@@ -18,7 +18,8 @@ type PolicyOp =
   | "orgConfig.adoptProjectWorkflows"
   | "override.approve"
   | "killSwitch.set"
-  | "approval.decide";
+  | "approval.decide"
+  | "workItem.markRepair";
 
 /** Runs one policy decision with a pending state, a toast and a refresh of the org's config. */
 export function usePolicyDecide() {

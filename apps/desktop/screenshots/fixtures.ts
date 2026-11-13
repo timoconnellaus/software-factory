@@ -744,6 +744,7 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
+      repairsMain: false,
       workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
@@ -1677,7 +1678,26 @@ export const ANSWERS: Answers = {
     ],
   }),
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
-  "inbox.list": () => INBOX,
+  // `?red=1` (before the hash): the Factory project's main is red (spec 53), for Mark as a repair.
+  "inbox.list": () =>
+    typeof location !== "undefined" && new URLSearchParams(location.search).get("red") === "1"
+      ? {
+          ...INBOX,
+          mainRed: [
+            {
+              projectId: FACTORY,
+              name: "Factory",
+              repositoryId: "repo_factory",
+              repo: { owner: "timoconnellaus", name: "software-factory" },
+              branch: "main",
+              headSha: "9b1e004",
+              failing: ["ci"],
+              redSince: ago(25),
+              lastGreenSha: "5da8988",
+            },
+          ],
+        }
+      : INBOX,
   "workItem.list": (input) => ({
     items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
@@ -1774,6 +1794,20 @@ export const ANSWERS: Answers = {
         : (CONFIG_HISTORY[0] ?? null),
     error: null,
     pendingMore: false,
+    // The Website overrides the org's retry limit, looser, not yet approved by an org admin.
+    orgOverrides:
+      input.projectId === SITE
+        ? [
+            {
+              stageId: "build",
+              key: "retryLimit",
+              value: 3,
+              looser: true,
+              approved: false,
+              orgVersion: 4,
+            },
+          ]
+        : [],
     history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
@@ -1951,6 +1985,12 @@ export const ANSWERS: Answers = {
     ],
     remaining: [],
     planDigest: "a".repeat(64),
+  }),
+  "killSwitch.list": () => ({
+    org: null,
+    projects: [
+      { projectId: SITE, on: true, reason: "Deploys are failing on the host", changedAt: ago(45) },
+    ],
   }),
   "stageType.list": () => ({
     types: [

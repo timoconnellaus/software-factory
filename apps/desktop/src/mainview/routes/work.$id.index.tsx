@@ -41,6 +41,7 @@ import {
 } from "../components/item-backlog.tsx";
 import { OpenTerminal } from "../components/open-terminal.tsx";
 import { Planning } from "../components/planning.tsx";
+import { RepairToggle } from "../components/repair-toggle.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
 import { CriteriaList } from "../components/review-parts.tsx";
 import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.tsx";
@@ -58,6 +59,7 @@ import {
 import {
   attachmentsQuery,
   boardsQuery,
+  inboxQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
@@ -450,6 +452,8 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
   const project = projects.data?.find((p) => p.id === item.projectId);
   const pinned = useViewState((s) => s.pins.includes(item.id));
   const [cancel, setCancel] = useState(false);
+  // A red default branch (spec 53): the item may be marked as its repair.
+  const inbox = useQuery(inboxQuery());
   const active = ["running", "waiting", "paused"].includes(item.status);
   const pre = isPreRelease(item.status);
   return (
@@ -493,6 +497,13 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
+        {active && (
+          <RepairToggle
+            workItemId={item.id}
+            repairs={item.repairsMain}
+            red={!!inbox.data?.mainRed.some((r) => r.projectId === item.projectId)}
+          />
+        )}
         {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"

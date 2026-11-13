@@ -37,6 +37,8 @@ import {
   trialsQuery,
 } from "../lib/factory-queries.ts";
 import { OpError, op, read, submitKey } from "../lib/op.ts";
+import { usePolicyDecide } from "../lib/policy-decide.ts";
+import { useCanDecide } from "./cannot-approve.tsx";
 import {
   ChangeDiff,
   type ConfigEditor,
@@ -55,6 +57,9 @@ import {
   strs,
 } from "./config-editor.tsx";
 import { Chip } from "./shell-list.tsx";
+
+/** Deep equality for setting values (JSON). */
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 type Overrides = Record<string, Record<string, string>>;
 
@@ -1027,6 +1032,12 @@ function OverrideField({
   const overrides = obj(editor.doc?.workflowOverrides);
   const mine = stageId ? obj(overrides[stageId]) : {};
   const overridden = Object.hasOwn(mine, setting.key);
+  // The saved override, as the engine sees it: looser than the org's, approved or not.
+  const stored = editor.config.data?.orgOverrides.find(
+    (o) => o.stageId === stageId && o.key === setting.key,
+  );
+  const { run, pending } = usePolicyDecide();
+  const canDecide = useCanDecide();
   const put = (v: unknown) =>
     editor.set((d) => {
       if (!stageId) return;
@@ -1052,9 +1063,40 @@ function OverrideField({
         )}
       </span>
       {overridden && (
-        <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
-          Use the org's value
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
+            Use the org's value
+          </Button>
+          {stored?.looser &&
+            (stored.approved ? (
+              <Chip tone="green">An org admin approved this value</Chip>
+            ) : (
+              same(stored.value, mine[setting.key]) && (
+                <Button
+                  size="sm"
+                  className="h-7"
+                  disabled={pending !== null || !canDecide}
+                  data-testid={`approve-override-${setting.key}`}
+                  onClick={() =>
+                    void run(
+                      "override.approve",
+                      {
+                        projectId: editor.projectId,
+                        stageId,
+                        setting: setting.key,
+                        orgVersion: stored.orgVersion,
+                        value: stored.value,
+                        configVersion: editor.currentVersion,
+                      },
+                      "Approved",
+                    )
+                  }
+                >
+                  Approve this value (org admin)
+                </Button>
+              )
+            ))}
+        </div>
       )}
     </div>
   );

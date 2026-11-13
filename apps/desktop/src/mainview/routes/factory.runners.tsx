@@ -6,13 +6,15 @@ import { clock } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+import { toast } from "sonner";
 import { Cell, Empty, Row, TablePanel, When } from "../components/data-table.tsx";
 import { Reads } from "../components/read-state.tsx";
 import { PageArea, PageHeader, Panel } from "../components/shell-list.tsx";
 import { type RunnerRow, runnerRows } from "../lib/factory.ts";
+import { OpError, op, submitKey } from "../lib/op.ts";
 import { inboxQuery, runnersQuery } from "../lib/queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
@@ -144,12 +146,7 @@ function RunnerDetails({ r }: { r: RunnerRow }) {
         ? `Until ${clock(r.rateLimitedUntil)}`
         : "None right now",
     ],
-    [
-      "Claude accounts",
-      r.accounts
-        ? `${r.accounts.active}${r.accounts.names.length > 1 ? ` (of ${r.accounts.names.join(", ")})` : ""}`
-        : "not reported",
-    ],
+    ["Claude accounts", r.accounts ? <Accounts key="accounts" r={r} /> : "not reported"],
     ["Last heard", r.lastSeenAt ? <When key="heard" iso={r.lastSeenAt} /> : "never"],
   ];
   return (
@@ -171,5 +168,50 @@ function RunnerDetails({ r }: { r: RunnerRow }) {
         .
       </div>
     </Panel>
+  );
+}
+
+/**
+ * The runner's Claude accounts: the active one, and Use on the others (`runner.account.use`,
+ * delivered on its next heartbeat). Moved here from the website's Setup (ADR 0610).
+ */
+function Accounts({ r }: { r: RunnerRow }) {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const accounts = r.accounts;
+  if (!accounts) return null;
+  return (
+    <span className="flex flex-wrap items-center gap-1.5" data-testid="runner-accounts">
+      <span>{accounts.active}</span>
+      {accounts.names
+        .filter((n) => n !== accounts.active)
+        .map((name) => (
+          <Button
+            key={name}
+            size="sm"
+            variant="outline"
+            className="h-6 px-2 text-xs"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await op(
+                  "runner.account.use",
+                  { runnerId: r.id, name },
+                  { idempotencyKey: submitKey() },
+                );
+                toast.success(`${r.name} uses ${name} from its next job`);
+              } catch (error) {
+                toast.error(error instanceof OpError ? error.message : String(error));
+              } finally {
+                setBusy(false);
+                await queryClient.invalidateQueries({ queryKey: ["runners"] });
+              }
+            }}
+          >
+            Use {name}
+          </Button>
+        ))}
+    </span>
   );
 }

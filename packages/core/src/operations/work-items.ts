@@ -397,6 +397,8 @@ export const workItemGet = defineOperation({
       headSha: z.string().nullable(),
       prNumber: z.number().nullable(),
       policySha: z.string().nullable(),
+      /** Marked as a repair of a red default branch (spec 53, ADR 0581): lands ahead while red. */
+      repairsMain: z.boolean(),
       /** The workflow it follows (ADR 0371), null for the skeleton alone, and why. */
       workflow: z.string().nullable(),
       workflowReason: z.string().nullable(),
@@ -608,6 +610,7 @@ export const workItemGet = defineOperation({
         headSha: w.head_sha,
         prNumber: w.pr_number,
         policySha: w.policy_sha,
+        repairsMain: !!w.repairs_main,
         workflow: w.workflow,
         workflowReason: w.workflow_reason,
       },

@@ -7,15 +7,17 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import { Cell, Empty, Row, Stat, TablePanel, When, WIDE } from "../components/data-table.tsx";
+import { KillSwitches } from "../components/kill-switches.tsx";
 import { Reads, StatSkeleton } from "../components/read-state.tsx";
 import { PageArea, PageHeader, SectionTitle } from "../components/shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
 import { incidentRows, queued, runnersOnline, runningNow } from "../lib/factory.ts";
-import { mergeQueuesQuery } from "../lib/factory-queries.ts";
+import { killSwitchesQuery, mergeQueuesQuery } from "../lib/factory-queries.ts";
 import { openItem } from "../lib/places.ts";
 import { projectsQuery, workListsQuery } from "../lib/queries.ts";
-import { waitingCount } from "../lib/scope.ts";
+import { orgScope, waitingCount } from "../lib/scope.ts";
 import { useProjects, useSession } from "../lib/session.ts";
+import { getViewState } from "../lib/view-state.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 /** The figure tiles' grid. */
@@ -27,9 +29,11 @@ export const Route = createRoute({
   loader: async ({ context: { queryClient, session } }) => {
     const orgIds = session.orgs.map((o) => o.id);
     const projects = await queryClient.ensureQueryData(projectsQuery(orgIds)).catch(() => []);
+    const orgId = orgScope(session, getViewState().orgId);
     return Promise.all([
       queryClient.ensureQueryData(workListsQuery(orgIds)),
       queryClient.ensureQueryData(mergeQueuesQuery(projects.map((p) => p.id))),
+      ...(orgId ? [queryClient.ensureQueryData(killSwitchesQuery(orgId))] : []),
     ]).catch(() => null);
   },
   component: OverviewPage,
@@ -234,6 +238,13 @@ function OverviewPage() {
           </Empty>
         )}
       </Reads>
+      {orgId && (
+        <KillSwitches
+          orgId={orgId}
+          orgName={session.orgs.find((o) => o.id === orgId)?.name ?? "The org"}
+          projects={scopedProjects}
+        />
+      )}
     </PageArea>
   );
 }

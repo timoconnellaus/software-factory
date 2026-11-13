@@ -929,6 +929,60 @@ export async function recordPolicy(
   return { applied: true, valid: parsed.ok, error, version: written.sha };
 }
 
+export const killSwitchList = defineOperation({
+  name: "killSwitch.list",
+  description:
+    "An org's kill switches (ADR 0044): the org's own and each of its projects' that has ever been set, on or off, with the reason and when it changed. Members only.",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ orgId: z.string().min(1) }),
+  output: z.object({
+    org: z
+      .object({ on: z.boolean(), reason: z.string().nullable(), changedAt: z.string() })
+      .nullable(),
+    projects: z.array(
+      z.object({
+        projectId: z.string(),
+        on: z.boolean(),
+        reason: z.string().nullable(),
+        changedAt: z.string(),
+      }),
+    ),
+  }),
+  scope: async (input) => ({ orgId: input.orgId }),
+  async handler(input, ctx) {
+    // On a page view: the org's row by primary key, and its projects' rows through the projects'
+    // (org_id, slug) index, each joined by the switches' primary key; bounded.
+    const [org, projects] = await Promise.all([
+      ctx.db
+        .selectFrom("core_kill_switches")
+        .select(["is_on", "reason", "changed_at"])
+        .where("scope", "=", "org")
+        .where("scope_id", "=", input.orgId)
+        .executeTakeFirst(),
+      ctx.db
+        .selectFrom("core_projects as p")
+        .innerJoin("core_kill_switches as k", (j) =>
+          j.onRef("k.scope_id", "=", "p.id").on("k.scope", "=", "project"),
+        )
+        .select(["p.id", "k.is_on", "k.reason", "k.changed_at"])
+        .where("p.org_id", "=", input.orgId)
+        .limit(200)
+        .execute(),
+    ]);
+    return {
+      org: org ? { on: !!org.is_on, reason: org.reason, changedAt: org.changed_at } : null,
+      projects: projects.map((r) => ({
+        projectId: r.id,
+        on: !!r.is_on,
+        reason: r.reason,
+        changedAt: r.changed_at,
+      })),
+    };
+  },
+});
+
 export const killSwitchSet = defineOperation({
   name: "killSwitch.set",
   description:

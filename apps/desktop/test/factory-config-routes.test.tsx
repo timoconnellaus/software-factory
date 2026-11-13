@@ -253,3 +253,29 @@ describe("Org workflows (spec 52, ADR 0610)", () => {
     expect(textOf(html)).toContain("This Mac can't approve yet");
   });
 });
+
+describe("2c: the last website-only decisions, in the app (ADR 0610)", () => {
+  it("lists the kill switches on the Overview, with Turn off for one that is on", async () => {
+    const html = await renderPage("/factory");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="kill-switches"');
+    expect(text).toContain("Website On Deploys are failing on the host Turn off");
+  });
+
+  it("offers an org admin's Approve on a looser override that isn't approved", async () => {
+    const html = await renderPage("/factory/policy?project=prj_site&edit=1");
+    expect(html).toContain('data-testid="approve-override-retryLimit"');
+  });
+
+  it("offers Mark as a repair while the project's main is red, and Not a repair once marked", async () => {
+    const { repairShown } = await import("../src/mainview/components/repair-toggle.tsx");
+    expect(repairShown(true, false)).toBe(true);
+    expect(repairShown(false, true)).toBe(true);
+    expect(repairShown(false, false)).toBe(false);
+  });
+
+  it("switches a runner's Claude account from the Runners page", async () => {
+    const html = await renderPage("/factory/runners");
+    expect(textOf(html)).toContain("Use personal");
+  });
+});
