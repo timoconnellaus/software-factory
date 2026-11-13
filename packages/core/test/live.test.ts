@@ -310,8 +310,8 @@ describe("watching and steering a run", () => {
       item.workItemId,
     );
     expect(audit).toEqual({ actor_id: w.userId, outcome: "ok" });
-    const outbox = delivered.slice(before).flat() as { kind: string }[];
-    expect(outbox.filter((m) => m.kind === "run.steered")).toEqual([]);
+    // (`delivered` holds the outbox message ids this call queued: none.)
+    expect(delivered.slice(before).flat()).toEqual([]);
 
     // A member who doesn't own the runner is refused.
     const watcher = await member(w.orgId);
@@ -586,11 +586,7 @@ describe("a stream session's chat and takeover (spec 37, ADR 0450)", () => {
       w.human,
     );
     expect(asked.status).toBe("queued");
-    expect(
-      (delivered.slice(before).flat() as { kind: string }[]).filter(
-        (m) => m.kind === "run.steered",
-      ),
-    ).toEqual([]);
+    expect(delivered.slice(before).flat()).toEqual([]);
     const audit = await first<{ actor_id: string }>(
       "SELECT actor_id FROM core_audit WHERE operation = 'run.takeover' AND outcome = 'ok' AND work_item_id = ?",
       item.workItemId,
