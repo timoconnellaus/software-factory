@@ -2,6 +2,7 @@
 // content panel (each section puts its nested list and page in it) and the status bar. Only the
 // list and the page scroll. `beforeLoad` puts who is signed in (`org.list`) in the route context,
 // for every page under it.
+import { OpError } from "@software-factory/client/ops";
 import { TooltipProvider } from "@software-factory/ui/components/tooltip";
 import {
   createRoute,
@@ -17,6 +18,7 @@ import { CommandPalette } from "../components/shell-palette.tsx";
 import { OrgRail, Sidebar } from "../components/shell-sidebar.tsx";
 import { StatusBar } from "../components/shell-status-bar.tsx";
 import { Toolbar, useTabs } from "../components/shell-toolbar.tsx";
+import { WindowSkeleton } from "../components/window-skeleton.tsx";
 import {
   inboxQuery,
   meQuery,
@@ -40,6 +42,8 @@ export const appRoute = createRoute({
   id: "_app",
   beforeLoad: async ({ context }) => {
     const desktop = await bun.session({});
+    // Signed out is a state (the root shows sign-in), so the door isn't asked for anything.
+    if (!desktop.signedIn) throw new OpError("unauthenticated", "signed out");
     const session = await context.queryClient.ensureQueryData({
       ...meQuery(desktop.login),
       revalidateIfStale: true,
@@ -62,6 +66,8 @@ export const appRoute = createRoute({
     ]).catch(() => null);
   },
   component: AppLayout,
+  // Loading the shell itself (the session and its first reads): the whole window, not a page.
+  pendingComponent: WindowSkeleton,
 });
 
 /** The work item in focus mode, when the window is on it (spec 41). Leaving the item leaves focus. */

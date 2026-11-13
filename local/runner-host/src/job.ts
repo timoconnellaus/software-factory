@@ -182,6 +182,11 @@ export async function steerLoop(options: {
   if (!(await adapter.manifest()).capabilities.includes("steer")) return;
   const take = cp.steers.bind(cp);
   let failures = 0;
+  // Host ack (spec 44): every call says which steers this host has received since the last one,
+  // so a steer is delivered only once the host has it (a take by a call whose host had gone is
+  // offered again a minute later). A steer offered twice is dropped here by its id.
+  let received: string[] = [];
+  const seen = new Set<string>();
   while (!signal.aborted) {
     let steers: {
       id: string;
@@ -193,10 +198,15 @@ export async function steerLoop(options: {
     try {
       ({ steers } = await take(
         job.jobId,
-        { fencingToken: job.lease.fencingToken, waitMs: viaLine ? 0 : STEER_WAIT_MAX_MS },
+        {
+          fencingToken: job.lease.fencingToken,
+          waitMs: viaLine || received.length > 0 ? 0 : STEER_WAIT_MAX_MS,
+          ack: received,
+        },
         signal,
       ));
       failures = 0;
+      received = [];
     } catch (error) {
       if (signal.aborted) return;
       if (isStop(error)) {
@@ -214,6 +224,9 @@ export async function steerLoop(options: {
     }
     for (const s of steers) {
       if (signal.aborted) return;
+      received.push(s.id);
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
       if (s.kind === "takeover") {
         try {
           if (!options.takeover) throw new Error("this session can't be taken over from here");
@@ -253,7 +266,10 @@ export async function steerLoop(options: {
       }
     }
     // On the line: wait for a push (or the line going up or down, or the 5-minute safety poll).
-    if (viaLine && options.line?.up()) await options.line.next("steer", signal);
+    // Acks to send go at once (the next call, not held); else, on the line, wait for a push.
+    if (received.length === 0 && viaLine && options.line?.up()) {
+      await options.line.next("steer", signal);
+    }
   }
 }
 
