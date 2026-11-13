@@ -907,7 +907,7 @@ export const workItemTriage = defineOperation({
         : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;
     const specId = newId("spec");
-    // v13 (`triage-ties`): the check that proves each criterion, as data the code validates. Only
+    // `triage-ties`: the check that proves each criterion, as data the code validates. Only
     // the project's declared checks and required CI checks may be named; any other name is dropped,
     // so that criterion is untied and Not proven. Older instances keep the criteria as given.
     const tied = has(w.workflow_version, "triage-ties")

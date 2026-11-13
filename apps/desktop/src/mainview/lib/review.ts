@@ -59,11 +59,21 @@ export function verdictChips(p: ParsedPacket): { label: string; status: Status }
   // prove one, the chip says that instead of "0 of N" (the owner's decision, 2026-11-13).
   const proven = packetProven(p);
   if (proven?.checksSetUp === false) chips.push({ label: "No checks set up", status: "idle" });
-  else if (proven && proven.total > 0) {
-    chips.push({
-      label: `Proven ${proven.proven} of ${proven.total}`,
-      status: proven.proven === proven.total ? "done" : "waiting",
-    });
+  else if (proven) {
+    // Proven counts only ties a person approved; what passed the check triage (an agent) named is
+    // counted apart, never as proven (amended 2026-11-13).
+    if (proven.total > 0) {
+      chips.push({
+        label: `Proven ${proven.proven} of ${proven.total}`,
+        status: proven.proven === proven.total ? "done" : "waiting",
+      });
+    }
+    if (proven.triage && proven.triage.total > 0) {
+      chips.push({
+        label: `Passed the check triage named ${proven.triage.passed} of ${proven.triage.total}`,
+        status: "waiting",
+      });
+    }
   }
   if (p.reviewer) {
     chips.push(

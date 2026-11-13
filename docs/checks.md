@@ -10,7 +10,8 @@ labelled as opinion, and never proves anything.
 A project has checks when either of these is true:
 
 - **Declared checks.** The project's config has `checks`: at most ten
-  `{ "name": "tests", "run": "pnpm test", "timeoutMinutes": 20 }`, and a workflow may add its own.
+  `{ "name": "tests", "run": "pnpm test", "timeoutMinutes": 20, "proves": true }` (`proves` is
+  optional), and a workflow may add its own.
   The runner host runs them on the head commit after every build. Declare the install first
   (`pnpm install --frozen-lockfile`); later checks use what it installed.
 - **Required CI checks.** The config's `protection.requiredChecks` names CI check runs (default
@@ -30,17 +31,29 @@ as "not covered by a check". Where the tie comes from:
 
 - **An item with a spec** (medium and large by default): the approved spec's criteria. A person
   approved the spec, so the tie is theirs.
-- **An item without a spec** (small by default, `spec.requiredFrom` is `medium`), from Workflow v13:
+- **An item without a spec** (small by default, `spec.requiredFrom` is `medium`), from the Workflow's `triage-ties` feature:
   triage. It is given the names that can prove anything (`checks.provable`: the declared checks,
   then the required CI checks) and returns `criterionChecks`, one entry per criterion.
   `workItem.triage` keeps only those names (any other is dropped and journaled, and that criterion
   is untied, so Not proven), writes the tags into triage's spec, and refuses once the item has left
-  triage, so no later stage can add or change a tie. Before v13 a small item had no ties at all, so
+  triage, so no later stage can add or change a tie. Before `triage-ties` a small item had no ties at all, so
   none of its criteria could ever be Proven.
 - **The reviewer** may name checks too. They are shown, but never prove anything.
 
-A tied criterion is Proven only when one of its checks passed on the head commit: a declared check
-the runner host ran, or a required CI check that is green. Never a static check.
+A criterion tied in a person-approved spec is **Proven** only when one of its checks passed on the
+head commit: a declared check the runner host ran, or a required CI check that is green.
+
+Triage is an agent, so a criterion it tied is never called Proven: when its check passed the gate
+says "Passed `tests`, the check triage named (not checked by a person)", and counts it apart
+("Proven 2 of 3 · passed the check triage named 4 of 5"). Auto-approval (ADR 0515) counts only
+person-approved ties.
+
+## Which checks can prove
+
+Only a check that runs tests, by its name or command (`test`, `e2e`, `vitest`, …). Never a setup
+check (install, build) or a static one (lint, typecheck, format). A declared check can say so
+itself: `"proves": false`, or `"proves": true` for one the default doesn't recognise (that loosens
+the config, so it waits for an approver). Triage is offered only checks that can prove.
 
 ## What the gate says
 

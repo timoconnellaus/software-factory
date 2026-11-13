@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { declaredChecks, provableChecks } from "../policy/project-policy.ts";
+import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
@@ -28,7 +28,6 @@ import {
   type CheckRun,
   executedChecks,
   hostChecksOn,
-  isStaticCheck,
   notRunLines,
   notRunTitle,
 } from "../verify/proof.ts";
@@ -221,12 +220,8 @@ export const reviewPacketRecord = defineOperation({
       .limit(CHECK_ROWS_MAX)
       .execute();
     const hostChecks = hostChecksOn(w);
-    const declared = hostChecks
-      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => ({
-          name: c.name,
-          run: c.run,
-        }))
-      : [];
+    // With whether each may prove a criterion (setup and static checks never do).
+    const declared = hostChecks ? declaredProof(ctx.scope.policy ?? null, w.workflow) : [];
     // The approved spec's criteria: the links to checks a person approved (ADR 0501).
     const spec = await ctx.db
       .selectFrom("core_specs")
@@ -235,7 +230,7 @@ export const reviewPacketRecord = defineOperation({
       .where("status", "=", "approved")
       .orderBy("version", "desc")
       .executeTakeFirst();
-    // An item without a spec on Workflow v13 (`triage-ties`): triage's criteria, whose ties to
+    // An item without a spec on Workflow feature `triage-ties`: triage's criteria, whose ties to
     // checks `workItem.triage` validated in the triage stage, before any check ran. The reviewer
     // can't add or change them: its own links never prove (ADR 0501, amended 2026-11-13).
     const triaged =
@@ -492,29 +487,24 @@ function checkRunOf(r: {
 }
 
 /**
- * The check names triage may tie a criterion to (Workflow v13, `triage-ties`): the item's declared
+ * The check names triage may tie a criterion to (Workflow feature `triage-ties`): the item's declared
  * checks and the CI checks its config requires. Read once by the Workflow before triage.
  */
 export const checksProvable = defineOperation({
   name: "checks.provable",
   description:
-    "The names of the checks that can prove a work item's acceptance criteria: the project's declared checks for the item's workflow (run by the runner host), then the CI checks its config requires (never factory/verify). Triage names one of these for each criterion it writes, or none when no declared check can prove it; workItem.triage drops any other name. Static checks (lint, typecheck, format) are listed with `static: true`: they run but never prove a criterion.",
+    "The names of the checks that can prove a work item's acceptance criteria: the project's declared checks for the item's workflow (run by the runner host), then the CI checks its config requires (never factory/verify). Triage names one of these for each criterion it writes, or none when no declared check can prove it; workItem.triage drops any other name. Checks that can't prove a criterion are left out: setup checks (install, build), static checks (lint, typecheck, format) and any the config marks `proves: false`.",
   risk: "read",
   actors: ["agent", "human"],
   permission: "member",
   input: z.object({ workItemId }),
   output: z.object({
-    checks: z.array(z.object({ name: z.string(), static: z.boolean() })),
+    checks: z.array(z.object({ name: z.string() })),
   }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
-    const policy = ctx.scope.policy ?? null;
-    const runs = new Map(declaredChecks(policy, w.workflow).map((c) => [c.name, c.run]));
     return {
-      checks: provableChecks(policy, w.workflow).map((name) => ({
-        name,
-        static: isStaticCheck(name, runs.get(name) ?? ""),
-      })),
+      checks: provableChecks(ctx.scope.policy ?? null, w.workflow).map((name) => ({ name })),
     };
   },
 });

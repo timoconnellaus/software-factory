@@ -123,7 +123,10 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(String(run?.output?.summary)).toContain(
       "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm test`, exit 0, 1 s)",
     );
-    expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 0/1");
+    // A small item's criteria come from triage: counted apart from a person's ties, never "proven".
+    expect(String(run?.output?.summary)).toContain(
+      "Criteria that passed the check triage named (not checked by a person, not proven): 0/1",
+    );
   });
 
   it("goes on to verify and the merge gate when the runner could not run the checks: said plainly, never passed or proven, no build burned", async () => {
@@ -666,13 +669,14 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
   });
 });
 
-// The owner's decision (2026-11-13): a small item skips the spec stage, so before Workflow v13 its
+// The owner's decision (2026-11-13): a small item skips the spec stage, so before the Workflow's `triage-ties` feature its
 // criteria came from triage with no check named and nothing on it could ever be Proven (the
-// reviewer's links never prove). From v13 triage names the proving check for each criterion, only
+// reviewer's links never prove). From `triage-ties` triage names the proving check for each criterion, only
 // from the project's declared checks and required CI checks; the code validates the names.
-describe("triage ties each criterion to a check (Workflow v13, triage-ties)", () => {
+describe("triage ties each criterion to a check (Workflow feature triage-ties)", () => {
   const TIED = {
     ...CHECKS,
+    checks: [{ name: "install", run: "pnpm install --frozen-lockfile" }, ...CHECKS.checks],
     protection: { onRed: "warn", requiredChecks: ["ci", "e2e"] },
   };
   const C = {
@@ -682,7 +686,7 @@ describe("triage ties each criterion to a check (Workflow v13, triage-ties)", ()
     invented: "The toggle state persists",
   };
 
-  it("proves a small item's criterion by a tied check that passed; a failed tie, a dropped name and 'none' are not proven", async () => {
+  it("says a small item's criterion passed the check triage named, never Proven; a failed tie, a dropped name and 'none' did not", async () => {
     const w = await world(TIED);
     const item = await create(w);
     // The CI the config requires: `ci` green, `e2e` red on every head.
@@ -692,9 +696,9 @@ describe("triage ties each criterion to a check (Workflow v13, triage-ties)", ()
     ]);
     await runStage(w, item.workItemId, "triage", (j) => {
       // Triage is told exactly which names can prove a criterion.
-      expect(j.harness.prompt).toMatch(
-        /- lint \(static: never proves a criterion\)\n- tests\n- ci\n- e2e/,
-      );
+      // Only checks that can prove: not install (setup) or lint (static).
+      expect(j.harness.prompt).toMatch(/proves it when it passes[^\n]*\n- tests\n- ci\n- e2e\n/);
+      expect(j.harness.prompt).not.toMatch(/^- (install|lint)$/m);
       expect(j.harness.prompt).toMatch(/"criterionChecks"/);
       return triage("small", {
         acceptanceCriteria: Object.values(C),
@@ -703,7 +707,8 @@ describe("triage ties each criterion to a check (Workflow v13, triage-ties)", ()
           { criterion: C.failed, checks: ["E2E"] },
           { criterion: C.none, checks: [] },
           // Not a declared check: dropped, so this criterion is untied.
-          { criterion: C.invented, checks: ["manual-qa"] },
+          // Install is a setup check: it can never prove anything, so it is dropped too.
+          { criterion: C.invented, checks: ["manual-qa", "install"] },
         ],
       });
     });
@@ -723,10 +728,12 @@ describe("triage ties each criterion to a check (Workflow v13, triage-ties)", ()
       item.workItemId,
     );
     expect(triaged?.diff).toContain("manual-qa");
+    expect(triaged?.diff).toContain("install");
 
     await runStage(w, item.workItemId, "build", () => ({
       ...build(),
       checks: [
+        { name: "install", exitCode: 0 },
         { name: "lint", exitCode: 0 },
         { name: "tests", exitCode: 0 },
       ],
@@ -751,12 +758,36 @@ describe("triage ties each criterion to a check (Workflow v13, triage-ties)", ()
     );
     const sections = JSON.parse(packet.sections);
     expect(sections.proof).toMatchObject([
-      { criterion: C.passed, proven: true, provenBy: ["tests"], linkedBy: "triage" },
+      // Triage is an agent: its tie passed, but that is never "Proven" (no person checked it).
+      {
+        criterion: C.passed,
+        proven: false,
+        provenBy: [],
+        passedTriageCheck: ["tests"],
+        linkedBy: "triage",
+        fromTriage: true,
+      },
       { criterion: C.failed, proven: false, unproven: ["e2e"], linkedBy: "triage" },
       { criterion: C.none, proven: false, provenBy: [], uncovered: true, linkedBy: "triage" },
       { criterion: C.invented, proven: false, provenBy: [], linkedBy: "reviewer" },
     ]);
-    expect(sections.proven).toMatchObject({ proven: 1, total: 4, checksSetUp: true });
+    expect(sections.proof[1].passedTriageCheck).toBeUndefined();
+    // Counted apart: nothing a person tied, 1 of 4 passed the check triage named.
+    expect(sections.proven).toMatchObject({
+      proven: 0,
+      total: 0,
+      triage: { passed: 1, total: 4 },
+      checksSetUp: true,
+    });
+    const head = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_review_packets WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    const summary = String((await verifyRun(w, String(head?.head_sha)))?.output?.summary);
+    expect(summary).toContain(
+      "Criteria that passed the check triage named (not checked by a person, not proven): 1/4",
+    );
+    expect(summary).not.toContain("Criteria proven by an executed check");
   });
 
   it("refuses triage once the item has left the triage stage, so no later stage can tie a criterion", async () => {

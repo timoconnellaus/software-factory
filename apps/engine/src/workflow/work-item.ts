@@ -385,11 +385,10 @@ class ItemFlow {
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const scores = has(version, "triage-readiness");
-      // v13: the checks triage may tie each criterion to (the code drops any other name).
-      const provable = has(version, "triage-ties")
+      // `triage-ties`: the checks triage may tie each criterion to (the code drops any other name).
+      let provable = has(version, "triage-ties")
         ? ((await this.act("triage: checks", "checks.provable", { workItemId: id })).checks as {
             name: string;
-            static: boolean;
           }[])
         : undefined;
       const triageRun = await this.runWithRetries(
@@ -445,6 +444,13 @@ class ItemFlow {
               .all<{ prompt: string; answer: string }>();
             return results;
           });
+          // Each round reads the checks again under its own step name: a cached list from the
+          // first round would be stale if the config changed while answers were awaited.
+          if (provable) {
+            provable = (
+              await this.act(`triage #${k}: checks`, "checks.provable", { workItemId: id })
+            ).checks as { name: string }[];
+          }
           const again = await this.runWithRetries(
             meta,
             `triage #${k}`,

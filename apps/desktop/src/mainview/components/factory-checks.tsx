@@ -168,18 +168,36 @@ export function criterionMark(
   // No checks set up: nothing could prove it, so the mark is the reviewer's, said as such.
   if (noChecks) return { status: "idle", label: "Met (opinion)" };
   if (!proof) return { status: "done", label: "Met" }; // a packet from before: the reviewer's word
-  return proof.proven
-    ? { status: "done", label: "Proven" }
-    : { status: "waiting", label: "Not proven" };
+  if (proof.proven) return { status: "done", label: "Proven" };
+  // Triage's tie passed: said as such, never "Proven" (no person checked the tie).
+  if (proof.passedTriageCheck?.length) return { status: "waiting", label: "Passed triage's check" };
+  return { status: "waiting", label: "Not proven" };
 }
 
 /** Under a criterion: what proved it (or why nothing did), who linked it, the reviewer's opinion. */
 export function CriterionProofNote({ proof }: { proof: CriterionProof }) {
+  const triagePassed = proof.passedTriageCheck?.length ? proof.passedTriageCheck : null;
   return (
     <div className="mt-0.5 flex flex-col gap-0.5 text-xs" data-testid="criterion-proof">
       <div className="font-medium text-ink-2">
-        {proof.proven ? `Proven by ${proof.provenBy.join(", ")}` : "Not proven"}
-        {!proof.proven && (
+        {proof.proven ? (
+          `Proven by ${proof.provenBy.join(", ")}`
+        ) : triagePassed ? (
+          <span data-testid="criterion-triage-passed">
+            Passed{" "}
+            {triagePassed.map((n, i) => (
+              <span key={n}>
+                {i > 0 && ", "}
+                <code className="font-mono">{n}</code>
+              </span>
+            ))}
+            , the check triage named{" "}
+            <span className="font-normal text-ink-3">(not checked by a person)</span>
+          </span>
+        ) : (
+          "Not proven"
+        )}
+        {!proof.proven && !triagePassed && (
           <span className="font-normal text-ink-3" data-testid="criterion-why">
             {": "}
             {whyNotProven(proof)}
@@ -195,9 +213,7 @@ export function CriterionProofNote({ proof }: { proof: CriterionProof }) {
       {/* Not proven already says why (whyNotProven); proven says who tied it. */}
       {proof.proven && (
         <div className="text-ink-3" data-testid="criterion-linked-by">
-          {proof.linkedBy === "triage"
-            ? "Tied by triage to a declared check, before any check ran"
-            : "Linked in the approved spec"}
+          Linked in the approved spec
         </div>
       )}
     </div>

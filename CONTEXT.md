@@ -245,9 +245,9 @@ _Avoid_: runner check (the agent's own report), CI
 
 **Proven**
 An acceptance criterion is **Proven** when a check the approved spec links it to (a factory check or
-a CI check run, `[checks: …]` on the criterion) passed on the head SHA; for an item without a spec,
-a check triage tied it to, validated against the declared checks (Workflow v13). Otherwise it is
-**Not proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as
+a CI check run, `[checks: …]` on the criterion) passed on the head SHA. A check triage (an agent)
+tied it to that passed is never Proven: it is "passed the check triage named", counted apart. A
+setup or static check never proves. Otherwise it is **Not proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as
 opinion; `[checks: none]` is **not covered by a check**. With no checks set up at all, the gate says
 nothing can be proven instead of a count (ADR 0501, [`docs/checks.md`](docs/checks.md)).
 _Avoid_: met (the reviewer's judgement)

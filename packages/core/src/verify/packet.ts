@@ -16,6 +16,7 @@ import {
   executedChecks,
   notRunLines,
   notRunTitle,
+  proofCounts,
   proveCriteria,
   weakerLines,
   whyNotProven,
@@ -63,7 +64,7 @@ export interface PacketInput {
   hostChecks?: boolean | undefined;
   /** The approved spec's acceptance criteria, for the links a person approved (ADR 0501). */
   specCriteria?: readonly string[] | null | undefined;
-  /** Who wrote `specCriteria`'s links: the approved spec, or triage (Workflow v13). */
+  /** Who wrote `specCriteria`'s links: the approved spec, or triage (the Workflow's `triage-ties` feature). */
   linksFrom?: "spec" | "triage" | undefined;
 }
 
@@ -175,6 +176,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
     ? proveCriteria(evidence.criteria, executed, ci, {
         specCriteria: input.specCriteria,
         linksFrom: input.linksFrom,
+        declared: input.declaredChecks,
         requiredCi: input.requiredCi,
         gateFilesChanged: intact.findings.some((f) => f.kind === "gate-file"),
       })
@@ -201,8 +203,8 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
             executed,
             proof,
             proven: {
-              proven: proof.filter((p) => p.proven).length,
-              total: proof.length,
+              // Person-tied criteria proven, and triage's ties counted apart (amended 2026-11-13).
+              ...proofCounts(proof),
               weakened: proof.some((p) => p.weakened),
               // Nothing declared and no required CI reported: nothing could prove a criterion, so
               // the gate says that rather than "0/N proven".
@@ -348,6 +350,8 @@ const short = (sha: string) => sha.slice(0, 7);
 export interface StoredProven {
   proven: number;
   total: number;
+  /** Criteria from triage's list that passed the check triage named: never "proven". */
+  triage?: { passed: number; total: number };
   weakened?: boolean;
   checksSetUp?: boolean;
 }
@@ -363,8 +367,18 @@ function provenLines(p: StoredProven, unproven: string[]): string[] {
       "",
     ];
   }
+  const weakened = p.weakened
+    ? " (weakened: the tests-intact guard found gate-file edits on this commit)"
+    : "";
   return [
-    `Criteria proven by an executed check: ${p.proven}/${p.total}${p.weakened ? " (weakened: the tests-intact guard found gate-file edits on this commit)" : ""}`,
+    ...(p.total > 0 || !p.triage
+      ? [`Criteria proven by an executed check: ${p.proven}/${p.total}${weakened}`]
+      : []),
+    ...(p.triage
+      ? [
+          `Criteria that passed the check triage named (not checked by a person, not proven): ${p.triage.passed}/${p.triage.total}`,
+        ]
+      : []),
     ...unproven.map((u) => `- ${u}`),
     "",
   ];
@@ -395,7 +409,13 @@ export function storedProof(sections: Record<string, unknown>): {
 } {
   const e = sections.executed as Partial<ExecutedChecks> | undefined;
   const p = sections.proven as
-    | { proven?: unknown; total?: unknown; weakened?: unknown; checksSetUp?: unknown }
+    | {
+        proven?: unknown;
+        total?: unknown;
+        weakened?: unknown;
+        checksSetUp?: unknown;
+        triage?: { passed?: unknown; total?: unknown };
+      }
     | undefined;
   const ranOn = typeof sections.checksRanOn === "string" ? sections.checksRanOn : null;
   const lines =
@@ -415,6 +435,9 @@ export function storedProof(sections: Record<string, unknown>): {
             total: p.total,
             ...(p.weakened === true ? { weakened: true } : {}),
             ...(typeof p.checksSetUp === "boolean" ? { checksSetUp: p.checksSetUp } : {}),
+            ...(typeof p.triage?.passed === "number" && typeof p.triage.total === "number"
+              ? { triage: { passed: p.triage.passed, total: p.triage.total } }
+              : {}),
           }
         : null,
     unprovenLines: storedUnproven(sections),
@@ -436,6 +459,7 @@ function storedUnproven(sections: Record<string, unknown>): string[] {
       notCounted: Array.isArray(r.notCounted) ? r.notCounted : [],
       linkedBy: r.linkedBy === "spec" || r.linkedBy === "triage" ? r.linkedBy : "reviewer",
       uncovered: r.uncovered === true,
+      passedTriageCheck: Array.isArray(r.passedTriageCheck) ? r.passedTriageCheck : [],
     });
     return [`Not proven: ${r.criterion} (${why})`];
   });

@@ -27,10 +27,10 @@ export function triagePrompt(
   /** Spec 23 (v9): score readiness too; the answers to an earlier round's questions, if any. */
   readiness?: { answers: { prompt: string; answer: string }[] },
   /**
-   * v13 (`triage-ties`): the checks that can prove a criterion (`checks.provable`). Triage names
+   * `triage-ties`: the checks that can prove a criterion (`checks.provable`). Triage names
    * one for each criterion, or none; any other name is dropped in code.
    */
-  checks?: { name: string; static: boolean }[],
+  checks?: { name: string }[],
 ): string {
   const tie = (shape: string) =>
     checks
@@ -66,11 +66,9 @@ export function triagePrompt(
       ? [
           "",
           checks.length
-            ? "For each criterion, name in `criterionChecks` the check that proves it when it passes on the commit, chosen only from these (the project's declared checks and required CI checks; a static one never proves a behaviour):"
+            ? "For each criterion, name in `criterionChecks` the check that proves it when it passes on the commit, chosen only from these (the project's checks that run tests, and its required CI checks):"
             : "The project has no checks that could prove a criterion: give each criterion `checks: []` in `criterionChecks`.",
-          ...checks.map(
-            (c) => `- ${c.name}${c.static ? " (static: never proves a criterion)" : ""}`,
-          ),
+          ...checks.map((c) => `- ${c.name}`),
           "Give `checks: []` when no listed check would exercise the criterion: that is an honest answer and is shown as \"not covered by a check\". Don't force a match, and don't invent a name: any name not listed is dropped and the criterion is Not proven.",
         ]
       : []),

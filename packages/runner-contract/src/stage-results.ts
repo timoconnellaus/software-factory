@@ -29,7 +29,7 @@ export const triageResultSchema = z.object({
   domains: z.array(z.string().min(1).max(40)).max(10).default([]),
   acceptanceCriteria: z.array(criterion).max(30).default([]),
   /**
-   * The check that proves each criterion (Workflow v13, `triage-ties`), matched to
+   * The check that proves each criterion (Workflow feature `triage-ties`), matched to
    * `acceptanceCriteria` by text. `checks` names only the project's declared checks or required CI
    * checks it was given; an empty list says no declared check can prove the criterion (shown as
    * "not covered by a check"). Advisory input: `workItem.triage` drops any name the project
