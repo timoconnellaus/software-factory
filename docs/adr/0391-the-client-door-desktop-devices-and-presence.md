@@ -115,3 +115,9 @@ removed, and is cut to 120 characters (`titled` in `packages/core`): `Merge 3f2a
 acme/widgets, without its checks: "Fix the inbox count"`. The key helper refuses a summary with
 format, separator or control characters (spec 40 M4b). New `describeDecision` cases follow the
 same rule.
+
+Later the same day (review of the follow-up): the facts are never cut, only the title is, to the
+room the facts leave; and a merge without checks says so first, `Merge WITHOUT its checks: 3f2a91c
+into main of acme/widgets: "Fix the inbox count"`, so the condition is in the first words even
+where a sheet can't show the whole line.
+

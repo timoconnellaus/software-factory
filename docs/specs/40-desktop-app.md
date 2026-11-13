@@ -489,15 +489,17 @@ the profile never ships a helper that failed a check.
   prompt that shows the call's summary; the app shows `keyStorage: "secure-enclave"`, and a gate
   decided from the desktop is recorded with its presence proof.
 - **What the prompt shows.** The summary of a merge names the repository, the commit being merged
-  (short SHA) and the work item's title, and says so plainly when the merge is without checks
-  (`mergeWithoutChecks`): `Merge 3f2a91c into main of acme/widgets, without its checks: "Fix the
-  inbox count"`. Every client sends `headSha` with `review.merge`, so the proof binds the commit.
-  **The engine's facts come first and any title last** (amended 2026-11-13, review of #150): a
-  title is agent-written, so it is quoted last with double quotes, format characters (Cf) and line
-  breaks removed, and the whole summary is cut to 120 characters (`titled`, `MAX_SUMMARY`). A title
-  can't pose as the repository or push "without its checks" off the sheet, and can't make an item
-  undecidable (the helper refuses Cf, Zl, Zp and control characters). Every `describeDecision` case
-  follows this, new ones included.
+  (short SHA) and the work item's title, and says so plainly, **first**, when the merge is without
+  checks (`mergeWithoutChecks`): `Merge WITHOUT its checks: 3f2a91c into main of acme/widgets: "Fix
+  the inbox count"`. Every client sends `headSha` with `review.merge`, so the proof binds the
+  commit. **The engine's facts come first and any title last** (amended 2026-11-13, reviews of
+  #150): a title is agent-written, so it is quoted last with double quotes, format characters (Cf)
+  and line breaks removed, and gets only the room the facts leave under 120 characters (`titled`,
+  `MAX_SUMMARY`); **the facts are never cut** (only a merge's branch name is shortened, in the
+  middle, if the facts alone would pass 280 characters, `MAX_FACTS`, under the helper's 300). A
+  title can't pose as the repository or push the facts off the sheet, an unusual condition is in
+  the first words, and a title can't make an item undecidable (the helper refuses Cf, Zl, Zp and
+  control characters). Every `describeDecision` case follows this, new ones included.
 - Killing the helper on expiry or cancel takes the Touch ID sheet down; each exit code above maps to
   its own message in the app; a second decision while one waits is refused; the app shows "Waiting
   for Touch ID: \<summary\>".

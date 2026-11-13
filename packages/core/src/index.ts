@@ -30,6 +30,7 @@ export {
   DESKTOP_CALLBACK_URL,
   DESKTOP_DEVICE_ACTOR,
   DESKTOP_TOKEN_PREFIX,
+  MAX_FACTS,
   MAX_SUMMARY,
   presenceMessage,
   rawSignature,
