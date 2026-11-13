@@ -295,6 +295,12 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    */
   desktopDecidable?: true;
   /**
+   * Inputs of a presence-decidable operation the desktop may run without a proof, the desktop only:
+   * ones that decide nothing (adopting projects' workflows as a dry run, ADR 0610). The phone, the
+   * CLI and MCP stay refused.
+   */
+  desktopOneTap?: (input: z.output<I>) => boolean;
+  /**
    * A person-only operation the phone may run with one tap, without a fingerprint (ADR 0541
    * decision 5, the owner's rule "ordinary answers are one tap"): everything `desktopDecidable`,
    * and these, which only ever hold work back or answer: `question.answer` (security, privacy and

@@ -739,7 +739,7 @@ export const runSteer = defineOperation({
 export const runTakeSteers = defineOperation({
   name: "run.takeSteers",
   description:
-    "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued. Fenced: a stale token is refused.",
+    "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued, polling for one in the Worker (spec 44). Fenced: a stale token is refused.",
   risk: "write",
   // Re-taken every 25 s per running job: audited only when it hands steers over (ADR 0590).
   audit: { changesOnly: true, changed: (out) => out.steers.length > 0 },
@@ -749,6 +749,8 @@ export const runTakeSteers = defineOperation({
   input: z.object({ jobId, fencingToken }),
   output: z.object({
     workItemId: z.string(),
+    /** The job's run: what the channel's held call polls for queued steers (spec 44). */
+    runId: z.string(),
     steers: z.array(
       z.object({
         id: z.string(),
@@ -806,6 +808,7 @@ export const runTakeSteers = defineOperation({
     }
     return {
       workItemId: run.work_item_id,
+      runId: run.id,
       steers: queued.map((s) => ({
         id: s.id,
         text: s.text,

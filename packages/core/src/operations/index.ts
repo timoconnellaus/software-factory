@@ -1,4 +1,5 @@
 export * from "./adjudicator.ts";
+export * from "./adopt.ts";
 export * from "./artifacts.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
@@ -7,6 +8,7 @@ export * from "./backlog.ts";
 export * from "./cli.ts";
 export * from "./config.ts";
 export * from "./connector.ts";
+export * from "./delivery.ts";
 export * from "./desktop.ts";
 export * from "./device.ts";
 export * from "./devices.ts";
