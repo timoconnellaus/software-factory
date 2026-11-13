@@ -10,7 +10,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { AUTO_APPROVE, holdAutoApproval } from "./auto-approve.ts";
+import { AUTO_APPROVE, autoMergedKey, holdAutoApproval } from "./auto-approve.ts";
 import { POLICY_PR_BRANCH } from "./onboarding.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
 import { requireProject, requireRepository } from "./shared.ts";
@@ -365,6 +365,30 @@ async function holdOnRevert(
   repositoryId: string,
   reverts: readonly { sha: string | null; pr: number | null }[],
 ): Promise<boolean> {
+  if (reverts.length === 0) return false;
+  // The reverted commit, matched to the project's recent auto-approved merges (one row by key):
+  // GitHub's Revert button names the merge commit, not the PR (review of #152).
+  const row = await ctx.db
+    .selectFrom("core_meta")
+    .select("value")
+    .where("key", "=", autoMergedKey(project.id))
+    .executeTakeFirst();
+  let merged: { sha: string; pr: number | null; number: number }[] = [];
+  try {
+    merged = row ? (JSON.parse(row.value) as typeof merged) : [];
+  } catch {
+    merged = [];
+  }
+  const bySha = merged.find((m) =>
+    reverts.some((r) => r.sha && r.sha.length >= 7 && m.sha.startsWith(r.sha)),
+  );
+  if (bySha)
+    return holdAutoApproval(
+      ctx,
+      project,
+      `the auto-approved merge of #${bySha.number} (${bySha.sha.slice(0, 7)}) was reverted`,
+      [bySha.sha],
+    );
   const prs = [...new Set(reverts.flatMap((r) => (r.pr ? [r.pr] : [])))].slice(0, 5);
   if (prs.length === 0) return false;
   // core_work_items_repository_idx (repository_id, pr_number), then core_pending_actions_item_idx.

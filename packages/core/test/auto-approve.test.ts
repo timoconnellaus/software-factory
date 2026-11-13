@@ -36,6 +36,7 @@ const good = (): AutoApproveFacts => ({
     verdict: "pass",
     ci: "success",
     criteriaProven: true,
+    specByPerson: true,
     weakened: false,
     testsIntact: true,
   },
@@ -46,6 +47,7 @@ const good = (): AutoApproveFacts => ({
   ],
   hold: null,
   touchesFactoryConfig: false,
+  versionSupports: true,
 });
 const failing = (f: AutoApproveFacts, s = ON) =>
   autoApproveVerdict(f, s)
@@ -88,6 +90,24 @@ describe("autoApproveVerdict: every condition, in code", () => {
           }),
       ],
       ["limits", (f) => (f.today = 10)],
+      ["version", (f) => (f.versionSupports = false)],
+      [
+        "checks",
+        (f) => (f.packet = { ...(f.packet as NonNullable<typeof f.packet>), specByPerson: false }),
+      ],
+      ["risk", (f) => (f.changes = [{ path: "vendor/lib", changes: 1, submodule: true }])],
+      ["risk", (f) => (f.changes = [{ path: "packages/core/package.json", changes: 1 }])],
+      ["risk", (f) => (f.changes = [{ path: "apps/engine/tsconfig.json", changes: 1 }])],
+      ["risk", (f) => (f.changes = [{ path: "apps/desktop/electrobun.config.ts", changes: 1 }])],
+      ["risk", (f) => (f.changes = [{ path: "apps/desktop/native/sf-keys.swift", changes: 1 }])],
+      ["risk", (f) => (f.changes = [{ path: "apps/desktop/scripts/release.sh", changes: 1 }])],
+      [
+        "risk",
+        (f) => {
+          f.factorySource = true;
+          f.changes = [{ path: "docs/specs/x.md", changes: 1 }];
+        },
+      ],
       ["risk", (f) => (f.changes = [{ path: "assets/logo.png", changes: 0, unreadable: true }])],
       ["risk", (f) => (f.changes = [{ path: "apps/app/src/routeTree.gen.ts", changes: 3 }])],
       ["risk", (f) => (f.changes = [{ path: ".gitmodules", changes: 3 }])],
@@ -151,6 +171,17 @@ describe("autoApproveVerdict: every condition, in code", () => {
       ["enabled", "forbiddenPaths", "maxChangedLines", "maxFiles", "maxPerDay", "riskPaths"].sort(),
     );
     expect(SELF_MODIFY_PATHS).toContain(".factory/**");
+  });
+
+  it("on the factory's own repository only the allow-list is auto-approved", () => {
+    const f = {
+      ...good(),
+      factorySource: true,
+      changes: [{ path: "docs/design/x.html", changes: 3 }],
+    };
+    expect(autoApproveVerdict(f, ON).approve).toBe(true);
+    const off = { ...f, changes: [{ path: "docs/architecture.md", changes: 3 }] };
+    expect(autoApproveVerdict(off, ON).reason).toMatch(/factory's own repository/);
   });
 
   it("the workflow's own lists add to the floor", () => {
@@ -279,9 +310,31 @@ async function atMergeGate(
     verdict?: "approve" | "defer";
     /** Runs once the item has pinned its org version, before the gate is decided. */
     meanwhile?: () => Promise<void>;
+    /** Who approved the item's spec: a person (default) or the adjudicator. */
+    specBy?: "person" | "adjudicator";
+    /** The item's Workflow version (default: one with dark factory mode). */
+    workflowVersion?: number;
+    noAssignee?: boolean;
   } = {},
 ) {
   const item = await newItem(w, uid("dark "));
+  await rows(
+    "UPDATE core_work_items SET workflow_version = ? WHERE id = ?",
+    opts.workflowVersion ?? 14,
+    item.workItemId,
+  );
+  const at = new Date().toISOString();
+  await rows(
+    `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
+     VALUES (?, ?, ?, ?, 'spec', 'spec.accept', 'write', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+    uid("pa_spec"),
+    w.orgId,
+    w.projectId,
+    item.workItemId,
+    opts.specBy === "adjudicator" ? "improver" : w.userId,
+    at,
+    at,
+  );
   await opts.meanwhile?.();
   const base = (await github.getBranchSha(w.repo, "main")) ?? undefined;
   const head = await github.push(
@@ -316,6 +369,11 @@ async function atMergeGate(
     FOREMAN,
   );
   if (gate.status !== "pending") throw new Error("expected the merge gate to wait");
+  if (opts.noAssignee)
+    await rows(
+      "UPDATE core_pending_actions SET assignee_user_id = NULL WHERE id = ?",
+      gate.pendingActionId,
+    );
   await ok("adjudicator.request", { pendingActionId: gate.pendingActionId }, IMPROVER);
   const a = await first<{ job_id: string }>(
     "SELECT job_id FROM core_adjudications WHERE pending_action_id = ?",
@@ -342,6 +400,29 @@ async function atMergeGate(
   );
   return { item, head, gate: gate.pendingActionId, recorded, pa };
 }
+
+/** Lands an approved merge as the babysitter would (`pr.merge` with the approval): its merge commit. */
+async function land(_w: W, at: Awaited<ReturnType<typeof atMergeGate>>): Promise<string> {
+  await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", at.head, at.item.workItemId);
+  await ok("pr.open", { workItemId: at.item.workItemId }, FOREMAN);
+  const merged = await ok<{ sha: string }>(
+    "pr.merge",
+    { workItemId: at.item.workItemId, headSha: at.head, touchesFactoryConfig: false },
+    FOREMAN,
+    { approvalId: at.gate },
+  );
+  return merged.sha;
+}
+
+const holdOf = async (w: W) =>
+  (JSON.parse(
+    (
+      await first<{ raw: string }>(
+        "SELECT pp.raw FROM core_project_policies pp JOIN core_projects p ON p.id = pp.project_id AND pp.sha = p.policy_sha WHERE p.id = ?",
+        w.projectId,
+      )
+    ).raw,
+  ).autoApproveHold ?? null) as { reason: string } | null;
 
 describe("dark factory mode through the operations", () => {
   it("an agent can't turn it on; an org admin's save loosens and waits for an org admin", async () => {
@@ -452,7 +533,17 @@ describe("dark factory mode through the operations", () => {
   it("every fifth auto-approval also goes to a person after it merges; their 'no' holds the project", async () => {
     const w = await world();
     await dark(w);
-    for (let i = 0; i < 5; i++) expect((await atMergeGate(w)).pa.status).toBe("approved");
+    for (let i = 0; i < 4; i++) await land(w, await atMergeGate(w));
+    // Sampled when the merge lands, not at approval: an approval alone opens no review.
+    const fifth = await atMergeGate(w);
+    expect(fifth.pa.status).toBe("approved");
+    expect(
+      await rows(
+        "SELECT id FROM core_pending_actions WHERE project_id = ? AND operation = 'autoApprove.review'",
+        w.projectId,
+      ),
+    ).toEqual([]);
+    await land(w, fifth);
     const review = await first<{ id: string; status: string }>(
       "SELECT id, status FROM core_pending_actions WHERE project_id = ? AND operation = 'autoApprove.review'",
       w.projectId,
@@ -471,41 +562,63 @@ describe("dark factory mode through the operations", () => {
     expect((await atMergeGate(w)).pa.status).toBe("pending");
   });
 
-  it("a revert of an auto-approved merge on the default branch holds the project", async () => {
+  it("a revert of an auto-approved merge holds the project: GitHub's Revert button names the merge commit", async () => {
     const w = await world();
     await dark(w);
-    const { item } = await atMergeGate(w);
-    await rows("UPDATE core_work_items SET pr_number = 77 WHERE id = ?", item.workItemId);
-    await ok(
-      "push.observe",
-      {
-        repo: { owner: w.repo.owner, name: w.repo.repo },
-        ref: "refs/heads/main",
-        before: "b".repeat(40),
-        after: "f".repeat(40),
-        pusher: "tim",
-        pusherIsApp: false,
-        reverts: [{ sha: null, pr: 77 }],
-      },
-      { type: "intake", id: "github" },
-    );
-    const raw = await first<{ raw: string }>(
-      "SELECT pp.raw FROM core_project_policies pp JOIN core_projects p ON p.id = pp.project_id AND pp.sha = p.policy_sha WHERE p.id = ?",
-      w.projectId,
-    );
-    expect(JSON.parse(raw.raw).autoApproveHold.reason).toMatch(/reverted/);
+    const mergeSha = await land(w, await atMergeGate(w));
+    const push = (reverts: { sha: string | null; pr: number | null }[]) =>
+      ok(
+        "push.observe",
+        {
+          repo: { owner: w.repo.owner, name: w.repo.repo },
+          ref: "refs/heads/main",
+          before: "b".repeat(40),
+          after: "f".repeat(40),
+          pusher: "tim",
+          pusherIsApp: false,
+          reverts,
+        },
+        { type: "intake", id: "github" },
+      );
+    // Another commit's revert holds nothing.
+    await push([{ sha: "abcdef1", pr: null }]);
+    expect(await holdOf(w)).toBeNull();
+    await push([{ sha: mergeSha, pr: null }]);
+    expect((await holdOf(w))?.reason).toMatch(/reverted/);
   });
 
-  it("red CI on the default branch after an auto-approved merge holds the project; green ends the window", async () => {
+  it("the red-main window opens when an auto-approved merge lands and closes on green at or after it", async () => {
     const w = await world();
     await dark(w);
-    expect((await atMergeGate(w)).pa.status).toBe("approved");
+    const red = async () => {
+      const main = (await github.getBranchSha(w.repo, "main")) as string;
+      await github.setChecks(w.repo, main, [
+        {
+          name: "ci",
+          status: "completed",
+          conclusion: "failure",
+          appSlug: "github-actions",
+          url: null,
+        },
+      ]);
+      await ok(
+        "main.observe",
+        { repo: { owner: w.repo.owner, name: w.repo.repo }, headSha: null, trigger: "recheck" },
+        FOREMAN,
+      );
+    };
+    // Approved but not merged: red main holds nothing.
+    const approved = await atMergeGate(w);
+    expect(approved.pa.status).toBe("approved");
+    await red();
+    expect(await holdOf(w)).toBeNull();
+    // Main goes green again, then the merge lands: the window opens at its commit.
     const main = (await github.getBranchSha(w.repo, "main")) as string;
     await github.setChecks(w.repo, main, [
       {
         name: "ci",
         status: "completed",
-        conclusion: "failure",
+        conclusion: "success",
         appSlug: "github-actions",
         url: null,
       },
@@ -515,14 +628,47 @@ describe("dark factory mode through the operations", () => {
       { repo: { owner: w.repo.owner, name: w.repo.repo }, headSha: null, trigger: "recheck" },
       FOREMAN,
     );
-    const raw = await first<{ raw: string }>(
-      "SELECT pp.raw FROM core_project_policies pp JOIN core_projects p ON p.id = pp.project_id AND pp.sha = p.policy_sha WHERE p.id = ?",
-      w.projectId,
-    );
-    expect(JSON.parse(raw.raw).autoApproveHold.reason).toMatch(/went red/);
+    const mergeSha = await land(w, approved);
     expect(
-      await rows("SELECT key FROM core_meta WHERE key = ?", `auto_approved:${w.projectId}`),
-    ).toEqual([]);
+      (
+        await first<{ value: string }>(
+          "SELECT value FROM core_meta WHERE key = ?",
+          `auto_approved:${w.projectId}`,
+        )
+      ).value,
+    ).toContain(mergeSha);
+    await red();
+    expect((await holdOf(w))?.reason).toMatch(/went red/);
+  });
+
+  it("a spec the adjudicator approved, or a Workflow version without the babysitter's re-check, goes to a person", async () => {
+    const w = await world();
+    await dark(w);
+    const byAdjudicator = await atMergeGate(w, { specBy: "adjudicator" });
+    expect(byAdjudicator.pa.status).toBe("pending");
+    expect(byAdjudicator.pa.reason).toMatch(/wasn't approved by a person/);
+    const old = await atMergeGate(w, { workflowVersion: 10 });
+    expect(old.pa.status).toBe("pending");
+    expect(old.pa.reason).toMatch(/no dark factory mode/);
+  });
+
+  it("on a project marked as the factory's own source, only the allow-list is auto-approved", async () => {
+    const w = await world();
+    await dark(w, { factorySource: "yes" });
+    const code = await atMergeGate(w);
+    expect(code.pa.status).toBe("pending");
+    expect(code.pa.reason).toMatch(/factory's own repository/);
+    const design = await atMergeGate(w, {
+      files: [
+        {
+          path: "docs/design/x.html",
+          status: "modified",
+          patch: "@@ -1 +1 @@\n-a\n+b",
+          changes: 4,
+        },
+      ],
+    });
+    expect(design.pa.status).toBe("approved");
   });
 
   it("counts only while on in both the pinned and the current org version", async () => {
@@ -604,17 +750,36 @@ describe("dark factory mode through the operations", () => {
   it("the review after a sampled merge goes to the first approver when the gate had no assignee", async () => {
     const w = await world();
     await dark(w);
-    for (let i = 0; i < 4; i++) await atMergeGate(w);
-    await rows(
-      "UPDATE core_pending_actions SET assignee_user_id = NULL WHERE project_id = ? AND kind = 'merge' AND status = 'pending'",
-      w.projectId,
-    );
-    await atMergeGate(w);
+    for (let i = 0; i < 5; i++) await land(w, await atMergeGate(w, { noAssignee: true }));
     const review = await first<{ assignee_user_id: string | null }>(
       "SELECT assignee_user_id FROM core_pending_actions WHERE project_id = ? AND operation = 'autoApprove.review'",
       w.projectId,
     );
     expect(review.assignee_user_id).toBe(w.userId);
+  });
+
+  it("the babysitter's re-check refuses an auto-approval for another head", async () => {
+    const w = await world();
+    await dark(w);
+    const { item, head, gate } = await atMergeGate(w);
+    await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", head, item.workItemId);
+    await ok("pr.open", { workItemId: item.workItemId }, FOREMAN);
+    await ok(
+      "mergeQueue.enter",
+      { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
+      FOREMAN,
+    );
+    await rows(
+      "UPDATE core_merge_queue SET head_sha = ? WHERE work_item_id = ?",
+      "e".repeat(40),
+      item.workItemId,
+    );
+    const marked = await ok<{ merging: boolean; withdrawn?: string }>(
+      "mergeQueue.merging",
+      { workItemId: item.workItemId, merging: true },
+      BABYSITTER,
+    );
+    expect(marked.withdrawn).toMatch(/another commit/);
   });
 });
 

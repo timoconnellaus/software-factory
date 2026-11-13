@@ -299,6 +299,12 @@ export const projectPolicySchema = z
      * something goes wrong (a tightening); while set, no merge here is auto-approved. Removing it is
      * a loosening an org admin makes and approves.
      */
+    /**
+     * The project is the factory's own source (review of #152): auto-approval there is default-deny,
+     * only `FACTORY_SOURCE_ALLOW`. `auto`: recognised by the engine's package name in the repository.
+     * `no` is a loosening an org admin approves.
+     */
+    factorySource: z.enum(["auto", "yes", "no"]).default("auto"),
     autoApproveHold: z
       .object({
         since: z.string().max(40),

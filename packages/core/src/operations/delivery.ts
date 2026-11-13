@@ -231,23 +231,34 @@ export const mainObserve = defineOperation({
       after: { state, sha: head, failing: ci.failing },
     });
     const where = `${repository.owner}/${repository.name}`;
-    // Dark factory mode (ADR 0515 §7): red after an auto-approved merge since main was last green
-    // holds the project; green ends that window. A point read and write by key, on a change only.
-    if (opens || closes) {
+    // Dark factory mode (ADR 0515 §7, review of #152): the window opens when an auto-approved merge
+    // lands (`<time> <merge commit>`) and closes once main's CI is green on that commit or a later
+    // one; red in between holds the project. A point read by key, on a change only.
+    if (opens || state === "green") {
       const key = autoApprovedKey(project.id);
-      const since = await ctx.db
-        .selectFrom("core_meta")
-        .select("value")
-        .where("key", "=", key)
-        .executeTakeFirst();
-      if (since && opens)
+      const marker = (
+        await ctx.db
+          .selectFrom("core_meta")
+          .select("value")
+          .where("key", "=", key)
+          .executeTakeFirst()
+      )?.value;
+      const mergeSha = marker?.split(" ")[1] ?? null;
+      if (marker && opens)
         await holdAutoApproval(
           ctx,
           project,
-          `${repository.default_branch} went red on ${where} after an auto-approved merge`,
+          `${repository.default_branch} went red on ${where} after an auto-approved merge${mergeSha ? ` (${mergeSha.slice(0, 7)})` : ""}`,
           [head],
         );
-      if (since) ctx.write(ctx.db.deleteFrom("core_meta").where("key", "=", key));
+      if (marker && opens) ctx.write(ctx.db.deleteFrom("core_meta").where("key", "=", key));
+      if (marker && state === "green" && mergeSha) {
+        // Green on the merge commit or a later one (it contains the merge): the window closes.
+        const contains =
+          head === mergeSha ||
+          (await github.compareCommits(repo, mergeSha, head).catch(() => null))?.behindBy === 0;
+        if (contains) ctx.write(ctx.db.deleteFrom("core_meta").where("key", "=", key));
+      }
     }
     if (opens) {
       for (const userId of audience ?? []) {

@@ -13,7 +13,7 @@ export const autoApproveSettings = z
       .boolean()
       .default(false)
       .describe(
-        "Dark factory mode: merges are approved with no person when every condition holds (the packet passed on this commit with every criterion proven by a check a person tied to it, tests intact, the adjudicator approved having earned it, inside these limits, low risk, and never a change to the factory itself). It only approves; the babysitter lands the merge. Turning it on is a loosening an org admin approves; it counts for an item only while it is on in both the version the item pinned and the current one. A project is held automatically after an incident, a revert, red CI or a person's 'should not have merged'. Small items never qualify: their criteria are tied to checks by triage, an agent, not by a person.",
+        "Dark factory mode: merges are approved with no person when every condition holds (the packet passed on this commit with every criterion proven by a check a person tied to it, tests intact, the adjudicator approved having earned it, inside these limits, low risk, and never a change to the factory itself). It only approves; the babysitter lands the merge. Turning it on is a loosening an org admin approves; it counts for an item only while it is on in both the version the item pinned and the current one. A project is held automatically after an incident, a revert, red CI or a person's 'should not have merged'. Small items never qualify: their criteria are tied to checks by triage, an agent, not by a person; nor do items whose spec the adjudicator approved: a person must approve the spec whose ties count. On the factory's own repository it covers only docs/screenshots and docs/design: everything else there always goes to a person.",
       ),
     maxChangedLines: z
       .number()
@@ -110,6 +110,28 @@ export const RISK_PATHS = [
   // The evals that judge the factory, and the factory's own policy.
   "evals/**",
   ".factory/**",
+  // Package and config surfaces: what is built, bundled and resolved, wherever it lives (review
+  // of #152: an `exports` map or a `paths` mapping can swap in other code).
+  "**/package.json",
+  "**/tsconfig*",
+  "**/jsconfig*",
+  "**/*.config.*",
+  "**/turbo.json",
+  "**/biome.json",
+  "**/pnpm-workspace.yaml",
+  "**/.npmrc",
+  "**/.nvmrc",
+  "**/Makefile",
+  "**/justfile",
+  // Release and build scripts.
+  "**/scripts/**",
+  "**/release*",
+  // Native code and its build (a key helper, a desktop shell).
+  "**/*.swift",
+  "**/*.m",
+  "**/*.mm",
+  "**/*.entitlements",
+  "**/*.plist",
   // Lock files: what installs, whatever the manifest says.
   "**/pnpm-lock.yaml",
   "**/package-lock.json",
@@ -120,6 +142,12 @@ export const RISK_PATHS = [
   "**/Gemfile.lock",
   "**/go.sum",
 ] as const;
+
+/**
+ * On the factory's own repository auto-approval is default-deny (review of #152, ADR 0515 amended):
+ * a change qualifies only when every path it touches is on this list. Widening it takes an ADR.
+ */
+export const FACTORY_SOURCE_ALLOW = ["docs/screenshots/**", "docs/design/**"] as const;
 
 /** Generated files: what made them isn't in the diff, so they aren't low risk. */
 export const GENERATED_PATHS = [
@@ -223,6 +251,8 @@ export interface AutoApproveFacts {
      * person approved (the spec's): `criteriaProven` (as #146's `everyCriterionProven`).
      */
     criteriaProven: boolean;
+    /** A person, not the adjudicator, approved the spec whose ties count (review of #152). */
+    specByPerson: boolean;
     /** The proof was weakened (a check changed in the same diff, ADR 0501). */
     weakened: boolean;
     testsIntact: boolean | null;
@@ -233,7 +263,13 @@ export interface AutoApproveFacts {
    * GitHub's compare of the default branch with the head. `unreadable`: GitHub gave no diff for it
    * (binary, too large, a submodule): not low risk.
    */
-  changes: { path: string; changes: number | null; unreadable?: boolean }[] | null;
+  changes:
+    | { path: string; changes: number | null; unreadable?: boolean; submodule?: boolean }[]
+    | null;
+  /** The repository is the factory's own source: default-deny (`FACTORY_SOURCE_ALLOW`). */
+  factorySource?: boolean;
+  /** The item's Workflow version has dark factory mode (the babysitter re-checks it). */
+  versionSupports?: boolean;
   /** Merges auto-approved in the project today (UTC), before this one. */
   today?: number;
   /** The project's hold (ADR 0515 §7), if set. */
@@ -245,6 +281,7 @@ export interface AutoApproveFacts {
 export type AutoApproveCondition =
   | "enabled"
   | "hold"
+  | "version"
   | "checks"
   | "tests"
   | "adjudicator"
@@ -279,10 +316,22 @@ export function autoApproveVerdict(
     !facts.hold,
     facts.hold ? `the project's auto-approval is held: ${facts.hold}` : "no hold",
   );
+  add(
+    "version",
+    facts.versionSupports === true,
+    facts.versionSupports === true
+      ? "the item's Workflow version has dark factory mode"
+      : "the item's Workflow version has no dark factory mode (no babysitter re-check)",
+  );
   const p = facts.packet;
   add(
     "checks",
-    !!p && p.verdict === "pass" && p.ci === "success" && p.criteriaProven && !p.weakened,
+    !!p &&
+      p.verdict === "pass" &&
+      p.ci === "success" &&
+      p.criteriaProven &&
+      p.specByPerson &&
+      !p.weakened,
     !p
       ? "no review packet on this commit"
       : p.verdict !== "pass"
@@ -291,9 +340,11 @@ export function autoApproveVerdict(
           ? `CI on this commit is ${p.ci ?? "unknown"}`
           : p.weakened
             ? "the proof was weakened: a check changed in the same diff"
-            : !p.criteriaProven
-              ? "not every criterion is proven by a check a person tied to it (small items never are: triage ties theirs)"
-              : "every check passed and every criterion is proven",
+            : !p.specByPerson
+              ? "the spec wasn't approved by a person (the adjudicator's approval doesn't count here)"
+              : !p.criteriaProven
+                ? "not every criterion is proven by a check a person tied to it (small items never are: triage ties theirs)"
+                : "every check passed and every criterion is proven",
   );
   add(
     "tests",
@@ -343,6 +394,11 @@ export function autoApproveVerdict(
   const risky = [
     ...matching([...RISK_PATHS, ...GENERATED_PATHS, ...setting.riskPaths], paths),
     ...(changes ?? []).filter((c) => c.unreadable).map((c) => `${c.path} (no readable diff)`),
+    ...(changes ?? []).filter((c) => c.submodule).map((c) => `${c.path} (a submodule bump)`),
+    // The factory's own repository: anything off the allow-list.
+    ...(facts.factorySource
+      ? paths.filter((x) => !FACTORY_SOURCE_ALLOW.some((g) => globMatch(g, x)))
+      : []),
   ];
   add(
     "risk",
@@ -351,9 +407,11 @@ export function autoApproveVerdict(
       ? "the change couldn't be read from GitHub"
       : facts.touchesFactoryConfig || self.length
         ? `a change to the factory itself${self.length ? `: ${self.slice(0, 5).join(", ")}` : ""}`
-        : risky.length
-          ? `touches a risk path: ${[...new Set(risky)].slice(0, 5).join(", ")}`
-          : "low risk",
+        : facts.factorySource && risky.length
+          ? `the factory's own repository: only ${FACTORY_SOURCE_ALLOW.join(" and ")} are auto-approved (${[...new Set(risky)].slice(0, 3).join(", ")})`
+          : risky.length
+            ? `touches a risk path: ${[...new Set(risky)].slice(0, 5).join(", ")}`
+            : "low risk",
   );
   const failed = conditions.find((c) => !c.ok);
   return {
