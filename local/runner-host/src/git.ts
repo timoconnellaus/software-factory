@@ -15,6 +15,20 @@ import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
 import type { Artifact, Job } from "@software-factory/runner-contract";
 import type { Exec } from "@software-factory/runner-local";
 
+/**
+ * The oldest git the host works with: the check export reads the tree with `--attr-source`
+ * (`exportTree`), which git 2.40 added. On an older git every check export fails, so doctor checks it.
+ */
+export const MIN_GIT: [number, number] = [2, 40];
+
+/** Whether `git --version` output (`git version 2.39.5 (Apple Git-154)`) is at least `min`. */
+export function gitAtLeast(text: string, min: [number, number] = MIN_GIT): boolean {
+  const m = /git version (\d+)\.(\d+)/.exec(text);
+  if (!m) return false;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  return major > min[0] || (major === min[0] && minor >= min[1]);
+}
+
 /** The push remote of a clone: a URL git can't use, so only the host's explicit push works. */
 export const DISABLED_PUSH_URL = "no-push://the-runner-host-pushes";
 

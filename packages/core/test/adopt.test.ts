@@ -109,24 +109,61 @@ const behaviour = async (projectId: string) => {
   };
 };
 
-const adopt = (w: W, dryRun: boolean, baseVersion = 0) =>
-  ok<{
-    dryRun: boolean;
-    orgVersion: number | null;
-    workflows: { id: string; name: string; added: boolean; projects: string[] }[];
-    agents: string[];
-    projects: {
-      name: string;
-      from: string | null;
-      workflow: string;
-      overrides: Record<string, Record<string, unknown>>;
-      changes: { class: string }[];
-    }[];
-    skipped: { name: string; reason: string }[];
-    remaining: string[];
-  }>("orgConfig.adoptProjectWorkflows", { orgId: w.orgId, baseVersion, dryRun }, w.human);
+type AdoptPlan = {
+  dryRun: boolean;
+  orgVersion: number | null;
+  workflows: { id: string; name: string; added: boolean; projects: string[] }[];
+  agents: string[];
+  projects: {
+    name: string;
+    from: string | null;
+    workflow: string;
+    overrides: Record<string, Record<string, unknown>>;
+    changes: { class: string }[];
+  }[];
+  skipped: { name: string; reason: string }[];
+  remaining: string[];
+  planDigest: string;
+};
+
+/** A dry run, or a real run of the plan a dry run just showed (its digest, review of #156). */
+const adopt = async (w: W, dryRun: boolean, baseVersion = 0): Promise<AdoptPlan> => {
+  const call = (input: Record<string, unknown>) =>
+    ok<AdoptPlan>(
+      "orgConfig.adoptProjectWorkflows",
+      { orgId: w.orgId, baseVersion, ...input },
+      w.human,
+    );
+  if (dryRun) return call({ dryRun: true });
+  const plan = await call({ dryRun: true });
+  return call({ dryRun: false, planDigest: plan.planDigest });
+};
 
 describe("orgConfig.adoptProjectWorkflows", () => {
+  it("runs only the plan its dry run showed (review of #156)", async () => {
+    const w = await world(TODAY);
+    await project(w, "Later", TODAY);
+    const plan = await adopt(w, true);
+    // Another project appears after the dry run: the plan the person saw is not the plan now.
+    await project(w, "Newcomer", TODAY);
+    const moved = await refusal(
+      call(
+        "orgConfig.adoptProjectWorkflows",
+        { orgId: w.orgId, baseVersion: 0, dryRun: false, planDigest: plan.planDigest },
+        w.human,
+      ),
+    );
+    expect(moved.code).toBe("conflict");
+    const blind = await refusal(
+      call(
+        "orgConfig.adoptProjectWorkflows",
+        { orgId: w.orgId, baseVersion: 0, dryRun: false },
+        w.human,
+      ),
+    );
+    expect(blind.code).toBe("invalid_input");
+  });
+
   it("a dry run reports what it would write and writes nothing", async () => {
     const w = await world(TODAY);
     // Every row the run would write, counted before and after (review of #128).

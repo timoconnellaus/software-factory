@@ -271,7 +271,10 @@ _Avoid_: API key, PAT
 **Desktop device**
 A Mac running the desktop app, registered by a browser sign-in (ADR 0391): a Secure Enclave key
 plus a desktop token. Its token acts as the person on the `desktop` surface, like a `write` CLI
-token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call).
+token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call). Since
+ADR 0610 the same proof also makes policy decisions there: org workflow and agent saves, org config
+rollbacks and approvals, adopting projects' workflows, approving a looser override, and turning a kill
+switch off. Approving device logins and registering runners stay on the website.
 Listed and revoked on the website.
 _Avoid_: client, install
 
@@ -334,6 +337,11 @@ the landings since the last green SHA. While one is open the line stops: only **
 (ADR 0581, 0584).
 _Avoid_: broken build, main-red issue (patientos's claim; here the episode is the claim)
 
+**Suspect, culprit** (spec 53)
+An episode's suspects are the factory's landings since main was last green. Its culprit is the
+one that turned it red: proven in code only when there is one landing and its merge commit is the
+first red head, otherwise named by a person (`mainRed.attribute`). Never a guess (ADR 0621).
+
 **Known flake** (spec 53)
 A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
 repository's flake list (`core_flakes`). A failed check is rerun at most once per SHA (ADR 0583);
@@ -384,6 +392,9 @@ gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `m
 `policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An
 incident's own failures open no further incidents. Its fix merges with no person only under
 **dark factory mode**, like any change (ADR 0515; the check-only exception of ADR 0230 is superseded).
+One kind is a record only, with no work item: an **archive incident**, when a run's archived log
+lost an object in the archive bucket. No agent can bring it back, so it is listed on the desktop's
+Checks and incidents page until a person resolves it (`incident.resolve`).
 _Avoid_: bug, postmortem, issue
 
 **Check (`.factory/checks/`)**
