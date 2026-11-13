@@ -72,6 +72,9 @@ function Root() {
         back={async () =>
           client.setQueryData(["update"], await bun.updateAction({ action: "back" }))
         }
+        quit={async () => {
+          await bun.updateAction({ action: "quit" });
+        }}
       />
     );
   // The door refused this build (ADR 0393): only updating helps, signed in or not.

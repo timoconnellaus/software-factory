@@ -175,8 +175,10 @@ export class Updates {
     bundle: string;
     version: string;
     fingerprint: string;
-    /** When the full check passed (epoch ms). */
+    /** When the full check passed, on the monotonic clock (`monotonic`). */
     at: number;
+    /** And on the wall clock (epoch ms): the monotonic one may not advance while the Mac sleeps. */
+    wallAt: number;
   } | null = null;
   /** How many times a checked bundle's hash differed at the click, this session (logged each time). */
   hashMismatches = 0;
@@ -382,9 +384,15 @@ export class Updates {
    * Null when the staged update may be applied now; else why not (and the state says so, in plain
    * words). Cheap when the staged bundle is, by its content hash, the one checked at download.
    */
-  async verifyForApply(): Promise<string | null> {
+  async verifyForApply(gate?: Pick<ApplyGate, "cancelled">): Promise<string | null> {
     const why = await this.recheck();
     if (why) {
+      // Given up on while it was checked (restart-update.ts's watchdog): the window already says
+      // the app didn't restart, and that stays what it says.
+      if (gate?.cancelled()) {
+        this.d.log(`updates: the cancelled restart's check failed afterwards: ${why}`);
+        return why;
+      }
       this.fail(why, this.state.version, false);
       // Discarded above: fetched again now, and checked in full when it lands.
       if (why === CHANGED_ON_DISK) void this.check();
@@ -397,11 +405,13 @@ export class Updates {
     if (v) {
       this.verified = null;
       try {
+        // Stale by either clock: the monotonic one may stand still while the Mac sleeps, and the
+        // wall clock can be set back. A negative age on either is treated as stale too.
         const age = this.d.monotonic() - v.at;
-        // A negative age can't happen on a monotonic clock; if it does, the check is treated as stale.
-        if (age < 0 || age > VERIFIED_FOR_MS) {
+        const wall = this.d.now() - v.wallAt;
+        if (age < 0 || age > VERIFIED_FOR_MS || wall < 0 || wall > VERIFIED_FOR_MS) {
           this.d.log(
-            `updates: ${v.version} was checked ${Math.round(age / 3_600_000)} h ago: checking it in full again`,
+            `updates: ${v.version} was checked ${Math.round(Math.max(age, wall) / 3_600_000)} h ago: checking it in full again`,
           );
           return this.verifyStaged();
         }
@@ -480,6 +490,7 @@ export class Updates {
         version: staged.version,
         fingerprint: before,
         at: this.d.monotonic(),
+        wallAt: this.d.now(),
       };
     return null;
   }
@@ -491,7 +502,7 @@ export class Updates {
    */
   async apply(gate?: ApplyGate): Promise<void> {
     await this.prepareInstall();
-    if (await this.verifyForApply()) return;
+    if (await this.verifyForApply(gate)) return;
     // The last moment to stop: past here the helper may replace the app. A restart that was given
     // up on (restart-update.ts's watchdog) has already brought everything back and said so.
     if (gate && !gate.handoff()) {
