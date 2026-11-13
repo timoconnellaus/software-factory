@@ -27,6 +27,9 @@ import {
 
 export type LineKind = LineMessage["t"];
 
+/** A line up this long counts as healthy: its next drop starts the backoff again from 1 s. */
+const STABLE_MS = 60_000;
+
 /** How long to leave an engine without the line before asking again. */
 const RETRY_UNAVAILABLE_MS = 60_000;
 
@@ -49,7 +52,13 @@ export class JobLine {
       engineHasLine: () => boolean;
       socket?: LineSocketFactory;
       /** Shorter timings for tests. */
-      timings?: Partial<{ pingMs: number; pongMs: number; retryMs: number; unavailableMs: number }>;
+      timings?: Partial<{
+        pingMs: number;
+        pongMs: number;
+        retryMs: number;
+        unavailableMs: number;
+        stableMs: number;
+      }>;
     },
   ) {}
 
@@ -88,10 +97,17 @@ export class JobLine {
       pongMs: LINE_PONG_DEADLINE_MS,
       retryMs: 1_000,
       unavailableMs: RETRY_UNAVAILABLE_MS,
+      stableMs: STABLE_MS,
       ...this.options.timings,
     };
     if (!cp.line) return;
     let failures = 0;
+    // Exponential backoff with full jitter, up to a minute: a line that keeps dropping doesn't
+    // reconnect every second (each costs a request, a read and a relay wake).
+    const backoff = () =>
+      sleep(Math.random() * Math.min(t.retryMs * 2 ** failures, 60_000), undefined, {
+        signal,
+      }).catch(() => {});
     while (!signal.aborted) {
       if (!this.options.engineHasLine()) {
         await sleep(t.unavailableMs, undefined, { signal }).catch(() => {});
@@ -100,38 +116,38 @@ export class JobLine {
       let url: string;
       try {
         url = (await cp.line(job.jobId, { fencingToken: job.lease.fencingToken })).connect.url;
+        // The job ended while the call was out: never open a line for it.
+        if (signal.aborted) return;
       } catch (error) {
         if (signal.aborted) return;
         // Fenced or killed: the job's own calls stop it; the line just ends.
         if (error instanceof ChannelCallError && error.status === 409) return;
         const unavailable =
           error instanceof ChannelCallError && (error.status === 404 || error.status === 503);
-        if (!unavailable) failures++;
         log(`${job.jobId}: no job line (${error instanceof Error ? error.message : error})`);
-        await sleep(
-          unavailable ? t.unavailableMs : Math.min(t.retryMs * 2 ** failures, 60_000),
-          undefined,
-          { signal },
-        ).catch(() => {});
+        if (unavailable) {
+          await sleep(t.unavailableMs, undefined, { signal }).catch(() => {});
+        } else {
+          failures++;
+          await backoff();
+        }
         continue;
       }
-      const opened = await this.connect(url, t);
-      if (opened) failures = 0;
+      const upFor = await this.connect(url, t);
+      // Only a line that stayed up a while resets the backoff.
+      if (upFor >= t.stableMs) failures = 0;
       else failures++;
-      if (!signal.aborted) {
-        await sleep(Math.min(t.retryMs * 2 ** failures, 60_000), undefined, { signal }).catch(
-          () => {},
-        );
-      }
+      if (!signal.aborted) await backoff();
     }
   }
 
-  /** One connection: resolves when it closes. Whether it opened. */
-  private connect(url: string, t: { pingMs: number; pongMs: number }): Promise<boolean> {
+  /** One connection: resolves when it closes, with how long it was up (0: it never opened). */
+  private connect(url: string, t: { pingMs: number; pongMs: number }): Promise<number> {
     const { job, signal, log } = this.options;
-    return new Promise<boolean>((resolve) => {
+    if (signal.aborted) return Promise.resolve(0);
+    return new Promise<number>((resolve) => {
       const ws = (this.options.socket ?? ((u: string) => new WebSocket(u)))(url);
-      let opened = false;
+      let openedAt = 0;
       let ping: ReturnType<typeof setInterval> | null = null;
       let deadline: ReturnType<typeof setTimeout> | null = null;
       let done = false;
@@ -145,7 +161,7 @@ export class JobLine {
           this.open = false;
           this.wakeAll();
         }
-        resolve(opened);
+        resolve(openedAt ? Date.now() - openedAt : 0);
       };
       const stop = () => {
         try {
@@ -156,8 +172,14 @@ export class JobLine {
         finish();
       };
       signal.addEventListener("abort", stop, { once: true });
+      // Aborted between the check above and here: an abort event won't come again.
+      if (signal.aborted) {
+        stop();
+        return;
+      }
       ws.addEventListener("open", () => {
-        opened = true;
+        if (done) return;
+        openedAt = Date.now();
         this.open = true;
         log(`${job.jobId}: job line open`);
         // Up: every loop calls once now (anything missed while down), then waits on pushes.

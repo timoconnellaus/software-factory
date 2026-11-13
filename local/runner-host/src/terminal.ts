@@ -104,7 +104,7 @@ export async function terminalLoop(options: {
     }
     if (!url) {
       // On the line: wait for a push (or the line going up or down, or the safety poll).
-      if (viaLine && options.line) await options.line.next("viewer", signal);
+      if (viaLine && options.line?.up()) await options.line.next("viewer", signal);
       continue;
     }
     log(`${job.jobId}: someone opened the web terminal; relaying`);

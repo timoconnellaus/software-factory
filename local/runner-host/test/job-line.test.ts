@@ -234,4 +234,39 @@ describe("the job line (spec 44 part B)", () => {
     // Every call says which it received since the last: none, then st_1, then st_1 again.
     expect(calls.map((c) => c.ack)).toEqual([[], ["st_1"], ["st_1"]]);
   });
+
+  it("a job that ends while the line call is out opens nothing, and run() returns", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const { line, sockets, stop, running } = setup({
+      line: async () => {
+        await gate;
+        return { connect: { url: "wss://engine/line?ticket=late" } };
+      },
+    });
+    await tick(5);
+    stop.abort();
+    release();
+    await running;
+    expect(sockets).toEqual([]);
+    expect(line.up()).toBe(false);
+  });
+
+  it("a line the server closes reopens with growing, jittered backoff", async () => {
+    const { line, sockets, stop, running } = setup();
+    const opened: number[] = [];
+    for (let i = 0; i < 400 && sockets.length < 4; i++) {
+      if (sockets.length > opened.length) opened.push(Date.now());
+      const last = sockets.at(-1);
+      if (last && line.up()) last.close();
+      await tick(2);
+    }
+    expect(sockets.length).toBeGreaterThanOrEqual(3);
+    // It stayed up for less than a minute each time, so the backoff never resets.
+    stop.abort();
+    await running;
+    expect(line.up()).toBe(false);
+  });
 });

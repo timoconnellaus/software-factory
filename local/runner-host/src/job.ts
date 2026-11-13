@@ -267,7 +267,9 @@ export async function steerLoop(options: {
     }
     // On the line: wait for a push (or the line going up or down, or the 5-minute safety poll).
     // Acks to send go at once (the next call, not held); else, on the line, wait for a push.
-    if (received.length === 0 && viaLine && options.line) await options.line.next("steer", signal);
+    if (received.length === 0 && viaLine && options.line?.up()) {
+      await options.line.next("steer", signal);
+    }
   }
 }
 
@@ -912,7 +914,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearInterval(flusher);
     await relay?.close().catch(() => {});
     lineStop.abort();
-    await lining.catch(() => {});
+    // Bounded: the job's end never waits on its line (it closes itself; this is a backstop).
+    await Promise.race([lining.catch(() => {}), sleep(5_000)]);
     if (checksRoot) {
       await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
       await rm(`${checksRoot}.index`, { force: true }).catch(() => {});
