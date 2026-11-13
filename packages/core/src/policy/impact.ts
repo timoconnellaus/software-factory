@@ -1,8 +1,10 @@
 // The impact summary of a config change (ADR 0370): what a new version loosens, tightens or leaves
 // alone, computed on the server so a person (and the gate) can trust it. Anything more permissive,
 // and any change this file can't classify, is `loosens`: unknown fails closed.
+
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
+import { checkProves } from "../verify/proof.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
 import {
   onOrgWorkflow,
@@ -423,6 +425,14 @@ function checkChanges(
     if (!a) add(path, "loosens", `No longer runs the check ${b.name}.`);
     else if (a.run !== b.run)
       add(path, "loosens", `Changes what the check ${b.name} runs: \`${b.run}\` → \`${a.run}\`.`);
+    else if (checkProves(a.name, a.run, a.proves) !== checkProves(b.name, b.run, b.proves))
+      add(
+        path,
+        checkProves(a.name, a.run, a.proves) ? "loosens" : "tightens",
+        checkProves(a.name, a.run, a.proves)
+          ? `A pass of the check ${b.name} now proves acceptance criteria.`
+          : `A pass of the check ${b.name} no longer proves acceptance criteria.`,
+      );
     else if (a.timeoutMinutes !== b.timeoutMinutes)
       add(path, "neutral", `The check ${b.name} may run ${a.timeoutMinutes} min.`);
   }

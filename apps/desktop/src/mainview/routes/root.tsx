@@ -8,6 +8,7 @@ import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-r
 import { useEffect, useState } from "react";
 import type { Session } from "../../shared/rpc.ts";
 import { bun, onInbox, onNavigate } from "../bridge.ts";
+import { KeyNotices } from "../components/key-notices.tsx";
 import { UpdateRequired } from "../components/update-required.tsx";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 
@@ -77,6 +78,7 @@ function Root() {
     <>
       {session.signedIn ? <Outlet /> : <SignIn session={session} />}
       <Toaster position="bottom-right" closeButton />
+      <KeyNotices session={session} />
     </>
   );
 }
@@ -102,6 +104,13 @@ function SignIn({ session }: { session: Session }) {
       >
         {session.signingIn ? "Waiting for the browser…" : "Sign in"}
       </Button>
+      {session.keyFingerprint && (
+        <p className="text-muted-foreground text-sm" data-testid="key-fingerprint">
+          This Mac's key:{" "}
+          <span className="font-mono text-foreground">{session.keyFingerprint}</span>. Approve on
+          the website only if it shows exactly this fingerprint, all four groups.
+        </p>
+      )}
     </main>
   );
 }

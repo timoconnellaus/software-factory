@@ -122,6 +122,14 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: "criteria",
   },
+  // Both kinds of tie: Proven (a person-approved spec) and passed the check triage named.
+  {
+    name: "item-review-proof-triage",
+    path: "/work/wi_13?tab=review&fixture=triage",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  { name: "inbox-merge-triage", path: "/?item=wi_13&fixture=triage", design: "InboxMerge.html" },
   {
     name: "inbox-merge-no-checks",
     path: "/?item=wi_13&fixture=nochecks",
@@ -283,6 +291,24 @@ export const SCREENS = [
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
   { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
+  // The device key (spec 40 M4b, fake-bridge.ts `?key=`): the fingerprint while signing in, the
+  // offer to sign in again with a Secure Enclave key, and a decision waiting for Touch ID.
+  { name: "key-signing-in", path: "/", query: "?key=signing-in", design: "SignIn.html" },
+  { name: "key-upgrade", path: "/", query: "?key=upgrade", design: "Main.html" },
+  {
+    name: "key-upgrade-this-mac",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+  },
+  { name: "key-touch-id", path: "/", query: "?key=touch-id", design: "InboxMerge.html" },
+  {
+    name: "key-sign-in-again-confirm",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+    clicks: ['[data-testid="sign-in-again"]'],
+  },
   // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
   {
     name: "this-mac-update-idle",

@@ -58,6 +58,9 @@ export const publish: StageType<typeof settings> = {
     operation: "pr.merge",
     risk: "merge",
     // `autoApprove` (ADR 0515) is added with dark factory mode, build plan PR (e).
+    // Its condition "every acceptance criterion is proven by a check that ran" must read
+    // `everyCriterionProven` (verify/proof.ts): only a tie a person approved counts; a criterion that
+    // passed the check triage (an agent) named is not proven for it (ADR 0501, amended 2026-11-13).
     delegable: [],
     // `merge` is in ALWAYS_REVIEW (ADR 0008); `autoApprove` decides only under ADR 0515's conditions.
     alwaysReview: true,
@@ -73,26 +76,35 @@ export const publish: StageType<typeof settings> = {
   next: (ctx) => {
     const at = ctx.entry.stageId;
     if (ctx.observations.merged) return { kind: "complete", stageId: at };
+    const head = ctx.observations.headSha;
+    // An approval the babysitter carried to this head (spec 53): no new gate in this round.
+    const carried =
+      ctx.observations.carriedApproval && ctx.observations.carriedApproval.headSha === head
+        ? head
+        : undefined;
     // A person's send-back here isn't a failed attempt (today's Workflow doesn't count it).
-    const gated = gateStep(ctx, "gate", gateOf(ctx.gate), null, (note) => ({
-      kind: "sendBack",
-      stageId: at,
-      to: "",
-      note,
-      free: true,
-    }));
+    const gated =
+      carried && !latest(ctx.steps, "gate")
+        ? null
+        : gateStep(ctx, "gate", gateOf(ctx.gate), null, (note) => ({
+            kind: "sendBack",
+            stageId: at,
+            to: "",
+            note,
+            free: true,
+          }));
     if (gated) return gated;
     // The approval holds for the head it was given on, as today (`pr.merge` carries `headSha` and
-    // refuses a moved head): a new head is checked again and decided again.
-    const approved = latest(ctx.steps, "gate")?.step.headSha;
-    const head = ctx.observations.headSha;
+    // refuses a moved head), or for the head the babysitter proved carries the approved change: any
+    // other new head is checked again and decided again.
+    const approved = carried ?? latest(ctx.steps, "gate")?.step.headSha;
     if (!approved || !head)
       return {
         kind: "fail",
         stageId: at,
         reason: "the merge approval or the PR's head is unknown: it can't be tied to a head",
       };
-    if (approved !== head)
+    if (approved !== head && !carried)
       return {
         kind: "sendBack",
         stageId: at,

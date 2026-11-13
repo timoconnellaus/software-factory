@@ -247,9 +247,11 @@ _Avoid_: runner check (the agent's own report), CI
 
 **Proven**
 An acceptance criterion is **Proven** when a check the approved spec links it to (a factory check or
-a CI check run, `[checks: …]` on the criterion) passed on the head SHA; otherwise it is **Not
-proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as opinion
-(ADR 0501).
+a CI check run, `[checks: …]` on the criterion) passed on the head SHA. A check triage (an agent)
+tied it to that passed is never Proven: it is "passed the check triage named", counted apart. A
+setup or static check never proves. Otherwise it is **Not proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as
+opinion; `[checks: none]` is **not covered by a check**. With no checks set up at all, the gate says
+nothing can be proven instead of a count (ADR 0501, [`docs/checks.md`](docs/checks.md)).
 _Avoid_: met (the reviewer's judgement)
 
 **Tests intact**
@@ -334,7 +336,8 @@ _Avoid_: broken build, main-red issue (patientos's claim; here the episode is th
 
 **Known flake** (spec 53)
 A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
-repository's flake list. A failed check is rerun at most once per SHA (ADR 0583).
+repository's flake list (`core_flakes`). A failed check is rerun at most once per SHA (ADR 0583);
+a check that flakes three times in 14 days gets a backlog item to fix it (decision 3).
 _Avoid_: flaky test (as a label you add by hand)
 
 **Default-branch ruleset**
