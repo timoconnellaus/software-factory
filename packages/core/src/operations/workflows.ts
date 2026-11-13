@@ -1050,7 +1050,10 @@ async function pendingOrgChange(
         unknown
       >;
       proposal = after
-        ? ({ workflows: after.workflows, agents: after.agents } as unknown as Record<string, unknown>)
+        ? ({ workflows: after.workflows, agents: after.agents } as unknown as Record<
+            string,
+            unknown
+          >)
         : null;
     }
   } catch {
