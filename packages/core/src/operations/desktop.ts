@@ -29,7 +29,6 @@ import {
   describeKillSwitchOff,
   describeOrgConfigDecision,
   describeOverrideApprove,
-  titled,
 } from "./policy-summary.ts";
 import { MAX_FACTS, titled } from "./summary.ts";
 import { ORG_CONFIG_WRITES } from "./workflows.ts";

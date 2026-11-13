@@ -95,7 +95,11 @@ describe("turning a switch off against the switch seen", () => {
       origin: {
         surface: "desktop",
         deviceId,
-        presence: { op: "killSwitch.set", inputDigest: await inputDigest(input) },
+        presence: {
+          op: "killSwitch.set",
+          inputDigest: await inputDigest(input),
+          challengeId: "pch_test",
+        },
       },
     }).catch((e: { code: string }) => e);
     expect((proven as { code: string }).code).toBe("invalid_input");
