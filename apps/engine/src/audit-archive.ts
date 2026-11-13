@@ -143,7 +143,9 @@ export async function archiveAudit(
       let day: string;
       if (last) day = nextDay(last.day);
       else {
-        const first = await env.DB.prepare("SELECT at FROM core_audit WHERE rowid = (SELECT min(rowid) FROM core_audit)").all<{
+        const first = await env.DB.prepare(
+          "SELECT at FROM core_audit WHERE rowid = (SELECT min(rowid) FROM core_audit)",
+        ).all<{
           at: string;
         }>();
         count(m, first);
@@ -322,6 +324,7 @@ async function archiveDay(env: Pick<Env, "DB" | "ARCHIVE">, m: Meter, d: DayRun)
     count(m, next);
     const nextAt = next.results[0]?.at;
     const safe = nextAt ? new Date(Date.parse(nextAt) - skew).toISOString() : d.dayEnd;
+    // biome-ignore lint/complexity/useMathMinMax: the earlier of two ISO timestamps (strings)
     const until = safe < d.dayEnd ? safe : d.dayEnd;
     if (until <= cont.at && nextAt) {
       // The window is too narrow for the rows the skew spans: widen it.

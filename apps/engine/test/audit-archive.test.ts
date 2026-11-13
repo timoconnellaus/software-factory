@@ -335,7 +335,7 @@ describe("the audit archive", () => {
     );
     // An archived chunk holding two of the item's rows (the read path doesn't re-check the chain).
     const day = dayAgo(150);
-    const old = (id: string, at: string, op: string) => ({
+    const old = (id: string, at: string, op: string): AuditRow => ({
       id,
       at,
       operation: op,
