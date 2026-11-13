@@ -100,7 +100,15 @@ function updateStatus(): UpdateStatus {
  */
 function checkState(): Pick<
   UpdateStatus,
-  "phase" | "checkedAt" | "installed" | "channel" | "reason" | "ready" | "version" | "jobs"
+  | "phase"
+  | "checkedAt"
+  | "installed"
+  | "channel"
+  | "reason"
+  | "ready"
+  | "version"
+  | "jobs"
+  | "installFailure"
 > {
   const which = new URLSearchParams(location.search).get("check") ?? "up-to-date";
   const at = Date.now() - 12 * 60_000;
@@ -118,6 +126,20 @@ function checkState(): Pick<
       return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 0 };
     case "jobs":
       return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 2 };
+    // The last restart relaunched the old version (Electrobun's helper refused it).
+    case "not-installed":
+      return {
+        ...base,
+        phase: "ready",
+        ready: true,
+        version: "0.1.42",
+        jobs: 0,
+        installFailure: {
+          version: "0.1.42",
+          reason:
+            "The update to 0.1.42 didn't install: the updater's record of where the app is installed named another copy (the app was moved after it was first opened).",
+        },
+      };
     case "offline":
       return { ...base, phase: "failed", ready: false, version: null, jobs: 0, reason: offline };
     case "refused":

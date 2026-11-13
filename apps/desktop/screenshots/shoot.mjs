@@ -359,6 +359,12 @@ export const SCREENS = [
     design: "SettingsDevices.html",
   },
   {
+    name: "this-mac-update-not-installed",
+    path: "/settings",
+    query: "?check=not-installed",
+    design: "SettingsDevices.html",
+  },
+  {
     name: "this-mac-update-off",
     path: "/settings",
     query: "?check=off",
