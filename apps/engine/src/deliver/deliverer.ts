@@ -71,6 +71,18 @@ interface Lease {
 
 /** Another pass took the repository over: this one stops, changing nothing more. */
 class LeaseLost extends Error {}
+/**
+ * An item's pinned workflow can't be read (fourth review of #185): that item, and only that item,
+ * leaves; the rest go on.
+ */
+class Unreadable extends Error {
+  constructor(
+    message: string,
+    readonly workItemId: string | null,
+  ) {
+    super(message);
+  }
+}
 
 interface HeadRow {
   id: string;
@@ -199,7 +211,31 @@ async function pass(
     if (!head || head.driver !== "babysitter") return head ? later(clock, IDLE_RECHECK_MS) : null;
     // A paused item (a kill switch) holds the head, as it did when it landed itself.
     if (head.item_status === "paused") return later(clock, IDLE_RECHECK_MS);
-    const waitMs = await deliverHead(env, lease, head, clock);
+    let waitMs: number | null;
+    try {
+      waitMs = await deliverHead(env, lease, head, clock);
+    } catch (error) {
+      if (!(error instanceof Unreadable)) throw error;
+      // Never blame the head for another item's refusal (fifth review of #185): the pass stops and
+      // the next one looks again.
+      if (error.workItemId !== head.work_item_id) throw new Error(error.message);
+      // It leaves the queue, sent back as withdrawn: its Workflow (v17) parks on the owner's
+      // question, an older row ends; either way the items behind it go on.
+      const left = await call(
+        env,
+        lease,
+        "mergeQueue.leave",
+        {
+          workItemId: head.work_item_id,
+          outcome: "left",
+          reason: `its workflow version can't be read: ${error.message}`,
+          delivery: "withdrawn",
+        },
+        { idempotencyKey: `deliver:${head.id}:leave` },
+      );
+      if (left.status === "refused") throw new Error(`mergeQueue.leave refused: ${left.message}`);
+      waitMs = null;
+    }
     if (waitMs !== null) return later(clock, waitMs);
   }
   return later(clock, 60_000);
@@ -263,6 +299,10 @@ async function call(
   } catch (error) {
     if (!isOperationError(error)) throw error;
     if (error.code === "fenced") throw new LeaseLost(error.message);
+    if (error.code === "workflow_unreadable" && op !== "mergeQueue.leave") {
+      const about = (input as { workItemId?: unknown } | null)?.workItemId;
+      throw new Unreadable(error.message, typeof about === "string" ? about : null);
+    }
     return {
       status: "refused",
       code: error.code,
@@ -668,6 +708,9 @@ async function settleBabysit(
           : null;
     if (job.status === "queued" && why && reason) {
       if (!(await next(true))) return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+      // The job was another item's (it left the head meanwhile): closed, and the head goes on; the
+      // head is never ended for another item's job (sixth review of #185).
+      if (job.work_item_id !== head.work_item_id) return { kind: "go" };
       return {
         kind: "end",
         delivery: reason.kind === "conflict" ? "conflict" : "failed",
