@@ -2016,6 +2016,26 @@ export const ANSWERS: Answers = {
       },
     ],
   }),
+  "workflow.list": () => ({
+    version: 4,
+    workflows: [
+      {
+        id: "wf_software",
+        name: "Software",
+        description: "Code changes, from the org",
+        builtIn: null,
+        stages: [],
+      },
+      {
+        id: "wf_incident",
+        name: "Incident",
+        description: "",
+        builtIn: "incident" as const,
+        stages: [],
+      },
+    ],
+    templates: [],
+  }),
   "workflow.get": (input) => ({
     version: 4,
     workflow: {

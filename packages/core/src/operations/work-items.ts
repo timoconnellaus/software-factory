@@ -1350,6 +1350,23 @@ export const workItemFinish = defineOperation({
   },
 });
 
+/**
+ * The plan a card's item was split off (spec 24), from a left join by primary key on the item's
+ * `parent_work_item_id` (only for a plan's children, source `planning`; incidents are children too).
+ */
+const splitParent = z
+  .object({ id: z.string(), number: z.number(), title: z.string() })
+  .nullable()
+  .optional();
+const parentOf = (r: {
+  parent_id: string | null;
+  parent_number: number | null;
+  parent_title: string | null;
+}) =>
+  r.parent_id && r.parent_number !== null
+    ? { id: r.parent_id, number: r.parent_number, title: r.parent_title ?? "" }
+    : null;
+
 export const inboxList = defineOperation({
   name: "inbox.list",
   description:
@@ -1370,6 +1387,8 @@ export const inboxList = defineOperation({
         createdAt: z.string(),
         timeoutAt: z.string().nullable(),
         escalated: z.boolean(),
+        /** Spec 24: the plan this card's item was split off, for grouping under it. */
+        parent: splitParent,
       }),
     ),
     questions: z.array(
@@ -1384,6 +1403,7 @@ export const inboxList = defineOperation({
         defaultAnswer: z.string().nullable(),
         recommendation: z.string().nullable(),
         irreversible: z.boolean(),
+        parent: splitParent,
       }),
     ),
     running: z.array(itemSummary),
@@ -1427,6 +1447,7 @@ export const inboxList = defineOperation({
         openQuestions: z.number(),
         atGate: z.boolean(),
         announcedAt: z.string(),
+        parent: splitParent,
       }),
     ),
     wipHolds: z.array(z.object({ projectId: z.string(), waitingBuilds: z.number() })),
@@ -1502,7 +1523,15 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_pending_actions")
         .leftJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select([
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_pending_actions.id",
           "core_pending_actions.kind",
           "core_pending_actions.work_item_id",
@@ -1522,7 +1551,15 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_questions")
         .innerJoin("core_work_items", "core_work_items.id", "core_questions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select([
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_questions.id",
           "core_questions.work_item_id",
           "core_questions.project_id",
@@ -1580,7 +1617,15 @@ export const inboxList = defineOperation({
       ctx.db
         .selectFrom("core_planning_sessions")
         .innerJoin("core_work_items", "core_work_items.id", "core_planning_sessions.work_item_id")
+        .leftJoin("core_work_items as parent", (j) =>
+          j
+            .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            .on("core_work_items.source", "=", "planning"),
+        )
         .select((eb) => [
+          "parent.id as parent_id",
+          "parent.number as parent_number",
+          "parent.title as parent_title",
           "core_planning_sessions.work_item_id",
           "core_planning_sessions.status",
           "core_planning_sessions.at_gate",
@@ -1640,6 +1685,7 @@ export const inboxList = defineOperation({
         createdAt: g.created_at,
         timeoutAt: g.timeout_at,
         escalated: g.escalations > 0,
+        parent: parentOf(g),
       }));
     const nowMs = Date.parse(ctx.now);
     const runners = runnerRows.map((r) => {
@@ -1687,6 +1733,7 @@ export const inboxList = defineOperation({
         defaultAnswer: q.default_answer,
         recommendation: q.recommendation,
         irreversible: q.irreversible === 1,
+        parent: parentOf(q),
       })),
       running: running.map(summarise),
       runners,
@@ -1699,6 +1746,7 @@ export const inboxList = defineOperation({
         openQuestions: Number(p.open_questions ?? 0),
         atGate: p.at_gate === 1,
         announcedAt: p.announced_at ?? "",
+        parent: parentOf(p),
       })),
       wipHolds: holds.map((h) => ({ projectId: h.project_id, waitingBuilds: Number(h.n) })),
       releaseFlags: flagged.flatMap((f) => {
