@@ -87,13 +87,9 @@ describe("the shadow reconciler", () => {
     expect(before?.value ?? "").not.toContain(item.workItemId);
     const seen: Recorded[] = [];
     while ((await shadowPass(recordingEnv(env, seen), later())) > 0);
-    // The audit table is the hottest write table, with no index to find ends by: it is never scanned
-    // here, only read for one ended item at a time by its item index, a few operations, bounded.
+    // The audit table is the hottest write table, with no index to find ends by: never read here.
     expect(seen.length).toBeGreaterThan(0);
-    for (const r of seen.filter((x) => /core_audit/.test(x.sql))) {
-      expect(r.sql).toMatch(/FROM core_audit WHERE work_item_id = \?/);
-      expect(r.sql).toMatch(/LIMIT 50/);
-    }
+    expect(seen.filter((r) => /core_audit/.test(r.sql))).toEqual([]);
     const cursor = await first<{ value: string }>(
       "SELECT value FROM core_meta WHERE key = ?",
       SHADOW_CURSOR,
@@ -210,7 +206,7 @@ describe("the shadow reconciler on an org workflow (spec 52 PR (d))", () => {
     });
   });
 
-  it("writes no verdict when the pinned org version is missing", async () => {
+  it("an item it can't compare still writes its row, with why: the streak breaks, it isn't skipped", async () => {
     const w = await world({ version: 1, autonomyPolicy: "balanced", workflow: "wf_ship" });
     await ok(
       "workflow.save",
@@ -223,9 +219,14 @@ describe("the shadow reconciler on an org workflow (spec 52 PR (d))", () => {
       .bind(id)
       .run();
     while ((await shadowPass(env, later())) > 0);
-    expect(
-      await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", id),
-    ).toBeNull();
+    const row = await first<{ divergences: number; report: string }>(
+      "SELECT divergences, report FROM core_reconcile_items WHERE work_item_id = ?",
+      id,
+    );
+    expect(row?.divergences).toBe(1);
+    expect(JSON.parse(row?.report ?? "{}").uncompared).toEqual([
+      "the org workflow the item pinned can't be resolved",
+    ]);
   });
 });
 

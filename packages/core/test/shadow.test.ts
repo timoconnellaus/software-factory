@@ -2,6 +2,7 @@
 // jobs, gates and who decided them) replayed through `reconcile()`; at each thing the Workflow did,
 // what the reconciler would have done. Pure; the engine's tests run it against the real Workflow.
 import { describe, expect, it } from "vitest";
+import { assemblePacket } from "../src/index.ts";
 import {
   ATTACHED_PR,
   COVERAGE,
@@ -542,6 +543,111 @@ describe("nothing is dropped silently (review of #148)", () => {
     const v = shadowVerdict(ATTACHED_PR, item({ kind: "attached", size: "large" }), h, "done");
     expect(v.equivalences?.map((e) => e.reason)).toEqual(["absent-stage-skipped"]);
     expect(v.covers).toEqual(["an attached PR"]);
-    expect(COVERAGE).toHaveLength(10);
+    expect(COVERAGE).toHaveLength(9);
+  });
+});
+
+/** A packet's input whose only difference is CI on the head: green passes, red fails. */
+const packetInput = (green: boolean): Parameters<typeof assemblePacket>[0] => ({
+  headSha: "a".repeat(40),
+  evidence: {
+    summary: "",
+    criteria: [{ criterion: "A", met: true, evidence: "x" }],
+    checks: [],
+    reviewer: { role: "review", verdict: "approve", notes: "" },
+    riskFlags: [],
+  },
+  ci: green
+    ? { state: "success", checks: [], failing: [], pending: [] }
+    : { state: "failure", checks: [], failing: ["ci"], pending: [] },
+  files: [],
+  sameModelAsImplementer: false,
+});
+
+describe("the second review of #148", () => {
+  it("an absent stage's skip is an equivalence only for an attached PR", () => {
+    const h = shipped().end();
+    const v = shadowVerdict(
+      SOFTWARE,
+      item(),
+      { ...h, stages: [...h.stages, { stage: "deploy", status: "skipped", at: "z" }] },
+      "done",
+    );
+    expect(v.uncompared).toEqual(["a skip of a stage the workflow doesn't have: deploy"]);
+  });
+
+  it("a cancelled stage row is replayed, and one the workflow lacks is named", () => {
+    const h = history().enter("triage").job("triage").skip("spec").enter("build").end("cancelled");
+    const lacks = shadowVerdict(
+      SOFTWARE,
+      item(),
+      { ...h, stages: [...h.stages, { stage: "deploy", status: "cancelled", at: "z" }] },
+      "cancelled",
+    );
+    expect(lacks.uncompared).toEqual(["a stage the workflow doesn't have: deploy"]);
+    const ok = shadowVerdict(SOFTWARE, item(), h, "cancelled");
+    expect(ok.divergences).toBe(0);
+  });
+
+  it("a critic or an adjudicator the settings call for that never ran is a divergence", () => {
+    const critic: WorkflowDefinition = {
+      ...SOFTWARE,
+      stages: SOFTWARE.stages.map((s) =>
+        s.id === "spec" ? { ...s, settings: { ...(s.settings as object), critic: true } } : s,
+      ),
+    };
+    const h = history()
+      .enter("triage")
+      .job("triage")
+      .enter("spec")
+      .job("planning", "done", { role: "spec" })
+      .gate("spec", "approved", { id: "pa_spec" })
+      .enter("build")
+      .job("build")
+      .enter("verify")
+      .job("verify")
+      .enter("merge")
+      .gate("merge", "approved")
+      .end();
+    const v = shadowVerdict(critic, item({ size: "medium" }), h, "done", {
+      adjudicator: { spec: "shadow", step: "off" },
+    });
+    expect(said(v)).toEqual(
+      expect.arrayContaining([
+        "no spec critic ran ≠ spec critic ran",
+        "no adjudicator on a spec gate ≠ adjudicator asked (spec)",
+      ]),
+    );
+  });
+
+  it("checks reads exactly the verdict assemblePacket computes", () => {
+    // The reconciler's checks stage is fed the stored packet's verdict; at the switch-over it reads
+    // the same function. Here the function's own verdicts decide the replay.
+    const verdicts = (["pass", "fail"] as const).map((want) => {
+      const packet = assemblePacket(packetInput(want === "pass"));
+      return packet.verdict;
+    });
+    expect(verdicts).toEqual(["pass", "fail"]);
+    const replay = (verdict: "pass" | "fail") =>
+      said(
+        shadowVerdict(
+          SOFTWARE,
+          item(),
+          history()
+            .enter("triage")
+            .job("triage")
+            .skip("spec")
+            .enter("build")
+            .job("build")
+            .enter("verify")
+            .job("verify", "done", { packet: verdict })
+            .enter("merge")
+            .gate("merge", "approved")
+            .end(),
+          "done",
+        ),
+      );
+    expect(replay(verdicts[0] as "pass")).toContain("complete verify");
+    expect(replay(verdicts[1] as "fail")).toContain("complete verify ≠ sendBack verify → build");
   });
 });

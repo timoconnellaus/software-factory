@@ -69,7 +69,10 @@ describe("the reconciler in shadow: report and streak", () => {
     const got = await ok<Record<string, unknown>>("reconcile.streak", { orgId: w.orgId }, w.human);
     // Beside the number, the scenarios its items covered, and the ones none has yet.
     expect(got.coverage).toMatchObject({ covered: ["a cancel", "an incident"] });
-    expect((got.coverage as { missing: string[] }).missing).toHaveLength(8);
+    expect((got.coverage as { missing: string[] }).missing).toHaveLength(7);
+    // Twenty in a row isn't enough on its own: coverage and the known gaps hold the switch-over.
+    expect(got.switchOverReady).toBe(false);
+    expect((got.knownGaps as string[]).length).toBeGreaterThan(0);
     expect(got).toMatchObject({
       status: "comparable",
       streak: 20,
