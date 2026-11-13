@@ -232,6 +232,44 @@ describe("factory/verify check runs", () => {
     expect(events).toHaveLength(1);
   });
 
+  it("never passes the check for an item whose workflow version can't be read, from a webhook refresh (review of #185)", async () => {
+    const { w, item, head } = await atVerify();
+    await github.setChecks(w.repo, head, [
+      { name: "ci", status: "in_progress", conclusion: null, appSlug: "github-actions", url: null },
+    ]);
+    await record(item.workItemId, head);
+    // The config the item started under stops reading; then CI goes green.
+    await rows(
+      "UPDATE core_work_items SET policy_sha = ? WHERE id = ?",
+      "f".repeat(40),
+      item.workItemId,
+    );
+    await github.setChecks(w.repo, head, [
+      {
+        name: "ci",
+        status: "completed",
+        conclusion: "success",
+        appSlug: "github-actions",
+        url: null,
+      },
+    ]);
+    await ok(
+      "verify.refresh",
+      { repo: { owner: w.repo.owner, name: w.repo.repo }, headSha: head, trigger: "ci" },
+      INTAKE,
+    );
+    const checks = await verifyCheck(w.repo, head);
+    expect(checks[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+    const row = await first<{ conclusion: string; title: string }>(
+      "SELECT conclusion, title FROM core_verify_checks WHERE head_sha = ?",
+      head,
+    );
+    expect(row).toMatchObject({
+      conclusion: "failure",
+      title: "This item's workflow version can't be read",
+    });
+  });
+
   it("leaves a new push to the PR without a passing check until verify runs again (criterion 2)", async () => {
     const { w, item, head, pr } = await atVerify();
     await record(item.workItemId, head);

@@ -169,6 +169,38 @@ describe("the babysitter's deliverer (v11)", () => {
     expect(approval).toEqual({ status: "rejected", decision: "withdrawn" });
   });
 
+  it("an item whose workflow version can't be read leaves the head of the queue; the one behind it lands (review of #185)", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Stops reading", "src/a.ts");
+    const b = await toMergeGate(w, "Healthy", "src/b.ts");
+    deliverTestSeams.beforeMark = async (id) => {
+      if (id !== a) return;
+      deliverTestSeams.beforeMark = null;
+      // At the head, about to merge: the config it started under stops reading, and B queues behind.
+      await env.DB.prepare("UPDATE core_work_items SET policy_sha = ? WHERE id = ?")
+        .bind("f".repeat(40), a)
+        .run();
+      await approve(w, b);
+    };
+    await approve(w, a);
+    await itemStatus(b, "done");
+    expect(await merges(b)).toHaveLength(1);
+    expect(await merges(a)).toEqual([]);
+    const entry = await first<{ status: string; outcome: string }>(
+      "SELECT status, outcome FROM core_merge_queue WHERE work_item_id = ? ORDER BY rowid LIMIT 1",
+      a,
+    );
+    expect(entry?.status).toBe("left");
+    // Its owner is asked (once), and it doesn't merge.
+    const asked = await waitFor("the owner's question", () =>
+      all<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable'",
+        a,
+      ).then((r) => (r.length ? r : null)),
+    );
+    expect(asked).toHaveLength(1);
+  });
+
   it("pr.merge refuses a cancelled item even with its approval, whoever calls it", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Cancelled, then merged by hand");

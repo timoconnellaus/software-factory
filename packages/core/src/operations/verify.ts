@@ -22,6 +22,7 @@ import {
   releaseSplitChildren,
   splitFiles,
 } from "../splits.ts";
+import { UNREADABLE_WORKFLOW_PROMPT, unreadablePlain, workflowUnreadable } from "../unreadable.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -105,6 +106,22 @@ export async function postVerify(
     .where("project_id", "=", args.project.id)
     .where("head_sha", "=", args.headSha)
     .executeTakeFirst();
+  // Never success for an item whose pinned workflow can't be read (fourth review of #185), from any
+  // caller (a webhook, the cron, the outbox recheck, a release): a failing check that says why, so
+  // GitHub's required check can't pass and nothing merges it.
+  if (args.output.conclusion === "success") {
+    const why = await workflowUnreadable(ctx, args.item?.id ?? existing?.work_item_id);
+    if (why)
+      args = {
+        ...args,
+        output: {
+          status: "completed",
+          conclusion: "failure",
+          title: UNREADABLE_WORKFLOW_PROMPT,
+          summary: `${UNREADABLE_WORKFLOW_PROMPT}: ${unreadablePlain(why)}. The factory won't pass this commit until it reads again.\n\nDetail: ${why}`,
+        },
+      };
+  }
   const base = ctx.services.publicBaseUrl?.replace(/\/$/, "");
   let checkRunId = existing?.github_check_run_id ?? null;
   let error: string | null = null;

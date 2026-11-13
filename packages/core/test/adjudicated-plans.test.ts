@@ -191,4 +191,41 @@ describe("an adjudicator-approved plan gate (review of #130)", () => {
     );
     expect(told).toHaveLength(1);
   });
+
+  it("a planning job's own calls are refused once the item's workflow version can't be read (review of #185)", async () => {
+    const w = await world({ ...POLICY, adjudicator: { spec: "active" } });
+    await onMain(w, ".kim/designs/system.d2", D2);
+    const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);
+    const m5 = RUNNER_ACTOR(r.runnerId);
+    const item = await newItem(w, "Add CSV export");
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+    const { job } = await ok<{ job: Job | null }>(
+      "job.claim",
+      {
+        claimId: uid("claim-"),
+        manifest,
+        capacity: { max: 2, inUse: 0, accepting: true, light: { max: 6, inUse: 0 } },
+      },
+      m5,
+    );
+    if (!job) throw new Error("expected the planning job");
+    await rows(
+      "UPDATE core_work_items SET policy_sha = ? WHERE id = ?",
+      "f".repeat(40),
+      item.workItemId,
+    );
+    const refused = await call(
+      "spec.revise",
+      { ...SPEC, jobId: job.jobId, fencingToken: job.lease.fencingToken },
+      m5,
+    ).catch((e: { code: string }) => e);
+    expect(refused).toMatchObject({ code: "workflow_unreadable" });
+    // Its run may still hand back (the allow-list), and the owner is asked once.
+    const asked = await rows<{ id: string }>(
+      "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable'",
+      item.workItemId,
+    );
+    expect(asked).toHaveLength(1);
+  });
 });

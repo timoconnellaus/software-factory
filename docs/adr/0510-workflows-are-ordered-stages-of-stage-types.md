@@ -97,4 +97,12 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > is refused (`workflow_unreadable`) and the first refusal puts one blocking question to its owner.
 > A Workflow from v17 parks on that question (Check again / Stop) instead of ending, at its plan, at
 > each re-pin and on any such refusal; earlier rows end failed before work starts.
+>
+> Amended 2026-11-13 (fourth review of #185): `factory/verify` is never posted as success for an
+> item whose workflow can't be read, whoever finds it (a webhook, the cron, a release): `postVerify`
+> posts a failing check that says why. The babysitter takes such an item out of the merge queue
+> (sent back as withdrawn) and goes on with the items behind it. The owner's question is found
+> again by its asker, not its wording; it is worded by the item's Workflow row (Check again / Stop
+> where it parks, what happened and what to do where it ends), and the item's queued jobs are
+> cancelled. A registry test pins every non-read operation that finds its item some other way.
 

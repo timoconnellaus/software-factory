@@ -459,8 +459,12 @@ describe("workItem.repinWorkflow", () => {
       item.workItemId,
     );
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ blocking: 1 });
-    expect(asked[0]?.prompt).toMatch(/^This item's workflow version can't be read/);
+    // No v17 Workflow parks this item, so its owner is told what happened and what to do, in plain
+    // words (the parse detail goes in the question's context).
+    expect(asked[0]).toMatchObject({ blocking: 0 });
+    expect(asked[0]?.prompt).toMatch(
+      /^This item's workflow version can't be read: a later org workflow version whose tightenings it took no longer reads\. .*start a new item for this work, or reopen this one\./,
+    );
     // Reads, and what asks or ends it, still work; a person isn't refused.
     expect(
       await as("workItem.repinWorkflow", { workItemId: item.workItemId, at: "verify #1" }),

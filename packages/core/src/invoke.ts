@@ -14,7 +14,7 @@ import {
   guardChanged,
   toStatement,
 } from "@software-factory/db";
-import { type Compilable, sql } from "kysely";
+import type { Compilable } from "kysely";
 import { type Actor, type DeviceSurface, isDeviceSurface, type Origin } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
@@ -43,6 +43,8 @@ import {
   resumeEventType,
 } from "./scope.ts";
 import type { FactoryServices } from "./services.ts";
+import { UNREADABLE_ASKER, UNREADABLE_WORKFLOW_PROMPT, unreadablePlain } from "./unreadable.ts";
+import { has } from "./workflow-features.ts";
 
 export interface InvokeDeps {
   d1: D1Database;
@@ -380,7 +382,7 @@ export async function runOperation<O = unknown>(
     risk !== "read" &&
     !(PINNED_ERROR_ALLOWED as readonly string[]).includes(op.name)
   ) {
-    await askUnreadableWorkflow(deps, scope.workItemId, scope.pinnedError);
+    await askWorkflowUnreadable(deps, scope.workItemId, scope.pinnedError);
     return refuse(
       {
         decision: "deny",
@@ -1073,38 +1075,89 @@ export const PINNED_ERROR_ALLOWED = [
   "run.takeSteers",
   "lease.heartbeat",
   "lease.release",
+  // What only takes the item out of delivery (fourth review of #185).
+  "mergeQueue.leave",
 ] as const;
 
-/** The prompt's start: the Workflow (v17) and core ask the same question, once. */
-export const UNREADABLE_WORKFLOW_PROMPT = "This item's workflow version can't be read";
-
-/** Puts one blocking question to the item's owner, unless an open one already asks it. */
-async function askUnreadableWorkflow(deps: InvokeDeps, workItemId: string, why: string) {
+/**
+ * Puts one question about an item whose workflow can't be read to its owner (reviews of #185),
+ * unless one this asker put is still open: core asks on the first refusal, a v17 Workflow asks (or
+ * finds this one) when it parks. A Workflow row that parks (v17) is asked "Check again / Stop"; an
+ * earlier row ends the item, so its owner is told what happened and what to do. Jobs it had queued
+ * are cancelled, so a runner can't claim them. A failure to ask is logged and opens an incident.
+ */
+export async function askWorkflowUnreadable(
+  deps: InvokeDeps,
+  workItemId: string,
+  why: string,
+): Promise<string | null> {
   const db = createDb(deps.d1);
   const open = await db
     .selectFrom("core_questions")
     .select("id")
     .where("work_item_id", "=", workItemId)
+    .where("asked_by", "=", UNREADABLE_ASKER)
     .where("answered_at", "is", null)
-    .where(sql<boolean>`instr(prompt, ${UNREADABLE_WORKFLOW_PROMPT}) = 1`)
     .limit(1)
     .executeTakeFirst();
-  if (open) return;
-  await runOperation(
-    deps,
-    getOperation("question.ask") as AnyOperation,
-    {
-      workItemId,
-      questions: [
-        {
-          domain: "operations",
-          prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${why}. The factory stopped it rather than run it without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
-          options: ["Check again", "Stop this work item"],
-          defaultAnswer: "Check again",
-          blocking: true,
-        },
-      ],
-    },
-    { actor: { type: "agent", id: "foreman" }, origin: { surface: "workflow" } },
-  ).catch(() => undefined);
+  if (open) return open.id;
+  try {
+    const item = await db
+      .selectFrom("core_work_items")
+      .select(["workflow_version", "number"])
+      .where("id", "=", workItemId)
+      .executeTakeFirst();
+    await db
+      .updateTable("core_jobs")
+      .set({ status: "cancelled", wait_reason: "the item's workflow version can't be read" })
+      .where("work_item_id", "=", workItemId)
+      .where("status", "=", "queued")
+      .execute();
+    const parks = has(item?.workflow_version, "repin-reverify");
+    const plain = unreadablePlain(why);
+    const asked = await runOperation<{ questionIds: string[] }>(
+      deps,
+      getOperation("question.ask") as AnyOperation,
+      {
+        workItemId,
+        questions: [
+          parks
+            ? {
+                domain: "operations",
+                prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${plain}. Work item #${item?.number ?? "?"} has stopped rather than run without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
+                context: `Detail: ${why}`,
+                options: ["Check again", "Stop this work item"],
+                defaultAnswer: "Check again",
+                recommendation: "Check again",
+                recommendationReason:
+                  "Once the version reads again, the item carries on where it stopped.",
+                blocking: true,
+              }
+            : {
+                domain: "operations",
+                prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${plain}. The factory stopped work item #${item?.number ?? "?"} before doing any more work on it. Fix the org's workflow config, then start a new item for this work, or reopen this one.`,
+                context: `Detail: ${why}`,
+                options: ["Understood"],
+                defaultAnswer: "Understood",
+                blocking: false,
+              },
+        ],
+      },
+      { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
+    );
+    return asked.status === "ok" ? (asked.output.questionIds[0] ?? null) : null;
+  } catch (error) {
+    console.error(`couldn't ask about item ${workItemId}'s unreadable workflow`, error);
+    await runOperation(
+      deps,
+      getOperation("incident.open") as AnyOperation,
+      {
+        workItemId,
+        kind: "manual",
+        reason: `The factory couldn't ask the owner about this item's unreadable workflow version (${why}): ${error instanceof Error ? error.message : String(error)}`,
+      },
+      { actor: { type: "agent", id: "foreman" }, origin: { surface: "workflow" } },
+    ).catch((e) => console.error("couldn't open the incident either", e));
+    return null;
+  }
 }
