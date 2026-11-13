@@ -63,7 +63,14 @@ export const WORKFLOW_FEATURES = [
    */
   "triage-ties",
   /**
-   * v16 (provisional: the next number above main's at merge; spec 52 Q3, review of #139): a
+   * v16 (provisional: the next number above main's at merge; spec 24, ADR 0630): a spec that
+   * splits the item builds nothing. The parent's PR carries exactly the approved plan's files
+   * (decided in code from the diff), goes through verify and the merge gate, then releases the
+   * children, and the parent closes when its last child ends.
+   */
+  "splits",
+  /**
+   * v17 (provisional: the next number above main's at merge; spec 52 Q3, review of #139): a
    * tightening adopted at the merge-gate boundary for a stage the item already passed sends it back
    * to verify its head again under it (without a build), then to the gate.
    */
@@ -86,7 +93,8 @@ const v12 = [...v11, "reverify-on-withdrawal"] as const;
 const v13 = [...v12, "repin-tightening"] as const;
 const v14 = [...v13, "reverify-on-push"] as const;
 const v15 = [...v14, "triage-ties"] as const;
-const v16 = [...v15, "repin-reverify"] as const;
+const v16 = [...v15, "splits"] as const;
+const v17 = [...v16, "repin-reverify"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -106,6 +114,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   14: new Set(v14),
   15: new Set(v15),
   16: new Set(v16),
+  17: new Set(v17),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

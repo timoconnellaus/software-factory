@@ -54,6 +54,7 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { has } from "../workflow-features.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -467,6 +468,20 @@ export const specRevise = defineOperation({
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
       );
     }
+    // An item on a Workflow without `splits` can't build a split (review of #171).
+    if (input.children?.length && !has(w.workflow_version, "splits")) {
+      throw new OperationError(
+        "invalid_input",
+        "this item's Workflow can't split work: plan it as one piece of work",
+      );
+    }
+    // Depth 1 (spec 24, ADR 0303): a child's plan can't split again.
+    if (input.children?.length && w.parent_work_item_id) {
+      throw new OperationError(
+        "invalid_input",
+        "this item was split off a parent's plan, and a child can't split again (depth 1): plan it as one piece of work, or ask in the chat to change the parent's plan",
+      );
+    }
     // A person's edit stays word for word (ADR 0471): the planner asks before changing it.
     const dropped = droppedEdits(input.specMd, await standingEdits(ctx, w.id));
     if (dropped.length) {
@@ -502,6 +517,7 @@ export const specRevise = defineOperation({
         coverage: json(input.coverage),
         clarifications: json(input.clarifications),
         summary: input.summary ?? null,
+        children: input.children?.length ? json(input.children) : null,
         status: "draft",
         created_by: ctx.actor.id,
         created_at: ctx.now,
@@ -1352,6 +1368,7 @@ export const specEdit = defineOperation({
         assumptions: spec.assumptions,
         coverage: spec.coverage,
         clarifications: spec.clarifications,
+        children: spec.children,
         summary: "edited by a person",
         status: "draft",
         created_by: ctx.actor.id,

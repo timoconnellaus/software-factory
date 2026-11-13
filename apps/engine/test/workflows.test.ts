@@ -342,7 +342,7 @@ describe("the default builder", () => {
     expect(journal).toHaveLength(1);
     expect(journal[0]?.diff).toMatch(/"workflow":"repinned"/);
   });
-  it("a tightening of a stage already passed sends the item back to verify at the merge boundary (v16)", async () => {
+  it("a tightening of a stage already passed sends the item back to verify at the merge boundary (v17)", async () => {
     const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
     await ok(
       "agent.save",

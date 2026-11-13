@@ -64,7 +64,7 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 
 > Amended 2026-11-13 (review of #139): a version that both tightens and loosens reaches a running item
 > as its tightenings only, stage by stage; the loosenings never do. A tightening of a stage the item
-> has already passed sends it back to verify (Workflow v16) rather than skipping it.
+> has already passed sends it back to verify (Workflow v17) rather than skipping it.
 >
 > Amended 2026-11-13 (review of #185): what an item runs is its pinned version with each adopted
 > version folded in, in order (`org_config_adopted`); a later version is compared against that, so

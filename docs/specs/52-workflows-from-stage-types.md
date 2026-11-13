@@ -836,7 +836,7 @@ and after.
   item only its tightenings, stage by stage (`stricterDefinition`), over what it already runs: the
   item keeps its pin and appends the newer version to `org_config_adopted` (migration 0287, at most
   8), folded in order, so a later version that drops what an earlier one added never takes it away;
-  journaled as `workflow: tightened parts adopted`. An unresolvable list fails closed. From Workflow v16 (`repin-reverify`), a tightening of a stage the item already
+  journaled as `workflow: tightened parts adopted`. An unresolvable list fails closed. From Workflow v17 (`repin-reverify`), a tightening of a stage the item already
   passed (a check added before verify, found at the merge boundary) sends it back to verify its head
   again, with the checks before verify, instead of skipping it.
 - **Moving an item by hand** is `workItem.moveWorkflowVersion` (human): allowed at a stage boundary
@@ -1337,7 +1337,7 @@ screen needs).
    item moved (ADR 0590).
    *Follow-ups (review of #139/#144), 2026-11-13:* partial adoption of a mixed version's tightenings
    (`org_config_adopted`, migration 0287, folded by `adoptedDefinition`, failing closed); `behind`
-   lists adopted tightenings verify can act on (verify and the checks before it), and from v16 (`repin-reverify`) the merge
+   lists adopted tightenings verify can act on (verify and the checks before it), and from v17 (`repin-reverify`) the merge
    boundary re-verifies on them; the shadow replay counts an adopted floor as a re-pin (uncompared).
    `override.approve` is self-modify, decided by an org admin through `approval.decide`; an
    adjudicator-blocked plan notice goes to the project's first approver when the gate has none.

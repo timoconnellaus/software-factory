@@ -39,6 +39,7 @@ import {
   overrideApprovals,
   parseAdopted,
 } from "../scope.ts";
+import { childEnded, heldReason, NOT_HELD } from "../splits.ts";
 import { workflowImpact } from "../stages/impact.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
@@ -206,10 +207,12 @@ export function startPipeline(
       })
       .where("id", "=", item.id)
       .where("status", "=", "queued")
+      // Never a plan's child before its parent's plan merged (review of #171).
+      .where(NOT_HELD)
       .$if(!!conditions, (q) =>
         q
           .where(
-            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused'))`,
+            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused') AND a.awaiting_children = 0)`,
             "<",
             conditions?.activeLimit ?? 0,
           )
@@ -392,6 +395,8 @@ export async function pullQueued(
         .select(sql<number>`count(*)`.as("n"))
         .where("project_id", "=", project.id)
         .where("status", "in", [...ACTIVE_STATUSES])
+        // A split's parent waiting for its children holds no slot (review of #171).
+        .where("awaiting_children", "=", 0)
         .executeTakeFirst()
     )?.n ?? 0,
   );
@@ -416,6 +421,9 @@ export async function pullQueued(
       ])
       .where("project_id", "=", project.id)
       .where("status", "=", "queued")
+      // A plan's child still held for its parent is never a candidate (review of #171), so it
+      // can't trip startPipeline's guard and abort the pull.
+      .where(NOT_HELD)
       .execute()
   ).sort(pullOrder);
   const blocked = await blockersOf(
@@ -814,7 +822,20 @@ function parkedOutput(m: NeedsInfo) {
 }
 
 /** Releases an item (ADR 0491): queued, and the pull runs after this commits. */
+/** Whether a split's parent has merged its plan and released its children (spec 24). */
+async function parentReleased(ctx: HandlerContext, parentId: string): Promise<boolean> {
+  const parent = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["awaiting_children", "status"])
+    .where("id", "=", parentId)
+    .executeTakeFirst();
+  return parent?.awaiting_children === 1 || parent?.status === "done";
+}
+
 export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
+  // A plan's child is held until its parent's plan has merged (review of #171), by anyone.
+  const held = await heldReason(ctx, w);
+  if (held) throw new OperationError("conflict", held);
   {
     const project = requireProject(ctx);
     // A shaped item whose workflow's shaping changed isn't released: it is flagged for a person,
@@ -1003,6 +1024,9 @@ export const workItemShape = defineOperation({
 
 /** Starts shaping an item (ADR 0493): its Workflow runs the shaping stages before release. */
 export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
+  // Shaping a plan's child would triage and plan it before its parent's plan merged.
+  const held = await heldReason(ctx, w);
+  if (held) throw new OperationError("conflict", held);
   {
     const project = requireProject(ctx);
     const policy = ctx.scope.policy;
@@ -1750,6 +1774,47 @@ export async function resumeParked(
     title: change.title ?? w.title,
     body: change.body ?? w.body,
   };
+  // Spec 24: a sibling it waited for ended without merging. The owner starts it without that
+  // sibling (the link goes) or cancels it; nothing runs until they say.
+  if (marker.source === "split") {
+    const answer = change.answered?.answer ?? answers[0] ?? "";
+    if (open.length && !change.answered) return "waiting";
+    if (/^cancel/i.test(answer.trim())) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set({
+            status: "cancelled",
+            status_reason: `cancelled: ${marker.reason}`,
+            needs_info: null,
+            closed_at: ctx.now,
+            updated_at: ctx.now,
+          })
+          .where("id", "=", w.id)
+          .where("needs_info", "is not", null),
+      );
+      ctx.guardChanged("the item is still parked");
+      ctx.change({ entity: "work_item", id: w.id, after: { status: "cancelled" } });
+      await childEnded(ctx, w, "cancelled");
+      return "resumed";
+    }
+    // Started without it: the links to siblings that ended without merging go.
+    const ended = await ctx.db
+      .selectFrom("core_work_item_links as l")
+      .innerJoin("core_work_items as d", "d.id", "l.waits_for_id")
+      .select("l.waits_for_id")
+      .where("l.work_item_id", "=", w.id)
+      .where("d.status", "in", ["failed", "rejected", "cancelled"])
+      .execute();
+    for (const e of ended) {
+      ctx.write(
+        ctx.db
+          .deleteFrom("core_work_item_links")
+          .where("work_item_id", "=", w.id)
+          .where("waits_for_id", "=", e.waits_for_id),
+      );
+    }
+  }
   if (marker.source === "precheck") {
     const checked = precheck({
       title: item.title,
@@ -1770,9 +1835,10 @@ export async function resumeParked(
     }
   }
   // The answers become part of the request, so triage and the planner read them.
-  const body = answers.length
-    ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
-    : item.body;
+  const body =
+    answers.length && marker.source !== "split"
+      ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
+      : item.body;
   for (const q of open) {
     ctx.write(
       ctx.db
@@ -1797,7 +1863,13 @@ export async function resumeParked(
     after: { needsInfo: null },
   });
   const next = { ...w, body, needs_info: null };
-  if (marker.heading === "ready") {
+  // A plan's child parked while held, answered after its parent released the others (review of
+  // #171): it goes to the queue with them, not back to Ready.
+  const released =
+    marker.heading === "ready" && w.source === "planning" && w.parent_work_item_id
+      ? await parentReleased(ctx, w.parent_work_item_id)
+      : false;
+  if (marker.heading === "ready" && !released) {
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -1805,7 +1877,7 @@ export async function resumeParked(
         .where("id", "=", w.id)
         .where("status", "=", "backlog"),
     );
-  } else if (marker.heading === "queued") {
+  } else if (marker.heading === "queued" || released) {
     await releaseNow(ctx, next);
   } else {
     await shapeNow(ctx, next);
