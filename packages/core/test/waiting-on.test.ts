@@ -12,6 +12,8 @@ type WaitingOn = {
   position?: number;
   merging?: boolean;
   held?: boolean;
+  reason?: string;
+  until?: string;
 } | null;
 
 const run = (sql: string, ...params: unknown[]) =>
@@ -79,16 +81,19 @@ async function gate(w: World, id: string) {
   );
 }
 
-async function question(w: World, id: string) {
+async function question(w: World, id: string, blocking = 1) {
+  const qid = uid("q_");
   await run(
     `INSERT INTO core_questions (id, work_item_id, project_id, org_id, prompt, planning_round, asked_by, created_at, blocking)
-     VALUES (?, ?, ?, ?, 'No CI?', 0, 'foreman', ?, 1)`,
-    uid("q_"),
+     VALUES (?, ?, ?, ?, 'No CI?', 0, 'foreman', ?, ?)`,
+    qid,
     id,
     w.projectId,
     w.orgId,
     iso(T0),
+    blocking,
   );
+  return qid;
 }
 
 async function enqueue(w: World, id: string, at: number, extra: Record<string, unknown> = {}) {
@@ -228,5 +233,109 @@ describe("what an item waits on", () => {
     // The merge gate on the second (a person) comes before its place in the queue.
     await gate(w, second);
     expect((await board(w)).get(second)).toEqual({ kind: "person", on: "gate" });
+  });
+
+  it("two facts at once: a gate beats a claimed job, a claimed job beats a queued one", async () => {
+    const w = await world({ ...POLICY, activeLimit: 10 });
+    const id = await running(w, "Both");
+    await stage(id, "build", T0);
+    await job(w, id, "build", "queued", T0 + 1);
+    await job(w, id, "build", "claimed", T0 + 2);
+    expect((await board(w)).get(id)).toEqual({ kind: "agent" });
+    await gate(w, id);
+    expect((await board(w)).get(id)).toEqual({ kind: "person", on: "gate" });
+    expect(await get(w, id)).toEqual({ kind: "person", on: "gate" });
+  });
+
+  it("a queued job that can't start says why (a WIP limit), not just 'runner'", async () => {
+    const w = await world({ ...POLICY, activeLimit: 10 });
+    const id = await running(w, "Over the limit");
+    await stage(id, "build", T0);
+    await job(w, id, "build", "queued", T0 + 1);
+    await run("UPDATE core_jobs SET wait_reason = 'waiting on review' WHERE work_item_id = ?", id);
+    expect((await board(w)).get(id)).toEqual({ kind: "runner", reason: "waiting on review" });
+    expect((await list(w)).get(id)).toEqual({ kind: "runner", reason: "waiting on review" });
+  });
+
+  it("the head at its bound on updates: a person while asked, then holding until the hour is up", async () => {
+    const w = await world({ ...POLICY, activeLimit: 10 });
+    const head = await running(w, "Bounded");
+    await stage(head, "merge", T0);
+    // The babysitter's question is not blocking (askOne): the queue entry says who it waits on.
+    const qid = await question(w, head, 0);
+    await enqueue(w, head, T0, { hold_question_id: qid });
+    const steps = async () => {
+      const status = await ok<{
+        repositories: { deliveries: { step: string | null; heldUntil: string | null }[] }[];
+      }>("delivery.status", { projectId: w.projectId }, w.human);
+      const queue = await ok<{ entries: { step: string | null; heldUntil?: string | null }[] }>(
+        "mergeQueue.list",
+        { projectId: w.projectId },
+        w.human,
+      );
+      return { status: status.repositories[0]?.deliveries[0], queue: queue.entries[0] };
+    };
+    expect((await board(w)).get(head)).toEqual({ kind: "person", on: "question", position: 1 });
+    expect(await get(w, head)).toEqual({ kind: "person", on: "question", position: 1 });
+    expect(await steps()).toEqual({
+      status: expect.objectContaining({ step: "asking", heldUntil: null }),
+      queue: expect.objectContaining({ step: "asking", heldUntil: null }),
+    });
+    // "Wait an hour": the question is cleared and the head holds until then.
+    const until = iso(Date.now() + 3_600_000);
+    await run(
+      "UPDATE core_merge_queue SET hold_question_id = NULL, held_until = ? WHERE work_item_id = ?",
+      until,
+      head,
+    );
+    expect((await board(w)).get(head)).toEqual({ kind: "holding", position: 1, until });
+    expect((await list(w)).get(head)).toEqual({ kind: "holding", position: 1, until });
+    expect(await steps()).toEqual({
+      status: expect.objectContaining({ step: "holding", heldUntil: until }),
+      queue: expect.objectContaining({ step: "holding", heldUntil: until }),
+    });
+    // The hour is up: it updates once more and waits on CI.
+    await run(
+      "UPDATE core_merge_queue SET held_until = ? WHERE work_item_id = ?",
+      iso(Date.now() - 1_000),
+      head,
+    );
+    expect((await board(w)).get(head)).toEqual({ kind: "ci", position: 1 });
+    expect((await steps()).status?.step).toBe("ci");
+  });
+
+  it("a red default branch holds the queue, but not a head GitHub was already asked to merge", async () => {
+    const w = await world({ ...POLICY, activeLimit: 10 });
+    const repo = await env.DB.prepare("SELECT id FROM core_repositories WHERE project_id = ?")
+      .bind(w.projectId)
+      .first<{ id: string }>();
+    if (!repo) throw new Error("no repository");
+    const head = await running(w, "Merging");
+    const second = await running(w, "Behind");
+    for (const id of [head, second]) {
+      await stage(id, "merge", T0);
+      await run("UPDATE core_work_items SET repository_id = ? WHERE id = ?", repo.id, id);
+    }
+    await enqueue(w, head, T0, { merging_at: iso(T0 + 1) });
+    await enqueue(w, second, T0 + 5);
+    await run(
+      `INSERT INTO core_main_health (repository_id, project_id, head_sha, state, red_since, checked_at)
+       VALUES (?, ?, ?, 'red', ?, ?)`,
+      repo.id,
+      w.projectId,
+      "d".repeat(40),
+      iso(T0 + 2),
+      iso(T0 + 2),
+    );
+    const b = await board(w);
+    expect(b.get(head)).toEqual({ kind: "queue", position: 1, merging: true });
+    expect(b.get(second)).toEqual({ kind: "queue", position: 2, held: true });
+    const status = await ok<{
+      repositories: { deliveries: { state: string; step: string | null }[] }[];
+    }>("delivery.status", { projectId: w.projectId }, w.human);
+    expect(status.repositories[0]?.deliveries.map((d) => [d.state, d.step])).toEqual([
+      ["merging", "merging"],
+      ["held", null],
+    ]);
   });
 });

@@ -64,22 +64,45 @@ interface QueueRow {
   merging_at: string | null;
   update_asked_at: string | null;
   update_from_sha: string | null;
+  /** The question the babysitter asked a person at its bound on updates (`mergeQueue.hold`). */
+  hold_question_id: string | null;
+  /** The person answered "wait": the head updates again only after this time. */
+  held_until: string | null;
   /** 1 while its repository's default branch is red (an open episode, spec 53). */
   stopped: number;
 }
 
+/** The step the head of a queue is on (`headStep`). */
+export type HeadStep = "merging" | "asking" | "holding" | "updating" | "ci";
+
 /**
- * Which step the head of a queue is on: `merging` (GitHub was asked to merge it), `updating`
- * (GitHub was asked to merge the default branch in and the new head isn't there yet), or `ci`
- * (up to date: the queue waits for CI on its head, then merges).
+ * Which step the head of a queue is on: `merging` (GitHub was asked to merge it), `asking` (at its
+ * bound on updates the babysitter asked a person "update once more, or wait?", `mergeQueue.hold`),
+ * `holding` (the person said wait: nothing happens until `held_until`), `updating` (GitHub was
+ * asked to merge the default branch in and the new head isn't there yet), or `ci` (up to date: the
+ * queue waits for CI on its head, then merges).
  */
 export function headStep(
-  e: Pick<QueueRow, "merging_at" | "update_asked_at" | "update_from_sha" | "head_sha">,
-): "merging" | "updating" | "ci" {
+  e: Pick<
+    QueueRow,
+    | "merging_at"
+    | "update_asked_at"
+    | "update_from_sha"
+    | "head_sha"
+    | "hold_question_id"
+    | "held_until"
+  >,
+  now: string,
+): HeadStep {
   if (e.merging_at) return "merging";
+  if (e.hold_question_id) return "asking";
+  if (e.held_until && e.held_until > now) return "holding";
   if (e.update_asked_at && e.update_from_sha === e.head_sha) return "updating";
   return "ci";
 }
+
+/** The steps a queue read reports for its head (`mergeQueue.list`, `delivery.status`). */
+export const HEAD_STEPS = ["merging", "asking", "holding", "updating", "ci"] as const;
 
 /**
  * The project's open entries, head first, as one query (for `readBatch`). An entry whose work item
@@ -112,6 +135,8 @@ export function queuedEntriesQuery(
         "q.merging_at",
         "q.update_asked_at",
         "q.update_from_sha",
+        "q.hold_question_id",
+        "q.held_until",
         sql<number>`EXISTS (SELECT 1 FROM core_main_health h WHERE h.repository_id = w.repository_id AND h.red_since IS NOT NULL)`.as(
           "stopped",
         ),
@@ -512,9 +537,12 @@ export const mergeQueueList = defineOperation({
         repositoryId: z.string().nullable(),
         /**
          * Its repository's head only (null for the rest): `updating` (GitHub is merging the
-         * default branch in), `ci` (waiting on CI on its head before it merges) or `merging`.
+         * default branch in), `ci` (waiting on CI on its head before it merges), `merging`,
+         * `asking` (a person is asked "update once more, or wait?") or `holding` (until `heldUntil`).
          */
-        step: z.enum(["merging", "updating", "ci"]).nullable().optional(),
+        step: z.enum(HEAD_STEPS).nullable().optional(),
+        /** `holding`: when the head updates again. */
+        heldUntil: z.string().nullable().optional(),
       }),
     ),
   }),
@@ -533,7 +561,8 @@ export const mergeQueueList = defineOperation({
           headSha: e.head_sha,
           enqueuedAt: e.enqueued_at,
           repositoryId: e.repository_id,
-          step: head ? headStep(e) : null,
+          step: head ? headStep(e, ctx.now) : null,
+          heldUntil: head && headStep(e, ctx.now) === "holding" ? e.held_until : null,
         };
       }),
     };

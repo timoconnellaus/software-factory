@@ -845,7 +845,7 @@ export const workItemGet = defineOperation({
         : null,
       mergeQueue: queuePosition(queue, w.id),
       /** What a running or waiting item waits on (waiting-on.ts), as the board and list say it. */
-      waitingOn: factRows[0] ? waitingOnOf(factRows[0], placesIn(queue).get(w.id)) : null,
+      waitingOn: factRows[0] ? waitingOnOf(factRows[0], placesIn(queue, ctx.now).get(w.id)) : null,
       policy: policy
         ? {
             autonomyPolicy: policy.autonomyPolicy,

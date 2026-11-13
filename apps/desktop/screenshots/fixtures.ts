@@ -2286,6 +2286,7 @@ export const ANSWERS: Answers = {
                   headSha: "a1b2c3d4e5",
                   enqueuedAt: ago(9),
                   step: "ci" as const,
+                  heldUntil: null,
                 },
                 {
                   workItemId: "wi_44",
@@ -2298,6 +2299,7 @@ export const ANSWERS: Answers = {
                   headSha: "9c41e07d2b",
                   enqueuedAt: ago(12),
                   step: null,
+                  heldUntil: null,
                 },
               ]
             : [
@@ -2312,6 +2314,7 @@ export const ANSWERS: Answers = {
                   headSha: "9c41e07d2b",
                   enqueuedAt: ago(12),
                   step: "ci" as const,
+                  heldUntil: null,
                 },
               ],
         },
