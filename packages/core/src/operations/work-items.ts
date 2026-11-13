@@ -1272,7 +1272,7 @@ export const inboxList = defineOperation({
     ),
     /**
      * "`main` is red" (spec 53, ADR 0581): one card per open red episode, while the line is
-     * stopped, for the project's approvers only (owner question 4, recommended; not yet answered):
+     * stopped, for the project's approvers only (spec 53, decision 4):
      * the failing checks and since when. What is held behind it is `delivery.status`
      * (no count here: the inbox doesn't count rows of a growing table).
      */
@@ -1545,8 +1545,8 @@ export const inboxList = defineOperation({
           ).map((kind) => ({ kind, filename: `${d.repo}-${kind}.json` })),
         };
       }),
-      // Only to the episode's audience: the project's approvers (owner question 4's
-      // recommendation, `mainRedAudience`).
+      // Only to the episode's audience: the project's approvers (spec 53, decision 4,
+      // `mainRedAudience`).
       mainRed: redRows
         .filter((r) => parseJson<string[]>(r.audience, []).includes(me))
         .map((r) => ({

@@ -1,6 +1,6 @@
 # ADR 0585: One babysitter per repository; it fails safe
 
-Status: proposed, 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md)).
+Status: accepted, 2026-11-13; proposed 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md)).
 Applies [ADR 0035](0035-lease-fencing-and-one-branch-per-run.md) and [ADR 0511](0511-a-reconciler-runs-the-stage-list.md)
 per repository.
 
@@ -24,3 +24,6 @@ harmless (a pinned head refuses the second); two repairs are not.
 ## Consequences
 - No lease to renew by hand and nothing that must be released: the row is the lease, and the job's
   own runner lease covers the job.
+
+> Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
+> recommendation (spec 53, **Decisions**). This ADR is accepted as written.

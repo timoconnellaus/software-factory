@@ -350,6 +350,7 @@ export const FACTORY_ITEMS: Summary[] = [
 ];
 
 /** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+// (CONFIG_HISTORY, below the document, is its versions newest first.)
 export const POLICY_DOC = {
   version: 1,
   autonomyPolicy: "balanced",
@@ -401,6 +402,50 @@ export const POLICY_DOC = {
   ],
   workflow: "Software",
 };
+
+/** A project on the org's Software workflow, with one override of the org's value (spec 52). */
+export const ON_ORG_WORKFLOW = {
+  ...POLICY_DOC,
+  workflow: "wf_software",
+  workflowOverrides: { build: { retryLimit: 3 } },
+};
+
+/** The Factory project's config versions, newest first, as `config.get` lists them. */
+export const CONFIG_HISTORY = [
+  {
+    version: 12,
+    sha: "5da8988",
+    source: "app",
+    note: "Two agents and the Software workflow",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 3),
+    valid: true,
+    impact: "neutral" as const,
+    policy: POLICY_DOC,
+  },
+  {
+    version: 11,
+    sha: "a41c9e2",
+    source: "improve",
+    note: "The builder writes the failing test first",
+    createdBy: null,
+    createdAt: ago(60 * 24 * 4),
+    valid: true,
+    impact: "neutral" as const,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
+  },
+  {
+    version: 10,
+    sha: "77b0c1d",
+    source: "app",
+    note: "Waiting on you: 5 to 3",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 9),
+    valid: true,
+    impact: "tightens" as const,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
+  },
+];
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
@@ -1730,32 +1775,133 @@ export const ANSWERS: Answers = {
   }),
   "config.get": (input) => ({
     projectId: input.projectId,
-    current: {
-      version: 12,
-      sha: "5da8988",
-      source: "app",
-      note: "Two agents and the Software workflow",
-      createdBy: "owner",
-      createdAt: ago(60 * 24 * 3),
-      valid: true,
-      impact: "neutral",
-      policy: POLICY_DOC,
-    },
+    // The Website runs the org's Software workflow, overriding its retry limit (PR #121).
+    current:
+      input.projectId === SITE
+        ? { ...(CONFIG_HISTORY[0] as (typeof CONFIG_HISTORY)[0]), policy: ON_ORG_WORKFLOW }
+        : (CONFIG_HISTORY[0] ?? null),
     error: null,
-    history: [],
+    pendingMore: false,
+    history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
         ? [
             {
               pendingActionId: "pa_cfg_1",
               operation: "config.save",
-              note: "Retries per item, 2 to 3",
+              note: "One more retry for flaky builds",
               by: "owner",
               createdAt: ago(30),
               baseVersion: 12,
+              policy: { ...POLICY_DOC, retryLimit: 3 },
+              toVersion: null,
             },
           ]
         : [],
+  }),
+  // The engine's classification of a draft against the current version (ADR 0370): here, from the
+  // fields the fixtures change, worded as `policyImpact` words them.
+  "config.preview": (input) => {
+    const draft = input.policy as Record<string, unknown>;
+    const changes: { path: string; class: "loosens" | "tightens" | "neutral"; summary: string }[] =
+      [];
+    for (const [key, label] of [
+      ["retryLimit", "Retry limit"],
+      ["wipLimit", "WIP limit"],
+    ] as const) {
+      const before = POLICY_DOC[key];
+      const after = draft[key];
+      if (typeof after === "number" && after !== before)
+        changes.push({
+          path: key,
+          class: after > before ? "loosens" : "tightens",
+          summary: `${label} ${before} → ${after}`,
+        });
+    }
+    if (draft.autonomyPolicy !== POLICY_DOC.autonomyPolicy)
+      changes.push({
+        path: "autonomyPolicy",
+        class: draft.autonomyPolicy === "cautious" ? "tightens" : "loosens",
+        summary: `Autonomy policy ${POLICY_DOC.autonomyPolicy} → ${String(draft.autonomyPolicy)}`,
+      });
+    const cls = changes.some((c) => c.class === "loosens")
+      ? "loosens"
+      : changes.some((c) => c.class === "tightens")
+        ? "tightens"
+        : "neutral";
+    return {
+      valid: true,
+      error: null,
+      impact: { class: cls, changes },
+      currentVersion: 12,
+    };
+  },
+  "config.trials": () => ({
+    trials: [
+      {
+        id: "trial_1",
+        kind: "instructions",
+        status: "promoted" as const,
+        evidence: {},
+        outcome: null,
+        createdAt: ago(60 * 24 * 6),
+        decidedAt: ago(60 * 24 * 4),
+        summary: "The builder writes the failing test first",
+        reason: "5 items did at least as well",
+        itemsSoFar: 5,
+        targetItems: 5,
+        baseVersion: 10,
+        candidateVersion: 11,
+      },
+    ],
+  }),
+  "workflow.get": (input) => ({
+    version: 4,
+    workflow: {
+      schema: 1,
+      id: input.workflowId,
+      name: "Software",
+      description: "",
+      stages: [
+        {
+          id: "build",
+          type: "build",
+          typeVersion: 1,
+          name: "Build",
+          phase: "delivery",
+          settings: { retryLimit: 2 },
+        },
+        {
+          id: "verify",
+          type: "checks",
+          typeVersion: 1,
+          name: "Verify",
+          phase: "delivery",
+          settings: { requiredChecks: ["ci", "typecheck"] },
+        },
+      ],
+    },
+    builtIn: null,
+    shipped: null,
+  }),
+  "adjudicator.stats": () => ({
+    spec: {
+      mode: "shadow" as const,
+      decisions: 14,
+      approvals: 12,
+      agreed: 11,
+      precision: 0.92,
+      eligible: false,
+    },
+    step: {
+      mode: "off" as const,
+      decisions: 3,
+      approvals: 0,
+      agreed: 0,
+      precision: 0,
+      eligible: false,
+    },
+    configVersion: 12,
   }),
   "desktopDevice.list": () => ({
     devices: [

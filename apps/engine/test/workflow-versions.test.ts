@@ -116,12 +116,18 @@ const V13_STEPS = [
   "this.repin(`verify #${b}`, plan)",
   "this.repin(`merge #${b}`, plan)",
 ];
+// The steps v14 adds (ADR 0587): the head re-read after a verify run, its CI and its packet.
+const V14_STEPS = [
+  "`verify #${b}: head after run`",
+  "`verify #${b}: head after ci`",
+  "`verify #${b}: head after packet`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 14 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(14);
+  it("starts new instances on version 15 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(15);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -134,7 +140,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(14);
+    expect(row.workflow_version).toBe(15);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -170,13 +176,17 @@ describe("Workflow versions", () => {
     expect([...(WORKFLOW_VERSION_FEATURES[13] ?? [])].sort()).toEqual(
       [...(WORKFLOW_VERSION_FEATURES[12] ?? []), "repin-tightening"].sort(),
     );
-    // v14 is v13 plus triage naming the check that proves each criterion.
+    // v14 is v13 plus a person's push re-verifying (ADR 0587).
     expect([...(WORKFLOW_VERSION_FEATURES[14] ?? [])].sort()).toEqual(
-      [...(WORKFLOW_VERSION_FEATURES[13] ?? []), "triage-ties"].sort(),
+      [...(WORKFLOW_VERSION_FEATURES[13] ?? []), "reverify-on-push"].sort(),
     );
-    for (let v = 1; v <= 13; v++) expect(has(v, "triage-ties"), `v${v}`).toBe(false);
+    // v15 is v14 plus triage naming the check that proves each criterion.
+    expect([...(WORKFLOW_VERSION_FEATURES[15] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[14] ?? []), "triage-ties"].sort(),
+    );
+    for (let v = 1; v <= 14; v++) expect(has(v, "triage-ties"), `v${v}`).toBe(false);
     // A new item keeps v9's triage readiness and v10's spec critic.
-    for (const v of [11, 12, 13, 14]) {
+    for (const v of [11, 12, 13, 14, 15]) {
       expect(has(v, "triage-readiness"), `v${v}`).toBe(true);
       expect(has(v, "spec-critic"), `v${v}`).toBe(true);
     }
@@ -212,5 +222,6 @@ describe("Workflow versions", () => {
     for (const name of V9_STEPS) expect(source, name).toContain(name);
     for (const name of V10_STEPS) expect(source, name).toContain(name);
     for (const name of V13_STEPS) expect(source, name).toContain(name);
+    for (const name of V14_STEPS) expect(source, name).toContain(name);
   });
 });

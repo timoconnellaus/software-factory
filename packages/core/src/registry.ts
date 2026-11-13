@@ -64,6 +64,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   config.configSave,
   config.configRollback,
   config.configExport,
+  config.overrideApprove,
   improve.improveScan,
   improve.configTrialStart,
   improve.configTrialResolve,
