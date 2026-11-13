@@ -1,13 +1,12 @@
 // The change an approval is about (spec 53, ADR 0582), from git trees, never from patch text.
 //
 // **The change** of a head is the set of paths whose entry (mode and blob SHA) differs between the
-// head and its merge base with the default branch, each with its entry on both sides (absent for an
-// added or removed file). **The change is identical** on a new head when that set is equal, entry
-// for entry: every changed file has byte-identical content and the same mode on the head, and the
-// same content and mode at the base. So a merge of the default branch that touched only files the PR
-// didn't change leaves it identical; a file both sides changed (its base content moved, and its head
-// content is the merge of both) withdraws the approval, as does a moved rename, a mode change, or
-// anything GitHub can't show in full. Binary and very large files count like any other: by blob.
+// head and its merge base with the default branch. Since 2026-11-13 (#61, ADR 0582 amended) the
+// approval's digest is the PR's own patch (`patchDigest`): per file, the lines it adds and removes,
+// so a clean merge of the default branch into other hunks of a file the PR changed leaves it
+// identical. A file GitHub gives no patch for (binary, very large) counts by blob on both sides, so
+// a merge that moved its base still withdraws the approval, as do a moved rename, a mode change, or
+// anything GitHub can't show in full. `changeDigest` (by blob) is the earlier form.
 //
 // It fails closed: an unreadable or truncated tree has no digest, and no digest never matches.
 import type { ChangedFile, Tree, TreeEntry } from "../services.ts";

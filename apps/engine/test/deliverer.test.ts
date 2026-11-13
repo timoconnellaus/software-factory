@@ -630,7 +630,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
         a,
       ),
     );
-    expect(ended.approved_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(ended.approved_digest).toMatch(/^p1:[0-9a-f]{64}$/);
     expect(ended.head_sha).not.toBe(ended.approved_sha);
     // Nothing from the old head's evidence on the new one: no packet, no passing factory/verify.
     expect(
@@ -788,7 +788,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
 
   // Review of #105 (1): the same lines in a different file version hashed the same; a file both
   // sides changed now withdraws, and the item verifies the new head before a person decides again.
-  it("is withdrawn when main changed a file the PR changed; the item verifies the new head again", async () => {
+  it("is withdrawn when main changed a file the PR changed and GitHub gives no patch for it (binary, too large); the item verifies the new head again", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Both sides", files("src/a.ts"));
     await github.push(w.repo, "main", undefined, ["src/a.ts"]);
@@ -804,6 +804,81 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     await approve(w, a);
     await itemStatus(a, "done");
     expect(await merges(a)).toHaveLength(1);
+  });
+
+  // Work item #61 (2026-11-13): both sides changed one file in different hunks, GitHub's
+  // update-branch merged it cleanly (its content is neither side's), and the approval was
+  // withdrawn every time, in a loop. The PR's own change is identical, so it survives: the new
+  // head is verified again and lands with no second approval.
+  it("#61: a clean merge of main into other hunks of a file the PR changed keeps the approval, re-verifies and lands", async () => {
+    const w = await world();
+    const path = "apps/desktop/screenshots/fixtures.ts";
+    const mine = "@@ -10,3 +10,4 @@\n ctx\n+  item: the PR's line,\n ctx";
+    const a = await toMergeGateWith(w, "#61 shape", [{ path, status: "modified", patch: mine }]);
+    // Main changes the same file elsewhere (another desktop PR landing).
+    await github.push(w.repo, "main", undefined, [
+      { path, status: "modified", patch: "@@ -500,3 +500,4 @@\n ctx\n+  main: another PR,\n ctx" },
+    ]);
+    await approve(w, a);
+    const ended = await waitFor("reverify, not withdrawn", () =>
+      first<{ outcome: string; head_sha: string; end_reason: string }>(
+        "SELECT outcome, head_sha, end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    expect(ended.end_reason).toMatch(/merged in cleanly and the change is the one approved/);
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+    // One approval, never withdrawn: nothing looped.
+    expect(
+      await all<{ decision: string }>(
+        "SELECT decision FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge'",
+        a,
+      ),
+    ).toEqual([{ decision: "approved" }]);
+  });
+
+  it("the loop guard: an approval withdrawn twice for the same reason isn't updated a third time on its own; a person is asked, with the reason", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Keeps being withdrawn", files("src/a.ts"));
+    const round = async () => {
+      await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+      await approve(w, a);
+      await waitFor("withdrawn", () =>
+        first(
+          "SELECT id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'withdrawn' AND status = 'left' AND ended_at >= ?",
+          a,
+          new Date(Date.now() - 60_000).toISOString(),
+        ),
+      );
+      await runStage(w, a, "verify", () => verifyPass);
+      await gateOpen(a, "merge");
+    };
+    await round();
+    await round();
+    // A third time: main moves again; the head is held and a person asked, no third withdrawal.
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await approve(w, a);
+    const held = await waitFor("held, a person asked", () =>
+      first<{ hold_question_id: string | null }>(
+        "SELECT hold_question_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND hold_question_id IS NOT NULL",
+        a,
+      ),
+    );
+    const q = await first<{ prompt: string }>(
+      "SELECT prompt FROM core_questions WHERE id = ?",
+      held.hold_question_id,
+    );
+    expect(q?.prompt).toMatch(/withdrawn twice for the same reason/);
+    expect(
+      await all(
+        "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND decision = 'withdrawn'",
+        a,
+      ),
+    ).toHaveLength(2);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
   });
 
   // Review of #105 (1): fail closed. A tree GitHub truncates has no digest, and no digest never

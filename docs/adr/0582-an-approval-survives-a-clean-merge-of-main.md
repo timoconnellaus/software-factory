@@ -45,3 +45,19 @@ proves how the commit was made, not that the change the person approved is the c
 
 > Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
 > recommendation (spec 53, **Decisions**). This ADR is accepted as written.
+
+> Amended 2026-11-13 (work item #61, an approval withdrawn in a loop): a file both sides changed in
+> different hunks no longer withdraws the approval. (1) The update merge is judged from the merge
+> base, as a resolution is (#175): a path only one side changed must be that side's; a path both
+> sides changed may be new content, because the merge is GitHub's own update-branch merge for the
+> factory's call (checked: made and signed by GitHub, parents [approved head, main], the second on
+> main), and GitHub refuses one with a conflict. The textual three-way result can't be computed
+> from GitHub's API, so for those paths the factory trusts the merge it asked GitHub for; anyone
+> else's merge is still withdrawn. (2) The change digest is the PR's own patch, as spec 53's words
+> define it: per file, its status and the lines it adds and removes, line numbers and context
+> stripped (a file with no patch, binary or too large, counts by blob on both sides). A clean merge
+> of main into other hunks leaves it identical, so the approval survives, the new head is verified
+> again and it lands with no second approval (decision 1 as written). (3) A loop guard: after two
+> withdrawals for the same reason the item isn't updated a third time on its own; it is held and a
+> person asked, with the reason. (4) A reopened merge gate says plainly that the approval was
+> withdrawn, when and why, and that it was verified again.
