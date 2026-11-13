@@ -3,6 +3,7 @@
 // The host adds the job's id and fencing token and signs the call onto the channel, so the runner
 // key never reaches the harness. Whoever reads the secret can make that job's planning calls and
 // nothing else, which the agent can already do through its MCP server.
+
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -11,9 +12,11 @@ import {
   type ControlPlaneClient,
   type Job,
   PLANNING_OPS,
+  PLANNING_WAIT_MAX_MS,
   type PlanningOp,
   type PlanningRelay,
 } from "@software-factory/runner-contract";
+import type { JobLine } from "./job-line.ts";
 
 const MAX_BODY = 512 * 1024;
 
@@ -27,6 +30,11 @@ export interface RelayHooks {
   /** The cloud refused with 409 (`fenced`, `killed`): the job must stop. */
   onStop(error: ChannelCallError): void;
   log?: (message: string) => void;
+  /**
+   * The job line (spec 44 part B): while it is up, the hook's `planning.wait` is answered here by
+   * calls that don't hold (`timeoutMs: 0`), waiting on the line's `planning` pushes in between.
+   */
+  line?: JobLine;
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {
@@ -72,11 +80,16 @@ export async function startPlanningRelay(
       const input =
         body.input && typeof body.input === "object" ? (body.input as Record<string, unknown>) : {};
       try {
-        const result = await relayCall(job.jobId, {
-          fencingToken: job.lease.fencingToken,
-          op,
-          input,
-        });
+        const result =
+          op === "planning.wait" && hooks.line?.up()
+            ? await waitOnLine(hooks.line, input, (i) =>
+                relayCall(job.jobId, { fencingToken: job.lease.fencingToken, op, input: i }),
+              )
+            : await relayCall(job.jobId, {
+                fencingToken: job.lease.fencingToken,
+                op,
+                input,
+              });
         if (op === "planning.yield") hooks.onYield();
         return send(response, 200, { ok: true, result });
       } catch (error) {
@@ -119,4 +132,32 @@ export async function startPlanningRelay(
         server.close(() => resolve());
       }),
   };
+}
+
+/**
+ * The hook's `planning.wait` over the job line (spec 44 part B): evaluates without holding, and
+ * between evaluations waits for a `planning` push, the news' own `recheckAt`, the line going down,
+ * or the hook's timeout, whichever is first. Answers as the held call would.
+ */
+async function waitOnLine(
+  line: JobLine,
+  input: Record<string, unknown>,
+  call: (input: Record<string, unknown>) => Promise<unknown>,
+): Promise<unknown> {
+  const timeout = typeof input.timeoutMs === "number" ? input.timeoutMs : PLANNING_WAIT_MAX_MS;
+  const deadline = Date.now() + Math.min(timeout, PLANNING_WAIT_MAX_MS);
+  for (;;) {
+    const answer = (await call({ ...input, timeoutMs: 0 })) as {
+      due?: boolean;
+      yield?: boolean;
+      ended?: boolean;
+      recheckAt?: string | null;
+    };
+    const left = deadline - Date.now();
+    if (answer.due || answer.yield || answer.ended || left <= 0 || !line.up()) return answer;
+    const recheck = answer.recheckAt ? Date.parse(answer.recheckAt) - Date.now() : left;
+    const stop = new AbortController();
+    await line.next("planning", stop.signal, Math.max(0, Math.min(left, recheck)));
+    stop.abort();
+  }
 }

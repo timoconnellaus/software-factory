@@ -26,7 +26,6 @@ import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
 export { ClientHub } from "./client-hub.ts";
-export { PlanningHub } from "./planning-hub.ts";
 export { EngineApi } from "./rpc.ts";
 export { TerminalRelay } from "./terminal-relay.ts";
 export { WorkItemWorkflow } from "./workflow/work-item.ts";
@@ -41,7 +40,10 @@ export default {
     // The runner host's web terminal socket (ADR 0440), with the one-use ticket the channel's held
     // `terminal` call gave it. Viewers' sockets are only reachable through EngineApi (the binding).
     const terminal = parseTerminalPath(url.pathname);
-    if (terminal?.role === "host") return terminalRelay(env, terminal.jobId).fetch(request);
+    // The job line (spec 44 part B, ADR 0592) is the host's too, with a ticket from the `line` call.
+    if (terminal?.role === "host" || terminal?.role === "line") {
+      return terminalRelay(env, terminal.jobId).fetch(request);
+    }
     if (url.pathname.startsWith(CLI_PREFIX) || url.pathname.startsWith(CLIENT_PREFIX)) {
       return handleCli(request, env);
     }

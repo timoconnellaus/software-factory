@@ -13,6 +13,9 @@ import { invoke, isOperationError } from "@software-factory/core";
 import {
   clampSize,
   hostToRelaySchema,
+  LINE_PING,
+  LINE_PONG,
+  type LineMessage,
   parseTerminalMessage,
   parseTerminalPath,
   type RelayToHost,
@@ -40,8 +43,13 @@ export interface ViewerGrant {
 /** How often open viewers are re-checked against membership and their token. */
 export const VIEWER_RECHECK_MS = 60_000;
 
-type Ticket = ({ role: "host" } | ({ role: "view" } & ViewerGrant)) & { exp: number };
-type SocketMeta = { role: "host" } | ({ role: "viewer"; closed?: boolean } & ViewerGrant);
+type Ticket = ({ role: "host" } | { role: "line" } | ({ role: "view" } & ViewerGrant)) & {
+  exp: number;
+};
+type SocketMeta =
+  | { role: "host" }
+  | { role: "line" }
+  | ({ role: "viewer"; closed?: boolean } & ViewerGrant);
 
 /** WebSocket close codes the relay uses. */
 export const CLOSE = { normal: 1000, policy: 1008, replaced: 4000, revoked: 4001 } as const;
@@ -58,7 +66,7 @@ export class TerminalRelay extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Answered by the runtime, so a page's keepalive never wakes a hibernated relay.
-    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(LINE_PING, LINE_PONG));
   }
 
   /**
@@ -89,6 +97,34 @@ export class TerminalRelay extends DurableObject<Env> {
     return { ticket: null, viewers };
   }
 
+  /**
+   * A one-use ticket for the runner host's job line (spec 44 part B, ADR 0592): the hibernatable
+   * socket down which this relay pushes `{ t: "steer" | "viewer" | "planning" }`. The channel's
+   * fenced `line` call asks for it.
+   */
+  async lineTicket(): Promise<string> {
+    await this.pruneTickets();
+    return this.mint({ role: "line" });
+  }
+
+  /**
+   * Pushes a wake down the job line, if the host keeps one (spec 44 part B). A push carries no
+   * data: the host makes its own fenced call to see what there is. Returns how many lines heard it.
+   */
+  async push(t: LineMessage["t"]): Promise<number> {
+    let sent = 0;
+    for (const ws of this.ctx.getWebSockets("line")) {
+      if (!open(ws)) continue;
+      try {
+        ws.send(JSON.stringify({ t } satisfies LineMessage));
+        sent++;
+      } catch {
+        // A line that's going away: the host reconnects and calls once.
+      }
+    }
+    return sent;
+  }
+
   /** Who is connected (tests). */
   async state(): Promise<{ host: boolean; viewers: { userId: string; mode: TerminalMode }[] }> {
     return {
@@ -109,12 +145,23 @@ export class TerminalRelay extends DurableObject<Env> {
     const ticket = await this.ctx.storage.get<Ticket>(TICKET_PREFIX + key);
     // One use: gone the moment it is presented, whatever happens next.
     if (ticket) await this.ctx.storage.delete(TICKET_PREFIX + key);
-    if (!ticket || ticket.exp < Date.now() || (ticket.role === "host") !== (path.role === "host")) {
+    const wanted = path.role === "view" ? "view" : path.role;
+    if (!ticket || ticket.exp < Date.now() || ticket.role !== wanted) {
       return new Response("this ticket isn't valid", { status: 401 });
     }
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+    if (ticket.role === "line") {
+      // One line per job: a host that reconnects replaces the one before. Hibernatable, and its
+      // pings are answered by the runtime (setWebSocketAutoResponse), so an idle line costs nothing.
+      for (const old of this.ctx.getWebSockets("line")) {
+        this.closeSocket(old, CLOSE.replaced, "replaced");
+      }
+      this.ctx.acceptWebSocket(server, ["line"]);
+      server.serializeAttachment({ role: "line" } satisfies SocketMeta);
+      return new Response(null, { status: 101, webSocket: client });
+    }
     if (ticket.role === "host") {
       // A host that reconnects replaces the one before.
       for (const old of this.hosts()) this.closeSocket(old, CLOSE.replaced, "replaced");
@@ -138,15 +185,18 @@ export class TerminalRelay extends DurableObject<Env> {
       const host = this.hosts().length > 0;
       this.send(server, { t: "hello", mode: grant.mode, viewers: this.viewers().length, host });
       this.broadcastViewers();
-      // Without a host, the host's held call sees the attach on its next poll and asks hostTicket().
+      // Without a host: the job line says so at once (spec 44 part B); a host without a line sees
+      // the attach on its held call's next poll and asks hostTicket().
       if (host) this.toHost({ t: "redraw" });
+      else await this.push("viewer");
     }
     return new Response(null, { status: 101, webSocket: client });
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const meta = ws.deserializeAttachment() as SocketMeta | null;
-    if (!meta) return;
+    // A job line only listens; its pings are auto-responded and never get here.
+    if (!meta || meta.role === "line") return;
     if (meta.role === "host") {
       if (typeof message !== "string") {
         // Output: to every viewer, unless the frame is over the cap.
@@ -243,18 +293,23 @@ export class TerminalRelay extends DurableObject<Env> {
     } catch {
       // already closed
     }
-    if (!meta) return;
+    if (!meta || meta.role === "line") return;
     if (meta.role === "viewer") {
       await this.detach(meta);
       this.afterViewerLeft(ws);
     } else {
       this.broadcastViewers(ws);
-      // Viewers are still waiting: the host's next held call gets a fresh ticket from hostTicket().
+      // Viewers are still waiting and no host replaced this one (a reconnect closes the old host
+      // after the new one is in): the line says so, and the host's next call gets a ticket.
+      if (this.viewers(ws).length > 0 && this.hosts(ws).length === 0) await this.push("viewer");
     }
   }
 
-  /** The session ended: tell the viewers, close everyone. */
+  /** The session ended: tell the viewers, close everyone, the job line too. */
   private async end(reason: string) {
+    for (const line of this.ctx.getWebSockets("line")) {
+      this.closeSocket(line, CLOSE.normal, "the session ended");
+    }
     for (const { ws, meta } of this.viewers()) {
       this.send(ws, { t: "ended", reason });
       await this.dropViewer(ws, meta, CLOSE.normal, "the session ended", false);
@@ -302,7 +357,9 @@ export class TerminalRelay extends DurableObject<Env> {
     }
   }
 
-  private async mint(ticket: { role: "host" } | ({ role: "view" } & ViewerGrant)): Promise<string> {
+  private async mint(
+    ticket: { role: "host" } | { role: "line" } | ({ role: "view" } & ViewerGrant),
+  ): Promise<string> {
     const key = randomTicket();
     await this.ctx.storage.put(TICKET_PREFIX + key, {
       ...ticket,

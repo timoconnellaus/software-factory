@@ -156,20 +156,33 @@ export function Planning({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
-/** Re-reads the planning view (and the item, for its gates) whenever the engine says it changed. */
+/** How often the website's Planning tab re-reads while visible, at first and at most. */
+const PLANNING_REREAD_MS = 15_000;
+const PLANNING_REREAD_MAX_MS = 120_000;
+
+/**
+ * Re-reads the planning view while the tab is visible: every 15 s, backing off to 2 minutes while
+ * nothing changes, back to 15 s on a change. Only the planning read: the item's own query already
+ * polls. The website's work pages are being removed (ADR 0610), and the desktop app hears
+ * `planning.changed` on its ClientHub socket, so the website keeps no stream open (spec 44 PR 3).
+ */
 function useLive(workItemId: string) {
   const queryClient = useQueryClient();
   useEffect(() => {
-    if (typeof EventSource === "undefined") return;
-    const source = new EventSource(`/api/work/${workItemId}/planning/live`);
-    const changed = () => {
-      void queryClient.invalidateQueries({ queryKey: ["workItem", workItemId] });
+    const key = ["workItem", workItemId, "planning"];
+    let wait = PLANNING_REREAD_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        const was = JSON.stringify(queryClient.getQueryData(key) ?? null);
+        await queryClient.refetchQueries({ queryKey: key, exact: true }).catch(() => {});
+        const now = JSON.stringify(queryClient.getQueryData(key) ?? null);
+        wait = now !== was ? PLANNING_REREAD_MS : Math.min(wait * 2, PLANNING_REREAD_MAX_MS);
+      }
+      timer = setTimeout(tick, wait);
     };
-    source.addEventListener("changed", changed);
-    return () => {
-      source.removeEventListener("changed", changed);
-      source.close();
-    };
+    timer = setTimeout(tick, wait);
+    return () => clearTimeout(timer);
   }, [workItemId, queryClient]);
 }
 
