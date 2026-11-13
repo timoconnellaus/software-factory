@@ -140,5 +140,6 @@ function unavailableGitHub(): FactoryServices["github"] {
     checkRunDetail: no,
     revertPullRequest: no,
     commentOnPullRequest: no,
+    closePullRequest: no,
   };
 }

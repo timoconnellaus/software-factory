@@ -55,14 +55,14 @@ describe("revertVerdict", () => {
 
 describe("exactInverse", () => {
   const repo = { installationId: "1", owner: "o", repo: "r" };
-  const ctx = (trees: Record<string, Record<string, string>>, changed: Record<string, string[]>) =>
+  // before → merge (changes a.ts); main's base for the PR still has the merge's a.ts.
+  const ctx = (trees: Record<string, Record<string, string>>, prPaths: string[]) =>
     ({
       services: {
         github: {
-          commitParents: async (_r: unknown, sha: string) =>
-            sha === "merge" ? ["before"] : sha === "revert" ? ["mainHead"] : [],
-          compareFiles: async (_r: unknown, base: string, head: string) =>
-            (changed[`${base}..${head}`] ?? []).map((path) => ({ path, status: "modified" })),
+          commitParents: async (_r: unknown, sha: string) => (sha === "merge" ? ["before"] : []),
+          compareFiles: async () => [{ path: "a.ts", status: "modified" }],
+          changedPaths: async () => ({ mergeBase: "base", paths: prPaths, complete: true }),
           pathEntries: async (_r: unknown, sha: string, paths: string[]) =>
             Object.fromEntries(
               paths
@@ -72,32 +72,35 @@ describe("exactInverse", () => {
         },
       },
     }) as unknown as Parameters<typeof exactInverse>[0];
-  const changed = { "before..merge": ["a.ts"], "mainHead..revert": ["a.ts"] };
+  const exact = {
+    before: { "a.ts": "old" },
+    merge: { "a.ts": "new" },
+    base: { "a.ts": "new" },
+    revert: { "a.ts": "old" },
+  };
 
-  it("holds when the revert puts back what was there before the merge, and touches nothing else", async () => {
-    const trees = { before: { "a.ts": "old" }, revert: { "a.ts": "old" } };
-    expect(await exactInverse(ctx(trees, changed), repo, "merge", "revert")).toBe(true);
+  it("holds when the PR's whole diff puts back what was there before the merge, and nothing else", async () => {
+    expect(await exactInverse(ctx(exact, ["a.ts"]), repo, "main", "merge", "revert")).toBe(true);
   });
 
-  it("fails when a path differs, or the revert changes another path", async () => {
+  it("fails on a different result, another path in the PR, or a base main changed since", async () => {
     expect(
       await exactInverse(
-        ctx({ before: { "a.ts": "old" }, revert: { "a.ts": "new" } }, changed),
+        ctx({ ...exact, revert: { "a.ts": "evil" } }, ["a.ts"]),
         repo,
+        "main",
         "merge",
         "revert",
       ),
     ).toBe(false);
+    expect(await exactInverse(ctx(exact, ["a.ts", "b.ts"]), repo, "main", "merge", "revert")).toBe(
+      false,
+    );
     expect(
       await exactInverse(
-        ctx(
-          { before: { "a.ts": "old" }, revert: { "a.ts": "old" } },
-          {
-            ...changed,
-            "mainHead..revert": ["a.ts", "b.ts"],
-          },
-        ),
+        ctx({ ...exact, base: { "a.ts": "newer" } }, ["a.ts"]),
         repo,
+        "main",
         "merge",
         "revert",
       ),

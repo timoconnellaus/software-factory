@@ -744,6 +744,10 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const m = made as NonNullable<typeof made>;
       return { number: m.number, branch: m.headRefName, headSha: m.headRefOid, url: m.url };
     },
+    async closePullRequest(repo, number) {
+      const r = await api(repo, "PATCH", `/pulls/${number}`, { state: "closed" });
+      if (r.status !== 200) fail(`close PR #${number}`, r);
+    },
     async commentOnPullRequest(repo, number, body) {
       const r = await api(repo, "POST", `/issues/${number}/comments`, {
         body: body.slice(0, 60_000),

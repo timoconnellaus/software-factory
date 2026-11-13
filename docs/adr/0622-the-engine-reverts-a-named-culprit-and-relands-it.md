@@ -15,17 +15,20 @@ and [ADR 0621](0621-a-culprit-is-proven-or-named-never-guessed.md).
    marked as a repair (it lands while the line is stopped, ahead of held work), verified like any
    attached PR. Its merge gate is a person's, and the episode's audience gets a phone push
    ("needs you", decision 4).
-4. **Claimed before GitHub is asked.** `mainRed.revert`'s first call commits a claim, unique per
-   culprit and episode, so a cron pass and a person can't both open a revert PR; its next call asks
-   GitHub, or, when a claim was asked and not recorded, takes the revert PR GitHub already opened
-   (`revert-<pr>-…`). GitHub refusing (a conflict) is recorded once (`failed`), an incident is
+4. **Claimed before GitHub is asked.** `mainRed.revert` runs in three committed steps: a claim,
+   unique per culprit and episode; a lease to ask GitHub (`calling`, one caller at a time, taken
+   over only once it expires, doubling each try, three tries at most); then, carrying that try,
+   the call to GitHub, or, for a try that died after GitHub answered, the revert PR GitHub already
+   opened, found by the branch it named, and only from this repository, by the App, into the
+   default branch (never a fork's look-alike). GitHub refusing (a conflict) is recorded once (`failed`), an incident is
    opened and the owner told; it is not tried again for the episode. A revert whose item ends
    without merging is closed (`abandoned`). Whether GitHub's PR is the exact inverse of the
-   culprit's merge is checked in code and recorded (`exact_inverse`), never taken from input.
+   culprit's merge is checked in code from the PR's whole diff against its base on the default
+   branch, and recorded (`exact_inverse`), never taken from input; the item says when it isn't.
    Text the App posts (the revert PR, the reland comment, posted once after the call commits) is
    made inert: no mention, link or closing keyword. A merged revert is never reverted by the
-   babysitter, there is no "Reland: Revert …", and an original relands at most once: after that the
-   owner decides.
+   babysitter, there is no "Reland: Revert …", and a chain relands at most once (a reland carries its
+   original's root): after that the owner decides. An abandoned revert's PR is closed on GitHub.
 5. **Who makes it, when.** The babysitter, from the minute cron, once the episode is 30 minutes old
    and no other repair is open; a person may ask at any time. One revert per culprit
    (`core_reverts`).

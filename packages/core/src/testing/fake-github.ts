@@ -751,12 +751,18 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         title: input.title,
         state: "open",
         body: input.body,
-        author: FAKE_APP.slug,
+        author: `${FAKE_APP.slug}[bot]`,
         draft: false,
       });
       state.reverts = { ...(state.reverts ?? {}), [number]: input.number };
       await save(r, state);
       return { number, branch, headSha, url: pullUrl(r, number) };
+    },
+    async closePullRequest(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (pull && pull.state === "open") pull.state = "closed";
+      await save(r, state);
     },
     async commentOnPullRequest(r, number, body) {
       const state = await load(r);

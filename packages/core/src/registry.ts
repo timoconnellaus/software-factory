@@ -198,6 +198,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.mainRedAttribute,
   revert.mainRedRevert,
   revert.mainRedReland,
+  revert.mainRedCloseRevert,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
   babysit.babysitWake,

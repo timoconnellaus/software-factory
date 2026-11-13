@@ -46,49 +46,59 @@ function babysitterOrPerson(ctx: HandlerContext): "agent" | "person" {
   throw new OperationError("forbidden", "only a person or the babysitter reverts a culprit");
 }
 
+/** Tries at GitHub before the revert is given up and a person told. */
+const MAX_ATTEMPTS = 3;
+/** A caller's hold on asking GitHub; doubled per try, so one that keeps dying backs off. */
+const LEASE_MS = 2 * 60_000;
+
 /**
- * Whether GitHub's revert PR is the exact inverse of the culprit's merge (review of #178): on every
- * path the merge changed, the revert's head has what the merge's first parent had, and the revert
- * changes nothing else. revertVerdict's "the engine's unchanged revert" is this, never the input.
+ * Whether GitHub's revert PR is the exact inverse of the culprit's merge (review of #178): the PR's
+ * whole diff against its base on the default branch touches exactly the paths the merge changed;
+ * at that base each of them still had the merge's content, and the PR's head puts back what the
+ * merge's first parent had. revertVerdict's "the engine's unchanged revert" is this, never input.
  */
 export async function exactInverse(
   ctx: HandlerContext,
   repo: RepoRef,
+  defaultBranch: string,
   mergeSha: string,
   revertHead: string,
 ): Promise<boolean> {
   const github = ctx.services.github;
-  const [[before], [revertBase]] = await Promise.all([
-    github.commitParents(repo, mergeSha),
-    github.commitParents(repo, revertHead),
-  ]);
-  if (!before || !revertBase) return false;
-  const [culprit, revert] = await Promise.all([
+  const [before] = await github.commitParents(repo, mergeSha);
+  if (!before) return false;
+  const [culprit, pr] = await Promise.all([
     github.compareFiles(repo, before, mergeSha),
-    github.compareFiles(repo, revertBase, revertHead),
+    github.changedPaths(repo, defaultBranch, revertHead),
   ]);
-  const paths = culprit.map((f) => f.path);
-  if (paths.length === 0 || paths.length >= 300 || revert.length >= 300) return false;
-  if (revert.some((f) => !paths.includes(f.path))) return false;
-  const [atBefore, atRevert] = await Promise.all([
+  const paths = [...new Set(culprit.map((f) => f.path))].sort();
+  if (!pr.complete || !pr.mergeBase || paths.length === 0 || culprit.length >= 300) return false;
+  if (pr.paths.length !== paths.length || pr.paths.some((p) => !paths.includes(p))) return false;
+  const [atBefore, atMerge, atBase, atRevert] = await Promise.all([
     github.pathEntries(repo, before, paths),
+    github.pathEntries(repo, mergeSha, paths),
+    github.pathEntries(repo, pr.mergeBase, paths),
     github.pathEntries(repo, revertHead, paths),
   ]);
-  return paths.every(
-    (p) => JSON.stringify(atBefore[p] ?? null) === JSON.stringify(atRevert[p] ?? null),
-  );
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  return paths.every((p) => same(atBase[p], atMerge[p]) && same(atRevert[p], atBefore[p]));
 }
 
 export const mainRedRevert = defineOperation({
   name: "mainRed.revert",
   description:
-    "Revert the landing that turned a repository's default branch red (spec 53 §5, decision 2). Only for the open episode's culprit as proven (the red reproduced) or named by a person: never a guess, an agent's naming, or (for the babysitter) a revert itself. In two calls: the first claims the revert for this culprit and episode (`claimed`); the next asks GitHub to revert its merge commit (the exact inverse, no code written), or finds the revert PR GitHub already opened, and adds it as an attached repair with a person's merge gate (`opened`), telling the episode's audience. A GitHub refusal is recorded once (`failed`), with an incident, and not tried again for the episode. The babysitter acts once the episode is 30 minutes old with no other repair open; a person at any time.",
+    "Revert the landing that turned a repository's default branch red (spec 53 §5, decision 2). Only for the open episode's culprit as proven (the red reproduced) or named by a person: never a guess, an agent's naming, or (for the babysitter) a revert itself. In three calls, each committed before the next: the first claims the revert for this culprit and episode (`claimed`); the next takes the lease to ask GitHub (`calling`, with its `attempt`); the one carrying that attempt asks GitHub to revert the merge commit (no code written), or finds the revert PR GitHub already opened from this repository, as the App, into the default branch, and adds it as an attached repair with a person's merge gate (`opened`), telling the episode's audience. A GitHub refusal, or three tries that died, is recorded once (`failed`), with an incident, and not tried again for the episode. The babysitter acts once the episode is 30 minutes old with no other repair open; a person at any time.",
   risk: "write",
   actors: ["human", "agent"],
   permission: "approver",
-  input: z.object({ workItemId }),
+  input: z.object({
+    workItemId,
+    /** The try this caller holds the lease for (from the `calling` answer). */
+    attempt: z.number().int().min(1).optional(),
+  }),
   output: z.object({
-    status: z.enum(["claimed", "opened", "failed"]),
+    status: z.enum(["claimed", "calling", "opened", "failed"]),
+    attempt: z.number().nullable(),
     revertWorkItemId: z.string().nullable(),
     prNumber: z.number().nullable(),
   }),
@@ -134,7 +144,7 @@ export const mainRedRevert = defineOperation({
       .where("original_work_item_id", "=", w.id)
       .where("red_since", "=", health.red_since)
       .executeTakeFirst();
-    if (claim && claim.status !== "claimed") {
+    if (claim && claim.status !== "claimed" && claim.status !== "calling") {
       throw new OperationError("conflict", `#${w.number}'s revert is ${claim.status}`);
     }
     if (!claim) {
@@ -152,6 +162,12 @@ export const mainRedRevert = defineOperation({
           .executeTakeFirst();
         if (repair) throw new OperationError("conflict", "a repair is already under way");
       }
+      // The chain's root: a culprit that is itself a reland carries its original's root.
+      const relandOf = await ctx.db
+        .selectFrom("core_reverts")
+        .select("root_work_item_id")
+        .where("reland_work_item_id", "=", w.id)
+        .executeTakeFirst();
       // Committed before GitHub is asked; the unique index refuses a second claim.
       ctx.write(
         ctx.db.insertInto("core_reverts").values({
@@ -161,6 +177,10 @@ export const mainRedRevert = defineOperation({
           project_id: project.id,
           red_since: health.red_since,
           status: "claimed",
+          attempts: 0,
+          lease_until: null,
+          revert_branch: null,
+          root_work_item_id: relandOf?.root_work_item_id ?? w.id,
           revert_pr_number: null,
           revert_work_item_id: null,
           exact_inverse: null,
@@ -171,7 +191,44 @@ export const mainRedRevert = defineOperation({
         }),
       );
       ctx.change({ entity: "work_item", id: w.id, after: { revertClaimed: true, by } });
-      return { status: "claimed" as const, revertWorkItemId: null, prNumber: null };
+      return { status: "claimed" as const, attempt: null, revertWorkItemId: null, prNumber: null };
+    }
+
+    // The lease to ask GitHub: one caller at a time, taken over only once it has expired.
+    if (_input.attempt === undefined) {
+      if (claim.status === "calling" && claim.lease_until && claim.lease_until > ctx.now) {
+        throw new OperationError("conflict", `#${w.number}'s revert is being asked of GitHub`);
+      }
+      if (claim.attempts >= MAX_ATTEMPTS) {
+        return giveUp(
+          ctx,
+          w,
+          claim.id,
+          health.audience,
+          repository.default_branch,
+          `${MAX_ATTEMPTS} tries at GitHub didn't finish`,
+        );
+      }
+      const attempt = claim.attempts + 1;
+      ctx.write(
+        ctx.db
+          .updateTable("core_reverts")
+          .set({
+            status: "calling",
+            attempts: attempt,
+            lease_until: new Date(
+              Date.parse(ctx.now) + LEASE_MS * 2 ** (attempt - 1),
+            ).toISOString(),
+            updated_at: ctx.now,
+          })
+          .where("id", "=", claim.id)
+          .where("attempts", "=", claim.attempts),
+      );
+      ctx.guardChanged("no other caller took the lease");
+      return { status: "calling" as const, attempt, revertWorkItemId: null, prNumber: null };
+    }
+    if (claim.status !== "calling" || claim.attempts !== _input.attempt) {
+      throw new OperationError("conflict", `#${w.number}'s revert lease is another caller's`);
     }
 
     if (!ctx.scope.policy) {
@@ -179,10 +236,18 @@ export const mainRedRevert = defineOperation({
     }
     const repo = await repoRef(ctx, repository);
     const github = ctx.services.github;
-    // Asked before and not recorded (a commit that failed after GitHub's answer): GitHub's revert
-    // branch is `revert-<pr>-<head branch>`; take that PR rather than open a second one.
-    const prior = (await github.listOpenPullRequests(repo)).find((p) =>
-      p.head.ref.startsWith(`revert-${w.pr_number}-`),
+    // Asked before and not recorded (a call that died after GitHub's answer): GitHub's own revert
+    // PR, from this repository (never a fork), by the App, into the default branch, on the branch
+    // GitHub named when that is known; take it rather than open a second one.
+    const own = `${repo.owner}/${repo.repo}`.toLowerCase();
+    const prior = (await github.listOpenPullRequests(repo)).find(
+      (p) =>
+        p.head.repo?.toLowerCase() === own &&
+        p.author === `${github.app.slug}[bot]` &&
+        p.base.ref === repository.default_branch &&
+        (claim.revert_branch
+          ? p.head.ref === claim.revert_branch
+          : p.head.ref.startsWith(`revert-${w.pr_number}-`)),
     );
     let made: { number: number; branch: string; headSha: string; url: string };
     if (prior) {
@@ -204,32 +269,23 @@ export const mainRedRevert = defineOperation({
         });
       } catch (error) {
         const why = (error instanceof Error ? error.message : String(error)).slice(0, 500);
-        // Not tried again for this episode: recorded, an incident opened, the owner told.
-        ctx.write(
-          ctx.db
-            .updateTable("core_reverts")
-            .set({
-              status: "failed",
-              reason: `GitHub couldn't revert: ${why}`,
-              updated_at: ctx.now,
-            })
-            .where("id", "=", claim.id)
-            .where("status", "=", "claimed"),
+        return giveUp(
+          ctx,
+          w,
+          claim.id,
+          health.audience,
+          repository.default_branch,
+          `GitHub couldn't revert: ${why}`,
         );
-        await openIncident(ctx, {
-          kind: "manual",
-          reason: `The factory couldn't revert #${w.number} after it turned ${repository.default_branch} red: ${why}`,
-          runId: null,
-        });
-        tell(ctx, health.audience, {
-          event: "main.revert",
-          workItemId: w.id,
-          title: `The factory couldn't revert #${w.number}: ${repository.default_branch} stays red until a person repairs it.`,
-        });
-        return { status: "failed" as const, revertWorkItemId: null, prNumber: null };
       }
     }
-    const exact = await exactInverse(ctx, repo, w.merge_sha, made.headSha).catch(() => false);
+    const exact = await exactInverse(
+      ctx,
+      repo,
+      repository.default_branch,
+      w.merge_sha,
+      made.headSha,
+    ).catch(() => false);
     const title = plainTitle(`Revert “${cleanTitle(w.title)}”`).slice(0, 200);
     const created = createWorkItem(ctx, {
       project,
@@ -270,13 +326,16 @@ export const mainRedRevert = defineOperation({
           status: "opened",
           revert_pr_number: made.number,
           revert_work_item_id: created.id,
+          revert_branch: made.branch,
           exact_inverse: exact ? 1 : 0,
+          lease_until: null,
           updated_at: ctx.now,
         })
         .where("id", "=", claim.id)
-        .where("status", "=", "claimed"),
+        .where("status", "=", "calling")
+        .where("attempts", "=", _input.attempt),
     );
-    ctx.guardChanged("the revert is still claimed");
+    ctx.guardChanged("this caller still holds the lease");
     // Decision 4: a phone push when a revert needs a person (its merge gate is theirs).
     tell(ctx, health.audience, {
       event: "main.revert",
@@ -288,9 +347,43 @@ export const mainRedRevert = defineOperation({
       id: w.id,
       after: { revertedBy: created.id, revertPr: made.number, exactInverse: exact, by },
     });
-    return { status: "opened" as const, revertWorkItemId: created.id, prNumber: made.number };
+    return {
+      status: "opened" as const,
+      attempt: _input.attempt,
+      revertWorkItemId: created.id,
+      prNumber: made.number,
+    };
   },
 });
+
+/** Not tried again for this episode: recorded once, an incident opened, the owner told. */
+async function giveUp(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  claimId: string,
+  audience: string,
+  branch: string,
+  why: string,
+) {
+  ctx.write(
+    ctx.db
+      .updateTable("core_reverts")
+      .set({ status: "failed", reason: why, lease_until: null, updated_at: ctx.now })
+      .where("id", "=", claimId)
+      .where("status", "in", ["claimed", "calling"]),
+  );
+  await openIncident(ctx, {
+    kind: "manual",
+    reason: `The factory couldn't revert #${w.number} after it turned ${branch} red: ${why}`,
+    runId: null,
+  });
+  tell(ctx, audience, {
+    event: "main.revert",
+    workItemId: w.id,
+    title: `The factory couldn't revert #${w.number}: ${branch} stays red until a person repairs it.`,
+  });
+  return { status: "failed" as const, attempt: null, revertWorkItemId: null, prNumber: null };
+}
 
 function tell(
   ctx: HandlerContext,
@@ -333,6 +426,7 @@ export const mainRedReland = defineOperation({
       .select([
         "core_reverts.id as revert_id",
         "core_reverts.status",
+        "core_reverts.root_work_item_id",
         "o.id",
         "o.number",
         "o.title",
@@ -357,10 +451,11 @@ export const mainRedReland = defineOperation({
         .select("id")
         .where("revert_work_item_id", "=", row.id)
         .executeTakeFirst(),
+      // core_reverts_root_idx: relands anywhere in this chain (a reland's reland counts too).
       ctx.db
         .selectFrom("core_reverts")
         .select("id")
-        .where("original_work_item_id", "=", row.id)
+        .where("root_work_item_id", "=", row.root_work_item_id)
         .where("reland_work_item_id", "is not", null)
         .limit(MAX_RELANDS)
         .execute(),
@@ -424,6 +519,50 @@ export const mainRedReland = defineOperation({
       after: { relandWorkItemId: relandId, revertedBy: revert.id, skip },
     });
     return { relandWorkItemId: relandId, reason: skip };
+  },
+});
+
+export const mainRedCloseRevert = defineOperation({
+  name: "mainRed.closeRevert",
+  description:
+    "A factory revert whose work item ended without merging (cancelled, failed or rejected): its PR on GitHub is closed and the revert is marked abandoned, so nothing reads it again (spec 53 §5). The babysitter only.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ closed: z.boolean() }),
+  async handler(_input, ctx) {
+    if (ctx.actor.type !== BABYSITTER.type || ctx.actor.id !== BABYSITTER.id) {
+      throw new OperationError("forbidden", "only the babysitter closes a revert");
+    }
+    const revert = requireWorkItem(ctx);
+    if (!["cancelled", "failed", "rejected"].includes(revert.status)) {
+      throw new OperationError("conflict", `the revert #${revert.number} hasn't ended unmerged`);
+    }
+    // core_reverts_revert_idx.
+    const row = await ctx.db
+      .selectFrom("core_reverts")
+      .select(["id", "status", "revert_pr_number"])
+      .where("revert_work_item_id", "=", revert.id)
+      .executeTakeFirst();
+    if (row?.status !== "opened") return { closed: false };
+    if (row.revert_pr_number) {
+      const repo = await repoRef(ctx, requireRepository(ctx));
+      await ctx.services.github.closePullRequest(repo, row.revert_pr_number);
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_reverts")
+        .set({
+          status: "abandoned",
+          reason: `the revert ended ${revert.status}`,
+          updated_at: ctx.now,
+        })
+        .where("id", "=", row.id)
+        .where("status", "=", "opened"),
+    );
+    ctx.change({ entity: "work_item", id: revert.id, after: { revertAbandoned: true } });
+    return { closed: true };
   },
 });
 

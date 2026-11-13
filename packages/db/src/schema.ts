@@ -1005,7 +1005,11 @@ export interface CoreRevertsTable {
   repository_id: string;
   project_id: string;
   red_since: string;
-  status: "claimed" | "opened" | "failed" | "abandoned" | "relanded";
+  status: "claimed" | "calling" | "opened" | "failed" | "abandoned" | "relanded";
+  attempts: Generated<number>;
+  lease_until: string | null;
+  revert_branch: string | null;
+  root_work_item_id: string;
   revert_pr_number: number | null;
   revert_work_item_id: string | null;
   exact_inverse: number | null;

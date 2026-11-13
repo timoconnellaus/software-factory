@@ -3,6 +3,7 @@
 // repair through its own gate; once merged, "Reland: <title>" joins the backlog.
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
+import { BABYSITTER } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import worker, { repairRedMain } from "../src/index.ts";
 import {
@@ -222,21 +223,45 @@ describe("the engine's revert (spec 53 §5)", () => {
     expect(again.workItemId === revertId || again.outcome === "denied").toBe(true);
   });
 
-  it("a claim asked of GitHub but not recorded finds GitHub's revert PR instead of opening another", async () => {
+  it("a claim asked of GitHub but not recorded finds GitHub's revert PR instead of opening another; a fork's look-alike is never adopted", async () => {
     const w = await world();
     const a = await provenCulprit(w, "Asked twice");
     await backdate(w, 31);
-    // The claim commits; then GitHub made the revert, and the call that asked lost track of it.
-    expect(
-      await ok<{ status: string }>("mainRed.revert", { workItemId: a.id }, w.human),
-    ).toMatchObject({ status: "claimed" });
-    await github.revertPullRequest(w.repo, { number: a.pr, title: "Revert", body: "" });
+    const revert = (input: Record<string, unknown>) =>
+      ok<{ status: string; attempt: number | null }>(
+        "mainRed.revert",
+        { workItemId: a.id, ...input },
+        w.human,
+      );
+    expect(await revert({})).toMatchObject({ status: "claimed" });
+    const lease = await revert({});
+    expect(lease).toMatchObject({ status: "calling", attempt: 1 });
+    // Another caller while the lease holds is refused: one caller asks GitHub at a time.
+    await expect(call("mainRed.revert", { workItemId: a.id }, w.human)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    // A fork's PR named like GitHub's revert branch, and GitHub's own revert, made by a call that
+    // lost track of it.
+    await github.openOutsidePull(w.repo, {
+      branch: `revert-${a.pr}-evil`,
+      title: "Revert",
+      body: "",
+      fork: "someone/software-factory",
+    });
+    const real = await github.revertPullRequest(w.repo, {
+      number: a.pr,
+      title: "Revert",
+      body: "",
+    });
     const pulls = (await github.state(w.repo)).pulls.length;
-    expect(
-      await ok<{ status: string }>("mainRed.revert", { workItemId: a.id }, w.human),
-    ).toMatchObject({ status: "opened" });
+    const opened = await ok<{ status: string; prNumber: number }>(
+      "mainRed.revert",
+      { workItemId: a.id, attempt: lease.attempt },
+      w.human,
+    );
+    expect(opened).toMatchObject({ status: "opened", prNumber: real.number });
     expect((await github.state(w.repo)).pulls.length).toBe(pulls);
-    // A second claim for the same culprit and episode is refused.
+    // Done: a further call is refused.
     await expect(call("mainRed.revert", { workItemId: a.id }, w.human)).rejects.toMatchObject({
       code: "conflict",
     });
@@ -271,6 +296,77 @@ describe("the engine's revert (spec 53 §5)", () => {
     );
     await repairRedMain(env);
     expect(await revertOf(a.id)).toMatchObject({ status: "abandoned", reland_work_item_id: null });
+    // Its PR is closed on GitHub too.
+    const row = await first<{ pr_number: number }>(
+      "SELECT pr_number FROM core_work_items WHERE id = ?",
+      made?.revert_work_item_id,
+    );
+    const pull = (await github.state(w.repo)).pulls.find((p) => p.number === row?.pr_number);
+    expect(pull?.state).toBe("closed");
+  });
+
+  it("relands once per chain: a reland reverted again isn't relanded again, and a revert is never relanded", async () => {
+    const w = await world();
+    const mk = async (title: string) => {
+      const c = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { projectId: w.projectId, title },
+        w.human,
+      );
+      await env.DB.prepare("UPDATE core_work_items SET status = 'done' WHERE id = ?")
+        .bind(c.workItemId)
+        .run();
+      return c.workItemId;
+    };
+    const item = await first<{ repository_id: string }>(
+      "SELECT repository_id FROM core_work_items WHERE project_id = ? AND repository_id IS NOT NULL",
+      w.projectId,
+    );
+    const repo = item?.repository_id ?? (await mk("seed"));
+    const revertRow = (original: string, root: string, revert: string, reland: string | null) =>
+      env.DB.prepare(
+        `INSERT INTO core_reverts (id, original_work_item_id, repository_id, project_id, red_since,
+           status, root_work_item_id, revert_work_item_id, reland_work_item_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+        .bind(
+          `rvt_${uid("")}`,
+          original,
+          repo,
+          w.projectId,
+          new Date().toISOString(),
+          reland ? "relanded" : "opened",
+          root,
+          revert,
+          reland,
+          new Date().toISOString(),
+          new Date().toISOString(),
+        )
+        .run();
+    // X was reverted (R1) and relanded as X2; X2 was reverted too (R2): its root is X.
+    const x = await mk("Breaks main");
+    const r1 = await mk("Revert X");
+    const x2 = await mk("Reland: Breaks main");
+    const r2 = await mk("Revert X2");
+    await revertRow(x, x, r1, x2);
+    await revertRow(x2, x, r2, null);
+    const again = await ok<{ relandWorkItemId: string | null; reason: string | null }>(
+      "mainRed.reland",
+      { workItemId: r2 },
+      BABYSITTER,
+    );
+    expect(again).toMatchObject({ relandWorkItemId: null });
+    expect(again.reason).toMatch(/already relanded once/);
+    // A revert's own revert: no "Reland: Revert …".
+    const r3 = await mk("Revert of a revert");
+    await revertRow(r1, r1, r3, null);
+    const ofRevert = await ok<{ relandWorkItemId: string | null; reason: string | null }>(
+      "mainRed.reland",
+      { workItemId: r3 },
+      BABYSITTER,
+    );
+    expect(ofRevert).toMatchObject({ relandWorkItemId: null });
+    expect(ofRevert.reason).toMatch(/itself a revert/);
   });
 
   it("never reverts a guess: a candidate not yet proven, or a culprit an agent named", async () => {
