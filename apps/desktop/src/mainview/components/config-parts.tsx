@@ -1,9 +1,8 @@
 // The parts the Policy, Agents and Workflows pages share (spec 41, slice 5): which project's config
 // they show, the footer with its version and where it is changed, and the changes that wait for an
-// approver. Policy is edited here (ADR 0610): a save that loosens waits as a pending action, shown
-// with the engine's classified impact, and an approver decides it with Touch ID
-// (`approval.decide` through `decide()`). Workflows and agents still link to the website until
-// they are edited here too.
+// approver. The config is edited here (ADR 0610): a save that loosens waits as a pending action,
+// shown with the engine's classified impact, and an approver decides it with Touch ID
+// (`approval.decide` through `decide()`).
 import type { ConfigView, Project } from "@software-factory/client/ops";
 import { Button } from "@software-factory/ui/components/button";
 import {
@@ -18,14 +17,13 @@ import { type QueryClient, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { configProject, versionLine } from "../lib/config-view.ts";
 import { useDecide } from "../lib/decisions.tsx";
-import { ExternalLink, WEBSITE_URL } from "../lib/external.tsx";
 import { configQuery } from "../lib/factory-queries.ts";
 import { read } from "../lib/op.ts";
 import { projectsQuery } from "../lib/queries.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useProjects } from "../lib/session.ts";
 import { getViewState } from "../lib/view-state.ts";
-import { CannotApproveYet } from "./cannot-approve.tsx";
+import { CannotApproveYet, useCanDecide } from "./cannot-approve.tsx";
 import { ChangeDiff, ImpactList } from "./config-editor.tsx";
 import { Empty } from "./data-table.tsx";
 import { type ReadQuery, Reads, readState } from "./read-state.tsx";
@@ -53,10 +51,6 @@ export async function configProjectId(
   const orgId = orgScope(context.session, getViewState().orgId);
   return configProject(projects, orgId, chosen).project?.id ?? null;
 }
-
-/** The website page where a project's config is changed. */
-export const configUrl = (projectId: string, page: "settings" | "workflows") =>
-  `${WEBSITE_URL}/projects/${encodeURIComponent(projectId)}/${page}`;
 
 /** The projects in the rail's org, the chosen one (`?project=`, else the first) and its config. */
 export function useProjectConfig(chosen: string | undefined) {
@@ -165,6 +159,8 @@ function PendingChange({
   projectId: string;
 }) {
   const { decide, pending } = useDecide();
+  // A software key's proofs are refused: no Approve or Reject that can only fail (the notice says why).
+  const canDecide = useCanDecide();
   const stale = change.baseVersion !== null && change.baseVersion !== current;
   const policy = change.policy;
   const impact = useQuery({
@@ -199,7 +195,7 @@ function PendingChange({
           <Button
             size="sm"
             onClick={() => decideIt("approved")}
-            disabled={pending !== null}
+            disabled={pending !== null || !canDecide}
             data-testid="pending-approve"
           >
             Approve
@@ -209,7 +205,7 @@ function PendingChange({
           size="sm"
           variant="outline"
           onClick={() => decideIt("rejected")}
-          disabled={pending !== null}
+          disabled={pending !== null || !canDecide}
           data-testid="pending-reject"
         >
           Reject
@@ -235,48 +231,58 @@ function PendingChange({
   );
 }
 
-export function ConfigFooter({
-  config,
-  projectId,
-  page,
-}: {
-  config: ConfigView;
-  projectId: string;
-  page: "settings" | "workflows";
-}) {
-  if (page === "settings")
-    return (
-      <div
-        className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 text-ink-3 text-xs"
-        data-testid="config-footer"
-      >
-        <span>{versionLine(config.current)}</span>
-        <span>Tightening saves at once; loosening waits for an approver.</span>
-        <Link
-          to="/factory/policy"
-          search={{ project: projectId, edit: true }}
-          className="text-ink underline"
-        >
-          History and roll back
-        </Link>
-      </div>
-    );
+export function ConfigFooter({ config, projectId }: { config: ConfigView; projectId: string }) {
   return (
     <div
       className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 text-ink-3 text-xs"
       data-testid="config-footer"
     >
       <span>{versionLine(config.current)}</span>
-      <span>
-        Changing it is a policy change for a person, made on the website: tightening saves at once,
-        loosening waits for an approver.
-      </span>
-      <ExternalLink href={configUrl(projectId, page)} className="text-ink underline">
-        Change workflows and agents on the website
-      </ExternalLink>
+      <span>Tightening saves at once; loosening waits for an approver.</span>
+      <Link
+        to="/factory/policy"
+        search={{ project: projectId, edit: true }}
+        className="text-ink underline"
+      >
+        History and roll back
+      </Link>
     </div>
   );
 }
+
+/** Edit (to `?edit=1`) or Done, in a config page's header. */
+export function EditToggle({
+  from,
+  projectId,
+  editing,
+  label,
+  extra,
+}: {
+  from: "/factory/policy" | "/factory/agents" | "/factory/workflows";
+  projectId: string | undefined;
+  editing: boolean;
+  label: string;
+  extra?: Record<string, string>;
+}) {
+  const here = { ...(projectId ? { project: projectId } : {}), ...extra };
+  return editing ? (
+    <Button size="sm" variant="outline" asChild>
+      <Link to={from} search={here} data-testid="edit-done">
+        Done
+      </Link>
+    </Button>
+  ) : (
+    <Button size="sm" asChild>
+      <Link to={from} search={{ ...here, edit: true }} data-testid="edit-config">
+        {label}
+      </Link>
+    </Button>
+  );
+}
+
+/** A config page's `?edit=` search, as a boolean. */
+export const editSearch = (s: Record<string, unknown>): { edit?: boolean } =>
+  s.edit === true || s.edit === "1" || s.edit === "true" ? { edit: true } : {};
 
 /**
  * What a page shows until its config is there to show: a skeleton while the projects or the config

@@ -282,9 +282,11 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
   } = editor;
   const [open, setOpen] = useState(false);
   if (!dirty) return null;
-  const loosens = preview.data?.impact?.class === "loosens";
-  const invalid = preview.data && !preview.data.valid;
-  const changes = preview.data?.impact?.changes ?? [];
+  // The previous draft's answer is kept while the new one loads: never show or act on it.
+  const fresh = preview.data && !preview.isPlaceholderData ? preview.data : null;
+  const loosens = fresh?.impact?.class === "loosens";
+  const invalid = fresh && !fresh.valid;
+  const changes = fresh?.impact?.changes ?? [];
   return (
     <Panel needsYou className="sticky bottom-3 z-10 gap-2.5 shadow-lg" data-testid="save-bar">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 min-[900px]:gap-2">
@@ -295,6 +297,7 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
           </Chip>
         )}
         {invalid && <Chip tone="amber">Not valid</Chip>}
+        {!fresh && <span className="text-ink-3 text-xs">Classifying…</span>}
         <Button
           size="sm"
           variant="ghost"
@@ -308,7 +311,7 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
         <Button
           size="sm"
           variant="ghost"
-          className="px-2"
+          className="px-2 max-[899px]:hidden"
           onClick={() => setDraft(null)}
           disabled={busy}
         >
@@ -317,7 +320,7 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
         <Button
           size="sm"
           onClick={() => void save()}
-          disabled={busy || moved || !preview.data?.valid}
+          disabled={busy || moved || !fresh?.valid}
           data-testid="config-save"
         >
           {busy ? "Saving…" : loosens ? "Send" : `Save v${currentVersion + 1}`}
@@ -336,7 +339,7 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
         </div>
       )}
       <div className={cn("flex flex-col gap-2", !open && !moved && "max-[899px]:hidden")}>
-        {invalid && <div className="text-[13px]">Not valid: {preview.data?.error}</div>}
+        {invalid && <div className="text-[13px]">Not valid: {fresh?.error}</div>}
         <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
           <ImpactList changes={changes} testId="impact" />
           <ChangeDiff
@@ -352,6 +355,15 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
           aria-label="Why"
           onChange={(e) => setNote(e.target.value)}
         />
+        <Button
+          size="sm"
+          variant="outline"
+          className="w-fit min-[900px]:hidden"
+          onClick={() => setDraft(null)}
+          disabled={busy}
+        >
+          Discard changes
+        </Button>
       </div>
     </Panel>
   );

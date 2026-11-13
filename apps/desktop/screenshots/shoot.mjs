@@ -122,6 +122,14 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: "criteria",
   },
+  // Both kinds of tie: Proven (a person-approved spec) and passed the check triage named.
+  {
+    name: "item-review-proof-triage",
+    path: "/work/wi_13?tab=review&fixture=triage",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  { name: "inbox-merge-triage", path: "/?item=wi_13&fixture=triage", design: "InboxMerge.html" },
   {
     name: "inbox-merge-no-checks",
     path: "/?item=wi_13&fixture=nochecks",
@@ -257,6 +265,15 @@ export const SCREENS = [
   },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
+  // The project's workflows and agents edited in the app (ADR 0610).
+  { name: "workflows-edit", path: "/factory/workflows?edit=1", design: "FactoryWorkflow.html" },
+  {
+    name: "workflows-edit-steps",
+    path: "/factory/workflows?edit=1",
+    design: "FactoryWorkflow.html",
+    scrollTo: "slot-afterVerify",
+  },
+  { name: "agents-edit", path: "/factory/agents?edit=1", design: "FactoryAgents.html" },
   {
     name: "settings-repositories",
     path: "/settings/repositories",

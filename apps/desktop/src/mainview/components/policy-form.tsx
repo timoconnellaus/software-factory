@@ -295,15 +295,58 @@ export function PolicyForm({ editor, orgId }: { editor: ConfigEditor; orgId: str
       </EditSection>
 
       <EditSection
+        title="Spec approval"
+        changed={changed.has("spec") || changed.has("workflowOverrides")}
+      >
+        {org.on ? (
+          <OverrideField
+            org={org}
+            setting={REQUIRED_FROM}
+            label="Needed from"
+            help="Items this size and up get a spec a person approves; smaller ones skip Plan."
+            editor={editor}
+            render={(value, put) => (
+              <Segmented
+                label="Spec needed from"
+                options={SIZES}
+                value={typeof value === "string" ? value : "medium"}
+                onChange={put}
+              />
+            )}
+          />
+        ) : (
+          <EditField
+            label="Needed from"
+            help="Items this size and up get a spec a person approves; smaller ones skip Plan."
+          >
+            <Segmented
+              label="Spec needed from"
+              options={SIZES}
+              value={
+                typeof obj(doc.spec).requiredFrom === "string"
+                  ? (obj(doc.spec).requiredFrom as string)
+                  : "medium"
+              }
+              onChange={(v) =>
+                set((d) => {
+                  d.spec = { ...obj(d.spec), requiredFrom: v };
+                })
+              }
+            />
+          </EditField>
+        )}
+      </EditSection>
+
+      <EditSection
         title="Throughput"
         changed={changed.has("wipLimit") || changed.has("retryLimit")}
       >
         <EditField
-          label="Waiting on you"
+          label="WIP limit"
           help="How many items may wait at your gates before new builds stop."
         >
           <NumberInput
-            label="Waiting on you"
+            label="WIP limit"
             value={num(doc.wipLimit, 5)}
             min={1}
             max={100}
@@ -914,6 +957,12 @@ interface Overridable {
 const RETRY: Overridable = { type: "build", key: "retryLimit", unset: "the stage's default" };
 const CHECKS: Overridable = { type: "checks", key: "requiredChecks", unset: "none" };
 const SECTIONS_SETTING: Overridable = { type: "checks", key: "sections", unset: "every section" };
+const REQUIRED_FROM: Overridable = {
+  type: "interview-planning",
+  key: "requiredFrom",
+  unset: "the stage's default",
+};
+const SIZES = ["small", "medium", "large"] as const;
 
 type OrgWorkflow =
   | { on: false }
@@ -923,6 +972,8 @@ type OrgWorkflow =
       /** The org's value of a setting, and the stage id overrides are keyed by. */
       at: (s: Overridable) => { stageId: string | null; value: unknown };
       loading: boolean;
+      /** The org workflow couldn't be read: say so, never "no stage". */
+      failed: boolean;
     };
 
 /**
@@ -941,7 +992,8 @@ function useOrgWorkflow(orgId: string | null, doc: Doc | null): OrgWorkflow {
   return {
     on: true,
     name: typeof wf.data?.workflow.name === "string" ? wf.data.workflow.name : id,
-    loading: wf.isPending,
+    loading: wf.isPending && !wf.isError,
+    failed: wf.isError,
     at: (s) => {
       const stage = stages.find((x) => x.type === s.type);
       return { stageId: stage?.id ?? null, value: obj(stage?.settings)[s.key] };
@@ -987,31 +1039,34 @@ function OverrideField({
       d.workflowOverrides = all;
     });
   const note = (
-    <span className="text-ink-3 text-xs" data-testid={`override-${setting.key}`}>
-      {org.name} sets {orgValue === undefined ? setting.unset : shown(orgValue)}.{" "}
-      {overridden ? (
-        <>
-          <Chip tone="blue">Overridden here</Chip> A looser value than the org's applies only once
-          an org admin approves it.{" "}
-          <Button
-            size="sm"
-            variant="link"
-            className="h-auto p-0 text-xs"
-            onClick={() => put(undefined)}
-          >
-            Use the org's value
-          </Button>
-        </>
-      ) : (
-        "This project uses the org's value."
+    <div className="flex flex-col items-start gap-1.5" data-testid={`override-${setting.key}`}>
+      <span className="text-ink-3 text-xs">
+        {org.name} sets {orgValue === undefined ? setting.unset : shown(orgValue)}.{" "}
+        {overridden ? (
+          <>
+            <Chip tone="blue">Overridden here</Chip> A looser value than the org's applies only once
+            an org admin approves it.
+          </>
+        ) : (
+          "This project uses the org's value."
+        )}
+      </span>
+      {overridden && (
+        <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
+          Use the org's value
+        </Button>
       )}
-    </span>
+    </div>
   );
   if (!stageId)
     return (
       <EditField label={label} help={org.loading ? "Loading the org's workflow…" : help}>
-        <span className="text-ink-3 text-xs">
-          {org.loading ? "" : `${org.name} has no stage that sets this.`}
+        <span className="text-ink-3 text-xs" data-testid={`override-${setting.key}`}>
+          {org.failed
+            ? "Couldn't read the org's workflow, so this can't be changed here now. Try again later."
+            : org.loading
+              ? ""
+              : `${org.name} has no stage that sets this.`}
         </span>
       </EditField>
     );

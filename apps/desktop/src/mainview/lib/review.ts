@@ -38,7 +38,13 @@ export function verdictChips(p: ParsedPacket): { label: string; status: Status }
   const checks = checkCounts(p);
   const chips: { label: string; status: Status }[] = [
     {
-      label: checks.total ? `Checks ${checks.passed} of ${checks.total}` : "No checks reported",
+      // GitHub's CI, or what the reviewer reported: never the factory's own declared checks, whose
+      // state is the proof chip below ("No checks set up" / "Proven N of M").
+      label: checks.total
+        ? `${checks.source === "ci" ? "CI" : "Checks"} ${checks.passed} of ${checks.total}`
+        : checks.source === "ci"
+          ? "No CI reported"
+          : "No checks reported",
       status: checks.failed ? "failed" : checks.total ? "done" : "idle",
     },
     {
@@ -53,11 +59,21 @@ export function verdictChips(p: ParsedPacket): { label: string; status: Status }
   // prove one, the chip says that instead of "0 of N" (the owner's decision, 2026-11-13).
   const proven = packetProven(p);
   if (proven?.checksSetUp === false) chips.push({ label: "No checks set up", status: "idle" });
-  else if (proven && proven.total > 0) {
-    chips.push({
-      label: `Proven ${proven.proven} of ${proven.total}`,
-      status: proven.proven === proven.total ? "done" : "waiting",
-    });
+  else if (proven) {
+    // Proven counts only ties a person approved; what passed the check triage (an agent) named is
+    // counted apart, never as proven (amended 2026-11-13).
+    if (proven.total > 0) {
+      chips.push({
+        label: `Proven ${proven.proven} of ${proven.total}`,
+        status: proven.proven === proven.total ? "done" : "waiting",
+      });
+    }
+    if (proven.triage && proven.triage.total > 0) {
+      chips.push({
+        label: `Passed the check triage named ${proven.triage.passed} of ${proven.triage.total}`,
+        status: "waiting",
+      });
+    }
   }
   if (p.reviewer) {
     chips.push(

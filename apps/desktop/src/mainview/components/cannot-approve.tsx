@@ -5,9 +5,16 @@ import { Button } from "@software-factory/ui/components/button";
 import { checkForUpdates, SOFTWARE_KEY_TEXT } from "../lib/decisions.tsx";
 import { useDesktopSession } from "../lib/desktop-session.ts";
 
+/**
+ * Whether this Mac can make a presence proof the engine accepts. A software key can't: on the
+ * desktop, approving and rejecting a config change both take a proof (the decidability table).
+ */
+export function useCanDecide(): boolean {
+  return useDesktopSession()?.keyStorage !== "software";
+}
+
 export function CannotApproveYet() {
-  const session = useDesktopSession();
-  if (session?.keyStorage !== "software") return null;
+  if (useCanDecide()) return null;
   return (
     <div
       className="flex flex-wrap items-center gap-2 rounded-lg bg-chip-amber px-3 py-2 text-[13px] text-chip-amber-ink"
