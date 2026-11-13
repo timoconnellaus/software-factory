@@ -177,6 +177,14 @@ describe("the design checks (spec 22 part B)", () => {
       '<svg width="1"/>',
       '<svg xmlns="http://www.w3.org/2000/svg"><text>a\u0001b</text></svg>',
       '<svg xmlns="http://www.w3.org/2000/svg" x="1" x="2"/>',
+      // Review of #169: what XML itself refuses.
+      '<svg xmlns="http://www.w3.org/2000/svg"></svg>trailing',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>a ]]> b</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>&#0;</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>&#xFFFFFFFF;</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="a\u0001"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>\ufffe</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url (https://x)"/></svg>',
     );
     for (const svg of refused) expect(unsafeSvg(svg), svg).not.toBeNull();
     expect(

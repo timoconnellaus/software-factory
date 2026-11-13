@@ -40,6 +40,22 @@ const ORDINARY: [string, string][] = [
   ["Docs", "- [x](https://example.com/docs) is broken"],
   // Follow-up review: an unticked task is a task, and a reference-shaped line with words is text.
   ["Theme", "- [ ] Add dark mode\n- [ ] Follow the system setting"],
+  // Review of #169: words that merely start like an attestation are tasks.
+  [
+    "Tasks",
+    [
+      "Implement dark mode",
+      "Improve startup time",
+      "Investigate the crash",
+      "Website footer is broken",
+      "Mysql migration",
+      "Read replicas for the DB",
+      "This issue tracker link 404s",
+    ]
+      .map((t) => `- [ ] ${t}`)
+      .join("\n"),
+  ],
+  ["One", "- [ ] Implement X"],
   ["API", "[note]: we should drop the v1 API"],
 ];
 

@@ -73,7 +73,9 @@ function templateBox(line: string): boolean {
   const label = (m[2] ?? "").trim();
   return (
     label === "" ||
-    /^(i|i've|i'm|i am|i have|we|we've|my|this (is|isn't|is not|pr|issue)|the (issue|bug|problem) (is|has)|(have|did) you|(yes|confirmed?|agreed?|checked|searched|read)\b)/i.test(
+    // Whole words only (review of #169): "Implement…", "Website…", "Mysql…", "Read replicas…"
+    // and "This issue tracker…" are tasks, not a filer's attestation.
+    /^(?:i|i've|i'm|i am|i have|we|we've|my|this (?:is|isn't|is not)|this (?:pr|issue) (?:is|has|was|does|doesn't)|the (?:issue|bug|problem) (?:is|has)|(?:have|did) you|yes|confirmed?|agreed?|checked|searched|read the)\b/i.test(
       label,
     )
   );

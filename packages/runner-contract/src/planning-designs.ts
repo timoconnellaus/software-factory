@@ -116,6 +116,19 @@ const SVG_ATTRIBUTES = new Set([
 ]);
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+/** A character XML 1.0 allows (Char production). */
+const xmlChar = (c: number) =>
+  c === 0x9 ||
+  c === 0xa ||
+  c === 0xd ||
+  (c >= 0x20 && c <= 0xd7ff) ||
+  (c >= 0xe000 && c <= 0xfffd) ||
+  (c >= 0x10000 && c <= 0x10ffff);
+
+/** Whether text holds a control character (other than tab and line ends) or U+FFFE / U+FFFF. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: finding control characters is the point.
+const badChars = (t: string) => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/.test(t);
+
 /** Why an SVG can't be stored and shown, or null: a tokeniser over an allow-list. */
 export function unsafeSvg(svg: string): string | null {
   const text = svg.trim();
@@ -128,12 +141,18 @@ export function unsafeSvg(svg: string): string | null {
   while (i < text.length) {
     const lt = text.indexOf("<", i);
     const chunk = text.slice(i, lt === -1 ? text.length : lt);
-    // Text holds only escaped characters: the five named entities (exactly) and numeric ones.
+    // Text holds only escaped characters: the five named entities (exactly) and numeric ones
+    // naming a character XML allows.
     if (/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/.test(chunk))
       return "its text has a bare & or an unknown entity";
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: finding control characters is the point.
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(chunk))
-      return "its text has control characters";
+    for (const m of chunk.matchAll(/&#(x[0-9a-fA-F]+|\d+);/g)) {
+      const code = m[1]?.startsWith("x") ? Number.parseInt(m[1].slice(1), 16) : Number(m[1]);
+      if (!xmlChar(code)) return "its text names a character XML doesn't allow";
+    }
+    if (badChars(chunk)) return "its text has control or non-characters";
+    if (chunk.includes("]]>")) return "its text has ]]>";
+    // Nothing but white space after the root (review of #169).
+    if (open.length === 0 && roots > 0 && chunk.trim() !== "") return "it has text after its root";
     if (lt === -1) break;
     if (open.length === 0 && roots > 0) return "it has something after its root";
     tag.lastIndex = lt;
@@ -160,8 +179,9 @@ export function unsafeSvg(svg: string): string | null {
         seen.add(key);
         // No entity or escape can spell something else inside a value (`&#117;rl(`, `\75 rl(`).
         if (/[&\\<]/.test(value)) return "an attribute holds an entity, an escape or markup";
+        if (badChars(value)) return "an attribute holds control or non-characters";
         if (key === "xmlns" && value !== SVG_NS) return "it declares another namespace";
-        if (/url\(/i.test(value) && !/^url\(#[\w-]+\)$/.test(value))
+        if (/url\s*\(/i.test(value) && !/^url\(#[\w-]+\)$/.test(value))
           return "it refers to something outside itself";
       }
       if (open.length === 0 && !seen.has("xmlns"))
