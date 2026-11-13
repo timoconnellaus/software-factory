@@ -1,7 +1,8 @@
 // The readiness pre-check and parking (spec 23, ADR 0304 as amended 2026-11-12). The pre-check is a
 // floor for emptiness, not a judgement of clarity: code can't tell whether a request is clear, and
 // triage (an agent stage) asks what it needs. It parks only an item with nothing to act on (no body
-// and a title of under four words, or a body that is only a template's headings or only a link) or
+// and a title of under four words, or a body that is only a template's headings and checklist,
+// images, or only a link) or
 // an exact duplicate of an open item from the same source, and only when no person released it
 // (intake, MCP, the foreman, autopilots, the improver). A person on the app, the desktop, the phone
 // or the sf CLI is never parked; they get the result as a hint. A parked item stays in the Backlog
@@ -61,23 +62,38 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
   );
 }
 
-/** What's left of a body without template headings, HTML comments, empty checkboxes and links. */
+/**
+ * What's left of a body without template headings, HTML comments, a template's unticked checklist
+ * (`- [ ] I searched existing issues`, box and label: review of #117), checkbox markers, images and
+ * links. A ticked item keeps its words (`- [x] Crashes when saving a 2GB file` is a request), and
+ * `- [x](url)` is a link, not a box (review of #160).
+ */
 function substance(body: string): string {
-  return body
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .split("\n")
-    .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
-    .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s*(\[[ xX]?\]\s*)?/, ""))
-    .join(" ")
-    .replace(/<?https?:\/\/\S+>?/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    body
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .split("\n")
+      .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
+      .filter((l) => !/^\s*([-*+]|\d+[.)])\s+\[ ?\](\s|$)/.test(l))
+      // Reference definitions (`[1]: https://…`) are links.
+      .filter((l) => !/^\s*\[[^\]]+\]:\s*\S+/.test(l))
+      .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s+(\[[xX]\](?=\s|$))?/, ""))
+      .join(" ")
+      // Images, inline (a URL may hold balanced parentheses) or by reference, and HTML images.
+      .replace(/!\[[^\]]*\]\((?:[^()\s]|\([^()]*\))*(?:\s+"[^"]*")?\)/g, " ")
+      .replace(/!\[[^\]]*\]\[[^\]]*\]/g, " ")
+      .replace(/<img\b[^>]*>/gi, " ")
+      .replace(/\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*(?:\s+"[^"]*")?\)/g, "$1")
+      .replace(/<?https?:\/\/\S+>?/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /**
  * The pre-check (spec 23): only what code can know for certain. Nothing to act on is no body and a
- * title of fewer than four words, or a body that is nothing but a template's headings or a link.
+ * title of fewer than four words, or a body that is nothing but a template's headings and checklist,
+ * images or a link.
  * A parent item stands in for a body (a split of approved work). Answers count as body.
  */
 export function precheck(item: {

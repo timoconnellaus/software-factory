@@ -31,7 +31,6 @@ import {
   terminalCallRequestSchema,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
-import { planningHub } from "./planning-hub.ts";
 import { secrets } from "./secrets.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 
@@ -215,30 +214,46 @@ async function planningReply(
     PLANNING_WAIT_MAX_MS,
   );
   const deadline = Date.now() + timeout;
-  let hub: ReturnType<typeof planningHub> | null = null;
-  let seen = 0;
+  type Waited = { due: boolean; yield: boolean; ended: boolean; recheckAt: string | null };
+  // planning.wait (fenced) first. While nothing is due, the wait is in the Worker: every
+  // HELD_POLL_MS it calls planning.peek (a read: no write) with the same idleMs, and evaluates
+  // planning.wait again only when news falls due, the session must yield or has ended, the first
+  // evaluation's recheckAt passes, or the hold ends (spec 44 part A3). No Durable Object is held.
+  let reply = await invokeReply(env, op, input, actor);
   for (;;) {
-    const reply = await invokeReply(env, op, input, actor);
     if (reply.status && reply.status !== 200) return reply;
-    const body = reply.body as {
-      workItemId: string;
-      due: boolean;
-      yield: boolean;
-      ended: boolean;
-      recheckAt: string | null;
-    };
-    const left = deadline - Date.now();
-    if (body.due || body.yield || body.ended || left <= 0) return reply;
-    if (!hub) {
-      hub = planningHub(env, body.workItemId);
-      // Changes before this read were seen by the evaluation above or come after it: evaluate once
-      // more after taking the sequence, so nothing slips between the two.
-      seen = await hub.current();
-      continue;
+    const body = reply.body as Waited;
+    if (body.due || body.yield || body.ended || Date.now() >= deadline) return reply;
+    let recheck = body.recheckAt ? Date.parse(body.recheckAt) : Number.POSITIVE_INFINITY;
+    for (;;) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      await pause(Math.min(HELD_POLL_MS, left, Math.max(0, recheck - Date.now())));
+      if (Date.now() >= recheck) break;
+      const peek = await invokeReply(
+        env,
+        "planning.peek",
+        {
+          jobId,
+          fencingToken,
+          ...(typeof input.cursor === "number" ? { cursor: input.cursor } : {}),
+          ...(typeof input.idleMs === "number" ? { idleMs: input.idleMs } : {}),
+        },
+        actor,
+      );
+      if (peek.status && peek.status !== 200) return peek;
+      const p = peek.body as { dueAt: string | null; yield: boolean; ended: boolean };
+      if (p.yield || p.ended) break;
+      if (p.dueAt) {
+        recheck = Math.min(recheck, Date.parse(p.dueAt));
+        if (Date.now() >= recheck) break;
+      }
     }
-    const recheck = body.recheckAt ? Date.parse(body.recheckAt) - Date.now() : left;
-    const changed = await hub.waitForChange(seen, Math.max(0, Math.min(left, recheck)));
-    if (changed) seen = await hub.current();
+    reply = await invokeReply(env, op, input, actor);
+    const again = reply.body as Waited | undefined;
+    if (reply.status && reply.status !== 200) return reply;
+    if (again && !again.due && !again.yield && !again.ended && Date.now() < deadline) continue;
+    return reply;
   }
 }
 

@@ -4,16 +4,19 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
   resolveScope,
+  SCHEDULER,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
+import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
@@ -139,6 +142,37 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
           .bind(was, job.jobId)
           .run();
       }
+    },
+  },
+  {
+    // Spec 44 part A3: the held planning wait polls planning.peek in the Worker (the session by its
+    // job, the events after the cursor on (work_item_id, id), the open questions), every 3 s.
+    name: "the held planning wait's poll (planning.peek, spec 44)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan the guard" },
+        w.human,
+      );
+      await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+      const c = await channel(env, w.runner.runnerId);
+      let planningJob: { jobId: string; fencingToken: number } | null = null;
+      for (let i = 0; i < 200 && !planningJob; i++) {
+        const { job: got } = await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 1, accepting: true, light: { max: 6, inUse: 0 } },
+        });
+        if (got?.stage === "planning") {
+          planningJob = { jobId: got.jobId, fencingToken: got.lease.fencingToken };
+        } else if (!got) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!planningJob) throw new Error("no planning job");
+      return (await channel(e, w.runner.runnerId)).planning?.(planningJob.jobId, {
+        fencingToken: planningJob.fencingToken,
+        op: "planning.wait",
+        input: { timeoutMs: 3_500 },
+      });
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
@@ -390,6 +424,50 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         .first<string>("work_item_id");
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
+    },
+  },
+  {
+    // Every five minutes: the audit archiver's tick (ADR 0591). With a day recorded 100 days ago,
+    // the days after it are due: each takes its lease, finds the rowid floor with probes, bounds
+    // the window, reads a page and records the (empty) day. Its chunk batches run over real old
+    // rows in audit-archive.test.ts, under the same check.
+    name: "the audit archive's tick",
+    run: async (e) => {
+      const day = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 0, 0, ?, ?, ?)",
+      )
+        .bind(day, "0".repeat(64), "0".repeat(64), new Date().toISOString())
+        .run();
+      return archiveAudit(e, new Date(), { rows: 1_000 });
+    },
+  },
+  {
+    // Polled by an open item's Activity tab: the D1 entries and the item's archived chunks, one
+    // request; then, on demand, the archived entries read back.
+    name: "workItem.timeline, with its archived entries",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      await as(e, "workItem.timeline", { workItemId: item }, w.human);
+      return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
+    },
+  },
+  {
+    // The archiver's health report (only after three stopped ticks, or the tick after): the open
+    // archiver incident on core_incidents_audit_archive_idx.
+    name: "audit.archiveHealth",
+    run: (e) =>
+      as(e, "audit.archiveHealth", { stopped: false }, SCHEDULER as unknown as World["human"]),
+  },
+  {
+    // An org admin's verify of the chain (on demand): the days and their chunks by primary key.
+    name: "audit.verify",
+    run: (e) => {
+      const to = new Date(Date.now() - 95 * 86_400_000).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
     },
   },
   {

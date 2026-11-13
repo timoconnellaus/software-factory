@@ -271,7 +271,10 @@ _Avoid_: API key, PAT
 **Desktop device**
 A Mac running the desktop app, registered by a browser sign-in (ADR 0391): a Secure Enclave key
 plus a desktop token. Its token acts as the person on the `desktop` surface, like a `write` CLI
-token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call).
+token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call). Since
+ADR 0610 the same proof also makes policy decisions there: org workflow and agent saves, org config
+rollbacks and approvals, adopting projects' workflows, approving a looser override, and turning a kill
+switch off. Approving device logins and registering runners stay on the website.
 Listed and revoked on the website.
 _Avoid_: client, install
 
@@ -710,7 +713,10 @@ _Avoid_: PAT, deploy key, user token
 The append-only record of every operation that changed something: actor, origin, gate decision,
 diff. Machine-frequency calls (heartbeats, empty claims, held waits, presence, log batches) are
 recorded only when they change state, and a runner's input is kept as a digest (ADR 0590). Metrics
-are SQL views over it.
+are SQL views over it. **Machine rows** (a runner's, the scheduler's, an intake's or the foreman's
+routine calls, allowed and successful, on a fixed list of operations) move to the **audit archive**
+in R2 after 90 days as a hash chain, read back by the timeline and checked by `audit.verify`;
+everything else stays in D1 forever (ADR 0591).
 _Avoid_: log, history, event store, analytics
 
 **Outbox**
