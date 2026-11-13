@@ -69,48 +69,61 @@ export function workflowDiff(before: unknown, after: unknown): DiffRow[] {
 }
 
 /** Every field of an agent that differs (whatever fields it has). */
+/** The org config's top-level keys this diff shows (a test pins them to the schema's). */
+export const ORG_CONFIG_KEYS = ["version", "workflows", "builtIns", "archived", "agents"] as const;
+
+/** Workflows keyed by id: every field of each, those added or removed in full. */
+function workflowsDiff(was: Rec[], now: Rec[], prefix: string): DiffRow[] {
+  const rows: DiffRow[] = [];
+  for (const id of [...new Set([...was, ...now].map((w) => String(w.id)))]) {
+    const b = was.find((w) => String(w.id) === id) ?? null;
+    const a = now.find((w) => String(w.id) === id) ?? null;
+    const name = text((a ?? b)?.name);
+    const label = `${prefix}${name}`;
+    if (!b || !a) rows.push({ label, was: b ? "present" : "none", now: a ? "added" : "removed" });
+    // Added or removed: its fields too, so nothing it brings or takes is hidden.
+    for (const r of workflowDiff(b, a)) rows.push({ ...r, label: `${label}: ${r.label}` });
+  }
+  return rows;
+}
+
 /**
- * Every difference between two whole org configs (a rollback): each workflow by id, field by
- * field, workflows added or removed, and each agent by name (review of #159, round 4).
+ * Every difference between two whole org configs (a rollback): each top-level key of the schema
+ * (ORG_CONFIG_KEYS), workflows and the built-in copies and archived versions field by field,
+ * agents by name with every field; anything else differing is shown whole (review of #159).
  */
 export function orgConfigDiff(before: unknown, after: unknown): DiffRow[] {
-  const b = rec(before);
-  const a = rec(after);
-  const list = (r: Rec | null, k: string) => (Array.isArray(r?.[k]) ? (r[k] as Rec[]) : []);
+  const b = rec(before) ?? {};
+  const a = rec(after) ?? {};
+  const list = (r: Rec, k: string) => (Array.isArray(r[k]) ? (r[k] as Rec[]) : []);
   const rows: DiffRow[] = [];
-  const wb = list(b, "workflows");
-  const wa = list(a, "workflows");
-  for (const id of [...new Set([...wb, ...wa].map((w) => String(w.id)))]) {
-    const was = wb.find((w) => String(w.id) === id) ?? null;
-    const now = wa.find((w) => String(w.id) === id) ?? null;
-    const name = text((now ?? was)?.name);
-    if (!was || !now) {
-      rows.push({
-        label: `Workflow ${name}`,
-        was: was ? "present" : "none",
-        now: now ? "added back" : "removed",
-      });
-      continue;
-    }
-    for (const r of workflowDiff(was, now)) rows.push({ ...r, label: `${name}: ${r.label}` });
-  }
+  if (differ(b.version, a.version))
+    rows.push({ label: "Config schema version", was: text(b.version), now: text(a.version) });
+  rows.push(...workflowsDiff(list(b, "workflows"), list(a, "workflows"), "Workflow "));
+  const builtIns = (r: Rec) =>
+    Object.entries(rec(r.builtIns) ?? {}).map(([kind, w]) => ({
+      ...(rec(w) ?? {}),
+      id: `builtIn:${kind}`,
+      name: `${kind} (the org's copy)`,
+    }));
+  rows.push(...workflowsDiff(builtIns(b), builtIns(a), "Built-in "));
+  rows.push(...workflowsDiff(list(b, "archived"), list(a, "archived"), "Archived "));
   const ab = list(b, "agents");
   const aa = list(a, "agents");
   const key = (x: Rec) => String(x.name).toLowerCase();
   for (const k of [...new Set([...ab, ...aa].map(key))]) {
     const was = ab.find((x) => key(x) === k) ?? null;
     const now = aa.find((x) => key(x) === k) ?? null;
-    const name = text((now ?? was)?.name);
-    if (!was || !now) {
-      rows.push({
-        label: `Agent ${name}`,
-        was: was ? "present" : "none",
-        now: now ? "added back" : "removed",
-      });
-      continue;
-    }
-    for (const r of agentDiff(was, now)) rows.push({ ...r, label: `Agent ${name}: ${r.label}` });
+    const label = `Agent ${text((now ?? was)?.name)}`;
+    if (!was || !now)
+      rows.push({ label, was: was ? "present" : "none", now: now ? "added" : "removed" });
+    for (const r of agentDiff(was ?? {}, now ?? {}))
+      rows.push({ ...r, label: `${label}: ${r.label}` });
   }
+  // A key the schema gains later and this diff doesn't know yet: shown whole, never hidden.
+  for (const k of new Set([...Object.keys(b), ...Object.keys(a)]))
+    if (!(ORG_CONFIG_KEYS as readonly string[]).includes(k) && differ(b[k], a[k]))
+      rows.push({ label: k, was: text(b[k]), now: text(a[k]) });
   return rows;
 }
 
@@ -120,31 +133,63 @@ export function orgConfigDiff(before: unknown, after: unknown): DiffRow[] {
  * characters (zero-width, bidi) are shown as markers, so no change is invisible.
  */
 export function changedRegion(was: string, now: string, context = 40) {
+  // By code point, never splitting a surrogate pair.
+  const w = Array.from(was);
+  const n = Array.from(now);
   let start = 0;
-  while (start < was.length && start < now.length && was[start] === now[start]) start++;
+  while (start < w.length && start < n.length && w[start] === n[start]) start++;
   let end = 0;
   while (
-    end < was.length - start &&
-    end < now.length - start &&
-    was[was.length - 1 - end] === now[now.length - 1 - end]
+    end < w.length - start &&
+    end < n.length - start &&
+    w[w.length - 1 - end] === n[n.length - 1 - end]
   )
     end++;
-  const shown = (s: string) =>
-    s
-      .replace(
-        /\p{Cf}/gu,
-        (c) => `⟨U+${c.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  const point = (c: string) =>
+    `⟨U+${(c.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}⟩`;
+  // Invisible or look-alike-making characters, everywhere: format (zero-width, bidi), control
+  // (but a line break), carriage return, spaces other than ASCII's, combining marks and variation
+  // selectors. Tabs as ⇥.
+  const shown = (chars: string[]) =>
+    chars
+      .map((c) =>
+        c === "\t"
+          ? "⇥"
+          : c === "\r"
+            ? "⟨CR⟩"
+            : c !== "\n" && /[\p{Cf}\p{Cc}\p{M}]|[^\S\n\t ]|\p{Zs}/u.test(c) && c !== " "
+              ? point(c)
+              : c,
       )
-      .replace(/\t/g, "⇥");
-  // In the changed part, spaces too: a space added or removed is a change you can see.
-  const marked = (s: string) => shown(s).replace(/ /g, "·");
-  const pre = was.slice(Math.max(0, start - context), start);
+      .join("");
+  // In the changed part, ASCII spaces too, and any other non-ASCII character with its code point
+  // beside it: a look-alike (a Cyrillic "а" for a Latin "a") reads differently.
+  const marked = (chars: string[]) =>
+    chars
+      .map((c) => {
+        const v = shown([c]);
+        if (c === " ") return "·";
+        return v === c && /[^\x00-\x7f]/u.test(c) ? `${c}${point(c)}` : v;
+      })
+      .join("");
+  let wasPart = marked(w.slice(start, w.length - end));
+  let nowPart = marked(n.slice(start, n.length - end));
+  // Look-alikes (a Cyrillic "а" for a Latin "a"): the same on screen, so show code points.
+  if (wasPart === nowPart && w.join("") !== n.join("")) {
+    wasPart = w
+      .slice(start, w.length - end)
+      .map(point)
+      .join("");
+    nowPart = n
+      .slice(start, n.length - end)
+      .map(point)
+      .join("");
+  }
   return {
-    before: (start > context ? "…" : "") + shown(pre),
-    was: marked(was.slice(start, was.length - end)),
-    now: marked(now.slice(start, now.length - end)),
-    after:
-      shown(was.slice(was.length - end, was.length - end + context)) + (end > context ? "…" : ""),
+    before: (start > context ? "…" : "") + shown(w.slice(Math.max(0, start - context), start)),
+    was: wasPart,
+    now: nowPart,
+    after: shown(w.slice(w.length - end, w.length - end + context)) + (end > context ? "…" : ""),
   };
 }
 
