@@ -332,6 +332,11 @@ the landings since the last green SHA. While one is open the line stops: only **
 (ADR 0581, 0584).
 _Avoid_: broken build, main-red issue (patientos's claim; here the episode is the claim)
 
+**Suspect, culprit** (spec 53)
+An episode's suspects are the factory's landings since main was last green. Its culprit is the
+one that turned it red: proven in code only when there is one landing and its merge commit is the
+first red head, otherwise named by a person (`mainRed.attribute`). Never a guess (ADR 0621).
+
 **Known flake** (spec 53)
 A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
 repository's flake list (`core_flakes`). A failed check is rerun at most once per SHA (ADR 0583);

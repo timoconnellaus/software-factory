@@ -35,7 +35,21 @@ const mainHealth = z.object({
   redSince: z.string().nullable(),
   firstRedSha: z.string().nullable(),
   checkedAt: z.string(),
+  /** The open episode's suspects: the factory's landings since main was last green. */
+  suspects: z.array(
+    z.object({
+      workItemId: z.string(),
+      number: z.number(),
+      title: z.string(),
+      prNumber: z.number().nullable(),
+      mergeSha: z.string(),
+    }),
+  ),
+  /** The culprit, once proven (or named by a person), and why. Never a guess. */
+  culpritWorkItemId: z.string().nullable(),
+  attribution: z.string().nullable(),
 });
+type Suspect = z.infer<typeof mainHealth>["suspects"][number];
 
 function strings(text: string | null | undefined): string[] {
   try {
@@ -55,7 +69,119 @@ export function mainHealthOf(row: MainHealthRow): z.infer<typeof mainHealth> {
     redSince: row.red_since,
     firstRedSha: row.first_red_sha,
     checkedAt: row.checked_at,
+    suspects: parseSuspects(row.suspects),
+    culpritWorkItemId: row.culprit_work_item_id,
+    attribution: row.attribution,
   };
+}
+
+function parseSuspects(text: string | null | undefined): Suspect[] {
+  try {
+    const v = JSON.parse(text ?? "[]");
+    return Array.isArray(v) ? (v as Suspect[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Most suspects an episode keeps. */
+const MAX_SUSPECTS = 20;
+
+/**
+ * An episode's suspects (spec 53 §5): the factory's landings in the repository since main was last
+ * seen green, newest first. core_work_items_project_idx (project_id, status, updated_at): a range
+ * of the project's done items, at most MAX_SUSPECTS.
+ */
+async function suspectsSince(
+  ctx: HandlerContext,
+  projectId: string,
+  repositoryId: string,
+  since: string | null,
+): Promise<Suspect[]> {
+  if (!since) return [];
+  const rows = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["id", "number", "title", "pr_number", "merge_sha"])
+    .where("project_id", "=", projectId)
+    .where("status", "=", "done")
+    .where("updated_at", ">=", since)
+    .where("repository_id", "=", repositoryId)
+    .where("merge_sha", "is not", null)
+    .orderBy("updated_at", "desc")
+    .limit(MAX_SUSPECTS)
+    .execute();
+  return rows.map((r) => ({
+    workItemId: r.id,
+    number: r.number,
+    title: r.title,
+    prNumber: r.pr_number,
+    mergeSha: String(r.merge_sha),
+  }));
+}
+
+/**
+ * The culprit, only when it is proven (ADR 0584: never revert a guess): exactly one landing since
+ * green, its merge commit is the first red head, and that commit's first parent is the last green
+ * head. Anything else (several landings, someone else's push in between) is left to the babysit job
+ * or a person.
+ */
+async function provenCulprit(
+  ctx: HandlerContext,
+  repo: Awaited<ReturnType<typeof repoRef>>,
+  suspects: Suspect[],
+  firstRed: string,
+  lastGreen: string | null,
+): Promise<{ workItemId: string; why: string } | null> {
+  const [only] = suspects;
+  if (suspects.length !== 1 || !only || only.mergeSha !== firstRed || !lastGreen) return null;
+  const parents = await ctx.services.github.commitParents(repo, firstRed).catch(() => []);
+  if (parents[0] !== lastGreen) return null;
+  return {
+    workItemId: only.workItemId,
+    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, and main went red on it`,
+  };
+}
+
+/**
+ * What `factory/verify` reads on a non-repair factory item's head while its repository's line is
+ * stopped (spec 53, decision 7): pending, so GitHub refuses a person's merge there too.
+ */
+export const HELD_TITLE = "held: main is red";
+
+/**
+ * A red episode opened or closed: every open factory PR in the repository at its merge gate or in
+ * delivery gets `factory/verify` evaluated again (held, or released). The project's active items
+ * through core_work_items_project_idx (project_id, status), at most 50: the WIP limit keeps them few.
+ */
+async function recheckHeads(
+  ctx: HandlerContext,
+  projectId: string,
+  repository: { id: string; owner: string; name: string },
+): Promise<void> {
+  const items = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["head_sha", "pr_number"])
+    .where("project_id", "=", projectId)
+    .where("status", "in", ["running", "waiting"])
+    .where("repository_id", "=", repository.id)
+    .where("stage", "=", "merge")
+    .where("kind", "!=", "attached")
+    .where("repairs_main", "=", 0)
+    .where("pr_number", "is not", null)
+    .where("head_sha", "is not", null)
+    .limit(50)
+    .execute();
+  for (const i of items) {
+    if (!i.head_sha) continue;
+    ctx.emit({
+      kind: "verify.recheck",
+      payload: {
+        repo: { owner: repository.owner, name: repository.name },
+        headSha: i.head_sha,
+        prNumber: i.pr_number,
+      },
+    });
+  }
 }
 
 export async function lineStopped(
@@ -164,6 +290,12 @@ export const mainObserve = defineOperation({
     const opens = state === "red" && !before?.red_since;
     const closes = state === "green" && !!before?.red_since;
     const audience = opens ? await mainRedAudience(ctx, project.org_id) : null;
+    // Who turned it red (spec 53 §5): the landings since the last green, fixed when it opens.
+    const suspects = opens
+      ? await suspectsSince(ctx, project.id, repository.id, before?.green_at ?? null)
+      : null;
+    const lastGreen = before?.last_green_sha ?? null;
+    const proven = suspects ? await provenCulprit(ctx, repo, suspects, head, lastGreen) : null;
     const row: MainHealthRow = {
       repository_id: repository.id,
       project_id: project.id,
@@ -181,6 +313,22 @@ export const mainObserve = defineOperation({
         : state === "green"
           ? "[]"
           : (before?.audience ?? "[]"),
+      green_at: state === "green" ? ctx.now : (before?.green_at ?? null),
+      suspects: suspects
+        ? JSON.stringify(suspects)
+        : state === "green"
+          ? "[]"
+          : (before?.suspects ?? "[]"),
+      culprit_work_item_id: opens
+        ? (proven?.workItemId ?? null)
+        : state === "green"
+          ? null
+          : (before?.culprit_work_item_id ?? null),
+      attribution: opens
+        ? (proven?.why ?? null)
+        : state === "green"
+          ? null
+          : (before?.attribution ?? null),
     };
     const changed =
       !before ||
@@ -220,6 +368,10 @@ export const mainObserve = defineOperation({
             observed_at: row.observed_at,
             attempt: row.attempt,
             audience: row.audience,
+            green_at: row.green_at,
+            suspects: row.suspects,
+            culprit_work_item_id: row.culprit_work_item_id,
+            attribution: row.attribution,
           }),
         ),
     );
@@ -230,6 +382,8 @@ export const mainObserve = defineOperation({
       after: { state, sha: head, failing: ci.failing },
     });
     const where = `${repository.owner}/${repository.name}`;
+    // Decision 7: `factory/verify` on waiting heads goes to held (or back) with the line.
+    if (opens || closes) await recheckHeads(ctx, project.id, repository);
     if (opens) {
       for (const userId of audience ?? []) {
         ctx.emit({
@@ -327,6 +481,53 @@ export const workItemMarkRepair = defineOperation({
       payload: { projectId: w.project_id, repositoryId: w.repository_id },
     });
     return { repair: input.repair };
+  },
+});
+
+export const mainRedAttribute = defineOperation({
+  name: "mainRed.attribute",
+  description:
+    "Name the landing that turned a repository's default branch red (spec 53 §5, ADR 0584): one of the open red episode's suspects (the factory's landings since main was last green), with why. The factory names one itself only when it is proven (a single landing whose merge commit is the first red head); otherwise a person, or the babysitter, says which. Recorded on the episode; it never reverts anything by itself. Refused when the line isn't stopped or the item isn't a suspect.",
+  risk: "write",
+  actors: ["human", "agent"],
+  permission: "approver",
+  input: z.object({ workItemId, why: z.string().trim().min(1).max(2_000) }),
+  output: z.object({ culpritWorkItemId: z.string() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (!w.repository_id) throw new OperationError("conflict", `#${w.number} has no repository`);
+    const row = await ctx.db
+      .selectFrom("core_main_health")
+      .select(["red_since", "suspects", "culprit_work_item_id"])
+      .where("repository_id", "=", w.repository_id)
+      .executeTakeFirst();
+    if (!row?.red_since) {
+      throw new OperationError(
+        "conflict",
+        "the default branch isn't red: there is no culprit to name",
+      );
+    }
+    if (!parseSuspects(row.suspects).some((x) => x.workItemId === w.id)) {
+      throw new OperationError(
+        "conflict",
+        `#${w.number} didn't land since main was last green: it isn't a suspect`,
+      );
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_main_health")
+        .set({ culprit_work_item_id: w.id, attribution: input.why })
+        .where("repository_id", "=", w.repository_id)
+        .where("red_since", "=", row.red_since),
+    );
+    ctx.guardChanged("the episode is still open");
+    ctx.change({
+      entity: "main_health",
+      id: w.repository_id,
+      before: { culprit: row.culprit_work_item_id },
+      after: { culprit: w.id, why: input.why },
+    });
+    return { culpritWorkItemId: w.id };
   },
 });
 

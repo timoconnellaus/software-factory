@@ -33,6 +33,7 @@ import {
 } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
+import { HELD_TITLE, lineStopped } from "./delivery.ts";
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
@@ -766,6 +767,21 @@ export const verifyRefresh = defineOperation({
         ...storedTestFindings(sections),
         ...storedProof(sections),
       });
+      // Decision 7 (spec 53): while the repository's line is stopped, a factory head that isn't a
+      // repair reads pending, so GitHub refuses a person's merge too. It comes back when main is
+      // green (main.observe re-evaluates the heads). An attached PR lands through its own gate.
+      if (
+        output.conclusion === "success" &&
+        item.kind !== "attached" &&
+        item.repairs_main !== 1 &&
+        (await lineStopped(ctx, item))
+      ) {
+        output = {
+          status: "in_progress",
+          title: HELD_TITLE,
+          summary: `Work item #${item.number}: ${item.title}\n\nThe default branch is red, so only repairs merge until it is green again. Verify passed on this commit; it can merge once main is green (spec 53, decision 7).`,
+        };
+      }
     } else if (input.trigger === "ci" && existing) {
       // CI moved, but verify hasn't run on this SHA yet: the check already says so.
       return {

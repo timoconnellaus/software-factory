@@ -17,6 +17,7 @@ import {
   BABYSITTER,
   type BabysitReason,
   babysitResult,
+  HELD_TITLE,
   has,
   invoke,
   isOperationError,
@@ -472,6 +473,9 @@ async function deliverHead(
     return end("left", "failed", "the babysitter lands only an approved merge");
   }
   const touchesFactoryConfig = await approvedFlag(env, head.pending_action_id);
+  // A head held while main was red (decision 7) reads pending until it is evaluated again: release
+  // it now, or GitHub would refuse the merge for its required check.
+  await releaseHeld(env, lease, head, at);
   // Marked merging first, so a cancel from here until GitHub answers is refused ("this is
   // merging") rather than racing the merge (spec 53 review).
   await deliverTestSeams.beforeMark?.(id);
@@ -726,4 +730,27 @@ async function settleBabysit(
         ? `${check ?? "a required check"} failed on ${reason.headSha.slice(0, 7)} after the update, and the babysitter judged it a regression: ${result.note}`
         : `${check ?? "a required check"} failed on ${reason.headSha.slice(0, 7)} after the update; the babysitter asks a person: ${result.note}`,
   };
+}
+
+/**
+ * When `factory/verify` on the head still says "held: main is red" (main went green and the
+ * re-evaluation hasn't run yet), evaluates it again now. Primary-key reads: core_verify_checks
+ * (project_id, head_sha), then the item and its repository.
+ */
+async function releaseHeld(env: Env, lease: Lease, head: HeadRow, at: string): Promise<void> {
+  const row = await env.DB.prepare(
+    `SELECT v.title, r.owner, r.name, w.pr_number FROM core_verify_checks v
+     JOIN core_work_items w ON w.id = ?3
+     JOIN core_repositories r ON r.id = w.repository_id
+     WHERE v.project_id = ?1 AND v.head_sha = ?2`,
+  )
+    .bind(head.project_id, at, head.work_item_id)
+    .first<{ title: string | null; owner: string; name: string; pr_number: number | null }>();
+  if (!row || row.title !== HELD_TITLE) return;
+  await call(env, lease, "verify.refresh", {
+    repo: { owner: row.owner, name: row.name },
+    headSha: at,
+    prNumber: row.pr_number,
+    trigger: "rerequested",
+  });
 }

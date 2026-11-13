@@ -345,6 +345,8 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
+  /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
+  merge_sha: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -1026,6 +1028,14 @@ export type MainHealthState = "green" | "red" | "pending";
 
 /** One row per repository: its default branch head's CI and the open red episode. */
 export interface CoreMainHealthTable {
+  /** 0391: when the default branch was last seen green; the suspects are the landings after it. */
+  green_at: string | null;
+  /** 0391: the open episode's suspects, JSON `[{workItemId, number, title, prNumber, mergeSha}]`. */
+  suspects: Generated<string>;
+  /** 0391: the culprit, when proven in code or named by a person (`mainRed.attribute`). */
+  culprit_work_item_id: string | null;
+  /** 0391: why it is the culprit. */
+  attribution: string | null;
   repository_id: string;
   project_id: string;
   head_sha: string;

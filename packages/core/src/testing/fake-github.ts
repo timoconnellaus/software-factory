@@ -672,7 +672,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       if (pull.state !== "open") return { merged: false, reason: "Pull Request is not mergeable" };
       if (state.refs[pull.head] !== expected)
         return { merged: false, reason: "head moved", headMoved: true };
-      const merge = await commit(state, expected, `merge-${number}`);
+      // As GitHub makes it: the base branch's head first, the PR's head second.
+      const base = state.refs[pull.base];
+      const merge = await commit(state, base ?? expected, `merge-${number}`);
+      if (base) state.merged = { ...(state.merged ?? {}), [merge]: expected };
       state.refs[pull.base] = merge;
       pull.state = "merged";
       pull.mergeSha = merge;
