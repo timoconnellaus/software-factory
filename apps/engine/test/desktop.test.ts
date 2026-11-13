@@ -156,14 +156,16 @@ describe("a config change approved from the desktop (ADR 0610)", () => {
     const proof = await prove(token, device, "approval.decide", input);
     expect(proof.summary).toMatch(
       new RegExp(
-        `^Approve a change to the policy \\(v${base} to v${base + 1}\\): loosens: Autonomy policy Balanced → Autonomous`,
+        `^Approve a change to the policy \\(v${base} to v${base + 1}\\): loosens \\d+ things: Autonomy policy Balanced → Autonomous…`,
       ),
     );
     const reject = await prove(token, device, "approval.decide", {
       pendingActionId,
       decision: "rejected",
     });
-    expect(reject.summary).toMatch(/^Reject a change to the policy \(v\d+ to v\d+\): loosens: /);
+    expect(reject.summary).toMatch(
+      /^Reject a change to the policy \(v\d+ to v\d+\): loosens \d+ things: /,
+    );
     // The facts are never cut: past the room for it, the project's name is left out instead.
     expect(proof.summary).not.toMatch(/[;:] ?$/);
 
@@ -489,24 +491,33 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(await status(second)).toBe("pending");
   });
 
-  it("keeps authority-granting operations browser-only even with a proof (criterion 5)", async () => {
+  it("keeps authority-granting operations browser-only even with a proof (criterion 5, as amended by ADR 0610)", async () => {
     const w = await world();
-    const { token } = await signIn(w);
-    for (const op of [
-      "cli.approveDevice",
-      "desktop.approveDevice",
-      "runner.register",
-      "killSwitch.set",
-    ]) {
+    const { token, device } = await signIn(w);
+    for (const op of ["cli.approveDevice", "desktop.approveDevice", "runner.register"]) {
       const res = await callOp(token, "presence.challenge", { op, input: {} });
       expect([op, res.status]).toEqual([op, 403]);
     }
-    const off = await callOp(token, "killSwitch.set", {
-      scope: "project",
-      id: w.projectId,
-      on: false,
-    });
-    expect(off.status).toBe(403);
+    // Turning a kill switch off: refused without a proof, decided with one (ADR 0610).
+    const input = { scope: "project", id: w.projectId, on: false };
+    expect((await callOp(token, "killSwitch.set", input)).status).toBe(403);
+    const proof = await prove(token, device, "killSwitch.set", input);
+    expect(proof.summary).toMatch(/^Turn a project's kill switch off: its work resumes "[^"]+"$/);
+    expect((await callOp(token, "killSwitch.set", input, proof)).status).toBe(200);
+  });
+
+  it("saves an org workflow only with a proof, and the prompt says what it is (ADR 0610)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const input = { orgId: w.orgId, baseVersion: 0, templateId: "wf_software", name: "Desk" };
+    const bare = await callOp(token, "workflow.createFromTemplate", input);
+    expect(bare.status).toBe(403);
+    const proof = await prove(token, device, "workflow.createFromTemplate", input);
+    expect(proof.summary).toMatch(
+      /^Add an org workflow from the wf_software template \(v0 to v1\) "Desk in [^"]+"$/,
+    );
+    const made = await callOp(token, "workflow.createFromTemplate", input, proof);
+    expect(made.status).toBe(200);
   });
 
   it("refuses proofs from a software key: an unsigned build can't decide (criterion 6)", async () => {

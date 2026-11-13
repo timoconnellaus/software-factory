@@ -55,8 +55,6 @@ function randomTicket(): string {
 }
 
 export class TerminalRelay extends DurableObject<Env> {
-  private readonly waiters = new Set<() => void>();
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Answered by the runtime, so a page's keepalive never wakes a hibernated relay.
@@ -78,31 +76,20 @@ export class TerminalRelay extends DurableObject<Env> {
   }
 
   /**
-   * The runner host's held wait (the channel's `terminal` call): a fresh host ticket as soon as a
-   * viewer is waiting and no host is connected, else null after `ms`.
+   * The runner host's held `terminal` call asks this once its poll sees an open attach (spec 44):
+   * a fresh host ticket when a viewer is connected and no host is, else null; and how many viewers
+   * are connected, from the relay's live sockets. Answered at once: nothing here waits.
    */
-  async waitForViewer(ms: number): Promise<string | null> {
-    const deadline = Date.now() + ms;
-    for (;;) {
-      if (this.viewers().length > 0 && this.hosts().length === 0) {
-        await this.pruneTickets();
-        return this.mint({ role: "host" });
-      }
-      const left = deadline - Date.now();
-      if (left <= 0) return null;
-      await new Promise<void>((resolve) => {
-        const wake = () => {
-          clearTimeout(timer);
-          this.waiters.delete(wake);
-          resolve();
-        };
-        const timer = setTimeout(wake, left);
-        this.waiters.add(wake);
-      });
+  async hostTicket(): Promise<{ ticket: string | null; viewers: number }> {
+    const viewers = this.viewers().length;
+    if (viewers > 0 && this.hosts().length === 0) {
+      await this.pruneTickets();
+      return { ticket: await this.mint({ role: "host" }), viewers };
     }
+    return { ticket: null, viewers };
   }
 
-  /** Who is connected (tests and the held call). */
+  /** Who is connected (tests). */
   async state(): Promise<{ host: boolean; viewers: { userId: string; mode: TerminalMode }[] }> {
     return {
       host: this.hosts().length > 0,
@@ -151,8 +138,8 @@ export class TerminalRelay extends DurableObject<Env> {
       const host = this.hosts().length > 0;
       this.send(server, { t: "hello", mode: grant.mode, viewers: this.viewers().length, host });
       this.broadcastViewers();
+      // Without a host, the host's held call sees the attach on its next poll and asks hostTicket().
       if (host) this.toHost({ t: "redraw" });
-      else this.wakeWaiters();
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -262,8 +249,7 @@ export class TerminalRelay extends DurableObject<Env> {
       this.afterViewerLeft(ws);
     } else {
       this.broadcastViewers(ws);
-      // Viewers are still waiting: the host's next held call gets a fresh ticket.
-      this.wakeWaiters();
+      // Viewers are still waiting: the host's next held call gets a fresh ticket from hostTicket().
     }
   }
 
@@ -376,10 +362,6 @@ export class TerminalRelay extends DurableObject<Env> {
     } catch {
       // already closed
     }
-  }
-
-  private wakeWaiters() {
-    for (const wake of [...this.waiters]) wake();
   }
 }
 

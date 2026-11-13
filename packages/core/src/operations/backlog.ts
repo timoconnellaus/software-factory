@@ -29,7 +29,7 @@ import {
   TRIAGE_PARK_CAP,
 } from "../readiness.ts";
 import { activeKillSwitch, approverIds, loadPolicy, overrideApprovals } from "../scope.ts";
-import { childEnded } from "../splits.ts";
+import { childEnded, heldReason, NOT_HELD } from "../splits.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
   repinImpact,
@@ -195,6 +195,8 @@ export function startPipeline(
       })
       .where("id", "=", item.id)
       .where("status", "=", "queued")
+      // Never a plan's child before its parent's plan merged (review of #171).
+      .where(NOT_HELD)
       .$if(!!conditions, (q) =>
         q
           .where(
@@ -407,6 +409,9 @@ export async function pullQueued(
       ])
       .where("project_id", "=", project.id)
       .where("status", "=", "queued")
+      // A plan's child still held for its parent is never a candidate (review of #171), so it
+      // can't trip startPipeline's guard and abort the pull.
+      .where(NOT_HELD)
       .execute()
   ).sort(pullOrder);
   const blocked = await blockersOf(
@@ -817,14 +822,8 @@ async function parentReleased(ctx: HandlerContext, parentId: string): Promise<bo
 
 export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
   // A plan's child is held until its parent's plan has merged (review of #171), by anyone.
-  if (w.source === "planning" && w.parent_work_item_id) {
-    if (!(await parentReleased(ctx, w.parent_work_item_id))) {
-      throw new OperationError(
-        "conflict",
-        `#${w.number} was split off a plan that hasn't merged yet: it starts with its siblings when that plan merges`,
-      );
-    }
-  }
+  const held = await heldReason(ctx, w);
+  if (held) throw new OperationError("conflict", held);
   {
     const project = requireProject(ctx);
     // A shaped item whose workflow's shaping changed isn't released: it is flagged for a person,
@@ -1013,6 +1012,9 @@ export const workItemShape = defineOperation({
 
 /** Starts shaping an item (ADR 0493): its Workflow runs the shaping stages before release. */
 export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
+  // Shaping a plan's child would triage and plan it before its parent's plan merged.
+  const held = await heldReason(ctx, w);
+  if (held) throw new OperationError("conflict", held);
   {
     const project = requireProject(ctx);
     const policy = ctx.scope.policy;

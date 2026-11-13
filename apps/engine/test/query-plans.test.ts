@@ -48,6 +48,38 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
     // Spec 24: a split's parent waits for its children (each event, and once a day in its held
     // wait), by core_work_items_parent_idx (migration 0401).
+    // Review of #171: a child's end (its siblings, and who waits for it), the release, and the
+    // existing-children check at approval.
+    name: "a split's child ends: its siblings and who waits for it",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT * FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT work_item_id FROM core_work_item_links WHERE waits_for_id = ? AND work_item_id IN (?, ?)",
+      )
+        .bind("wi_child", "wi_a", "wi_b")
+        .all();
+    },
+  },
+  {
+    name: "a split's release and its existing-children check",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' AND status = 'ready' LIMIT 8",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 1",
+      )
+        .bind("wi_parent")
+        .all();
+    },
+  },
+  {
     name: "a split's parent reads its children",
     run: (e) =>
       e.DB.prepare(
@@ -101,6 +133,30 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
         fencingToken: job.fencingToken,
         waitMs: 0,
+      });
+    },
+  },
+  {
+    // Spec 44 part A: the held steer call waits in the Worker, reading every HELD_POLL_MS whether
+    // the run has a queued steer (core_run_steers_undelivered_idx). One poll at least.
+    name: "the held steer call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+      });
+    },
+  },
+  {
+    // Spec 44 part A: the held terminal call reads whether the run has an open attach
+    // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
+    name: "the held terminal call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).terminal?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
       });
     },
   },

@@ -15,7 +15,7 @@ import {
 } from "../operation.ts";
 import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
-import { childEnded, splitFiles } from "../splits.ts";
+import { childEnded, releaseSplitChildren, splitFiles } from "../splits.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -242,7 +242,20 @@ export const reviewPacketRecord = defineOperation({
     const split = await splitFiles(ctx, w);
     // Each approved file's content at the head (GitHub reads; at most the plan's files).
     const splitAtHead: Record<string, string | null> = {};
+    // Each must be a plain file at the head (review of #171): a link to identical content isn't.
+    const modes = split?.length
+      ? await ctx.services.github.pathEntries(
+          repo,
+          input.headSha,
+          split.map((f) => f.path),
+        )
+      : {};
     for (const f of split ?? []) {
+      const mode = modes[f.path]?.mode;
+      if (mode && mode !== "100644" && mode !== "100755") {
+        splitAtHead[f.path] = `mode:${mode}`;
+        continue;
+      }
       const content = await ctx.services.github.readFile(repo, f.path, input.headSha);
       splitAtHead[f.path] =
         content === null ? null : await sha256Hex(new TextEncoder().encode(content));
@@ -686,7 +699,9 @@ export const verifyRefresh = defineOperation({
         : "the pull request was closed without merging";
       await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
       endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
-      // A split's child or parent ended here too (review of #171): siblings and parent hear now.
+      // A split's child or parent ended here too (review of #171): siblings and parent hear now,
+      // and a parent whose plan merged this way still releases the children it held.
+      if (input.merged) await releaseSplitChildren(ctx, item);
       await childEnded(ctx, item, input.merged ? "done" : "cancelled");
       if (input.merged) {
         ctx.change({

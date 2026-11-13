@@ -121,13 +121,14 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
       if (f.previousPath && !expected.has(f.previousPath))
         reasons.push(`not one of the approved plan's files: ${f.previousPath}`);
     }
+    // Judged on the tree at the head, not the diff (review of #171): a file identical to main
+    // isn't in the diff but is still there with the approved content.
     for (const [path, sha256] of expected) {
-      if (input.files && !input.files.some((f) => f.path === path))
-        reasons.push(`the approved plan's file isn't in the pull request: ${path}`);
       const at = input.splitAtHead?.[path];
       if (at === undefined || at === null) {
-        if (input.files?.some((f) => f.path === path))
-          reasons.push(`the approved plan's file couldn't be read at the head: ${path}`);
+        reasons.push(`the approved plan's file isn't at the head: ${path}`);
+      } else if (at.startsWith("mode:")) {
+        reasons.push(`the approved plan's file is a link or not a plain file (${at}): ${path}`);
       } else if (at !== sha256) {
         reasons.push(`the approved plan's file was changed after approval: ${path}`);
       }

@@ -138,17 +138,21 @@ describe("adopting the projects' workflows changes nothing an item does", () => 
       const ids = [w.projectId];
       for (const [i, policy] of rest.entries()) ids.push(await addProject(w, i, policy));
       const before = await Promise.all(ids.map(behaviour));
+      const human = { type: "human" as const, id: w.userId };
+      // The real run is bound to the plan its dry run showed (review of #156).
+      const { planDigest } = await ok<{ planDigest: string }>(
+        "orgConfig.adoptProjectWorkflows",
+        { orgId: w.orgId, baseVersion: 0, dryRun: true },
+        human,
+      );
       const done = await ok<{
         projects: { projectId: string }[];
         skipped: { projectId: string; reason: string }[];
         remaining: string[];
       }>(
         "orgConfig.adoptProjectWorkflows",
-        { orgId: w.orgId, baseVersion: 0, dryRun: false },
-        {
-          type: "human",
-          id: w.userId,
-        },
+        { orgId: w.orgId, baseVersion: 0, dryRun: false, planDigest },
+        human,
       );
       // Every project moved, or was left as it is with a reason.
       expect(
