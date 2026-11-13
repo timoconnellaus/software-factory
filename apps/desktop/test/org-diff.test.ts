@@ -38,7 +38,7 @@ describe("workflowDiff", () => {
     expect(added).toContainEqual({
       label: "Build: settings (new stage)",
       was: "none",
-      now: '{"retryLimit":2}',
+      now: JSON.stringify({ retryLimit: 2 }, null, 1),
     });
     expect(workflowDiff({ stages: [a, b] }, { stages: [b] }).map((r) => r.label)).toContain(
       "Reviewer (removed)",
@@ -57,7 +57,9 @@ describe("agentDiff", () => {
       { name: "Critic", role: "review", requires: [] },
       { name: "Critic", role: "review", requires: ["browser"] },
     );
-    expect(rows).toEqual([{ label: "requires", was: "[]", now: '["browser"]' }]);
+    expect(rows).toEqual([
+      { label: "requires", was: "[]", now: JSON.stringify(["browser"], null, 1) },
+    ]);
   });
 });
 
@@ -81,5 +83,29 @@ describe("a change the screen can't show", () => {
       },
     };
     expect(cannotApproveOrg(p, 4)).toMatch(/can't show/);
+  });
+});
+
+describe("round 3 of #159", () => {
+  it("never cuts what it compares: a change past the 200th character reads different", async () => {
+    const { unreadable } = await import("../src/mainview/lib/org-diff.ts");
+    const long = "x".repeat(300);
+    const rows = workflowDiff(
+      { stages: [stage({ settings: { instructions: `${long}a` } })] },
+      { stages: [stage({ settings: { instructions: `${long}b` } })] },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.was).not.toBe(rows[0]?.now);
+    expect(unreadable(rows)).toBe(false);
+    expect(unreadable([{ label: "x", was: "same", now: "same" }])).toBe(true);
+  });
+
+  it("shows a stage type's version and the workflow's template", () => {
+    const labels = workflowDiff(
+      { template: { id: "wf_software", version: 1 }, stages: [stage({ typeVersion: 1 })] },
+      { template: { id: "wf_software", version: 2 }, stages: [stage({ typeVersion: 2 })] },
+    ).map((r) => r.label);
+    expect(labels).toContain("Reviewer: typeVersion");
+    expect(labels).toContain("Workflow template");
   });
 });
