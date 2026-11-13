@@ -33,6 +33,11 @@ export function updateRequiredView(u: UpdateStatus): {
         { action: "retry", label: "Try again", variant: "outline" },
       ],
     };
+  if (u.ready && u.jobs === 0 && u.installFailure?.version === u.version)
+    return {
+      body: u.installFailure.reason,
+      actions: [{ action: "restart", label: "Retry the update", variant: "default" }],
+    };
   if (u.ready && u.jobs === 0)
     return {
       body: `Version ${u.version} is downloaded and checked. Restart to finish updating.`,
