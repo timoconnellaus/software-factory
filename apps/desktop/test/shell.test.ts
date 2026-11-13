@@ -219,8 +219,7 @@ describe("status bar", () => {
 });
 
 describe("the Inbox list", () => {
-  const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" }) ?? null;
-  const entries = inboxEntries(inbox, setup);
+  const entries = inboxEntries(inbox);
 
   it("groups merges, specs, questions, approvals, then notices", () => {
     expect(entries.map((e) => `${e.group}:${e.key}`)).toEqual([
@@ -229,11 +228,16 @@ describe("the Inbox list", () => {
       "Questions:wi_11",
       "Approvals:wi_16",
       "Notices:protection-prj_factory",
-      "Notices:setup",
     ]);
-    expect(
-      inboxEntries(inbox, { ...(setup as NonNullable<typeof setup>), complete: true }),
-    ).toHaveLength(5);
+  });
+
+  it("never lists setup, and its count is only what waits on you, with setup unfinished", () => {
+    const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" });
+    expect(setup?.complete).toBe(false);
+    expect(entries.some((e) => e.key === "setup")).toBe(false);
+    expect(waitingCount(inbox)).toBe(
+      inbox.gates.length + inbox.questions.length + (inbox.releaseFlags?.length ?? 0),
+    );
   });
 
   it("selects ?item=, else the first; nothing when empty", () => {
@@ -256,7 +260,7 @@ describe("the Inbox list", () => {
 
   it("gives a second question on one item its own key", () => {
     const q = inbox.questions[0] as Inbox["questions"][number];
-    const two = inboxEntries({ ...inbox, gates: [], questions: [q, { ...q, id: "q_2" }] }, null);
+    const two = inboxEntries({ ...inbox, gates: [], questions: [q, { ...q, id: "q_2" }] });
     expect(two.filter((e) => e.kind === "question").map((e) => e.key)).toEqual(["wi_11", "q_2"]);
   });
 });

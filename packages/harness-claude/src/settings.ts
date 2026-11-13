@@ -513,19 +513,17 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
     ...(options.denyReadFiles ?? []).map((p) => `Read(${abs(p)})`),
+    // Edit denies cover every file tool that writes (Write included); Claude Code warns that a
+    // Write(<path>) deny never matches.
     ...writeDeny.map((p) => `Edit(${p})`),
-    ...writeDeny.map((p) => `Write(${p})`),
     // The worktree's git internals are the host's (it pushes from them).
     "Edit(.git/**)",
-    "Write(.git/**)",
     // Bypass mode allows every tool: WebFetch isn't sandboxed, so it can't be held to the host
     // allowlist there. Builds fetch through sandboxed commands (to the allowlist) instead.
     ...(mode === "bypassPermissions" ? ["WebFetch"] : []),
     // The attachments are the requester's, read only (additionalDirectories would otherwise make
     // them writable for the file tools).
-    ...(options.attachmentsDir
-      ? [`Edit(${abs(options.attachmentsDir)}/**)`, `Write(${abs(options.attachmentsDir)}/**)`]
-      : []),
+    ...(options.attachmentsDir ? [`Edit(${abs(options.attachmentsDir)}/**)`] : []),
   ];
   const git = options.git;
   const gitWrite = git
