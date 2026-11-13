@@ -49,6 +49,14 @@ export const orgWorkflowQuery = (orgId: string, workflowId: string) =>
     staleTime: 30_000,
   });
 
+/** The org's workflows (spec 52), for a project to run one. */
+export const orgWorkflowsQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["workflows", orgId],
+    queryFn: () => read("workflow.list", { orgId }),
+    staleTime: 60_000,
+  });
+
 /** The org workflow a project's config runs on, if it names one (`wf_…`). */
 export const orgWorkflowOf = (doc: Record<string, unknown> | null | undefined): string | null =>
   typeof doc?.workflow === "string" && doc.workflow.startsWith("wf_") ? doc.workflow : null;
