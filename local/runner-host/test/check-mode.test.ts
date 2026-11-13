@@ -166,7 +166,7 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
     // An adapter that claims it, on a host that doesn't declare it (a sprite runner): not declared.
     const claims = { ...m, capabilities: ["git-push", "checks"] } as typeof m;
     // `babysit` is the host's own (ADR 0620): declared either way.
-    expect(hostManifest(claims, false).capabilities).toEqual(["git-push", "babysit"]);
+    expect(hostManifest(claims, false).capabilities).toEqual(["git-push", "babysit", "job-line"]);
     expect(hostManifest(m).capabilities).toContain("babysit");
     expect(hostManifest(m, true, "container: a fresh check container").checksNote).toBe(
       "container: a fresh check container",

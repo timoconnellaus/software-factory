@@ -3,6 +3,7 @@
 // what news and waits answer. Shared by the cloud (operation inputs) and the harness (tool schemas),
 // so the two can't drift. Runtime-neutral.
 import { z } from "zod";
+import { designPreviewSchema } from "./planning-designs.ts";
 import { ARTIFACT_MAX_BYTES, controlSchema, UNIT_PATTERN } from "./planning-visuals.ts";
 
 /** Operations a planning job may run over `/runner/v1/jobs/:id/planning` (ADR 0350). */
@@ -19,6 +20,7 @@ export const PLANNING_OPS = [
   "artifact.show",
   "artifact.read",
   "design.pull",
+  "design.preview",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -307,12 +309,32 @@ export const designPullInputSchema = z.object({
     }, "a design is .dbml, .d2, .mmd, .yaml or .yml; a mockup .html; a plan .md"),
 });
 
+/**
+ * What the harness adds to a design's save (spec 22 part B): the runner's checks passed, and this is
+ * the preview they drew. Never in the model's tool schema: the MCP server fills it.
+ */
+export const artifactAddCallSchema = artifactAddInputSchema.extend({
+  preview: designPreviewSchema.optional(),
+});
+export const artifactUpdateCallSchema = artifactUpdateInputSchema.extend({
+  preview: designPreviewSchema.optional(),
+});
+/**
+ * The preview of a revision the runner didn't write itself: a pulled file's base (revision 0) and
+ * its first revision (spec 22 part B). The harness calls it after `design.pull`; never a tool.
+ */
+export const designPreviewInputSchema = z.object({
+  artifactId: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  preview: designPreviewSchema,
+});
+
 export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactReadInputSchema = z.object({
   artifactId: z.string().min(1),
-  /** A past revision; omitted, the latest. */
-  revision: z.number().int().positive().optional(),
+  /** A past revision; omitted, the latest. A pulled file's base is revision 0. */
+  revision: z.number().int().nonnegative().optional(),
 });
 
 export const coverageItemSchema = z.object({
@@ -332,6 +354,71 @@ export const clarificationSchema = z.object({
 });
 
 /** The whole living spec (ADR 0302). Each revision replaces the last. */
+/**
+ * A piece of work a plan splits off (spec 24, ADR 0303): its own title, size and spec slice (Goal,
+ * Scope, Acceptance criteria, with provenance tags pointing back at the parent), and optionally
+ * the sibling it waits for (`after`: that sibling's `key`), which must merge first.
+ */
+export const specChildSchema = z.object({
+  /** A short id the siblings' `after` names, such as `api` or `ui`. */
+  key: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, "a key is lowercase letters, digits and -"),
+  title: z.string().trim().min(1).max(200),
+  size: z.enum(["small", "medium", "large"]),
+  goal: z.string().trim().min(1).max(4_000),
+  scope: z.array(z.string().trim().min(1).max(1_000)).min(1).max(30),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1_000)).min(1).max(30),
+  after: z.string().min(1).max(40).optional(),
+});
+export type SpecChild = z.output<typeof specChildSchema>;
+
+/** Why a split can't stand (keys, `after`), or null. One `after` each, so a cycle is a chain back. */
+export function splitProblem(children: readonly SpecChild[]): string | null {
+  const keys = new Set<string>();
+  for (const c of children) {
+    if (keys.has(c.key)) return `two children share the key "${c.key}"`;
+    keys.add(c.key);
+  }
+  const after = new Map(children.map((c) => [c.key, c.after]));
+  for (const c of children) {
+    if (c.after === undefined) continue;
+    if (!keys.has(c.after))
+      return `"${c.key}" waits for "${c.after}", which isn't one of the children`;
+    const seen = new Set([c.key]);
+    for (let k: string | undefined = c.after; k !== undefined; k = after.get(k)) {
+      if (seen.has(k)) return `"${c.key}" waits for itself through "after"`;
+      seen.add(k);
+    }
+  }
+  return null;
+}
+
+/**
+ * The digest a person's approval of a split names (review of #171): SHA-256 (hex) of each child's
+ * key, title, size, goal, scope, criteria and `after`, in order. The app computes it from what it
+ * showed; the cloud refuses an approval whose digest isn't the gated spec's.
+ */
+export async function splitDigest(children: readonly SpecChild[]): Promise<string> {
+  const canonical = JSON.stringify(
+    children.map((c) => [
+      c.key,
+      c.title,
+      c.size,
+      c.goal,
+      c.scope,
+      c.acceptanceCriteria,
+      c.after ?? null,
+    ]),
+  );
+  // Web Crypto, in workerd, Node and the app's webview alike (this package has no DOM types).
+  const { subtle } = (
+    globalThis as unknown as {
+      crypto: { subtle: { digest(alg: string, data: Uint8Array): Promise<ArrayBuffer> } };
+    }
+  ).crypto;
+  const bytes = await subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export const specReviseInputSchema = z.object({
   title: z.string().max(200).optional(),
   /**
@@ -347,6 +434,18 @@ export const specReviseInputSchema = z.object({
   clarifications: z.array(clarificationSchema).max(100).default([]),
   /** What this revision changed, in a line. */
   summary: z.string().max(500).optional(),
+  /**
+   * Spec 24: the work items this plan splits into, approved with it in one decision. Depth 1: a
+   * child's own plan can't split again.
+   */
+  children: z
+    .array(specChildSchema)
+    .max(8)
+    .superRefine((cs, c) => {
+      const why = splitProblem(cs);
+      if (why) c.addIssue({ code: "custom", message: why });
+    })
+    .optional(),
 });
 export type SpecRevision = z.input<typeof specReviseInputSchema>;
 
@@ -409,6 +508,7 @@ export const PLANNING_TOOL_INPUTS = {
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
   "design.pull": designPullInputSchema,
+  "design.preview": designPreviewInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -426,12 +526,13 @@ export const PLANNING_INPUTS = {
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
   "question.answerFromEdit": questionAnswerFromEditInputSchema,
-  "artifact.add": artifactAddInputSchema,
-  "artifact.update": artifactUpdateInputSchema,
+  "artifact.add": artifactAddCallSchema,
+  "artifact.update": artifactUpdateCallSchema,
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
   "design.pull": designPullInputSchema,
+  "design.preview": designPreviewInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -464,6 +565,8 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
     "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":
     "Bring a question to everyone's view (when you want an answer to it next). null clears.",
+  "design.preview":
+    "Not a tool: the planning MCP server stores the preview it drew of a pulled design's base.",
   "spec.revise":
     "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption]. Keep every line a person edited word for word (refused otherwise): if one must change, ask them in the chat.",
   "chat.reply": "Reply in the planning chat, optionally about a question or to a message.",

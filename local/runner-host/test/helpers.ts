@@ -257,6 +257,9 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
               cloud.planningCalls.push(call);
               return { body: cloud.planning(call) as Record<string, unknown> };
             }
+            case "line":
+              // An engine without the job line (spec 44 part B): the host keeps its held calls.
+              return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
           }
         },
       ),

@@ -44,6 +44,7 @@ describe("the signed runner channel", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
@@ -569,6 +570,7 @@ describe("device login over the channel (ADR 0056)", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),

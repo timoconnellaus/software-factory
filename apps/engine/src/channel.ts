@@ -119,6 +119,7 @@ async function route(
     if (job.call === "terminal") {
       return terminalReply(env, runner, job.jobId, record, origin, signal);
     }
+    if (job.call === "line") return lineReply(env, runner, job.jobId, record, origin);
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -416,6 +417,39 @@ async function terminalReply(
     await pause(Math.min(HELD_POLL_MS, left));
     if (signal?.aborted) return { body: { connect: null } };
   }
+}
+
+/**
+ * The runner host's job line (spec 44 part B, ADR 0592): `run.terminal.host` as the runner (fenced:
+ * its own live job), then a one-use socket URL for the job's relay. The relay pushes
+ * `{ t: "steer" | "viewer" | "planning" }` down it; the host answers each with its own fenced call.
+ * Answered at once; never stored.
+ */
+async function lineReply(
+  env: Env,
+  runner: string,
+  jobId: string,
+  record: Record<string, unknown>,
+  origin: string,
+): Promise<ChannelReply> {
+  const parsed = terminalCallRequestSchema.safeParse(record);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: { error: parsed.error.message, code: "invalid_input", details: parsed.error.issues },
+    };
+  }
+  const check = await invokeReply(
+    env,
+    "run.terminal.host",
+    { jobId, fencingToken: parsed.data.fencingToken },
+    { type: "runner", id: runner },
+  );
+  if (check.status && check.status !== 200) return check;
+  const ticket = await terminalRelay(env, jobId).lineTicket();
+  const url = new URL(TERMINAL_PATHS.line(jobId), origin.replace(/^http/, "ws"));
+  url.searchParams.set("ticket", ticket);
+  return { body: { connect: { url: url.toString() } } };
 }
 
 /**

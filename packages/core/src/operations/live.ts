@@ -730,7 +730,11 @@ export const runSteer = defineOperation({
       logPlanning(ctx, item.id, "chat.steered", { messageId, steerId: id });
       await takeBackFromGate(ctx, item, "a person steered the planner");
     }
-    // Nothing to wake: the runner host's held steer call polls for it in the Worker (spec 44).
+    // Wakes the host through its job line, when it keeps one (spec 44 part B): routed to the job's
+    // relay. A host without a line finds the steer on its held call's next poll.
+    if (runnerHas(run, "job-line")) {
+      ctx.emit({ kind: "run.steered", payload: { workItemId: item.id, jobId: run.job_id } });
+    }
     return { steerId: id, text, status: "queued" as const };
   },
 });
@@ -864,7 +868,10 @@ export const runTakeover = defineOperation({
       }),
     );
     ctx.change({ entity: "run_steer", id, after: { runId: run.id, kind: "takeover" } });
-    // Like a steer: the host's held steer call finds it on its next poll (spec 44).
+    // Like a steer: pushed down the job line, else found on the held call's next poll (spec 44).
+    if (runnerHas(run, "job-line")) {
+      ctx.emit({ kind: "run.steered", payload: { workItemId: item.id, jobId: run.job_id } });
+    }
     return { requestId: id, status: "queued" as const };
   },
 });

@@ -13,6 +13,7 @@ import {
   capabilityManifestSchema,
   capacityPausedSchema,
   capacitySchema,
+  ENGINE_CAPABILITIES,
   executedCheckSchema,
   JOB_STAGES,
   type Job,
@@ -413,6 +414,11 @@ export const runnerHeartbeat = defineOperation({
     desiredVersion: z.string().nullable(),
     /** The engine's RUNNER_COMPAT: a runner below it claims nothing until it updates (ADR 0520). */
     minRunnerCompat: z.number().int(),
+    /**
+     * What this engine supports beyond the contract (spec 44 part B): `job-line`. A host uses the
+     * line only when it declares the capability too.
+     */
+    engine: z.object({ capabilities: z.array(z.string()) }),
   }),
   async handler(input, ctx) {
     const runner = await loadRunner(ctx, ctx.actor.id);
@@ -499,6 +505,7 @@ export const runnerHeartbeat = defineOperation({
       leases,
       desiredVersion: desiredVersion(ctx),
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: [...ENGINE_CAPABILITIES] },
     };
   },
 });

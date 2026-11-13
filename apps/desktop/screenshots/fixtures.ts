@@ -3,7 +3,10 @@
 // (docs/design/factory-ui) so the build and the design can be compared side by side. Never shipped:
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
-import { planBlocks } from "@software-factory/client/planning";
+import { type DesignPreview, planBlocks } from "@software-factory/client/planning";
+// Spec 22 part B: two designs as the runner's checks drew them (packages/planning-designs), a
+// pulled data model with its base, and an architecture the planner made.
+import DESIGNS from "./design-fixtures.json" with { type: "json" };
 
 /**
  * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
@@ -16,6 +19,36 @@ const notRunFixture = () => {
   return seenNotRun;
 };
 const NOT_RUN_REASON = "this Mac runner has no container runtime";
+
+/**
+ * `?fixture=red`: the factory's repository has a red main (spec 53): #8's landing is the proven
+ * culprit, the incident fix #40 is a repair merging, and #42 is held behind it.
+ */
+let seenRed = false;
+const redFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenRed ||= where.includes("fixture=red");
+  return seenRed;
+};
+const RED_SINCE_MIN = 18;
+/** `?fixture=red`'s approved item, held behind the red main. */
+const HELD_44 = () =>
+  item(44, "Cache the runner list", "merge", "waiting", {
+    statusReason: "Approved: waiting to merge",
+    priority: "high",
+    updatedAt: ago(15),
+  });
+const RED_MAIN = () => ({
+  projectId: FACTORY,
+  name: "Factory",
+  repositoryId: "repo_software-factory",
+  repo: { owner: "example", name: "software-factory" },
+  branch: "main",
+  headSha: "4d1c9e2a7b",
+  failing: ["ci", "typecheck"],
+  redSince: ago(RED_SINCE_MIN),
+  lastGreenSha: "b7e0f31c55",
+});
 /** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
 const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
   proof.map((p) => ({
@@ -565,8 +598,10 @@ const INBOX: OpOutput<"inbox.list"> = {
       files: [{ kind: "default-branch", filename: "software-factory-default-branch.json" }],
     },
   ],
-  // The "main is red" card (spec 53): no screen shows it yet.
-  mainRed: [],
+  // The "main is red" card (spec 53): only with `?fixture=red`.
+  get mainRed() {
+    return redFixture() ? [RED_MAIN()] : [];
+  },
 };
 
 // As main's verify run reports its checks (verifyResultSchema): the agent's own words in `detail`.
@@ -596,7 +631,7 @@ function link(id: string) {
 /** `workItem.board` over the fixtures: the states asked for, in pull order, and counts per state. */
 function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
   const states = input.states ?? [...PRE, ...ACTIVE_STATES];
-  const inOrg = ITEMS.filter(
+  const inOrg = [...ITEMS, ...(redFixture() ? [HELD_44()] : [])].filter(
     (i) => i.orgId === input.orgId && (!input.projectId || i.projectId === input.projectId),
   );
   const items = inOrg
@@ -630,6 +665,8 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         releasedAt: i.releasedAt ?? null,
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
+        // Spec 24: #13 was split off #9's plan, so lists show it under #9.
+        parentWorkItemId: i.id === "wi_13" ? "wi_9" : null,
         waitsFor,
         ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
@@ -688,6 +725,43 @@ function detail(id: string): OpOutput<"workItem.get"> {
     shaping: null,
     waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
     waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+    // Spec 24: #9's plan split into two work items; #13 is the first of them.
+    split:
+      id === "wi_9"
+        ? {
+            parent: null,
+            children: [
+              {
+                id: "wi_13",
+                number: 13,
+                title: "Issue intake and the trusted-author filter",
+                status: "waiting",
+                stage: "merge",
+                size: "small",
+              },
+              {
+                id: "wi_split_2",
+                number: 14,
+                title: "Report back to the issue",
+                status: "queued",
+                stage: "intake",
+                size: "small",
+              },
+            ],
+            held: false,
+          }
+        : id === "wi_13"
+          ? {
+              parent: {
+                id: "wi_9",
+                number: 9,
+                title: "Take work from GitHub issues",
+                status: "running",
+              },
+              children: [],
+              held: false,
+            }
+          : { parent: null, children: [], held: false },
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
@@ -764,6 +838,8 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       assumptions: [],
       path: `docs/specs/wi-${n}.md`,
       commitSha: "a1b2c3d",
+      // Spec 24: #12's plan splits into two work items (its card opens the plan to approve).
+      splitInto: id === "wi_12" ? 2 : 0,
     },
     questions:
       n === 11
@@ -1397,6 +1473,30 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       bodyMd: live ? PLAN_MD : "## Goal\nVerify flags a change that weakens the tests.\n",
       acceptanceCriteria: live ? [] : CRITERIA,
       assumptions: live ? ["Edits after release are ignored"] : [],
+      childrenUnreadable: false,
+      splitDigest: live ? "0".repeat(64) : null,
+      // Spec 24, as in PlanFocus: the plan splits into two work items, approved together.
+      children: live
+        ? [
+            {
+              key: "intake",
+              title: "Issue intake and the trusted-author filter",
+              size: "small" as const,
+              goal: "A labelled issue from a trusted author becomes a work item [parent]",
+              scope: ["The issues webhook [parent]", "The trusted-author filter [Q2]"],
+              acceptanceCriteria: ["A labelled issue appears in the Backlog [parent]"],
+            },
+            {
+              key: "report",
+              title: "Report back to the issue",
+              size: "small" as const,
+              goal: "The issue shows where its work got to [parent]",
+              scope: ["One comment with a link, closed on merge [Q4]"],
+              acceptanceCriteria: ["The issue is closed when its item merges [Q4]"],
+              after: "intake",
+            },
+          ]
+        : [],
       coverage: [],
       clarifications: [],
       summary: null,
@@ -1547,6 +1647,30 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             },
             createdAt: ago(1),
           },
+          // Spec 22 part B: a comment pinned on a table of the pulled data model.
+          {
+            id: "m8",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Keep the issue's node id too: numbers change when a repo is transferred.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: null,
+            pin: {
+              artifactId: "art_schema",
+              element: "table github_issues",
+              selector: null,
+              x: 0,
+              y: 0,
+              fx: 0.85,
+              fy: 0.2,
+              width: 700,
+            },
+            anchor: null,
+            createdAt: ago(0),
+          },
         ]
       : [],
     artifacts: live
@@ -1578,6 +1702,32 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             designType: null,
             pulledPath: null,
             updatedAt: ago(9),
+          },
+          {
+            id: "art_schema",
+            kind: "design",
+            title: "work-items.dbml",
+            description: "Pulled from .kim/designs/work-items.dbml",
+            revision: 3,
+            keep: true,
+            controls: [],
+            size: DESIGNS.art_schema.content.length,
+            designType: "data-model",
+            pulledPath: ".kim/designs/work-items.dbml",
+            updatedAt: ago(3),
+          },
+          {
+            id: "art_flow",
+            kind: "design",
+            title: "Issue intake",
+            description: "How a labelled issue becomes a work item.",
+            revision: 1,
+            keep: true,
+            controls: [],
+            size: DESIGNS.art_flow.content.length,
+            designType: "architecture",
+            pulledPath: null,
+            updatedAt: ago(6),
           },
         ]
       : [],
@@ -1681,6 +1831,24 @@ function liveView(): OpOutput<"run.live"> {
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
+/** A design's revision as artifact.get gives it: revision 0 is a pulled file's base. */
+function designGet(id: "art_schema" | "art_flow", revision: number | undefined) {
+  const d = DESIGNS[id];
+  const base = revision === 0 && d.base !== null;
+  const latest = id === "art_schema" ? 3 : 1;
+  return {
+    artifactId: id,
+    kind: "design",
+    title: id === "art_schema" ? "work-items.dbml" : "Issue intake",
+    revision: base ? 0 : latest,
+    latest,
+    content: base ? (d.base ?? "") : d.content,
+    controls: [],
+    designType: d.type,
+    preview: (base ? d.basePreview : d.preview) as DesignPreview | null,
+  };
+}
+
 /** A refusal in the server's shape: the fake door answers `{ ok: false, code, error }`. */
 export class Refusal extends Error {
   constructor(
@@ -1770,7 +1938,9 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS, ...(redFixture() ? [HELD_44()] : [])].filter(
+      (i) => !input.orgId || i.orgId === input.orgId,
+    ),
   }),
   "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
   "workItem.board": (input) => board(input),
@@ -1818,15 +1988,20 @@ export const ANSWERS: Answers = {
       kimCount: 3,
     };
   },
-  "artifact.get": (input) => ({
-    artifactId: input.artifactId,
-    kind: "mockup",
-    title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
-    revision: input.artifactId === "art_a" ? 2 : 1,
-    latest: input.artifactId === "art_a" ? 2 : 1,
-    content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
-    controls: ["--accent"],
-  }),
+  "artifact.get": (input) =>
+    input.artifactId === "art_schema" || input.artifactId === "art_flow"
+      ? designGet(input.artifactId, input.revision)
+      : {
+          artifactId: input.artifactId,
+          kind: "mockup",
+          title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
+          revision: input.artifactId === "art_a" ? 2 : 1,
+          latest: input.artifactId === "art_a" ? 2 : 1,
+          content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
+          controls: ["--accent"],
+          designType: null,
+          preview: null,
+        },
   "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
@@ -2060,6 +2235,86 @@ export const ANSWERS: Answers = {
   "cliToken.list": () => ({
     tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
   }),
+  // Spec 53's babysitter line: green unless `?fixture=red`.
+  "delivery.status": (input) => {
+    if (input.projectId !== FACTORY) return { repositories: [] };
+    const red = redFixture();
+    return {
+      repositories: [
+        {
+          repositoryId: "repo_software-factory",
+          owner: "example",
+          name: "software-factory",
+          branch: "main",
+          main: {
+            state: red ? ("red" as const) : ("green" as const),
+            headSha: "4d1c9e2a7b",
+            failing: red ? ["ci", "typecheck"] : [],
+            lastGreenSha: "b7e0f31c55",
+            redSince: red ? ago(RED_SINCE_MIN) : null,
+            firstRedSha: red ? "4d1c9e2a7b" : null,
+            checkedAt: ago(1),
+            suspects: red
+              ? [
+                  {
+                    workItemId: "wi_8",
+                    number: 8,
+                    title: "Retry a planning session that lost its runner",
+                    prNumber: 41,
+                    mergeSha: "4d1c9e2a7b",
+                  },
+                ]
+              : [],
+            culpritWorkItemId: red ? "wi_8" : null,
+            attribution: red
+              ? "#8's merge (4d1c9e2) is the only landing since b7e0f31 was green, and main went red on it, and the red reproduced on a rerun"
+              : null,
+            attributedBy: red ? ("proven" as const) : null,
+            candidateWorkItemId: null,
+          },
+          deliveries: red
+            ? [
+                {
+                  workItemId: "wi_40",
+                  number: 40,
+                  title: "Factory incident: #8 had a run that failed",
+                  position: 1,
+                  state: "merging" as const,
+                  repair: true,
+                  driver: "babysitter" as const,
+                  headSha: "a1b2c3d4e5",
+                  enqueuedAt: ago(9),
+                },
+                {
+                  workItemId: "wi_44",
+                  number: 44,
+                  title: "Cache the runner list",
+                  position: 2,
+                  state: "held" as const,
+                  repair: false,
+                  driver: "babysitter" as const,
+                  headSha: "9c41e07d2b",
+                  enqueuedAt: ago(12),
+                },
+              ]
+            : [
+                {
+                  workItemId: "wi_42",
+                  number: 42,
+                  title: "Keep the runner count fresh",
+                  position: 1,
+                  state: "merging" as const,
+                  repair: false,
+                  driver: "babysitter" as const,
+                  headSha: "9c41e07d2b",
+                  enqueuedAt: ago(12),
+                },
+              ],
+        },
+      ],
+    };
+  },
+  "workItem.markRepair": (input) => ({ repair: input.repair }),
   "mergeQueue.list": (input) => ({
     entries:
       input.projectId === FACTORY
