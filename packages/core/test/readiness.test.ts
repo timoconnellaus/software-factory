@@ -38,6 +38,56 @@ const ORDINARY: [string, string][] = [
   // Review of #160: a ticked item is a request, and `[x](url)` is a link with its text.
   ["Bug", "- [x] Crashes when saving a 2GB file"],
   ["Docs", "- [x](https://example.com/docs) is broken"],
+  // Follow-up review: an unticked task is a task, and a reference-shaped line with words is text.
+  ["Theme", "- [ ] Add dark mode\n- [ ] Follow the system setting"],
+  // Review of #169: words that merely start like an attestation are tasks.
+  [
+    "Tasks",
+    [
+      "Implement dark mode",
+      "Improve startup time",
+      "Investigate the crash",
+      "Website footer is broken",
+      "Mysql migration",
+      "Read replicas for the DB",
+      "This issue tracker link 404s",
+    ]
+      .map((t) => `- [ ] ${t}`)
+      .join("\n"),
+  ],
+  ["One", "- [ ] Implement X"],
+  // Review of #169 (2): openings that only look like a filer's, and \b before / - . :
+  ...[
+    "I want CSV export",
+    "I am unable to log in after the update",
+    "We need rate limiting on the API",
+    "We should cache the list",
+    "My account page crashes on load",
+    "Read the config from env instead of the file",
+    "This is broken on Safari",
+    "The issue is that uploads over 2GB fail",
+    "This PR is where the fix lands",
+    "Checked exceptions should be wrapped",
+    "Searched results should paginate",
+    "I/O errors on save are swallowed",
+    "i.e. fix the footer",
+    "Yes/no toggle for notifications",
+    "Checked-in binaries removed",
+    "Agreed-upon schema migration",
+    "My-sql migration",
+    "We-chat login",
+    // Round 3: a placeholder's opening with a real request after it.
+    "My code is crashing when I upload",
+    "My changes are lost after refresh",
+    "My PR has been stuck in verify for days",
+    "My commit has the wrong author in the log",
+    "I checked the docs page and it 404s",
+    "I read the docs and the install command is wrong",
+    "I tested the tests tab and it crashes",
+    "I have read the changelog page; it renders blank",
+    "I have added tests but CI still fails on main",
+  ].map((t): [string, string] => [`Task: ${t}`, `- [ ] ${t}`]),
+  ["API", "[note]: we should drop the v1 API"],
 ];
 
 /** Nothing to act on: every one parks. */
@@ -52,6 +102,24 @@ const EMPTY: [string, string][] = [
   [
     "Bug report",
     "## Checklist\n- [ ] I searched existing issues\n- [ ] I read the docs\n* [ ] I can reproduce it",
+  ],
+  // Placeholders that drop (review of #169).
+  [
+    "Placeholders",
+    [
+      "TODO",
+      "N/A",
+      "Tests added",
+      "Not a duplicate",
+      "I have read the contributing guide",
+      "My code follows the style guidelines of this project",
+      "This issue is not a duplicate",
+      "I agree to the terms",
+      "I have read the [contributing guide](https://example.com/CONTRIBUTING.md)",
+      "**I have searched the existing issues**",
+    ]
+      .map((t) => `- [ ] ${t}`)
+      .join("\n"),
   ],
   ["Screenshot", "![screenshot](https://example.com/s.png)"],
   ["Look", '<img src="https://example.com/s.png" alt="the bug" width="400">'],

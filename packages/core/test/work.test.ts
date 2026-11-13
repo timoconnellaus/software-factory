@@ -314,6 +314,64 @@ describe("the spec gate and questions", () => {
     expect(inbox.questions).toHaveLength(1);
     expect(inbox.running).toHaveLength(1);
   });
+
+  it("names the plan a card's item was split off, for grouping under it (spec 24)", async () => {
+    const { w, item, spec } = await specItem();
+    const parent = await newItem(w, "Take work from GitHub issues");
+    const linked = (source: string) =>
+      rows(
+        "UPDATE core_work_items SET parent_work_item_id = ?, source = ? WHERE id = ?",
+        parent.workItemId,
+        source,
+        item.workItemId,
+      );
+    await linked("planning");
+    await call("spec.accept", { workItemId: item.workItemId, specId: spec.specId }, FOREMAN);
+    await ok(
+      "question.ask",
+      { workItemId: item.workItemId, questions: [{ prompt: "Colour?" }] },
+      FOREMAN,
+    );
+    type Card = { workItemId: string | null; parent: { number: number; title: string } | null };
+    const inbox = () => ok<{ gates: Card[]; questions: Card[] }>("inbox.list", {}, w.human);
+    const split = await inbox();
+    const want = {
+      id: parent.workItemId,
+      number: parent.number,
+      title: "Take work from GitHub issues",
+    };
+    expect(split.gates.find((g) => g.workItemId === item.workItemId)?.parent).toEqual(want);
+    expect(split.questions.find((q) => q.workItemId === item.workItemId)?.parent).toEqual(want);
+    // The planning card names it too (review of #169).
+    await rows(
+      "INSERT INTO core_planning_sessions (id, work_item_id, session_ref, status, announced_at, created_by, created_at, updated_at) VALUES (?, ?, 'ref', 'idle', '2026-11-13T00:00:00.000Z', 'test', '2026-11-13T00:00:00.000Z', '2026-11-13T00:00:00.000Z')",
+      uid("ps_"),
+      item.workItemId,
+    );
+    const withPlanning = await ok<{ planning: Card[] }>("inbox.list", {}, w.human);
+    expect(withPlanning.planning.find((p) => p.workItemId === item.workItemId)?.parent).toEqual(
+      want,
+    );
+    // Never across orgs: a parent row in another org isn't named (review of #169).
+    const elsewhereOrg = uid("org_");
+    await rows(
+      "INSERT INTO core_organization (id, name, slug, kind, github_installation_id, created_at) VALUES (?, 'Elsewhere', ?, 'personal', '43', '2026-11-13T00:00:00.000Z')",
+      elsewhereOrg,
+      elsewhereOrg,
+    );
+    await rows(
+      "UPDATE core_work_items SET org_id = ? WHERE id = ?",
+      elsewhereOrg,
+      parent.workItemId,
+    );
+    const elsewhere = await inbox();
+    expect(elsewhere.gates.find((g) => g.workItemId === item.workItemId)?.parent).toBeNull();
+    await rows("UPDATE core_work_items SET org_id = ? WHERE id = ?", w.orgId, parent.workItemId);
+    // An incident is its item's child too, but not split work: no parent on its cards.
+    await linked("incident");
+    const incident = await inbox();
+    expect(incident.gates.find((g) => g.workItemId === item.workItemId)?.parent).toBeNull();
+  });
 });
 
 describe("workItem.get for the app", () => {
