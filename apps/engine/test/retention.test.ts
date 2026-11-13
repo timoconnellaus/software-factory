@@ -750,7 +750,11 @@ describe("a lost archive object is an incident for a person", () => {
     await expect(list(plain)).resolves.toMatchObject({ more: false });
     await expect(resolve(plain)).rejects.toMatchObject({ code: "forbidden" });
     // Another org's list is that org's own: none of these.
-    expect(await list(other.human, other.orgId)).toEqual({ incidents: [], more: false });
+    expect(await list(other.human, other.orgId)).toEqual({
+      incidents: [],
+      more: false,
+      auditArchiveStopped: null,
+    });
     await expect(resolve(w.human, "inc_nope")).rejects.toMatchObject({ code: "not_found" });
     // An incident with a fix work item closes with its item, not here.
     const fix = await ok<{ incidentId: string }>(
