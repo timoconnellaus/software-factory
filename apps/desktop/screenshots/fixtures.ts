@@ -44,6 +44,58 @@ const NOT_RUN_EXECUTED = {
   ],
 };
 
+/**
+ * `?fixture=nochecks`: the project declares no checks and no required CI reported, so nothing can
+ * be proven (the gate says so, no count). `?fixture=allproven`: every criterion tied to a check
+ * that passed. Neither: checks set up, some criteria tied to none.
+ */
+let seenProof: "nochecks" | "allproven" | null = null;
+const proofFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  if (where.includes("fixture=nochecks")) seenProof = "nochecks";
+  else if (where.includes("fixture=allproven")) seenProof = "allproven";
+  return seenProof;
+};
+type ProofRow = {
+  criterion: string | undefined;
+  proven: boolean;
+  provenBy: string[];
+  unproven: string[];
+  notCounted: string[];
+  linkedBy: "spec" | "reviewer";
+  weakened: boolean;
+  reviewerMet: boolean;
+  opinion: string;
+};
+/** The proof as each fixture has it, and the count the packet stores beside it. */
+function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<string, unknown> } {
+  const which = proofFixture();
+  const proof =
+    which === "nochecks"
+      ? rows.map((r) => ({ ...r, proven: false, provenBy: [], unproven: [], notCounted: [] }))
+      : which === "allproven"
+        ? rows.map((r) => ({
+            ...r,
+            proven: true,
+            provenBy: ["tests"],
+            unproven: [],
+            notCounted: [],
+            linkedBy: "spec" as const,
+          }))
+        : notRunFixture()
+          ? notProven(rows)
+          : rows;
+  return {
+    proof,
+    proven: {
+      proven: proof.filter((r) => r.proven).length,
+      total: proof.length,
+      weakened: false,
+      checksSetUp: which !== "nochecks",
+    },
+  };
+}
+
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 
@@ -802,33 +854,35 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
             // head, and each criterion's proof. Only the approved spec's links prove a criterion.
             executed: notRunFixture()
               ? NOT_RUN_EXECUTED
-              : {
-                  declared: ["lint", "tests"],
-                  results: [
-                    {
-                      name: "lint",
-                      command: "pnpm lint",
-                      exitCode: 0,
-                      timedOut: false,
-                      durationMs: 14_000,
-                      logTail: "",
-                      round: 0,
-                      passed: true,
-                    },
-                    {
-                      name: "tests",
-                      command: "pnpm test",
-                      exitCode: 0,
-                      timedOut: false,
-                      durationMs: 52_000,
-                      logTail: "",
-                      round: 1,
-                      passed: true,
-                    },
-                  ],
-                  extra: [],
-                },
-            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
+              : proofFixture() === "nochecks"
+                ? { declared: [], results: [], extra: [] }
+                : {
+                    declared: ["lint", "tests"],
+                    results: [
+                      {
+                        name: "lint",
+                        command: "pnpm lint",
+                        exitCode: 0,
+                        timedOut: false,
+                        durationMs: 14_000,
+                        logTail: "",
+                        round: 0,
+                        passed: true,
+                      },
+                      {
+                        name: "tests",
+                        command: "pnpm test",
+                        exitCode: 0,
+                        timedOut: false,
+                        durationMs: 52_000,
+                        logTail: "",
+                        round: 1,
+                        passed: true,
+                      },
+                    ],
+                    extra: [],
+                  },
+            ...shapedProof([
               {
                 criterion: CRITERIA[0],
                 proven: true,

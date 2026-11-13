@@ -108,6 +108,26 @@ describe("run settings", () => {
     expect(s.permissions.allow.some((r) => r.includes("git push"))).toBe(false);
   });
 
+  it("denies writes with Edit(...) rules only, never a Write(...) deny that can't match", () => {
+    for (const stage of ["triage", "spec", "build", "verify"] as const) {
+      const s = runSettings(
+        { stage },
+        { worktree: "/w/job", runDir: "/r/job", platform: "darwin", attachmentsDir: "/a/job" },
+      );
+      expect(s.permissions.deny.filter((r) => r.startsWith("Write("))).toEqual([]);
+      expect(s.permissions.deny).toEqual(
+        expect.arrayContaining([
+          "Edit(~/.ssh)",
+          "Edit(~/.ssh/**)",
+          "Edit(//w/job/.claude)",
+          "Edit(//w/job/.claude/**)",
+          "Edit(.git/**)",
+          "Edit(//a/job/**)",
+        ]),
+      );
+    }
+  });
+
   it("turns the sandbox on in every stage, with no way to run unsandboxed", () => {
     for (const stage of ["triage", "spec", "build", "verify"] as const) {
       const s = runSettings(
@@ -678,6 +698,7 @@ describe("attachments in a run (ADR 0310)", () => {
     expect(s.permissions.additionalDirectories).toEqual(["/a/job"]);
     expect(s.permissions.allow).toContain("Read(//a/job/**)");
     expect(s.permissions.deny).toContain("Edit(//a/job/**)");
+    expect(s.permissions.deny).not.toContain("Write(//a/job/**)");
     const none = runSettings({ stage: "build" }, { worktree: "/w/job", runDir: "/r/job" });
     expect(none.permissions.additionalDirectories).toBeUndefined();
   });

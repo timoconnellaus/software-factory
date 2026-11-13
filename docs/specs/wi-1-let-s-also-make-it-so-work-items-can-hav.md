@@ -1,6 +1,6 @@
 # Spec: Work item attachments
 
-Read first: [`docs/architecture.md`](../architecture.md), ADRs [0003](../adr/0003-operations-registry.md), [0004](../adr/0004-operations-are-the-api.md), [0010](../adr/0010-no-ambient-authority.md), [0011](../adr/0011-audit-journal-is-the-metrics.md), [0033](../adr/0033-per-job-github-app-token.md); specs [01](01-operations-and-store.md), [03](03-runner-contract-and-orca.md), [13](13-r1-work-item-detail.md).
+Read first: [`docs/architecture.md`](../architecture.md), ADRs [0003](../adr/0003-operations-registry.md), [0004](../adr/0004-invoke-pipeline-and-gate.md), [0010](../adr/0010-gatekeepers-for-intake-and-outbound.md), [0011](../adr/0011-audit-journal-is-the-metrics.md), [0033](../adr/0033-per-job-github-app-tokens.md); specs [01](01-operations-and-store.md), [03](03-runner-contract-and-orca.md), [13](13-r1-work-item-detail.md).
 
 ## Goal
 A work item can carry files, such as screenshots, logs and mockups, that people add by picker, drag-and-drop or pasting from the clipboard, and that the item's runs can read, so agents see what the requester saw.

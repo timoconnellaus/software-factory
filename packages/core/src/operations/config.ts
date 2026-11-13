@@ -869,3 +869,77 @@ export async function describeConfigDecision(
 }
 
 const quotedName = (name: string) => `"${name.replace(/\s+/g, " ").slice(0, 60)}"`;
+
+/**
+ * An org admin approves a project's existing looser override in one step (review of spec 52 (d2)):
+ * the override the project already has, which the stricter org value overrides until approved (it
+ * lapsed with an org change, or an org change made it looser). The approval counts for the org's
+ * current version, as one given on a save does, and carries to later versions that leave the
+ * setting's value unchanged. An override that isn't looser than the org's value has nothing to
+ * approve.
+ */
+export const overrideApprove = defineOperation({
+  name: "override.approve",
+  description:
+    "Approve a project's existing looser workflow override (spec 52, Q5/Q6): the value the project's config already sets for one stage setting, looser than the org workflow's, which the stricter org value replaces until an org admin approves it. Name the org config version you saw (`orgVersion`); a stale one is a conflict. Refused when the project has no such override or it isn't looser. Org admins only, in the app.",
+  risk: "write",
+  actors: ["human"],
+  permission: "admin",
+  // A policy decision (it lets a looser setting apply): made in the app (ADR 0340), never from the
+  // CLI, MCP or a desktop device until a presence proof covers policy decisions.
+  browserOnly: true,
+  input: z.object({
+    projectId,
+    stageId: z.string().min(1).max(40),
+    setting: z.string().min(1).max(40),
+    orgVersion: z.number().int().positive(),
+    note: z.string().max(2_000).optional(),
+  }),
+  output: z.object({ approved: z.boolean(), orgVersion: z.number(), value: z.unknown() }),
+  async handler(input, ctx) {
+    const project = requireProject(ctx);
+    if (ctx.origin.surface !== "app" && ctx.origin.surface !== "test")
+      throw new OperationError(
+        "forbidden",
+        `an override is approved in the app, not from ${ctx.origin.surface}`,
+        { browserOnly: true },
+      );
+    const raw = ctx.scope.rawPolicy;
+    if (!raw || !onOrgWorkflow(raw))
+      throw new OperationError("invalid_input", "the project isn't on an org workflow");
+    const { version, config } = await currentOrgConfig(ctx.db, project.org_id);
+    if (version !== input.orgVersion)
+      throw new OperationError(
+        "conflict",
+        `the org's workflows are at v${version}, not v${input.orgVersion}: look again before approving`,
+      );
+    const looser = normaliseOverrides(raw, config).looser.find(
+      (l) => l.stageId === input.stageId && l.key === input.setting,
+    );
+    if (!looser)
+      throw new OperationError(
+        "invalid_input",
+        `the project has no ${input.stageId} ${input.setting} override looser than the org's value: nothing to approve`,
+      );
+    // Guarded on the org still being at the version the admin saw.
+    ctx.guardExists(
+      "org config unchanged",
+      ctx.db
+        .selectFrom("core_organization")
+        .select("id")
+        .where("id", "=", project.org_id)
+        .where("config_version", "=", version),
+    );
+    approveOverrides(ctx, project, { looser: [looser], orgVersion: version });
+    ctx.change({
+      entity: "project",
+      id: project.id,
+      after: {
+        overrideApproved: { stage: input.stageId, setting: input.setting, value: looser.value },
+        orgVersion: version,
+        ...(input.note ? { note: input.note } : {}),
+      },
+    });
+    return { approved: true, orgVersion: version, value: looser.value };
+  },
+});

@@ -31,13 +31,13 @@ jobs:
       - id: check
         env:
           HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
-          ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ "$HAS_TOKEN" != "true" ]; then
             echo "::notice title=Deploy skipped::The CLOUDFLARE_API_TOKEN secret is not set. Add it with 'gh secret set CLOUDFLARE_API_TOKEN' (see docs/deploying.md)."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           elif [ -z "$ACCOUNT_ID" ]; then
-            echo "::notice title=Deploy skipped::The CLOUDFLARE_ACCOUNT_ID variable is not set. Add it with 'gh variable set CLOUDFLARE_ACCOUNT_ID' (see docs/deploying.md)."
+            echo "::notice title=Deploy skipped::The CLOUDFLARE_ACCOUNT_ID secret is not set. Add it with 'gh secret set CLOUDFLARE_ACCOUNT_ID' (see docs/deploying.md)."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -53,7 +53,7 @@ jobs:
       name: production
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v5
         with:
