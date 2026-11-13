@@ -3,7 +3,8 @@
 // review.sendBack, approval.decide). A decision updates the pending action and sends
 // `approval-<id>` to the Workflow in the same batch; the Workflow then re-runs the operation with
 // the approval, or loops back.
-import type { CoreDatabase, GateDecisionKind } from "@software-factory/db";
+import { type CoreDatabase, type GateDecisionKind, parseJson } from "@software-factory/db";
+import { splitDigest } from "@software-factory/runner-contract";
 import type { ExpressionBuilder } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -11,6 +12,7 @@ import { bindKimApproval, kimConflicts } from "../kim.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
+import { childrenOf, createSplitChildren } from "../splits.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
@@ -163,7 +165,12 @@ export function decidePending(
  * planner merges it); and the `.kim/` files the person sees at the gate are recorded on the spec,
  * revision and content hash, so the commit writes exactly those (review of #130).
  */
-export async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
+export async function approvingSpecGate(
+  ctx: HandlerContext,
+  pa: PendingActionRow,
+  /** What the person saw (spec 24): the spec version and the digest of its split. */
+  shown?: { specVersion?: number | undefined; splitDigest?: string | undefined },
+): Promise<void> {
   await assertSpecGateCurrent(ctx, pa.work_item_id);
   if (!pa.work_item_id) return;
   const conflicts = await kimConflicts(ctx, { id: pa.work_item_id });
@@ -180,6 +187,37 @@ export async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRo
     .where("id", "=", pa.work_item_id)
     .executeTakeFirst();
   if (w) await bindKimApproval(ctx, w);
+  // Spec 24: a split is approved only as it was shown (review of #171): the gated spec's version
+  // and the digest of its children, sent by the screen that showed them. The adjudicator and the
+  // generic gate card send neither, so a split always goes to a person on the plan's screen.
+  const specId = gatedSpecId(pa) ?? w?.current_spec_id ?? null;
+  if (!w || !specId) return;
+  const spec = await ctx.db
+    .selectFrom("core_specs")
+    .select(["version", "children"])
+    .where("id", "=", specId)
+    .executeTakeFirst();
+  const children = childrenOf(spec?.children);
+  if (children.length) {
+    if (
+      !shown?.splitDigest ||
+      shown.specVersion !== spec?.version ||
+      shown.splitDigest !== (await splitDigest(children))
+    ) {
+      throw new OperationError(
+        "conflict",
+        `this plan splits into ${children.length} work items: approve it on the plan's screen, which shows them (the version or the work items you saw aren't the gated ones)`,
+        { needs: "splitDigest", specVersion: spec?.version },
+      );
+    }
+    await createSplitChildren(ctx, w.id, specId);
+  }
+}
+
+/** The spec a spec gate was opened for (spec.accept's input). */
+function gatedSpecId(pa: PendingActionRow): string | null {
+  const input = parseJson<{ specId?: unknown }>(pa.input ?? "{}", {});
+  return typeof input.specId === "string" ? input.specId : null;
 }
 
 /** The work item's newest pending action of a kind (open first). */
@@ -285,12 +323,21 @@ export const specApprove = defineOperation({
   permission: "approver",
   browserOnly: true,
   presenceDecidable: true,
-  input: z.object({ workItemId, note: z.string().max(4_000).optional() }),
+  input: z.object({
+    workItemId,
+    note: z.string().max(4_000).optional(),
+    /** Spec 24: the version and the split's digest (splitDigest) the person saw; required for a split. */
+    specVersion: z.number().int().positive().optional(),
+    splitDigest: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
+  }),
   output: decisionOutput,
   async handler(input, ctx) {
     const pa = await gateFor(ctx, input.workItemId, "spec");
     // A gate the planner no longer stands behind (a person wrote after it asked) can't be approved.
-    if (pa.status === "pending") await approvingSpecGate(ctx, pa);
+    if (pa.status === "pending") await approvingSpecGate(ctx, pa, input);
     return decidePending(ctx, pa, "approved", input.note ?? null);
   },
 });

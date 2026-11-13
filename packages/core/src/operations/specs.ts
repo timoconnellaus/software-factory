@@ -1,13 +1,15 @@
 // The living spec (CONTEXT.md): drafted by the spec stage's run, gated by `spec.accept` (risk
 // `plan`, always reviewed for agents), committed to the work item's branch on approval.
 import { parseJson } from "@software-factory/db";
-import { droppedEdits, specResultSchema } from "@software-factory/runner-contract";
+import { DRAWN_BY, droppedEdits, specResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { sha256Hex } from "../attachments.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { approvedKimFiles, planPath, writeBackFiles } from "../kim.ts";
 import { defineOperation } from "../operation.ts";
 import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
+import { childrenOf, releaseSplitChildren } from "../splits.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 export const specPropose = defineOperation({
@@ -129,7 +131,12 @@ export const specCommit = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId }),
-  output: z.object({ path: z.string(), commitSha: z.string() }),
+  output: z.object({
+    path: z.string(),
+    commitSha: z.string(),
+    /** How many work items the approved spec split into (spec 24): the parent then builds nothing. */
+    children: z.number().default(0),
+  }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const spec = w.current_spec_id
@@ -140,15 +147,46 @@ export const specCommit = defineOperation({
           .executeTakeFirst()
       : undefined;
     if (spec?.status !== "approved") throw new OperationError("conflict", "no approved spec");
-    if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha };
+    const children = childrenOf(spec.children).length;
+    if (spec.commit_sha && spec.path)
+      return { path: spec.path, commitSha: spec.commit_sha, children };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
     const repo = await repoRef(ctx, requireRepository(ctx));
     // Spec 22: the plan and the kept artifacts, in the same commit as the spec. Only the files a
     // person approved at the gate, at the revision they saw (review of #130).
-    const kept = await approvedKimFiles(ctx, spec.kim_files);
-    const files = [{ path, content }, { path: planPath(w), content }, ...kept];
+    const approved = await approvedKimFiles(ctx, spec.kim_files);
+    // A design's drawing never overwrites a file the factory didn't draw (review of #163), on the
+    // item's branch or the default branch: two GitHub reads per drawing at the commit, at most two
+    // per kept design. A skipped drawing leaves the design itself to be written.
+    const repository = requireRepository(ctx);
+    const kept: typeof approved = [];
+    for (const f of approved) {
+      if (f.preview) {
+        const theirs = (
+          await Promise.all([
+            ctx.services.github.readFile(repo, f.path, w.branch),
+            ctx.services.github.readFile(repo, f.path, repository.default_branch),
+          ])
+        ).some((there) => there !== null && !there.includes(DRAWN_BY));
+        if (theirs) continue;
+      }
+      kept.push(f);
+    }
+    const files = [
+      { path, content },
+      { path: planPath(w), content },
+      ...kept.map((f) => ({ path: f.path, content: f.content })),
+    ];
     const unique = [...new Map(files.map((f) => [f.path, f])).values()];
+    // What this commit writes, by content hash (review of #171): a split parent's PR must hold
+    // exactly these at the head verify judges.
+    const committed = await Promise.all(
+      unique.map(async (f) => ({
+        path: f.path,
+        sha256: await sha256Hex(new TextEncoder().encode(f.content)),
+      })),
+    );
     const { commitSha } = await ctx.services.github.commitFiles(repo, {
       branch: w.branch,
       files: unique,
@@ -157,7 +195,7 @@ export const specCommit = defineOperation({
     ctx.write(
       ctx.db
         .updateTable("core_specs")
-        .set({ path, commit_sha: commitSha })
+        .set({ path, commit_sha: commitSha, committed_files: JSON.stringify(committed) })
         .where("id", "=", spec.id),
     );
     ctx.write(
@@ -167,7 +205,7 @@ export const specCommit = defineOperation({
         .where("id", "=", w.id),
     );
     ctx.change({ entity: "spec", id: spec.id, after: { path, commitSha } });
-    return { path, commitSha };
+    return { path, commitSha, children };
   },
 });
 
@@ -285,3 +323,45 @@ export function specDocument(spec: {
   }
   return `${parts.join("\n\n")}\n`;
 }
+
+export const splitRelease = defineOperation({
+  name: "split.release",
+  description:
+    "The Workflow releases a split parent's children once the parent's spec-only PR has merged (spec 24): they leave Ready for the queue together, and the pull starts them as slots allow; a child that waits for a sibling starts when that sibling has merged. A person approved them with the parent's spec. Refused for an item that didn't split.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ released: z.number() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (w.status !== "running" && w.status !== "waiting") {
+      throw new OperationError("conflict", `#${w.number} isn't running`);
+    }
+    // Only a split, and only once its plan's PR merged (review of #171): GitHub says so.
+    const spec = await ctx.db
+      .selectFrom("core_specs")
+      .select("children")
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "approved")
+      .orderBy("version", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (!childrenOf(spec?.children).length) {
+      throw new OperationError("conflict", `#${w.number}'s approved plan didn't split`);
+    }
+    const pr = w.pr_number
+      ? await ctx.services.github.getPullRequest(
+          await repoRef(ctx, requireRepository(ctx)),
+          w.pr_number,
+        )
+      : null;
+    if (!pr?.merged) {
+      throw new OperationError(
+        "conflict",
+        `#${w.number}'s plan hasn't merged: its children stay held`,
+      );
+    }
+    return { released: await releaseSplitChildren(ctx, w) };
+  },
+});

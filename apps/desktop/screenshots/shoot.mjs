@@ -93,6 +93,67 @@ export const SCREENS = [
     keys: ["f"],
     clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
   },
+  // Spec 22 part B: the System tab, a pulled data model with its changes against the default
+  // branch and a pinned comment; an architecture the planner made; and the source view.
+  {
+    name: "plan-system",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
+  {
+    name: "plan-system-flow",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-design"]:nth-of-type(2)'],
+  },
+  {
+    name: "plan-system-comment",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="comment-mode"]'],
+  },
+  {
+    name: "plan-system-full",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-full"]'],
+  },
+  {
+    name: "plan-system-source",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-source"]'],
+  },
+  // Spec 24: the plan's split at the gate ("Approve the plan and 2 work items"), a parent's
+  // overview with its children, and a child's link to its parent.
+  {
+    name: "plan-split",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "split",
+  },
+  // Review of #173: a child's whole slice, opened at the gate.
+  {
+    name: "plan-split-open",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "split",
+    clicks: ['[data-testid="split-child"]:nth-child(2) button'],
+  },
+  { name: "item-split-parent", path: "/work/wi_9", design: "ItemOverview.html" },
+  {
+    name: "work-list-split",
+    path: "/work?view=active&project=prj_factory&layout=list",
+    design: "WorkActive.html",
+  },
+  { name: "item-split-child", path: "/work/wi_13", design: "ItemOverview.html" },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.

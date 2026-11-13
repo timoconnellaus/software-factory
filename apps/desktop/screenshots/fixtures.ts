@@ -3,7 +3,10 @@
 // (docs/design/factory-ui) so the build and the design can be compared side by side. Never shipped:
 // the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
-import { planBlocks } from "@software-factory/client/planning";
+import { type DesignPreview, planBlocks } from "@software-factory/client/planning";
+// Spec 22 part B: two designs as the runner's checks drew them (packages/planning-designs), a
+// pulled data model with its base, and an architecture the planner made.
+import DESIGNS from "./design-fixtures.json" with { type: "json" };
 
 /**
  * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
@@ -630,6 +633,8 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         releasedAt: i.releasedAt ?? null,
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
+        // Spec 24: #13 was split off #9's plan, so lists show it under #9.
+        parentWorkItemId: i.id === "wi_13" ? "wi_9" : null,
         waitsFor,
         ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
@@ -688,6 +693,43 @@ function detail(id: string): OpOutput<"workItem.get"> {
     shaping: null,
     waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
     waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+    // Spec 24: #9's plan split into two work items; #13 is the first of them.
+    split:
+      id === "wi_9"
+        ? {
+            parent: null,
+            children: [
+              {
+                id: "wi_13",
+                number: 13,
+                title: "Issue intake and the trusted-author filter",
+                status: "waiting",
+                stage: "merge",
+                size: "small",
+              },
+              {
+                id: "wi_split_2",
+                number: 14,
+                title: "Report back to the issue",
+                status: "queued",
+                stage: "intake",
+                size: "small",
+              },
+            ],
+            held: false,
+          }
+        : id === "wi_13"
+          ? {
+              parent: {
+                id: "wi_9",
+                number: 9,
+                title: "Take work from GitHub issues",
+                status: "running",
+              },
+              children: [],
+              held: false,
+            }
+          : { parent: null, children: [], held: false },
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
@@ -764,6 +806,8 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       assumptions: [],
       path: `docs/specs/wi-${n}.md`,
       commitSha: "a1b2c3d",
+      // Spec 24: #12's plan splits into two work items (its card opens the plan to approve).
+      splitInto: id === "wi_12" ? 2 : 0,
     },
     questions:
       n === 11
@@ -1397,6 +1441,30 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       bodyMd: live ? PLAN_MD : "## Goal\nVerify flags a change that weakens the tests.\n",
       acceptanceCriteria: live ? [] : CRITERIA,
       assumptions: live ? ["Edits after release are ignored"] : [],
+      childrenUnreadable: false,
+      splitDigest: live ? "0".repeat(64) : null,
+      // Spec 24, as in PlanFocus: the plan splits into two work items, approved together.
+      children: live
+        ? [
+            {
+              key: "intake",
+              title: "Issue intake and the trusted-author filter",
+              size: "small" as const,
+              goal: "A labelled issue from a trusted author becomes a work item [parent]",
+              scope: ["The issues webhook [parent]", "The trusted-author filter [Q2]"],
+              acceptanceCriteria: ["A labelled issue appears in the Backlog [parent]"],
+            },
+            {
+              key: "report",
+              title: "Report back to the issue",
+              size: "small" as const,
+              goal: "The issue shows where its work got to [parent]",
+              scope: ["One comment with a link, closed on merge [Q4]"],
+              acceptanceCriteria: ["The issue is closed when its item merges [Q4]"],
+              after: "intake",
+            },
+          ]
+        : [],
       coverage: [],
       clarifications: [],
       summary: null,
@@ -1547,6 +1615,30 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             },
             createdAt: ago(1),
           },
+          // Spec 22 part B: a comment pinned on a table of the pulled data model.
+          {
+            id: "m8",
+            author: "person",
+            authorId: ME,
+            authorName: "You",
+            text: "Keep the issue's node id too: numbers change when a repo is transferred.",
+            questionId: null,
+            replyTo: null,
+            kind: "chat",
+            deliveredAt: null,
+            pin: {
+              artifactId: "art_schema",
+              element: "table github_issues",
+              selector: null,
+              x: 0,
+              y: 0,
+              fx: 0.85,
+              fy: 0.2,
+              width: 700,
+            },
+            anchor: null,
+            createdAt: ago(0),
+          },
         ]
       : [],
     artifacts: live
@@ -1578,6 +1670,32 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             designType: null,
             pulledPath: null,
             updatedAt: ago(9),
+          },
+          {
+            id: "art_schema",
+            kind: "design",
+            title: "work-items.dbml",
+            description: "Pulled from .kim/designs/work-items.dbml",
+            revision: 3,
+            keep: true,
+            controls: [],
+            size: DESIGNS.art_schema.content.length,
+            designType: "data-model",
+            pulledPath: ".kim/designs/work-items.dbml",
+            updatedAt: ago(3),
+          },
+          {
+            id: "art_flow",
+            kind: "design",
+            title: "Issue intake",
+            description: "How a labelled issue becomes a work item.",
+            revision: 1,
+            keep: true,
+            controls: [],
+            size: DESIGNS.art_flow.content.length,
+            designType: "architecture",
+            pulledPath: null,
+            updatedAt: ago(6),
           },
         ]
       : [],
@@ -1680,6 +1798,24 @@ function liveView(): OpOutput<"run.live"> {
 }
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
+
+/** A design's revision as artifact.get gives it: revision 0 is a pulled file's base. */
+function designGet(id: "art_schema" | "art_flow", revision: number | undefined) {
+  const d = DESIGNS[id];
+  const base = revision === 0 && d.base !== null;
+  const latest = id === "art_schema" ? 3 : 1;
+  return {
+    artifactId: id,
+    kind: "design",
+    title: id === "art_schema" ? "work-items.dbml" : "Issue intake",
+    revision: base ? 0 : latest,
+    latest,
+    content: base ? (d.base ?? "") : d.content,
+    controls: [],
+    designType: d.type,
+    preview: (base ? d.basePreview : d.preview) as DesignPreview | null,
+  };
+}
 
 /** A refusal in the server's shape: the fake door answers `{ ok: false, code, error }`. */
 export class Refusal extends Error {
@@ -1818,15 +1954,20 @@ export const ANSWERS: Answers = {
       kimCount: 3,
     };
   },
-  "artifact.get": (input) => ({
-    artifactId: input.artifactId,
-    kind: "mockup",
-    title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
-    revision: input.artifactId === "art_a" ? 2 : 1,
-    latest: input.artifactId === "art_a" ? 2 : 1,
-    content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
-    controls: ["--accent"],
-  }),
+  "artifact.get": (input) =>
+    input.artifactId === "art_schema" || input.artifactId === "art_flow"
+      ? designGet(input.artifactId, input.revision)
+      : {
+          artifactId: input.artifactId,
+          kind: "mockup",
+          title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
+          revision: input.artifactId === "art_a" ? 2 : 1,
+          latest: input.artifactId === "art_a" ? 2 : 1,
+          content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
+          controls: ["--accent"],
+          designType: null,
+          preview: null,
+        },
   "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
@@ -1939,6 +2080,26 @@ export const ANSWERS: Answers = {
         candidateVersion: 11,
       },
     ],
+  }),
+  "workflow.list": () => ({
+    version: 4,
+    workflows: [
+      {
+        id: "wf_software",
+        name: "Software",
+        description: "Code changes, from the org",
+        builtIn: null,
+        stages: [],
+      },
+      {
+        id: "wf_incident",
+        name: "Incident",
+        description: "",
+        builtIn: "incident" as const,
+        stages: [],
+      },
+    ],
+    templates: [],
   }),
   "workflow.get": (input) => ({
     version: 4,

@@ -19,7 +19,13 @@ import { decide as decideOp, OpError, submitKey } from "./op.ts";
 import { useRefreshAfterDecision } from "./queries.ts";
 
 export type Decision =
-  | { kind: "spec.approve"; workItemId: string }
+  | {
+      kind: "spec.approve";
+      workItemId: string;
+      /** Spec 24: for a split, the version and work items the person saw (review of #173). */
+      specVersion?: number;
+      splitDigest?: string;
+    }
   | { kind: "spec.requestChanges"; workItemId: string; note: string }
   | {
       kind: "review.merge";
@@ -75,7 +81,15 @@ export async function run(d: Decision): Promise<string> {
   const key = { idempotencyKey: submitKey() };
   switch (d.kind) {
     case "spec.approve": {
-      const r = await decideOp("spec.approve", { workItemId: d.workItemId }, key);
+      const r = await decideOp(
+        "spec.approve",
+        {
+          workItemId: d.workItemId,
+          ...(d.specVersion !== undefined ? { specVersion: d.specVersion } : {}),
+          ...(d.splitDigest !== undefined ? { splitDigest: d.splitDigest } : {}),
+        },
+        key,
+      );
       return r.alreadyDecided ? "Already decided" : DONE[d.kind];
     }
     case "spec.requestChanges": {

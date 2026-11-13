@@ -200,7 +200,8 @@ not actionable (ADR 0304). Takes no WIP slot.
 
 **Split**
 A spec that creates child work items when approved, each with its own spec slice; depth 1
-(ADR 0303).
+(ADR 0303). The parent builds nothing: its PR carries only the approved plan's files, and its
+children are released once it merges; it closes when its last child ends (ADR 0630).
 
 **Spec drift**
 Where a build departs from its approved spec's scope; a review-packet section (ADR 0306). Not the

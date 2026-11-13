@@ -17,6 +17,9 @@ const LATE_BLOCKS: [number, number][] = [
   [366, 366],
   // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
   [367, 367],
+  // The babysitter's reverts (block AT, spec 53 §5) land after 0400–0402: 0393 only creates
+  // core_reverts and its indexes, which nothing later touches.
+  [393, 393],
 ];
 
 const late = (name: string) => {
