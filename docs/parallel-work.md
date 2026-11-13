@@ -54,6 +54,7 @@ commit**, by editing this table. Use the next free block. Unused numbers in a bl
 | AS | 0380–0389 | 0610–0619 | The website shrinks to sign-in (`web-shrink`): spec 40 M5 brought forward, policy screens and decisions move to the desktop. Used: ADR 0610 | in progress |
 | AT | 0390–0399 | 0620–0629 | The babysitter, continued (`babysitter`, block AP's migrations sort before 0363 and 0373, which `core_jobs`' rebuild must follow): spec 53 parts d and e. The `babysit` job kind (migration 0390: `core_jobs` rebuilt once with no stage CHECK, the delivery fence, `core_flakes`; 0391 red-main attribution), red-main repair | in progress |
 | AU | 0400–0409 | 0630–0639 | Planning, finished (`planning`): spec 22 part B (the runner's design checks and previews, the System tab, pins on designs, `.svg` write-back) and spec 24 (splits). Used: migrations 0400 (`core_planning_artifact_revisions.preview`), 0401 (`core_specs.children`, `core_work_items_parent_idx`), 0402 (split bindings); ADR 0630 | in progress |
+| AV | 0410–0419 | 0640–0649 | The runner as a background service on a Mac (`runner-service`): spec 45. The signed runner bundle run by a per-user LaunchAgent from Application Support, the app's control socket and runner card, self-update from the app's signed channel, migration from the in-app runner, uninstall, doctor. Design PR: ADRs 0640–0642, no migrations | in review (spec) |
 
 Add more blocks of ten as needed. Once `packages/db` has a schema version constant, it equals the
 highest migration on `main`; when you merge `main`, keep the larger value.
