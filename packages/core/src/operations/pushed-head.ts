@@ -4,9 +4,10 @@
 // verify on, means the head the factory verified (or is verifying) is no longer the PR's.
 
 import type { HandlerContext, WorkItemRow } from "../operation.ts";
-import { approvalEvent, ciEvent, type GateEventPayload } from "../workflow-events.ts";
+import { approvalEvent, ciEvent, type GateEventPayload, runEvent } from "../workflow-events.ts";
 import { has } from "../workflow-features.ts";
 import { MERGING_HOLDS_MS, openEntry, releaseMergeQueue } from "./merge-queue.ts";
+import { ACTIVE_RUN } from "./runners.ts";
 
 /** What push.observe reports for a person's push to a factory item's branch. */
 export interface PushedHead {
@@ -139,6 +140,7 @@ export async function personPushed(
     );
     await releaseMergeQueue(ctx, item, "left", `withdrawn: ${note}`, "withdrawn");
   }
+  if (reverifies && gates.length === 0 && !delivering) await cancelStaleVerify(ctx, item, note);
   if (reverifies && item.head_sha && gates.length === 0 && !delivering) {
     // In verify: a CI wait on the old head wakes and sees it is stale.
     ctx.emit({
@@ -157,4 +159,61 @@ export async function personPushed(
     after: { headSha, reason: note },
   });
   return { outcome: "reverify", detail: `${pusher} pushed ${short}: verifying again` };
+}
+
+/**
+ * v14: a verify run still working on the old head is cancelled through the item's lease (ADR 0587):
+ * the fencing token goes up, so the runner's next heartbeat gets a `cancel` for the job and every
+ * write the run still makes is refused. The Workflow reads the head first when the run ends, so it
+ * verifies the new head, counting no failure. Only a verify run: a build in flight is left alone
+ * (`branch.advance` refuses its non-fast-forward, as before).
+ */
+async function cancelStaleVerify(ctx: HandlerContext, item: WorkItemRow, note: string) {
+  // Point lookups: core_leases by its key (work_item_id), core_runs by its key (id).
+  const lease = await ctx.db
+    .selectFrom("core_leases")
+    .select(["holder_kind", "holder_id", "fencing_token"])
+    .where("work_item_id", "=", item.id)
+    .executeTakeFirst();
+  if (lease?.holder_kind !== "run" || !lease.holder_id) return;
+  const run = await ctx.db
+    .selectFrom("core_runs")
+    .select(["id", "job_id", "status", "stage"])
+    .where("id", "=", lease.holder_id)
+    .executeTakeFirst();
+  if (run?.stage !== "verify") return;
+  if (!(ACTIVE_RUN as readonly string[]).includes(run.status)) return;
+  ctx.write(
+    ctx.db
+      .updateTable("core_leases")
+      .set((eb) => ({
+        fencing_token: eb("fencing_token", "+", 1),
+        holder_kind: null,
+        holder_id: null,
+        released_at: ctx.now,
+      }))
+      .where("work_item_id", "=", item.id)
+      .where("fencing_token", "=", lease.fencing_token),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_runs")
+      .set({ status: "cancelled", outcome: "cancelled", ended_at: ctx.now })
+      .where("id", "=", run.id)
+      .where("status", "in", [...ACTIVE_RUN]),
+  );
+  ctx.write(
+    ctx.db
+      .updateTable("core_jobs")
+      .set({ status: "cancelled", finished_at: ctx.now })
+      .where("id", "=", run.job_id),
+  );
+  ctx.emit({
+    kind: "workflow.event",
+    payload: {
+      instanceId: item.workflow_id,
+      type: runEvent(run.job_id),
+      payload: { runId: run.id, outcome: "cancelled", reason: `superseded: ${note}` },
+    },
+  });
 }

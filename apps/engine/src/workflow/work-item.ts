@@ -1538,7 +1538,7 @@ class ItemFlow {
     if (has(version, "babysitter-delivery")) {
       if (decided.decision !== "approved") return this.notApproved(decided);
       if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
-      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId, version);
       if (delivered.kind !== "withdrawn" && delivered.kind !== "reverify") return delivered;
       if (!has(version, "reverify-on-withdrawal")) {
         return { kind: "failed", reason: delivered.reason };
@@ -1688,6 +1688,7 @@ class ItemFlow {
     b: number,
     headSha: string,
     approvalId: string,
+    version: number,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "conflict" }
@@ -1697,12 +1698,25 @@ class ItemFlow {
   > {
     const id = this.workItemId;
     const p = `merge #${b}: deliver`;
-    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+    const entering = {
       workItemId: id,
       headSha,
       pendingActionId: approvalId,
       driver: "babysitter",
-    });
+    };
+    if (has(version, "reverify-on-push")) {
+      // v14: a person's push can land between the approval and this call (ADR 0587). Then
+      // mergeQueue.enter refuses the old head; the item verifies the new one, as for any push.
+      const entered = await this.call(`${p}: enqueue`, "mergeQueue.enter", entering);
+      if (entered.status === "refused") {
+        const moved = await this.headMoved(`${p}: head after enqueue`, headSha, version);
+        if (moved !== null) return { kind: "withdrawn", reason: moved };
+        throw new Ended("failed", `mergeQueue.enter refused: ${entered.message}`);
+      }
+      if (entered.status !== "ok") throw new Ended("failed", "mergeQueue.enter is not gated");
+    } else {
+      await this.act(`${p}: enqueue`, "mergeQueue.enter", entering);
+    }
     for (let i = 1; ; i++) {
       let told: DeliveredEventPayload | null = null;
       try {

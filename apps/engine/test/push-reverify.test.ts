@@ -4,6 +4,7 @@
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
+import type { Job } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import {
@@ -14,6 +15,7 @@ import {
   gateOpen,
   github,
   itemStatus,
+  MANIFEST,
   ok,
   runStage,
   triage,
@@ -226,10 +228,36 @@ describe("a person's push to a factory-built item's branch (ADR 0587, v14)", () 
     await runStage(w, id, "triage", () => triage("small"));
     await runStage(w, id, "build", () => build(["src/a.ts"]));
     let pushed = "";
-    await runStage(w, id, "verify", async () => {
-      pushed = await pushTo(w, await itemRow(id));
-      return verifyPass;
-    });
+    let stale: Job | null = null;
+    // The stale run is cancelled through the lease: its hand-back is fenced, and the runner's next
+    // heartbeat is told to cancel the job.
+    await expect(
+      runStage(w, id, "verify", async (job) => {
+        stale = job;
+        pushed = await pushTo(w, await itemRow(id));
+        return verifyPass;
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    const staleJob = stale as Job | null;
+    if (!staleJob) throw new Error("no verify job ran");
+    expect(
+      await first<{ status: string; outcome: string }>(
+        "SELECT status, outcome FROM core_runs WHERE job_id = ?",
+        staleJob.jobId,
+      ),
+    ).toEqual({ status: "cancelled", outcome: "cancelled" });
+    const beat = await ok<{ commands: { kind: string; jobId?: string }[] }>(
+      "runner.heartbeat",
+      {
+        manifest: MANIFEST,
+        capacity: { max: 4, inUse: 1, accepting: true },
+        activeJobs: [{ jobId: staleJob.jobId, fencingToken: staleJob.lease.fencingToken }],
+      },
+      w.runnerActor,
+    );
+    expect(beat.commands).toContainEqual(
+      expect.objectContaining({ kind: "cancel", jobId: staleJob.jobId }),
+    );
     const second = await runStage(w, id, "verify", (job) => {
       expect(job.context.headSha).toBe(pushed);
       return verifyPass;
@@ -258,23 +286,33 @@ describe("a person's push to a factory-built item's branch (ADR 0587, v14)", () 
 
     // The next verify runs on whichever head the Workflow read; while it runs, two more pushes.
     let newest = "";
-    const ran = await runStage(w, item.id, "verify", async (job) => {
-      expect([first1, second1]).toContain(job.context.headSha);
-      await pushTo(w, item);
-      newest = await pushTo(w, item);
-      return verifyPass;
-    });
-    expect(ran.context.headSha).not.toBe(newest);
-    await runStage(w, item.id, "verify", (job) => {
-      expect(job.context.headSha).toBe(newest);
-      return verifyPass;
-    });
+    let ranOn = "";
+    await expect(
+      runStage(w, item.id, "verify", async (job) => {
+        ranOn = String(job.context.headSha);
+        expect([first1, second1]).toContain(ranOn);
+        await pushTo(w, item);
+        newest = await pushTo(w, item);
+        return verifyPass;
+      }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    expect(ranOn).not.toBe(newest);
+    // The first push of the two cancelled the run, so a verify may start on the head in between;
+    // the item keeps verifying until it reaches the newest head, and gates only that one.
+    let on = "";
+    for (let i = 0; i < 3 && on !== newest; i++) {
+      await runStage(w, item.id, "verify", (job) => {
+        on = String(job.context.headSha);
+        return verifyPass;
+      });
+    }
+    expect(on).toBe(newest);
     const fresh = await freshGate(item.id, gate.id);
     expect(JSON.parse(fresh.input)).toMatchObject({ headSha: newest });
     // The gate opened once after the run on the newest head; no verify is left queued.
     const verifies = await jobs(item.id, "verify");
     expect(verifies.map((j) => JSON.parse(j.context).headSha).at(-1)).toBe(newest);
-    expect(verifies).toHaveLength(3);
+    expect(verifies.length).toBeLessThanOrEqual(4);
     expect(
       await first("SELECT id FROM core_jobs WHERE work_item_id = ? AND status = 'queued'", item.id),
     ).toBeNull();
@@ -284,6 +322,60 @@ describe("a person's push to a factory-built item's branch (ADR 0587, v14)", () 
         item.id,
       ),
     ).toHaveLength(1);
+  });
+
+  it("an approval racing a push: whichever lands first, the item verifies the new head and never fails", async () => {
+    const w = await world();
+    const { item, gate } = await toMergeGate(w, "Approved as it was pushed");
+    // review.merge commits; the push arrives before or just after the Workflow enqueues the
+    // approval. Before: mergeQueue.enter refuses the old head. After: the delivery is withdrawn.
+    await approve(w, item.id);
+    const pushed = await pushTo(w, item);
+    await runStage(w, item.id, "verify", (job) => {
+      expect(job.context.headSha).toBe(pushed);
+      return verifyPass;
+    });
+    const fresh = await freshGate(item.id, gate.id);
+    expect(JSON.parse(fresh.input)).toMatchObject({ headSha: pushed });
+    const row = await first<{ status: string }>(
+      "SELECT status FROM core_work_items WHERE id = ?",
+      item.id,
+    );
+    expect(row?.status).not.toBe("failed");
+  });
+
+  it("approved, then pushed before the Workflow enqueues: mergeQueue.enter refuses the old head and the item verifies the new one", async () => {
+    const w = await world();
+    const { item, gate } = await toMergeGate(w, "Enqueue refused");
+    const wf = await first<{ workflow_id: string }>(
+      "SELECT workflow_id FROM core_work_items WHERE id = ?",
+      item.id,
+    );
+    const instance = await env.WORK_ITEM_WORKFLOW.get(String(wf?.workflow_id));
+    // review.merge commits and the push is recorded before the Workflow takes the approval.
+    await instance.pause();
+    await approve(w, item.id);
+    const pushed = await pushTo(w, item);
+    expect(await pending("id = ?", gate.id)).toMatchObject({ status: "approved" });
+    await instance.resume();
+    await runStage(w, item.id, "verify", (job) => {
+      expect(job.context.headSha).toBe(pushed);
+      expect(job.context.runChecks).toBe(true);
+      return verifyPass;
+    });
+    const fresh = await freshGate(item.id, gate.id);
+    expect(JSON.parse(fresh.input)).toMatchObject({ headSha: pushed });
+    expect(await jobs(item.id, "build")).toHaveLength(1);
+    // The enqueue was refused (the old head), and nothing was left in the queue.
+    expect(
+      await all(
+        "SELECT outcome FROM core_audit WHERE work_item_id = ? AND operation = 'mergeQueue.enter'",
+        item.id,
+      ),
+    ).toEqual([{ outcome: "failed" }]);
+    expect(
+      await first("SELECT id FROM core_merge_queue WHERE work_item_id = ?", item.id),
+    ).toBeNull();
   });
 
   it("the factory's own pushes (its App) don't withdraw the gate", async () => {

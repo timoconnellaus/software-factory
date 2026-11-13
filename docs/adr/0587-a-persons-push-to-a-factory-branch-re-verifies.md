@@ -25,8 +25,10 @@ factory-built item did not, because its branch was assumed to move only by the f
    packet, a new merge gate. No build attempt is used.
 3. **In flight.** A verify run that finishes on a head that is no longer the item's opens no gate
    and counts no failure; a CI wait on it is woken and sees it is stale; a packet recorded for it is
-   only that head's record. The item then verifies the newest head, once, however many pushes came
-   while it ran. A build in flight is unchanged: `branch.advance` refuses to move a branch that is
+   only that head's record. The item then verifies the newest head, however many pushes came while
+   it ran. A verify run still working on the old head is cancelled through the item's lease: its
+   fencing token goes up, the run and job end `cancelled`, the runner's next heartbeat gets a
+   `cancel` for the job, and every write the run still makes is refused (`fenced`). A build in flight is unchanged: `branch.advance` refuses to move a branch that is
    not a fast-forward, which fails that attempt as before (a person pushing during a build is
    pushing to a branch the factory is about to write).
 4. **Earlier versions.** An open merge gate is withdrawn the same way at any version, and the
@@ -37,11 +39,16 @@ factory-built item did not, because its branch was assumed to move only by the f
    that opens is for the old head, and Send back verifies the new one.
 5. **The person sees it.** The item's activity says "`<login>` pushed `<sha>`: verifying again";
    the withdrawn gate's Inbox card goes, and a new one comes when verify is done.
-6. **The babysitter merging it right now** is left to the babysitter: GitHub refuses its merge for a
+6. **An approval racing a push.** `review.merge` can commit for the old head just before the push
+   is recorded, and the Workflow then asks `mergeQueue.enter` to deliver a head that is no longer
+   the item's. On v14 that refusal, with the item's head moved, is a withdrawal like any other:
+   the item verifies the new head and a person decides again. It never ends the item failed.
+7. **The babysitter merging it right now** is left to the babysitter: GitHub refuses its merge for a
    moved head and it withdraws the approval itself (spec 53).
 
 ## Consequences
 - A person can push a fix to a factory PR without the item getting stuck; their commit is verified
   like the factory's own before anyone may merge it.
-- A verify run already going when the push lands still runs to the end (its result is discarded);
-  cancelling it on the runner is a possible follow-up.
+- A verify run already going when the push lands is cancelled, so it doesn't burn a runner slot
+  for up to a full run. A verify job still queued (not yet claimed) is not cancelled: it runs on
+  the old head and its result is discarded, as before. On v13 and earlier nothing is cancelled.
