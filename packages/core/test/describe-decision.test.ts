@@ -1,14 +1,14 @@
 // What a presence prompt says (spec 40 M4b): the engine's facts first, a title last, cleaned and
 // cut so a title can't hide or push off the facts, nor make an item undecidable on the desktop.
 import { describe, expect, it } from "vitest";
-import { cleanTitle, MAX_SUMMARY, titled } from "../src/index.ts";
+import { cleanTitle, MAX_FACTS, MAX_SUMMARY, titled } from "../src/index.ts";
 
-const MERGE = "Merge 3f2a91c into main of acme/widgets, without its checks:";
+const MERGE = "Merge WITHOUT its checks: 3f2a91c into main of acme/widgets:";
 
 describe("presence summaries", () => {
   it("keep the facts first and quote the title last", () => {
     expect(titled(MERGE, "Fix the inbox count")).toBe(
-      'Merge 3f2a91c into main of acme/widgets, without its checks: "Fix the inbox count"',
+      'Merge WITHOUT its checks: 3f2a91c into main of acme/widgets: "Fix the inbox count"',
     );
   });
 
@@ -27,13 +27,22 @@ describe("presence summaries", () => {
     expect(titled("Approve the spec for #12", "​Real")).not.toMatch(/\p{Cf}/u);
   });
 
-  it("stay within the limit whatever the title, the facts whole", () => {
+  it("cut only the title, to the room the facts leave", () => {
     const long = titled(MERGE, "x".repeat(500));
     expect([...long].length).toBeLessThanOrEqual(MAX_SUMMARY);
     expect(long.startsWith(MERGE)).toBe(true);
     expect(long).toMatch(/…"$/);
     expect([...titled("Approve", "é".repeat(300))].length).toBeLessThanOrEqual(MAX_SUMMARY);
   });
+
+  it("never cut the facts: past the limit the title goes and the facts stay whole", () => {
+    // A 39-character owner and a 60-character repository name.
+    const facts = `Merge WITHOUT its checks: 3f2a91c into main of ${"o".repeat(39)}/${"r".repeat(60)}:`;
+    expect([...facts].length).toBeGreaterThan(MAX_SUMMARY);
+    expect(titled(facts, "Fix the inbox count")).toBe(facts);
+    expect([...facts].length).toBeLessThanOrEqual(MAX_FACTS);
+  });
+
   it("never cut the facts, and show a label only with its title (config summaries)", () => {
     const facts =
       "Approve a change to the policy (v2 to v3): loosens: Autonomy policy Balanced → Autonomous; agent spend: review → allow";
