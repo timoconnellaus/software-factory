@@ -130,8 +130,12 @@ export function pinOn(
   parts: DesignPart[],
   revision: number,
 ): { x: number; y: number } | null {
-  const box = parts.find((p) => p.id === pin.element)?.box;
-  if (box) return { x: box.x + pin.fx * box.w, y: box.y + pin.fy * box.h };
-  // A pin placed on this very revision, on a spot that isn't a part: where it was put.
-  return pin.revision === revision ? { x: pin.x, y: pin.y } : null;
+  const part = parts.find((p) => p.id === pin.element);
+  if (part?.box) {
+    const box = part.box;
+    return { x: box.x + pin.fx * box.w, y: box.y + pin.fy * box.h };
+  }
+  // A part still drawn but without a box of its own (review of #169), or a pin placed on this very
+  // revision on a spot that isn't a part: where it was put. Only a part that is gone is null.
+  return part || pin.revision === revision ? { x: pin.x, y: pin.y } : null;
 }

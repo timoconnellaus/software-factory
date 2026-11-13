@@ -19,6 +19,36 @@ const notRunFixture = () => {
   return seenNotRun;
 };
 const NOT_RUN_REASON = "this Mac runner has no container runtime";
+
+/**
+ * `?fixture=red`: the factory's repository has a red main (spec 53): #8's landing is the proven
+ * culprit, the incident fix #40 is a repair merging, and #42 is held behind it.
+ */
+let seenRed = false;
+const redFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  seenRed ||= where.includes("fixture=red");
+  return seenRed;
+};
+const RED_SINCE_MIN = 18;
+/** `?fixture=red`'s approved item, held behind the red main. */
+const HELD_44 = () =>
+  item(44, "Cache the runner list", "merge", "waiting", {
+    statusReason: "Approved: waiting to merge",
+    priority: "high",
+    updatedAt: ago(15),
+  });
+const RED_MAIN = () => ({
+  projectId: FACTORY,
+  name: "Factory",
+  repositoryId: "repo_software-factory",
+  repo: { owner: "example", name: "software-factory" },
+  branch: "main",
+  headSha: "4d1c9e2a7b",
+  failing: ["ci", "typecheck"],
+  redSince: ago(RED_SINCE_MIN),
+  lastGreenSha: "b7e0f31c55",
+});
 /** The proof when the checks weren't run: nothing proven, the spec's links left unproven. */
 const notProven = <T extends { provenBy: string[]; unproven: string[] }>(proof: T[]): T[] =>
   proof.map((p) => ({
@@ -568,8 +598,10 @@ const INBOX: OpOutput<"inbox.list"> = {
       files: [{ kind: "default-branch", filename: "software-factory-default-branch.json" }],
     },
   ],
-  // The "main is red" card (spec 53): no screen shows it yet.
-  mainRed: [],
+  // The "main is red" card (spec 53): only with `?fixture=red`.
+  get mainRed() {
+    return redFixture() ? [RED_MAIN()] : [];
+  },
 };
 
 // As main's verify run reports its checks (verifyResultSchema): the agent's own words in `detail`.
@@ -599,7 +631,7 @@ function link(id: string) {
 /** `workItem.board` over the fixtures: the states asked for, in pull order, and counts per state. */
 function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
   const states = input.states ?? [...PRE, ...ACTIVE_STATES];
-  const inOrg = ITEMS.filter(
+  const inOrg = [...ITEMS, ...(redFixture() ? [HELD_44()] : [])].filter(
     (i) => i.orgId === input.orgId && (!input.projectId || i.projectId === input.projectId),
   );
   const items = inOrg
@@ -716,6 +748,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 size: "small",
               },
             ],
+            held: false,
           }
         : id === "wi_13"
           ? {
@@ -726,8 +759,9 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 status: "running",
               },
               children: [],
+              held: false,
             }
-          : { parent: null, children: [] },
+          : { parent: null, children: [], held: false },
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
@@ -1904,7 +1938,9 @@ export const ANSWERS: Answers = {
   "project.list": (input) => ({ projects: PROJECTS.filter((p) => p.orgId === input.orgId) }),
   "inbox.list": () => INBOX,
   "workItem.list": (input) => ({
-    items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
+    items: [...ITEMS, ...FACTORY_ITEMS, ...(redFixture() ? [HELD_44()] : [])].filter(
+      (i) => !input.orgId || i.orgId === input.orgId,
+    ),
   }),
   "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
   "workItem.board": (input) => board(input),
@@ -2200,6 +2236,86 @@ export const ANSWERS: Answers = {
   "cliToken.list": () => ({
     tokens: TOKENS.filter((t) => t.kind === "cli").map(({ kind: _, ...t }) => t),
   }),
+  // Spec 53's babysitter line: green unless `?fixture=red`.
+  "delivery.status": (input) => {
+    if (input.projectId !== FACTORY) return { repositories: [] };
+    const red = redFixture();
+    return {
+      repositories: [
+        {
+          repositoryId: "repo_software-factory",
+          owner: "example",
+          name: "software-factory",
+          branch: "main",
+          main: {
+            state: red ? ("red" as const) : ("green" as const),
+            headSha: "4d1c9e2a7b",
+            failing: red ? ["ci", "typecheck"] : [],
+            lastGreenSha: "b7e0f31c55",
+            redSince: red ? ago(RED_SINCE_MIN) : null,
+            firstRedSha: red ? "4d1c9e2a7b" : null,
+            checkedAt: ago(1),
+            suspects: red
+              ? [
+                  {
+                    workItemId: "wi_8",
+                    number: 8,
+                    title: "Retry a planning session that lost its runner",
+                    prNumber: 41,
+                    mergeSha: "4d1c9e2a7b",
+                  },
+                ]
+              : [],
+            culpritWorkItemId: red ? "wi_8" : null,
+            attribution: red
+              ? "#8's merge (4d1c9e2) is the only landing since b7e0f31 was green, and main went red on it, and the red reproduced on a rerun"
+              : null,
+            attributedBy: red ? ("proven" as const) : null,
+            candidateWorkItemId: null,
+          },
+          deliveries: red
+            ? [
+                {
+                  workItemId: "wi_40",
+                  number: 40,
+                  title: "Factory incident: #8 had a run that failed",
+                  position: 1,
+                  state: "merging" as const,
+                  repair: true,
+                  driver: "babysitter" as const,
+                  headSha: "a1b2c3d4e5",
+                  enqueuedAt: ago(9),
+                },
+                {
+                  workItemId: "wi_44",
+                  number: 44,
+                  title: "Cache the runner list",
+                  position: 2,
+                  state: "held" as const,
+                  repair: false,
+                  driver: "babysitter" as const,
+                  headSha: "9c41e07d2b",
+                  enqueuedAt: ago(12),
+                },
+              ]
+            : [
+                {
+                  workItemId: "wi_42",
+                  number: 42,
+                  title: "Keep the runner count fresh",
+                  position: 1,
+                  state: "merging" as const,
+                  repair: false,
+                  driver: "babysitter" as const,
+                  headSha: "9c41e07d2b",
+                  enqueuedAt: ago(12),
+                },
+              ],
+        },
+      ],
+    };
+  },
+  "workItem.markRepair": (input) => ({ repair: input.repair }),
   "mergeQueue.list": (input) => ({
     entries:
       input.projectId === FACTORY

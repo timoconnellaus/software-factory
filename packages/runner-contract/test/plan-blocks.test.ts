@@ -287,6 +287,10 @@ describe("third review of #85", () => {
     const md = "## Stack\n- Use Postgres";
     expect(droppedEdits(md, [{ footprint: old }])).toEqual([]);
     expect(whyNotKept(md, old)).not.toContain("is back");
+    // Both lines: the old one is back (review of #160's follow-up).
+    const both = `${md}\n- use postgres`;
+    expect(droppedEdits(both, [{ footprint: old }])).toHaveLength(1);
+    expect(whyNotKept(both, old)).toContain("is back");
     // A new case-fix edit is kept too.
     const e = edit("## Stack\n- use postgres", 1, 1, "- Use Postgres");
     expect(droppedEdits(e.result, [e])).toEqual([]);
