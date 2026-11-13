@@ -9,6 +9,7 @@ import {
   autoApproveImpact,
   autoApproveSettings,
   autoApproveVerdict,
+  BABYSITTER,
   globMatch,
   lockWithoutManifest,
   SELF_MODIFY_PATHS,
@@ -31,7 +32,13 @@ import {
 const ON = autoApproveSettings.parse({ enabled: true });
 const good = (): AutoApproveFacts => ({
   headSha: "a".repeat(40),
-  packet: { verdict: "pass", ci: "success", proven: { proven: 2, total: 2 }, testsIntact: true },
+  packet: {
+    verdict: "pass",
+    ci: "success",
+    criteriaProven: true,
+    weakened: false,
+    testsIntact: true,
+  },
   adjudicator: { active: true, eligible: true, approved: true },
   changes: [
     { path: "src/theme.ts", changes: 20 },
@@ -69,9 +76,24 @@ describe("autoApproveVerdict: every condition, in code", () => {
         (f) =>
           (f.packet = {
             ...(f.packet as NonNullable<typeof f.packet>),
-            proven: { proven: 1, total: 2 },
+            criteriaProven: false,
           }),
       ],
+      [
+        "checks",
+        (f) =>
+          (f.packet = {
+            ...(f.packet as NonNullable<typeof f.packet>),
+            weakened: true,
+          }),
+      ],
+      ["limits", (f) => (f.today = 10)],
+      ["risk", (f) => (f.changes = [{ path: "assets/logo.png", changes: 0, unreadable: true }])],
+      ["risk", (f) => (f.changes = [{ path: "apps/app/src/routeTree.gen.ts", changes: 3 }])],
+      ["risk", (f) => (f.changes = [{ path: ".gitmodules", changes: 3 }])],
+      ["risk", (f) => (f.changes = [{ path: "src/StripeWebhook.ts", changes: 3 }])],
+      ["risk", (f) => (f.changes = [{ path: "evals/regressions/x.json", changes: 3 }])],
+      ["risk", (f) => (f.changes = [{ path: "infra/main.tf", changes: 3 }])],
       ["checks", (f) => (f.packet = null)],
       [
         "tests",
@@ -126,7 +148,7 @@ describe("autoApproveVerdict: every condition, in code", () => {
     }
     // The setting has no field that could take a path off the built-in list.
     expect(Object.keys(ON).sort()).toEqual(
-      ["enabled", "forbiddenPaths", "maxChangedLines", "maxFiles", "riskPaths"].sort(),
+      ["enabled", "forbiddenPaths", "maxChangedLines", "maxFiles", "maxPerDay", "riskPaths"].sort(),
     );
     expect(SELF_MODIFY_PATHS).toContain(".factory/**");
   });
@@ -252,18 +274,23 @@ async function dark(w: W, extra: Record<string, unknown> = {}) {
 async function atMergeGate(
   w: W,
   opts: {
-    files?: { path: string; status: "modified"; changes: number }[];
+    files?: { path: string; status: "modified"; patch: string; changes: number }[];
     packet?: Record<string, unknown>;
     verdict?: "approve" | "defer";
+    /** Runs once the item has pinned its org version, before the gate is decided. */
+    meanwhile?: () => Promise<void>;
   } = {},
 ) {
   const item = await newItem(w, uid("dark "));
+  await opts.meanwhile?.();
   const base = (await github.getBranchSha(w.repo, "main")) ?? undefined;
   const head = await github.push(
     w.repo,
     item.branch,
     base,
-    opts.files ?? [{ path: "src/theme.ts", status: "modified", changes: 40 }],
+    opts.files ?? [
+      { path: "src/theme.ts", status: "modified", patch: "@@ -1 +1 @@\n-a\n+b", changes: 40 },
+    ],
   );
   await rows(
     "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES (?, ?, ?, 'pass', ?, ?)",
@@ -273,6 +300,10 @@ async function atMergeGate(
     JSON.stringify(
       opts.packet ?? {
         ci: { state: "success" },
+        proof: [
+          { criterion: "a", proven: true, linkedBy: "spec", provenBy: ["t"] },
+          { criterion: "b", proven: true, linkedBy: "spec", provenBy: ["t"] },
+        ],
         proven: { proven: 2, total: 2 },
         testsIntact: { intact: true },
       },
@@ -344,19 +375,31 @@ describe("dark factory mode through the operations", () => {
     const w = await world();
     await dark(w);
     const big = await atMergeGate(w, {
-      files: [{ path: "src/big.ts", status: "modified", changes: 500 }],
+      files: [
+        { path: "src/big.ts", status: "modified", patch: "@@ -1 +1 @@\n-a\n+b", changes: 500 },
+      ],
     });
     expect(big.pa.status).toBe("pending");
     expect(big.pa.reason).toMatch(/Not auto-approved: 500 lines changed/);
     const risky = await atMergeGate(w, {
-      files: [{ path: "packages/core/src/policy/gate.ts", status: "modified", changes: 2 }],
+      files: [
+        {
+          path: "packages/core/src/policy/gate.ts",
+          status: "modified",
+          patch: "@@ -1 +1 @@\n-a\n+b",
+          changes: 2,
+        },
+      ],
     });
     expect(risky.pa.status).toBe("pending");
     expect(risky.pa.reason).toMatch(/factory itself/);
     const unproven = await atMergeGate(w, {
       packet: {
         ci: { state: "success" },
-        proven: { proven: 1, total: 2 },
+        proof: [
+          { criterion: "a", proven: true, linkedBy: "spec", provenBy: ["t"] },
+          { criterion: "b", proven: true, linkedBy: "reviewer", provenBy: ["t"] },
+        ],
         testsIntact: { intact: true },
       },
     });
@@ -481,4 +524,104 @@ describe("dark factory mode through the operations", () => {
       await rows("SELECT key FROM core_meta WHERE key = ?", `auto_approved:${w.projectId}`),
     ).toEqual([]);
   });
+
+  it("counts only while on in both the pinned and the current org version", async () => {
+    const w = await world();
+    await dark(w);
+    // The item pins the version with it on; then an org admin switches it off.
+    const { item, pa } = await atMergeGate(w, {
+      meanwhile: async () =>
+        approveIfPending(
+          w,
+          await call(
+            "workflow.save",
+            {
+              orgId: w.orgId,
+              baseVersion: await orgVersionOf(w),
+              workflow: { ...DARK, stages: SOFTWARE.stages },
+            },
+            w.human,
+          ),
+        ),
+    });
+    const pinned = await first<{ org_config_version: number }>(
+      "SELECT org_config_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(pinned.org_config_version).toBeLessThan(await orgVersionOf(w));
+    expect(pa.status).toBe("pending");
+    expect(pa.reason).toMatch(/autoApprove is off/);
+  });
+
+  it("a hold is written even where the workflow doesn't auto-approve", async () => {
+    const w = await world();
+    const item = await newItem(w, uid("plain "));
+    await ok(
+      "incident.open",
+      { workItemId: item.workItemId, kind: "manual", reason: "it broke" },
+      w.human,
+    );
+    const raw = await first<{ raw: string }>(
+      "SELECT pp.raw FROM core_project_policies pp JOIN core_projects p ON p.id = pp.project_id AND pp.sha = p.policy_sha WHERE p.id = ?",
+      w.projectId,
+    );
+    expect(JSON.parse(raw.raw).autoApproveHold.reason).toMatch(/incident/);
+  });
+
+  it("the babysitter checks again before merging: a hold since withdraws the auto-approval", async () => {
+    const w = await world();
+    await dark(w);
+    const { item, head, gate, pa } = await atMergeGate(w);
+    expect(pa.status).toBe("approved");
+    await rows("UPDATE core_work_items SET head_sha = ? WHERE id = ?", head, item.workItemId);
+    await ok("pr.open", { workItemId: item.workItemId }, FOREMAN);
+    await ok(
+      "mergeQueue.enter",
+      { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
+      FOREMAN,
+    );
+    // Before it merges, an incident holds the project.
+    const other = await newItem(w, uid("broken "));
+    await ok(
+      "incident.open",
+      { workItemId: other.workItemId, kind: "manual", reason: "x" },
+      w.human,
+    );
+    const marked = await ok<{ merging: boolean; withdrawn?: string }>(
+      "mergeQueue.merging",
+      { workItemId: item.workItemId, merging: true },
+      BABYSITTER,
+    );
+    expect(marked.merging).toBe(false);
+    expect(marked.withdrawn).toMatch(/held/);
+    const after = await first<{ status: string; decision: string }>(
+      "SELECT status, decision FROM core_pending_actions WHERE id = ?",
+      gate,
+    );
+    expect(after).toEqual({ status: "rejected", decision: "withdrawn" });
+  });
+
+  it("the review after a sampled merge goes to the first approver when the gate had no assignee", async () => {
+    const w = await world();
+    await dark(w);
+    for (let i = 0; i < 4; i++) await atMergeGate(w);
+    await rows(
+      "UPDATE core_pending_actions SET assignee_user_id = NULL WHERE project_id = ? AND kind = 'merge' AND status = 'pending'",
+      w.projectId,
+    );
+    await atMergeGate(w);
+    const review = await first<{ assignee_user_id: string | null }>(
+      "SELECT assignee_user_id FROM core_pending_actions WHERE project_id = ? AND operation = 'autoApprove.review'",
+      w.projectId,
+    );
+    expect(review.assignee_user_id).toBe(w.userId);
+  });
 });
+
+const orgVersionOf = async (w: W) =>
+  (
+    await first<{ config_version: number | null }>(
+      "SELECT config_version FROM core_organization WHERE id = ?",
+      w.orgId,
+    )
+  ).config_version ?? 0;

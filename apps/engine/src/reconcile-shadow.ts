@@ -14,23 +14,28 @@
 //   practice), its jobs by core_jobs_item_idx each with its run by primary key (LIMIT 200), its
 //   gates by core_pending_actions_item_idx each with its decider's user row by primary key (LIMIT
 //   200), and whether the merge queue carried a review packet to a new head, by
-//   core_review_packets_item_idx (the item's packets, one per verify round, LIMIT 1 hit). Five
+//   core_review_packets_item_idx (the item's packets, one per verify round, LIMIT 50). Questions
+//   put to a person are one EXISTS probe of core_questions_item_idx inside the item's read. Five
 //   statements per item, 125 per page, in one batch.
 //   With nothing new: one row and one empty index probe.
 // - writes: one `core_reconcile_items` row per ended item (at most 25) and the cursor (one row).
-// The audit table is never read: it is the hottest write table and has no index to find ends by.
+// The audit table is never read: it is the hottest write table, and what the replay needs from an
+// item's history is on its own rows (questions, the needs-info marker, its versions).
 // Pruning: `pruneReconcileShadow`, hourly from the minute cron.
 
 import { has, onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "@software-factory/core";
 import {
   compileItemWorkflow,
+  type EventRow,
   effectivePolicy,
   type GateRow,
   type ItemEnd,
   type JobRow,
+  type PacketRow,
   parseOrgConfig,
   type ShadowHistory,
   type ShadowObserved,
+  type ShadowVerdict,
   SIZE_RANK,
   type Size,
   type StageRow,
@@ -54,6 +59,15 @@ interface ItemRow {
   approvals: string | null;
   /** The Workflow version it ran on (ADR 0053). */
   workflow_version: number | null;
+  shaping_started_at: string | null;
+  release_flag: string | null;
+  needs_info: string | null;
+  workflow_id: string | null;
+  /** When the org config version it pinned was saved. */
+  org_created_at: string | null;
+  questions: number;
+  /** The approved plan's kept `.kim/` files (spec 22), JSON. */
+  kim_files: string | null;
 }
 
 /** Where the last pass stopped: `<updated_at> <id>` of the last ended item it read. */
@@ -94,7 +108,12 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   const reads = await env.DB.batch(
     ids.flatMap((id) => [
       env.DB.prepare(
-        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, p.raw,
+        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version,
+           w.shaping_started_at, w.release_flag, w.needs_info, w.workflow_id, p.raw,
+           c.created_at AS org_created_at,
+           -- Questions put to a person on the item (core_questions_item_idx, one row is enough).
+           EXISTS (SELECT 1 FROM core_questions q WHERE q.work_item_id = w.id) AS questions,
+           (SELECT s.kim_files FROM core_specs s WHERE s.id = w.current_spec_id) AS kim_files,
            c.raw AS org_raw,
            (SELECT json_group_array(json_object('stage', a.stage_id, 'setting', a.setting, 'value', a.value))
             FROM core_override_approvals a
@@ -116,6 +135,8 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
            json_extract(j.context, '$.step.id') AS step,
            json_extract(j.context, '$.specId') IS NOT NULL AS critic,
            json_extract(j.context, '$.adjudicate') IS NOT NULL AS adjudicate,
+           json_extract(j.context, '$.adjudicate.kind') AS adjudicateKind,
+           json_extract(j.context, '$.adjudicate.pendingActionId') AS adjudicatePa,
            json_extract(r.result, '$.verdict') AS verdict, json_extract(r.result, '$.notes') AS note
          FROM core_jobs j LEFT JOIN core_runs r ON r.id = j.run_id
          WHERE j.work_item_id = ? LIMIT 200`,
@@ -123,17 +144,21 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
       // Its gates (core_pending_actions_item_idx), and whether a person decided each one (the
       // decider's user row by primary key). LIMIT 200.
       env.DB.prepare(
-        `SELECT pa.kind, pa.operation, pa.status, pa.decision, pa.created_at AS at,
+        `SELECT pa.id, pa.kind, pa.operation, pa.status, pa.decision, pa.created_at AS at,
            pa.decided_at AS decidedAt, pa.note,
            json_extract(pa.input, '$.stepId') AS step, json_extract(pa.input, '$.headSha') AS headSha,
-           EXISTS (SELECT 1 FROM core_user u WHERE u.id = pa.decided_by) AS byPerson
+           EXISTS (SELECT 1 FROM core_user u WHERE u.id = pa.decided_by) AS byPerson,
+           pa.decided_by AS decidedBy, a.mode AS adjMode, a.acted AS adjActed
          FROM core_pending_actions pa
+         LEFT JOIN core_adjudications a ON a.pending_action_id = pa.id
          WHERE pa.work_item_id = ? LIMIT 200`,
       ).bind(id),
-      // The merge queue merged the default branch in and carried the packet to the new head
-      // (carryReviewPacket, ADR 0330).
+      // Its review packets (core_review_packets_item_idx, in its order): the verdict the checks
+      // stage reads, and whether the merge queue carried one to a new head (ADR 0330).
       env.DB.prepare(
-        "SELECT 1 AS moved FROM core_review_packets WHERE work_item_id = ? AND json_extract(sections, '$.carriedFrom') IS NOT NULL LIMIT 1",
+        `SELECT head_sha AS headSha, verdict, created_at AS at,
+           json_extract(sections, '$.carriedFrom') IS NOT NULL AS carried
+         FROM core_review_packets WHERE work_item_id = ? ORDER BY created_at LIMIT 50`,
       ).bind(id),
     ]),
   );
@@ -147,14 +172,23 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
     const at = PER_ITEM * i;
     const row = (reads[at]?.results as ItemRow[] | undefined)?.[0];
     const stages = (reads[at + 1]?.results ?? []) as StageRow[];
-    const queueHeadMoved = (reads[at + 4]?.results ?? []).length > 0;
+    const packetRows = (reads[at + 4]?.results ?? []) as (PacketRow & { carried: number })[];
+    const queueHeadMoved = packetRows.some((p) => p.carried === 1);
+    const packets = packetRows.map(({ headSha, verdict, at: t }) => ({ headSha, verdict, at: t }));
+    const events = row ? eventsOf(row) : [];
     const jobs = ((reads[at + 2]?.results ?? []) as RawJob[]).map(jobOf);
     const gates = ((reads[at + 3]?.results ?? []) as RawGate[]).map(gateOf);
     const verdict = row
       ? verdictOf(
           row,
-          { stages, jobs, gates },
-          { queueHeadMoved, babysitter: has(row.workflow_version, "babysitter-delivery") },
+          { stages, jobs, gates, packets, events },
+          {
+            queueHeadMoved,
+            babysitter: has(row.workflow_version, "babysitter-delivery"),
+            keptDesigns: !!row.kim_files && row.kim_files !== "[]",
+            releasedAt: row.shaping_started_at ? row.pulled_at : null,
+            releaseFlag: !!row.release_flag,
+          },
         )
       : null;
     if (!row || !verdict) return;
@@ -175,7 +209,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   await env.DB.batch(writes);
   return ended.length;
 }
-/** Per ended item, the batch reads: the item, its stages, its jobs, its gates, a moved head. */
+/** Per ended item, the batch reads: the item, its stages, jobs, gates and packets. */
 const PER_ITEM = 5;
 
 interface RawJob {
@@ -187,10 +221,13 @@ interface RawJob {
   step: string | null;
   critic: number;
   adjudicate: number;
+  adjudicateKind: string | null;
+  adjudicatePa: string | null;
   verdict: string | null;
   note: string | null;
 }
 interface RawGate {
+  id: string;
   kind: GateRow["kind"];
   operation: string;
   status: string;
@@ -201,6 +238,9 @@ interface RawGate {
   step: string | null;
   headSha: string | null;
   byPerson: number;
+  decidedBy: string | null;
+  adjMode: string | null;
+  adjActed: number | null;
 }
 const jobOf = (j: RawJob): JobRow => ({
   ...j,
@@ -209,22 +249,67 @@ const jobOf = (j: RawJob): JobRow => ({
   // `notes` is a list in a run's result; one line is enough for a send-back's note.
   note: typeof j.note === "string" ? j.note.slice(0, 500) : null,
 });
-const gateOf = (g: RawGate): GateRow => ({ ...g, byPerson: g.byPerson === 1 });
+const gateOf = ({ adjMode, adjActed, ...g }: RawGate): GateRow => ({
+  ...g,
+  byPerson: g.byPerson === 1,
+  adjudication: adjMode ? { mode: adjMode, acted: adjActed === 1 } : null,
+});
+
+/**
+ * What has no point of its own in the replay, from the item's own row (never the audit table):
+ * questions put to a person (parking asks its requester too), a parked marker, a re-pin (Q3: the org
+ * version it ended on was saved after its pull), shaping under an earlier org version than the one
+ * it delivered under (Q4: a release flag, its accept or a reshape), a reshape's new instance.
+ */
+function eventsOf(row: ItemRow): EventRow[] {
+  const out: EventRow[] = [];
+  const at = row.pulled_at ?? "";
+  if (row.questions === 1) out.push({ kind: "question", at });
+  if (row.needs_info) out.push({ kind: "parked", at });
+  if (
+    has(row.workflow_version, "repin-tightening") &&
+    row.org_created_at &&
+    row.pulled_at &&
+    row.org_created_at > row.pulled_at
+  )
+    out.push({ kind: "repin", at });
+  if (
+    (row.shaping_started_at && row.org_created_at && row.org_created_at > row.shaping_started_at) ||
+    /_r[0-9a-z]+$/.test(row.workflow_id ?? "")
+  )
+    out.push({ kind: "releaseChoice", at });
+  return out;
+}
+
+/**
+ * An ended item the replay can't compare still writes its row, with why (second review of #148):
+ * it breaks the streak rather than leaving it unnoticed.
+ */
+const notComparable = (why: string): ShadowVerdict => ({
+  transitions: [],
+  uncompared: [why],
+  known: [],
+  divergences: 1,
+});
 
 function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserved) {
   const stages = history.stages;
-  if (!ENDS.includes(row.status) || !row.raw) return null; // not ended, or no pinned config
+  if (!ENDS.includes(row.status)) return null; // not ended
   // Cancelled before its pipeline started: nothing ran, so there is nothing to compare.
   if (stages.every((s) => s.stage === "intake")) return null;
+  if (!row.raw) return notComparable("the config the item ran under can't be found");
   const parsed = parseProjectPolicy(row.raw);
-  if (!parsed.ok) return null;
+  if (!parsed.ok)
+    return notComparable(`the config the item ran under doesn't parse: ${parsed.error}`);
   const policy = resolved(parsed.policy, row.org_raw, row.approvals);
-  if (!policy) return null; // an org workflow that can't be resolved: not comparable
+  if (!policy) return notComparable("the org workflow the item pinned can't be resolved");
   let definition: ReturnType<typeof compileItemWorkflow>;
   try {
     definition = compileItemWorkflow(policy, row.workflow, row.kind);
-  } catch {
-    return null; // a slot workflow that doesn't compile (spec 52 PR (a)): not comparable
+  } catch (e) {
+    return notComparable(
+      `the item's workflow doesn't compile to a definition: ${e instanceof Error ? e.message : "unknown"}`,
+    );
   }
   let domains: string[] = [];
   try {
@@ -251,7 +336,7 @@ function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserve
     },
     history,
     row.status as ItemEnd,
-    observed,
+    { ...observed, adjudicator: policy.adjudicator },
   );
 }
 

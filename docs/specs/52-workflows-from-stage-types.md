@@ -1201,13 +1201,40 @@ screen needs).
    carries the approved change (`Observations.carriedApproval`, spec 53), including v12's carried
    approval after a re-verify; it stays a named divergence only for items before the babysitter
    (v4 to v10). The agent check now retries its run up to the item's retry limit, as today's slot
-   steps do. `reconcile.streak` reports a number. Not modelled, so reported as divergences on the
+   steps do. `reconcile.streak` reports a number. After review: **nothing is dropped silently.**
+   Whatever the replay has no point for is named in the item's `uncompared` list, so the item never
+   counts toward the streak: a gate whose operation the reconciler doesn't model, a re-pin (Q3), a
+   release choice or a release flag (Q4), questions put to a person, a parked item, the plan's kept
+   designs written back (spec 22), a job or a stage row the workflow doesn't have, a verify with no
+   packet. The spec critic's runs are compared with the spec stage's `critic` setting, and the
+   adjudicator's with the project's mode for that gate kind. A skip of a stage the workflow lacks
+   (an attached PR's spec and build) is a named equivalence (`absent-stage-skipped`), reported, not
+   a divergence. A shaped item's release is a point of its own (the reconciler waits for it). A
+   gate decided by the adjudicator agrees only where it had earned it (its record: active for that
+   kind, and it acted). **The checks stage reads the review packet's verdict**, the stored output of
+   `assemblePacket` (`packages/core/src/verify/packet.ts`), never the Workflow's own outcome; at the
+   switch-over the reconciler's checks stage reads the verdict from the same function, so a
+   Workflow that moved on against its packet diverges (tested). `reconcile.streak` reports, beside
+   the number, which of the switch-over's scenarios (`COVERAGE`: a verify that fails, slot and
+   merge-gate send-backs, retries past the limit, changes requested at the spec gate, a cancel, a
+   carried approval, an attached PR, an incident) the streak's items covered and which are missing.
+   Second review: an item it can't compare (no config, an org workflow it can't resolve, a
+   definition that doesn't compile) still writes its row, with why, so it breaks the streak. The pass
+   reads nothing from the audit table: questions come from `core_questions` (by its item index),
+   parking from the needs-info marker, a re-pin from the pinned org version being saved after the
+   pull, a release choice from shaping under an earlier version or a reshape's instance. A critic or
+   adjudicator run the settings call for that never happened diverges; a cancelled stage row is
+   replayed; the absent-stage equivalence is for attached PRs only. **Known gap** (`KNOWN_GAPS`):
+   question rounds and parking aren't modelled, so an item with questions or parked never agrees,
+   and the switch-over waits until the reconciler models them. Not modelled, so reported as divergences on the
    items that hit them: triage's readiness rounds (re-triage on answers), a PR conflict's free
    rounds (v3), and a stage added by a re-pin before the item's stage (Q3). `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The
-   **switch-over** is a separate PR, opened only when the streak reaches 20, and approved by the
+   **switch-over** is a separate PR, opened only when the streak reaches 20 **and** the streak's
+   items cover every scenario in `COVERAGE` **and** `KNOWN_GAPS` is empty (`reconcile.streak`'s
+   `switchOverReady`; amended 2026-11-13, second review of #148), and approved by the
    coordinator and the owner.
 5. **(d) Projects on org workflows: overrides and pinning on release** (migration **0282**: project
    config's `workflow` by id, `workflowOverrides`, the migration of each project's slot workflow to the
@@ -1336,6 +1363,24 @@ screen needs).
    would have changed every autonomy table. Not built: deploy approvals (no deploy stage yet) and a
    desktop card for the hold (the desktop stays read-only on policy decisions until the presence
    helper covers them).
+   After review: the setting counts only while it is on in both the org version the item pinned and
+   the current one, with the stricter limits (`stricterAutoApprove`), so switching it off stops items
+   already at a gate; a hold is written whatever the setting says. `SELF_MODIFY_PATHS` protects by
+   directory (all of `packages/core/src`, `apps/engine/src`, `apps/app/src`, `apps/desktop/src/bun`,
+   the connectors, `runner-contract`, `runner-local`, `harness-claude`, `local/runner-host`,
+   `packages/db`, `presets`, the deploy and check scripts, `.factory`, `.github`, wrangler configs,
+   `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `docs/adr`), and a test walks the import graph from the
+   gate and verify entry points and fails on any module outside it. The criteria condition counts
+   only ties a person approved (the spec's links, as #146's `everyCriterionProven`): **small items
+   never qualify**, since triage, an agent, ties their criteria. A weakened proof fails it. Wider risk
+   paths (schemas outside migrations, auth and billing by more names, secrets, CI and infra,
+   `.gitmodules`, agent instruction files, evals, every lock file), generated files and any file with
+   no readable diff (binary, too large, a submodule) make an item not low risk; `maxPerDay` (10)
+   caps auto-approvals per project per day, checked and counted in the approval's batch. The babysitter
+   checks again just before it merges (`mergeQueue.merging`): a hold since, or the setting switched
+   off, withdraws the auto-approval, and the item goes back to verify and its gate (v12). The
+   every-fifth review is counted and decided in the same batch, and goes to the gate's assignee or
+   the project's first approver.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

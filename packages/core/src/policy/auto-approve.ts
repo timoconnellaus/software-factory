@@ -9,13 +9,39 @@ import { z } from "zod";
  */
 export const autoApproveSettings = z
   .object({
-    enabled: z.boolean().default(false),
-    maxChangedLines: z.number().int().min(1).max(5_000).default(200),
-    maxFiles: z.number().int().min(1).max(200).default(10),
+    enabled: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Dark factory mode: merges are approved with no person when every condition holds (the packet passed on this commit with every criterion proven by a check a person tied to it, tests intact, the adjudicator approved having earned it, inside these limits, low risk, and never a change to the factory itself). It only approves; the babysitter lands the merge. Turning it on is a loosening an org admin approves; it counts for an item only while it is on in both the version the item pinned and the current one. A project is held automatically after an incident, a revert, red CI or a person's 'should not have merged'. Small items never qualify: their criteria are tied to checks by triage, an agent, not by a person.",
+      ),
+    maxChangedLines: z
+      .number()
+      .int()
+      .min(1)
+      .max(5_000)
+      .default(200)
+      .describe("Most lines added plus removed, by GitHub's compare with the default branch."),
+    maxFiles: z.number().int().min(1).max(200).default(10).describe("Most files changed."),
+    maxPerDay: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(10)
+      .describe("Most merges auto-approved in one project in a day (UTC), across its workflows."),
     /** Globs no auto-approved change may touch, on top of the floors. */
-    forbiddenPaths: z.array(z.string().min(1).max(200)).max(100).default([]),
+    forbiddenPaths: z
+      .array(z.string().min(1).max(200))
+      .max(100)
+      .default([])
+      .describe("Paths no auto-approved change may touch, on top of the built-in lists."),
     /** Globs that make a change risky, on top of `RISK_PATHS`. */
-    riskPaths: z.array(z.string().min(1).max(200)).max(100).default([]),
+    riskPaths: z
+      .array(z.string().min(1).max(200))
+      .max(100)
+      .default([])
+      .describe("Paths that make a change risky, on top of the built-in risk paths."),
   })
   .strict();
 export type AutoApproveSettings = z.infer<typeof autoApproveSettings>;
@@ -27,17 +53,85 @@ export const AUTO_APPROVE_OFF: AutoApproveSettings = autoApproveSettings.parse({
  * only without a matching manifest change (`lockWithoutManifest`).
  */
 export const RISK_PATHS = [
+  // Migrations and schemas, wherever they live.
   "**/migrations/**",
   "**/*.sql",
+  "**/schema.*",
+  "**/*.schema.*",
+  "**/schemas/**",
+  "**/*.prisma",
+  "**/*.graphql",
+  "**/*.dbml",
+  // Auth, sessions, secrets and permissions, by any of their names.
   "**/auth/**",
-  "**/*auth*.*",
+  "**/*auth*",
+  "**/*login*",
+  "**/*session*",
+  "**/*oauth*",
+  "**/*token*",
+  "**/*password*",
+  "**/*permission*",
+  "**/*secret*",
+  "**/*crypto*",
+  "**/*credential*",
+  // Billing and money.
   "**/billing/**",
   "**/payments/**",
+  "**/*billing*",
+  "**/*payment*",
+  "**/*stripe*",
+  "**/*invoice*",
+  "**/*subscription*",
+  "**/*pricing*",
+  // Secrets and environment.
   "**/.env*",
   "**/.dev.vars*",
   "**/wrangler.*",
+  // CI, repository settings and infrastructure.
   ".github/**",
+  ".gitlab-ci.yml",
+  ".circleci/**",
+  "**/Dockerfile*",
+  "**/docker-compose*",
+  "**/*.tf",
+  "**/*.tfvars",
+  "infra/**",
+  "terraform/**",
+  "k8s/**",
+  "helm/**",
+  // Submodules and what the factory's agents read as instructions.
+  ".gitmodules",
+  "**/AGENTS.md",
+  "**/CLAUDE.md",
+  "**/SKILL.md",
+  ".claude/**",
+  ".cursor/**",
+  ".kim/**",
+  // The evals that judge the factory, and the factory's own policy.
+  "evals/**",
   ".factory/**",
+  // Lock files: what installs, whatever the manifest says.
+  "**/pnpm-lock.yaml",
+  "**/package-lock.json",
+  "**/yarn.lock",
+  "**/bun.lockb",
+  "**/Cargo.lock",
+  "**/poetry.lock",
+  "**/Gemfile.lock",
+  "**/go.sum",
+] as const;
+
+/** Generated files: what made them isn't in the diff, so they aren't low risk. */
+export const GENERATED_PATHS = [
+  "**/*.gen.*",
+  "**/generated/**",
+  "**/__generated__/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/*.min.js",
+  "**/*.map",
+  "**/*.snap",
+  "**/worker-configuration.d.ts",
 ] as const;
 
 /**
@@ -45,14 +139,28 @@ export const RISK_PATHS = [
  * every workflow on every repository. No setting removes a path from this list.
  */
 export const SELF_MODIFY_PATHS = [
+  // By directory, so nothing that enforces policy is left out by name (review of #152): the import
+  // graph from the gate and verify entry points stays inside this list (auto-approve.test.ts).
+  "packages/core/src/**",
+  "packages/db/**",
+  "packages/runner-contract/**",
+  "packages/runner-local/**",
+  "packages/harness-claude/**",
+  "packages/connector-*/**",
+  "packages/config/**",
+  "apps/engine/src/**",
+  "apps/app/src/**",
+  "apps/desktop/src/bun/**",
+  "local/runner-host/**",
+  "presets/**",
+  "scripts/deploy/**",
+  "scripts/checks/**",
   ".factory/**",
-  "packages/core/src/policy/**",
-  "packages/core/src/gate.ts",
-  "packages/core/src/registry.ts",
-  "packages/core/src/operations/**",
-  "packages/core/src/stages/**",
-  "apps/engine/src/workflow/**",
+  ".github/**",
+  "**/wrangler.*",
   "AGENTS.md",
+  "CLAUDE.md",
+  "CONTEXT.md",
   "docs/adr/**",
 ] as const;
 
@@ -110,13 +218,24 @@ export interface AutoApproveFacts {
   packet: {
     verdict: "pass" | "fail";
     ci: string | null;
-    proven: { proven: number; total: number } | null;
+    /**
+     * Every acceptance criterion proven by a check that ran on this SHA, counting only ties a
+     * person approved (the spec's): `criteriaProven` (as #146's `everyCriterionProven`).
+     */
+    criteriaProven: boolean;
+    /** The proof was weakened (a check changed in the same diff, ADR 0501). */
+    weakened: boolean;
     testsIntact: boolean | null;
   } | null;
   /** The adjudicator: active for merge on this project, earned, and its verdict on this SHA. */
   adjudicator: { active: boolean; eligible: boolean; approved: boolean } | null;
-  /** GitHub's compare of the default branch with the head. */
-  changes: { path: string; changes: number | null }[] | null;
+  /**
+   * GitHub's compare of the default branch with the head. `unreadable`: GitHub gave no diff for it
+   * (binary, too large, a submodule): not low risk.
+   */
+  changes: { path: string; changes: number | null; unreadable?: boolean }[] | null;
+  /** Merges auto-approved in the project today (UTC), before this one. */
+  today?: number;
   /** The project's hold (ADR 0515 §7), if set. */
   hold: string | null;
   /** The merge would change the factory's own config (the gate's `touchesFactoryConfig`). */
@@ -161,25 +280,19 @@ export function autoApproveVerdict(
     facts.hold ? `the project's auto-approval is held: ${facts.hold}` : "no hold",
   );
   const p = facts.packet;
-  const proven = p?.proven;
   add(
     "checks",
-    !!p &&
-      p.verdict === "pass" &&
-      p.ci === "success" &&
-      !!proven &&
-      proven.total > 0 &&
-      proven.proven === proven.total,
+    !!p && p.verdict === "pass" && p.ci === "success" && p.criteriaProven && !p.weakened,
     !p
       ? "no review packet on this commit"
       : p.verdict !== "pass"
         ? "the review packet didn't pass"
         : p.ci !== "success"
           ? `CI on this commit is ${p.ci ?? "unknown"}`
-          : !proven || proven.total === 0
-            ? "no acceptance criterion is proven by a check that ran"
-            : proven.proven < proven.total
-              ? `${proven.total - proven.proven} of ${proven.total} criteria aren't proven by a check that ran`
+          : p.weakened
+            ? "the proof was weakened: a check changed in the same diff"
+            : !p.criteriaProven
+              ? "not every criterion is proven by a check a person tied to it (small items never are: triage ties theirs)"
               : "every check passed and every criterion is proven",
   );
   add(
@@ -203,29 +316,33 @@ export function autoApproveVerdict(
   const paths = changes?.map((c) => c.path) ?? [];
   const lines = changes?.reduce((n, c) => n + (c.changes ?? Number.POSITIVE_INFINITY), 0) ?? null;
   const forbidden = matching(setting.forbiddenPaths, paths);
+  const today = facts.today ?? 0;
   add(
     "limits",
     !!changes &&
       changes.length <= setting.maxFiles &&
       lines !== null &&
       lines <= setting.maxChangedLines &&
-      forbidden.length === 0,
+      forbidden.length === 0 &&
+      today < setting.maxPerDay,
     !changes
       ? "the change couldn't be read from GitHub"
-      : changes.length > setting.maxFiles
-        ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
-        : lines === null || !Number.isFinite(lines)
-          ? "a file's changed lines couldn't be counted"
-          : lines > setting.maxChangedLines
-            ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
-            : forbidden.length
-              ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
-              : "inside the size and path limits",
+      : today >= setting.maxPerDay
+        ? `${today} merges were auto-approved in this project today (the limit is ${setting.maxPerDay})`
+        : changes.length > setting.maxFiles
+          ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
+          : lines === null || !Number.isFinite(lines)
+            ? "a file's changed lines couldn't be counted"
+            : lines > setting.maxChangedLines
+              ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
+              : forbidden.length
+                ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
+                : "inside the size and path limits",
   );
   const self = matching(SELF_MODIFY_PATHS, paths);
   const risky = [
-    ...matching([...RISK_PATHS, ...setting.riskPaths], paths),
-    ...lockWithoutManifest(paths),
+    ...matching([...RISK_PATHS, ...GENERATED_PATHS, ...setting.riskPaths], paths),
+    ...(changes ?? []).filter((c) => c.unreadable).map((c) => `${c.path} (no readable diff)`),
   ];
   add(
     "risk",
@@ -259,12 +376,12 @@ export function autoApproveImpact(
       class: after.enabled ? "loosens" : "tightens",
       summary: `Merges ${after.enabled ? "are approved automatically when every condition holds" : "always go to a person"}.`,
     });
-  for (const key of ["maxChangedLines", "maxFiles"] as const) {
+  for (const key of ["maxChangedLines", "maxFiles", "maxPerDay"] as const) {
     if (before[key] === after[key]) continue;
     out.push({
       path: `${path}.${key}`,
       class: after[key] > before[key] ? "loosens" : "tightens",
-      summary: `Auto-approval ${key === "maxFiles" ? "file" : "changed-line"} limit ${before[key]} → ${after[key]}.`,
+      summary: `Auto-approval ${key === "maxFiles" ? "file" : key === "maxPerDay" ? "daily" : "changed-line"} limit ${before[key]} → ${after[key]}.`,
     });
   }
   for (const key of ["forbiddenPaths", "riskPaths"] as const) {
@@ -284,4 +401,37 @@ export function autoApproveImpact(
       });
   }
   return out;
+}
+
+/**
+ * The stricter of two settings (the version an item pinned and the org's current one): on only if
+ * on in both, the lower limits, every path of either (review of #152).
+ */
+export function stricterAutoApprove(
+  a: AutoApproveSettings,
+  b: AutoApproveSettings,
+): AutoApproveSettings {
+  return {
+    enabled: a.enabled && b.enabled,
+    maxChangedLines: Math.min(a.maxChangedLines, b.maxChangedLines),
+    maxFiles: Math.min(a.maxFiles, b.maxFiles),
+    maxPerDay: Math.min(a.maxPerDay, b.maxPerDay),
+    forbiddenPaths: [...new Set([...a.forbiddenPaths, ...b.forbiddenPaths])],
+    riskPaths: [...new Set([...a.riskPaths, ...b.riskPaths])],
+  };
+}
+
+/**
+ * ADR 0515's "every acceptance criterion is proven by a check that ran on the head SHA", from a
+ * packet's stored proof: only ties a person approved (`linkedBy: "spec"`, never the reviewer's or
+ * triage's) count, as PR #146's `everyCriterionProven`; no criteria is false. Small items never
+ * qualify: their criteria come from triage, an agent.
+ */
+export function criteriaProven(sections: Record<string, unknown>): boolean {
+  const proof = sections.proof;
+  if (!Array.isArray(proof) || proof.length === 0) return false;
+  return proof.every((p) => {
+    const x = p as { proven?: unknown; linkedBy?: unknown; fromTriage?: unknown };
+    return x.proven === true && x.linkedBy === "spec" && x.fromTriage !== true;
+  });
 }

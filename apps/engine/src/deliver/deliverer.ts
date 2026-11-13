@@ -401,6 +401,11 @@ async function deliverHead(
   if (marked.status !== "ok") {
     return end("left", "failed", `the babysitter couldn't start the merge: ${refusal(marked)}`);
   }
+  // An auto-approval the hold (or the setting switched off) withdrew just now (ADR 0515): the item
+  // verifies the head again and goes back to its merge gate, as any withdrawn approval does.
+  if (typeof marked.output.withdrawn === "string") {
+    return end("left", "withdrawn", marked.output.withdrawn);
+  }
   await deliverTestSeams.beforeLand?.(id);
   const landed = await call(
     env,

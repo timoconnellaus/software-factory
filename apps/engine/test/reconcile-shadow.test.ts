@@ -129,6 +129,12 @@ describe("the shadow reconciler", () => {
     )
       .bind(moved, JSON.stringify({ carriedFrom: "a1" }), new Date().toISOString())
       .run();
+    // The other has a packet too, so the two differ only by the named difference.
+    await env.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES ('rp_still', ?, 'b2', 'pass', '{}', ?)",
+    )
+      .bind(still, new Date().toISOString())
+      .run();
     while ((await shadowPass(env, later())) > 0);
     const report = async (id: string) =>
       ok<{ report: { known: { reason: string }[]; divergences: number } }>(
@@ -200,7 +206,7 @@ describe("the shadow reconciler on an org workflow (spec 52 PR (d))", () => {
     });
   });
 
-  it("writes no verdict when the pinned org version is missing", async () => {
+  it("an item it can't compare still writes its row, with why: the streak breaks, it isn't skipped", async () => {
     const w = await world({ version: 1, autonomyPolicy: "balanced", workflow: "wf_ship" });
     await ok(
       "workflow.save",
@@ -213,9 +219,14 @@ describe("the shadow reconciler on an org workflow (spec 52 PR (d))", () => {
       .bind(id)
       .run();
     while ((await shadowPass(env, later())) > 0);
-    expect(
-      await first("SELECT work_item_id FROM core_reconcile_items WHERE work_item_id = ?", id),
-    ).toBeNull();
+    const row = await first<{ divergences: number; report: string }>(
+      "SELECT divergences, report FROM core_reconcile_items WHERE work_item_id = ?",
+      id,
+    );
+    expect(row?.divergences).toBe(1);
+    expect(JSON.parse(row?.report ?? "{}").uncompared).toEqual([
+      "the org workflow the item pinned can't be resolved",
+    ]);
   });
 });
 
