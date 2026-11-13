@@ -395,6 +395,8 @@ describe("work item detail", () => {
       takeover: null,
       startedAt: NOW,
       endedAt: new Date(Date.parse(NOW) + ms).toISOString(),
+      log: "kept" as const,
+      archiveIncident: null,
     });
     expect(agentTime(detail({ runs: [run(1, 60_000), run(2, 120_000)] }))).toBe(180_000);
   });

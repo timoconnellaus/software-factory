@@ -381,6 +381,9 @@ gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `m
 `policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An
 incident's own failures open no further incidents. Its fix merges with no person only under
 **dark factory mode**, like any change (ADR 0515; the check-only exception of ADR 0230 is superseded).
+One kind is a record only, with no work item: an **archive incident**, when a run's archived log
+lost an object in the archive bucket. No agent can bring it back, so it is listed on the desktop's
+Checks and incidents page until a person resolves it (`incident.resolve`).
 _Avoid_: bug, postmortem, issue
 
 **Check (`.factory/checks/`)**

@@ -604,10 +604,10 @@ describe("a lost archive object is an incident for a person", () => {
   }
   type Report = {
     reported: boolean;
-    incident: { workItemId: string; number: number } | null;
+    incident: { id: string; openedAt: string; resolvedAt: string | null } | null;
   };
 
-  it("checks for itself, opens one incident per run, and starts no agent work", async () => {
+  it("checks for itself, records one incident per run, with no work item to release", async () => {
     const { w, workItemId, runId, chunk } = await archivedRun();
     const report = (firstSeq: number) =>
       ok<Report>("run.reportArchiveMissing", { workItemId, runId, firstSeq }, w.human);
@@ -616,20 +616,20 @@ describe("a lost archive object is an incident for a person", () => {
     // A chunk the index doesn't name: nothing.
     expect(await report(999)).toEqual({ reported: false, incident: null });
     await env.ARCHIVE.delete(chunk.r2_key);
+    const items = async () =>
+      (await first<{ n: number }>("SELECT count(*) AS n FROM core_work_items"))?.n;
+    const before = await items();
     const opened = await report(chunk.first_seq);
     expect(opened.reported).toBe(true);
-    const item = await first<{ kind: string; status: string; parent_work_item_id: string }>(
-      "SELECT kind, status, parent_work_item_id FROM core_work_items WHERE id = ?",
-      opened.incident?.workItemId,
-    );
-    // A record for a person: left in the backlog, so nothing runs until someone releases it.
-    expect(item).toEqual({ kind: "incident", status: "backlog", parent_work_item_id: workItemId });
+    // A record for a person and nothing else: no work item (so nothing to release into the
+    // incident workflow, whose fixes can auto-merge), no job.
+    expect(await items()).toBe(before);
     expect(
-      await all("SELECT 1 FROM core_jobs WHERE work_item_id = ?", opened.incident?.workItemId),
-    ).toEqual([]);
-    expect(
-      await all<{ kind: string }>("SELECT kind FROM core_incidents WHERE run_id = ?", runId),
-    ).toEqual([{ kind: "archive_missing" }]);
+      await all<{ kind: string; fix_work_item_id: string | null; resolved_at: string | null }>(
+        "SELECT kind, fix_work_item_id, resolved_at FROM core_incidents WHERE run_id = ?",
+        runId,
+      ),
+    ).toEqual([{ kind: "archive_missing", fix_work_item_id: null, resolved_at: null }]);
     // Again (another viewer): the same incident, no second one.
     expect(await report(chunk.first_seq)).toEqual({ reported: false, incident: opened.incident });
     expect((await all("SELECT 1 FROM core_incidents WHERE run_id = ?", runId)).length).toBe(1);
@@ -655,6 +655,52 @@ describe("a lost archive object is an incident for a person", () => {
       firstSeq: chunk.first_seq,
       incident: opened.incident,
     });
+  });
+
+  it("is listed for the org until a person resolves it, once, with what they did", async () => {
+    const { w, workItemId, runId, chunk } = await archivedRun();
+    await env.ARCHIVE.delete(chunk.r2_key);
+    const opened = await ok<Report>(
+      "run.reportArchiveMissing",
+      { workItemId, runId, firstSeq: chunk.first_seq },
+      w.human,
+    );
+    const id = opened.incident?.id ?? "";
+    const list = () =>
+      ok<{ incidents: { id: string; workItemId: string; runId: string | null }[]; more: boolean }>(
+        "incident.listArchiveMissing",
+        { orgId: w.orgId },
+        w.human,
+      );
+    expect((await list()).incidents).toContainEqual(
+      expect.objectContaining({ id, workItemId, runId }),
+    );
+    // The item's runs say where the log is.
+    const detail = await ok<{ runs: { id: string; log: string; archiveIncident: unknown }[] }>(
+      "workItem.get",
+      { workItemId },
+      w.human,
+    );
+    expect(detail.runs.find((r) => r.id === runId)).toMatchObject({
+      log: "missing",
+      archiveIncident: { id, resolvedAt: null },
+    });
+    expect(
+      await ok(
+        "incident.resolve",
+        { workItemId, incidentId: id, resolution: "lost, accepted" },
+        w.human,
+      ),
+    ).toEqual({ resolved: true });
+    expect(
+      await ok("incident.resolve", { workItemId, incidentId: id, resolution: "again" }, w.human),
+    ).toEqual({ resolved: false });
+    expect((await list()).incidents.map((i) => i.id)).not.toContain(id);
+    const row = await first<{ resolution: string; resolved_by: string }>(
+      "SELECT resolution, resolved_by FROM core_incidents WHERE id = ?",
+      id,
+    );
+    expect(row).toEqual({ resolution: "lost, accepted", resolved_by: w.human.id });
   });
 
   it("the daily sample finds a lost object with a HEAD and opens its incident", async () => {
