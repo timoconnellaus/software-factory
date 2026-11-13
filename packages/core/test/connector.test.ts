@@ -134,6 +134,77 @@ describe("push validation (ADR 0052 item 4)", () => {
     expect(out).toMatchObject({ outcome: "violation", failedRuns: [job.runId] });
   });
 
+  // #190 review: with no run of the item active, an App push the engine didn't make is never "a
+  // control-plane move". The engine records its SHAs once GitHub answers, so it is judged again
+  // after PUSH_RECHECK_MS (the outbox holds it), then is a violation unless the engine made it.
+  it("judges an App push to an item's branch with no run active again later, then as a violation", async () => {
+    const w = await world();
+    const item = await newItem(w);
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    const repo = { owner: w.repo.owner, name: w.repo.repo };
+    // Another token of the same App moves the branch.
+    const foreign = await github.push(w.repo, item.branch, undefined, ["src/hidden.ts"]);
+    const first = await push(repo, item.branch, foreign);
+    expect(first).toMatchObject({ outcome: "ok", failedRuns: [] });
+    expect(first.detail).toMatch(/hasn't recorded making yet/);
+    const held = await rows<{ next_at: string; payload: string }>(
+      "SELECT next_at, payload FROM core_outbox WHERE kind = 'push.recheck' AND instr(payload, ?) > 0",
+      foreign,
+    );
+    expect(held).toHaveLength(1);
+    expect(Date.parse(String(held[0]?.next_at))).toBeGreaterThan(Date.now() + 100_000);
+    // Judged again: still not the engine's, still the branch's head.
+    const second = await ok<{ outcome: string; detail: string }>(
+      "push.observe",
+      { ...JSON.parse(String(held[0]?.payload)).input },
+      INTAKE,
+    );
+    expect(second.outcome).toBe("violation");
+    expect(second.detail).toMatch(/neither the engine nor a run of #\d+ made/);
+    const notes = await rows(
+      "SELECT id FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'run.confinement') > 0 AND instr(payload, ?) > 0",
+      item.workItemId,
+    );
+    expect(notes).toHaveLength(1);
+  });
+
+  it("accepts on the second look a head the engine made meanwhile (the merge queue's own merge)", async () => {
+    const w = await world();
+    const item = await newItem(w);
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    const repo = { owner: w.repo.owner, name: w.repo.repo };
+    const merged = await github.push(w.repo, item.branch, undefined, ["README.md"]);
+    // The queue recorded the merge GitHub returned, after the push's delivery arrived.
+    await env.DB.prepare(
+      "INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, status, enqueued_at, updated_at, update_merge_sha, driver) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, 'babysitter')",
+    )
+      .bind(
+        uid("mq"),
+        w.projectId,
+        item.workItemId,
+        sha40("a"),
+        sha40("a"),
+        new Date().toISOString(),
+        new Date().toISOString(),
+        merged,
+      )
+      .run();
+    const again = await ok<{ outcome: string; detail: string }>(
+      "push.observe",
+      {
+        repo,
+        ref: `refs/heads/${item.branch}`,
+        before: sha40("b"),
+        after: merged,
+        pusher: "software-factory-test[bot]",
+        pusherIsApp: true,
+        recheck: true,
+      },
+      INTAKE,
+    );
+    expect(again).toMatchObject({ outcome: "ok", detail: "a control-plane move" });
+  });
+
   it("ignores people's pushes to their own branches", async () => {
     const { repo, job } = await withActiveRun();
     expect((await push(repo, "tim/feature", sha40("e1"), false)).outcome).toBe("ignored");

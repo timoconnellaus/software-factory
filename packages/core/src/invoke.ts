@@ -982,7 +982,13 @@ export function outboxStatement(
       now,
       message.kind,
       JSON.stringify(message.payload),
-      new Date(Date.parse(now) + OUTBOX_GRACE_MS).toISOString(),
+      // A message held until a time of its own (push.recheck) is due no sooner.
+      new Date(
+        Math.max(
+          Date.parse(now) + OUTBOX_GRACE_MS,
+          "notBefore" in message.payload ? Date.parse(String(message.payload.notBefore)) : 0,
+        ),
+      ).toISOString(),
     );
 }
 
