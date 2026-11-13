@@ -1074,6 +1074,15 @@ export interface CoreDeliveryStateTable {
   babysit_reasons: Generated<JsonText>;
 }
 
+/** 0392: what the babysitter's conflict resolution changed, for the reopened gate. */
+export interface CoreBabysitResolutionsTable {
+  work_item_id: string;
+  head_sha: string;
+  summary: string;
+  patches: Generated<string>;
+  created_at: Iso;
+}
+
 /** 0393 (spec 53 §5): the engine's revert of a red main's culprit, claimed, then opened. */
 export interface CoreRevertsTable {
   id: string;
@@ -1498,6 +1507,7 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_babysit_resolutions: CoreBabysitResolutionsTable;
   core_reverts: CoreRevertsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;

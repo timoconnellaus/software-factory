@@ -12,6 +12,7 @@ import type {
   RepoGuards,
   RepoRef,
 } from "../services.ts";
+import { mergeBaseAmbiguousFrom, type SinceBase } from "../verify/merge-base.ts";
 import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
 type Touch =
@@ -149,6 +150,8 @@ export interface FakeGitHub extends GitHubService {
     opts?: {
       byGitHub?: boolean;
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
+      /** What the compare reports for the merge commit's paths (patches, renames). */
+      touches?: Touch[];
     },
   ): Promise<string>;
   /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
@@ -601,6 +604,30 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const complete = !state.truncatedTrees?.[m] && !state.truncatedTrees?.[h];
       return { mergeBase: m, paths, complete };
     },
+    async mergeBaseAmbiguous(r, a, b) {
+      // As GitHub answers: one merge base, the same both ways (even for a criss-cross), and each
+      // side's commits since it with their parents; the judgement is the client's.
+      const state = await load(r);
+      const x = state.refs[a] ?? a;
+      const y = state.refs[b] ?? b;
+      const base = mergeBaseOf(state, x, y);
+      const parentsOf = (c: string) => [
+        ...(state.parents[c] ? [state.parents[c] as string] : []),
+        ...(state.merged?.[c] ? [state.merged[c] as string] : []),
+      ];
+      // GitHub lists `head ^other`: the commits the head has that the other side doesn't (checked
+      // against a recorded response: packages/core/test/fixtures/criss-cross-compare.json).
+      const since = (head: string, other: string): SinceBase => {
+        const theirs = reachable(state, other);
+        const commits = [...reachable(state, head)]
+          .filter((c) => !theirs.has(c))
+          .map((sha) => ({ sha, parents: parentsOf(sha) }));
+        return { base, total: commits.length, commits };
+      };
+      return mergeBaseAmbiguousFrom(since(y, x), since(x, y), async (sha, b0) =>
+        reachable(state, b0).has(sha),
+      );
+    },
     async pathEntries(r, at, paths) {
       const state = await load(r);
       const tree = treeAt(state, state.refs[at] ?? at);
@@ -614,6 +641,15 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
       if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
       if (opts.tree) {
+        // The paths it sets differ from the merged-in side: the compare lists them, as GitHub's does.
+        state.touched = {
+          ...(state.touched ?? {}),
+          [next]: [
+            ...(state.touched?.[next] ?? []),
+            ...Object.keys(opts.tree.set ?? {}),
+            ...(opts.touches ?? []),
+          ],
+        };
         const tree = { ...treeAt(state, next), ...opts.tree.set };
         for (const p of opts.tree.remove ?? []) delete tree[p];
         state.trees = { ...(state.trees ?? {}), [next]: tree };
