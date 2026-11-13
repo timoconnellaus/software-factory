@@ -65,6 +65,8 @@ interface ItemRow {
   workflow_id: string | null;
   /** When the org config version it pinned was saved. */
   org_created_at: string | null;
+  /** Set when the item adopted only newer versions' tightenings (#139 follow-up). */
+  org_config_adopted: string | null;
   questions: number;
   /** The approved plan's kept `.kim/` files (spec 22), JSON. */
   kim_files: string | null;
@@ -108,7 +110,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   const reads = await env.DB.batch(
     ids.flatMap((id) => [
       env.DB.prepare(
-        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version,
+        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, w.org_config_adopted,
            w.shaping_started_at, w.release_flag, w.needs_info, w.workflow_id, p.raw,
            c.created_at AS org_created_at,
            -- Questions put to a person on the item (core_questions_position_idx (work_item_id leading), one row is enough).
@@ -258,7 +260,7 @@ const gateOf = ({ adjMode, adjActed, ...g }: RawGate): GateRow => ({
 /**
  * What has no point of its own in the replay, from the item's own row (never the audit table):
  * questions put to a person (parking asks its requester too), a parked marker, a re-pin (Q3: the org
- * version it ended on was saved after its pull), shaping under an earlier org version than the one
+ * version it ended on was saved after its pull, or it adopted a later version's tightenings), shaping under an earlier org version than the one
  * it delivered under (Q4: a release flag, its accept or a reshape), a reshape's new instance.
  */
 function eventsOf(row: ItemRow): EventRow[] {
@@ -273,6 +275,7 @@ function eventsOf(row: ItemRow): EventRow[] {
     row.org_created_at > row.pulled_at
   )
     out.push({ kind: "repin", at });
+  else if (row.org_config_adopted !== null) out.push({ kind: "repin", at });
   if (
     (row.shaping_started_at && row.org_created_at && row.org_created_at > row.shaping_started_at) ||
     /_r[0-9a-z]+$/.test(row.workflow_id ?? "")

@@ -23,6 +23,13 @@ export function closeTerminal(workItemId: string): void {
   emit();
 }
 
+/** Every terminal closed (another account signed in: they were the previous account's runs). */
+export function closeAllTerminals(): void {
+  if (open.size === 0) return;
+  open = new Map();
+  emit();
+}
+
 export function terminalFor(workItemId: string): TerminalRun | null {
   return open.get(workItemId) ?? null;
 }

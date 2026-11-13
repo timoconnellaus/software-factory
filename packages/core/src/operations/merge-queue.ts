@@ -49,6 +49,7 @@ const OPEN_ITEM = ["running", "waiting", "paused"] as const;
 
 interface QueueRow {
   id: string;
+  project_id: string;
   work_item_id: string;
   workflow_id: string | null;
   pending_action_id: string | null;
@@ -60,15 +61,57 @@ interface QueueRow {
   repository_id: string | null;
   driver: MergeQueueDriver;
   repairs_main: number;
+  merging_at: string | null;
+  update_asked_at: string | null;
+  update_from_sha: string | null;
+  /** The question the babysitter asked a person at its bound on updates (`mergeQueue.hold`). */
+  hold_question_id: string | null;
+  /** The person answered "wait": the head updates again only after this time. */
+  held_until: string | null;
+  /** 1 while its repository's default branch is red (an open episode, spec 53). */
+  stopped: number;
 }
+
+/** The step the head of a queue is on (`headStep`). */
+export type HeadStep = "merging" | "asking" | "holding" | "updating" | "ci";
+
+/**
+ * Which step the head of a queue is on: `merging` (GitHub was asked to merge it), `asking` (at its
+ * bound on updates the babysitter asked a person "update once more, or wait?", `mergeQueue.hold`),
+ * `holding` (the person said wait: nothing happens until `held_until`), `updating` (GitHub was
+ * asked to merge the default branch in and the new head isn't there yet), or `ci` (up to date: the
+ * queue waits for CI on its head, then merges).
+ */
+export function headStep(
+  e: Pick<
+    QueueRow,
+    | "merging_at"
+    | "update_asked_at"
+    | "update_from_sha"
+    | "head_sha"
+    | "hold_question_id"
+    | "held_until"
+  >,
+  now: string,
+): HeadStep {
+  if (e.merging_at) return "merging";
+  if (e.hold_question_id) return "asking";
+  if (e.held_until && e.held_until > now) return "holding";
+  if (e.update_asked_at && e.update_from_sha === e.head_sha) return "updating";
+  return "ci";
+}
+
+/** The steps a queue read reports for its head (`mergeQueue.list`, `delivery.status`). */
+export const HEAD_STEPS = ["merging", "asking", "holding", "updating", "ci"] as const;
 
 /**
  * The project's open entries, head first, as one query (for `readBatch`). An entry whose work item
- * ended is skipped. With `repositoryId`, only that repository's queue (ADR 0490).
+ * ended is skipped. With `repositoryId`, only that repository's queue (ADR 0490). Given several
+ * projects (the board), their entries together, each project's in its own order.
  */
 export function queuedEntriesQuery(
   ctx: HandlerContext,
-  project: string,
+  project: string | readonly string[],
   repositoryId?: string | null,
 ) {
   return (
@@ -77,6 +120,7 @@ export function queuedEntriesQuery(
       .innerJoin("core_work_items as w", "w.id", "q.work_item_id")
       .select([
         "q.id",
+        "q.project_id",
         "q.work_item_id",
         "q.workflow_id",
         "q.pending_action_id",
@@ -88,8 +132,19 @@ export function queuedEntriesQuery(
         "w.title",
         "w.repository_id",
         "w.repairs_main",
+        "q.merging_at",
+        "q.update_asked_at",
+        "q.update_from_sha",
+        "q.hold_question_id",
+        "q.held_until",
+        sql<number>`EXISTS (SELECT 1 FROM core_main_health h WHERE h.repository_id = w.repository_id AND h.red_since IS NOT NULL)`.as(
+          "stopped",
+        ),
       ])
-      .where("q.project_id", "=", project)
+      .$if(typeof project === "string", (q) => q.where("q.project_id", "=", project as string))
+      .$if(typeof project !== "string", (q) =>
+        q.where("q.project_id", "in", project.length ? [...project] : [""]),
+      )
       // One queue per repository (ADR 0490): an item lands on its own repository's default branch.
       // An item with no repository recorded (code from before 0260) shares its project's queue: a
       // project has one repository until per-repository protection lands.
@@ -562,20 +617,36 @@ export const mergeQueueList = defineOperation({
         enqueuedAt: z.string(),
         /** The repository it lands in: the queue is per repository (ADR 0490). */
         repositoryId: z.string().nullable(),
+        /**
+         * Its repository's head only (null for the rest): `updating` (GitHub is merging the
+         * default branch in), `ci` (waiting on CI on its head before it merges), `merging`,
+         * `asking` (a person is asked "update once more, or wait?") or `holding` (until `heldUntil`).
+         */
+        step: z.enum(HEAD_STEPS).nullable().optional(),
+        /** `holding`: when the head updates again. */
+        heldUntil: z.string().nullable().optional(),
       }),
     ),
   }),
   async handler(_input, ctx) {
     const entries = await queuedEntries(ctx, requireProject(ctx).id);
+    const heads = new Set<string>();
     return {
-      entries: entries.map((e) => ({
-        workItemId: e.work_item_id,
-        number: e.number,
-        title: e.title,
-        headSha: e.head_sha,
-        enqueuedAt: e.enqueued_at,
-        repositoryId: e.repository_id,
-      })),
+      entries: entries.map((e) => {
+        const repo = e.repository_id ?? "";
+        const head = !heads.has(repo);
+        heads.add(repo);
+        return {
+          workItemId: e.work_item_id,
+          number: e.number,
+          title: e.title,
+          headSha: e.head_sha,
+          enqueuedAt: e.enqueued_at,
+          repositoryId: e.repository_id,
+          step: head ? headStep(e, ctx.now) : null,
+          heldUntil: head && headStep(e, ctx.now) === "holding" ? e.held_until : null,
+        };
+      }),
     };
   },
 });

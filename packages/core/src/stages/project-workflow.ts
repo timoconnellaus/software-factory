@@ -315,7 +315,18 @@ export function effectivePolicy(
   const resolved = resolveProjectWorkflow(policy, org, { kind: "effective", approvals });
   if (!resolved) return { ok: true, value: policy };
   if (!resolved.ok) return resolved;
-  const def = resolved.value;
+  return {
+    ok: true,
+    value: policyFromDefinition(policy, resolved.value, namedAgents(resolved.value, org)),
+  };
+}
+
+/** The config today's engine reads, from a definition already resolved and the agents it names. */
+export function policyFromDefinition(
+  policy: ProjectPolicy,
+  def: WorkflowDefinition,
+  agents: OrgConfig["agents"],
+): ProjectPolicy {
   const settings = (id: string) => {
     const s = def.stages.find((x) => x.id === id) as StageInstance;
     return stageType(s.type)?.settings.parse(s.settings ?? {}) as Record<string, unknown>;
@@ -326,18 +337,15 @@ export function effectivePolicy(
   const workflow = slotWorkflow(def);
   const { reviewPacket: _drop, ...rest } = policy;
   return {
-    ok: true,
-    value: {
-      ...rest,
-      spec: { ...policy.spec, requiredFrom: spec.requiredFrom },
-      retryLimit: build.retryLimit,
-      protection: { ...policy.protection, requiredChecks: [...verify.requiredChecks] },
-      ...(verify.sections ? { reviewPacket: { sections: [...verify.sections] } } : {}),
-      agents: namedAgents(def, org).map((a) => ({ ...a, requires: [...a.requires] })),
-      workflows: [workflow],
-      workflow: workflow.name,
-      workflowOverrides: {},
-    },
+    ...rest,
+    spec: { ...policy.spec, requiredFrom: spec.requiredFrom },
+    retryLimit: build.retryLimit,
+    protection: { ...policy.protection, requiredChecks: [...verify.requiredChecks] },
+    ...(verify.sections ? { reviewPacket: { sections: [...verify.sections] } } : {}),
+    agents: agents.map((a) => ({ ...a, requires: [...a.requires] })),
+    workflows: [workflow],
+    workflow: workflow.name,
+    workflowOverrides: {},
   };
 }
 
@@ -478,4 +486,52 @@ export function repinImpact(
     after: namedAgents(now.value, current.config),
   };
   return workflowImpact(was.value, now.value, agents);
+}
+
+/**
+ * The pinned definition with only the newer version's tightenings adopted (review of #139: "adopt
+ * only the tightened parts"), stage by stage: a stage both have takes the newer one where that
+ * change only tightens it (and the pinned one otherwise); a stage only the newer one has is added
+ * where adding it tightens (a check or a gate that runs for every item), after the stage it follows
+ * there; the pinned order is kept. `adopted` lists what was taken.
+ */
+export function stricterDefinition(
+  pinned: WorkflowDefinition,
+  newer: WorkflowDefinition,
+  agents: { before: readonly AgentConfig[]; after: readonly AgentConfig[] },
+): { def: WorkflowDefinition; adopted: ImpactChange[]; skipped: ImpactChange[] } {
+  const adopted: ImpactChange[] = [];
+  // Tightenings not taken because the same stage's change also loosens (review of #185): told to
+  // a person, never applied silently or dropped silently.
+  const skipped: ImpactChange[] = [];
+  const one = (s: StageInstance): WorkflowDefinition => ({ ...pinned, stages: [s] });
+  const stages: StageInstance[] = pinned.stages.map((s) => {
+    const n = newer.stages.find((x) => x.id === s.id);
+    if (!n || same(n, s)) return s;
+    const c = workflowImpact(one(s), one(n), agents).changes;
+    if (c.some((x) => x.class === "loosens")) {
+      skipped.push(...c.filter((x) => x.class === "tightens"));
+      return s;
+    }
+    if (!c.some((x) => x.class === "tightens")) return s;
+    adopted.push(...c.filter((x) => x.class === "tightens"));
+    return n;
+  });
+  newer.stages.forEach((n, i) => {
+    if (stages.some((x) => x.id === n.id)) return;
+    const prev = newer.stages[i - 1];
+    const at = prev ? stages.findIndex((x) => x.id === prev.id) + 1 : 0;
+    if (prev && at === 0) return; // its neighbour isn't kept: not adopted
+    const trial = [...stages.slice(0, at), n, ...stages.slice(at)];
+    const c = workflowImpact(
+      { ...pinned, stages },
+      { ...pinned, stages: trial },
+      agents,
+    ).changes.filter((x) => x.path.startsWith(`stages.${n.id}`));
+    if (c.length && c.every((x) => x.class === "tightens")) {
+      stages.splice(at, 0, n);
+      adopted.push(...c);
+    } else skipped.push(...c.filter((x) => x.class === "tightens"));
+  });
+  return { def: { ...pinned, stages }, adopted, skipped };
 }

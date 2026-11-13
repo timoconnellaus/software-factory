@@ -227,6 +227,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   verify.checksForHead,
   verify.checksProvable,
   verify.verifyRefresh,
+  verify.workItemMarkUnreadable,
   verify.prAutoMerge,
   verify.projectCheckGitHub,
   connector.connectorReceive,

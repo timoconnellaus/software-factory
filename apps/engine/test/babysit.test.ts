@@ -253,6 +253,38 @@ describe("the babysit job (spec 53 §4)", () => {
     expect(flakes).toEqual([{ check_name: "ci", test_name: "db connects", head_sha: a.head }]);
   });
 
+  it("an item whose workflow version stops reading during its babysit job leaves; the healthy one behind it lands (review of #185)", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Flaky, then unreadable", "src/a.ts");
+    const b = await toMergeGate(w, "Healthy behind it", "src/b.ts");
+    await github.setChecks(w.repo, a.head, CI("failure"));
+    await approve(w, a.id);
+    await babysitJob(a.id);
+    await approve(w, b.id);
+    // A's job finishes (a flake); meanwhile the config A started under stops reading.
+    await runStage(w, a.id, "babysit", async () => {
+      await env.DB.prepare("UPDATE core_work_items SET policy_sha = ? WHERE id = ?")
+        .bind("f".repeat(40), a.id)
+        .run();
+      return { result: { verdict: "flake", check: "ci", test: "db connects", note: "a reset" } };
+    });
+    await deliverRepository(env, a.projectId, a.repositoryId);
+    await deliverRepository(env, b.projectId, b.repositoryId);
+    await itemStatus(b.id, "done");
+    // A left, not merged; B was never blamed for A; the babysit state is clear.
+    expect(await entry(a.id)).toMatchObject({ status: "left" });
+    const bLeft = await all<{ end_reason: string | null }>(
+      "SELECT end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left' AND outcome != 'merged'",
+      b.id,
+    );
+    expect(bLeft).toEqual([]);
+    const state = await first<{ babysit_job_id: string | null }>(
+      "SELECT babysit_job_id FROM core_delivery_state WHERE key = ?",
+      `${a.projectId}:${a.repositoryId}`,
+    );
+    expect(state?.babysit_job_id).toBeNull();
+  });
+
   it("a regression: the delivery ends failed with the job's note, and the item goes back to build", async () => {
     const w = await world();
     const a = await toMergeGate(w, "Broken at the merge", "src/a.ts");

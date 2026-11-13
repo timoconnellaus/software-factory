@@ -196,7 +196,7 @@ export function cutList(
 
 /** Who an item in the factory waits on, in the design's words, with its dot. */
 export function waitingOn(
-  item: Pick<BoardItem, "id" | "status" | "blockedBy">,
+  item: Pick<BoardItem, "id" | "status" | "blockedBy"> & { waitingOn?: BoardItem["waitingOn"] },
   needsYou: Set<string>,
 ): { label: string; status: "waiting" | "running" | "idle" } {
   if (needsYou.has(item.id)) return { label: "Waiting on you", status: "waiting" };
@@ -208,15 +208,22 @@ export function waitingOn(
         }
       : { label: "Waiting for a slot", status: "idle" };
   }
-  if (item.status === "running") return { label: "Agent working", status: "running" };
+  // Only when a runner has claimed a job for it (the board's waitingOn): otherwise it is between
+  // steps or waiting on something the stage line names.
+  if (item.waitingOn?.kind === "agent") return { label: "Agent working", status: "running" };
+  if (item.status === "running") return { label: "In progress", status: "running" };
   if (item.status === "paused") return { label: "Paused", status: "idle" };
   return { label: "Waiting on someone else", status: "idle" };
 }
 
 /** The order the All projects list sorts by: you first, then agents, then the rest. */
-export function waitingOrder(item: Pick<BoardItem, "id" | "status">, needsYou: Set<string>) {
+export function waitingOrder(
+  item: Pick<BoardItem, "id" | "status"> & { waitingOn?: BoardItem["waitingOn"] },
+  needsYou: Set<string>,
+) {
   if (needsYou.has(item.id)) return 0;
-  if (item.status === "running") return 1;
+  if (item.waitingOn?.kind === "agent") return 1;
+  if (item.status === "running") return 2;
   if (item.status === "waiting") return 2;
   if (item.status === "paused") return 3;
   return 4;

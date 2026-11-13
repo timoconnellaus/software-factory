@@ -84,6 +84,7 @@ export * from "./scope.ts";
 export * from "./services.ts";
 export * from "./skills/index.ts";
 export { childrenOf, SPLIT_MAX, splitSettledEvent } from "./splits.ts";
+export * from "./unreadable.ts";
 export * from "./verify/index.ts";
 export * from "./verify/merge-base.ts";
 export * from "./workflow-events.ts";

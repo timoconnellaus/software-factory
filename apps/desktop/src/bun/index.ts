@@ -13,7 +13,13 @@ import Electrobun, {
   Utils,
 } from "electrobun/main";
 import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
-import { type ApplyEvent, type ApplyState, applyTransition, IDLE } from "../shared/update-apply.ts";
+import {
+  type ApplyEvent,
+  type ApplyState,
+  applyTransition,
+  IDLE,
+  STUCK_TEXT,
+} from "../shared/update-apply.ts";
 import { checkSummary } from "../shared/update-check.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
@@ -186,6 +192,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         if (action === "check") void updates.checkByPerson();
         // Back from a refused update's screen.
         if (action === "back") applyStep({ type: "back" });
+        // A restart stuck in the updater: quitting is the way on (the person reopens the app).
+        if (action === "quit" && applying.step === "stuck") void quit();
         pushUpdate();
         return updateStatus();
       },
@@ -439,7 +447,8 @@ const STALLED_REASON = `The app didn't restart into the update within ${APPLY_TI
  * come back.
  */
 async function restartToUpdate(anyway = false) {
-  if (restarting) return;
+  // Stuck in the updater: the app may be half replaced; only quitting and reopening moves on.
+  if (restarting || applying.step === "stuck") return;
   restarting = true;
   const wasWaiting = restartWhenIdle;
   restartWhenIdle = false;
@@ -494,7 +503,8 @@ async function restartToUpdate(anyway = false) {
       },
       { anyway },
     );
-    if (outcome === "stalled") applyStep({ type: "refused", reason: STALLED_REASON });
+    if (outcome === "stuck") applyStep({ type: "stuck" });
+    else if (outcome === "stalled") applyStep({ type: "refused", reason: STALLED_REASON });
     else if (outcome !== "failed") applyStep({ type: "deferred" });
     else
       applyStep({
@@ -515,6 +525,8 @@ async function restartToUpdate(anyway = false) {
           title: "Software Factory",
           body: "The runner is busy: it takes no new jobs, and the app updates once it is idle.",
         });
+    } else if (outcome === "stuck") {
+      Utils.showNotification({ title: "Software Factory", body: STUCK_TEXT });
     } else if (outcome === "stalled") {
       console.log(`updates: restart to update: no restart after ${APPLY_TIMEOUT_MS / 1000} s`);
       Utils.showNotification({ title: "Software Factory", body: STALLED_REASON });

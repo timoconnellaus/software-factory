@@ -22,6 +22,7 @@ import { peekItem } from "../lib/places.ts";
 import { boardsQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { groupUnderParents } from "../lib/splits.ts";
+import { agentWorking, stageWait } from "../lib/stage-wait.ts";
 import {
   type ActiveItem,
   boardLanes,
@@ -69,7 +70,10 @@ function useBoardItems(projectId: string | null, states: string[]) {
       projectId,
     ),
   );
-  const all = board.data?.items ?? [];
+  // A read that failed keeps its last data: what each item waited on then may no longer be true.
+  const all = board.isError
+    ? (board.data?.items ?? []).map((i) => ({ ...i, waitingOn: null }))
+    : (board.data?.items ?? []);
   const items = itemsIn(all, states, { orgId, projectId });
   // The read returns at most 500 of the states it was asked for; its counts are every item's.
   const cut = board.data
@@ -303,11 +307,18 @@ export function ProjectBoard({
 
 function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string> }) {
   const open = useOpenItem() === item.id;
+  // No agent working on it: what it waits on, not "Working" (stage-wait.ts).
+  const wait = stageWait(item);
   const state =
     item.status === "queued"
       ? { label: "Queued", tone: "neutral" as const, needsYou: false }
-      : cardState(item, needsYou);
-  const who = waitingOn(item, needsYou);
+      : wait && !needsYou.has(item.id)
+        ? { label: "Waiting", tone: "neutral" as const, needsYou: false }
+        : cardState(item, needsYou);
+  const who =
+    wait && !needsYou.has(item.id)
+      ? { label: wait, status: "waiting" as const }
+      : waitingOn(item, needsYou);
   return (
     <Link
       {...peekItem(item.id)}
@@ -335,10 +346,32 @@ function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string>
       <HeldChip projectId={item.projectId} workItemId={item.id} enabled={item.stage === "merge"} />
       <div className="flex items-start gap-1.5 text-ink-muted text-xs" data-testid="card-who">
         <StatusDot status={who.status} className="mt-1" />
-        <span className="min-w-0 flex-1">{item.statusReason ?? who.label}</span>
+        <span className="min-w-0 flex-1" data-testid={wait ? "stage-wait" : undefined}>
+          {wait && !needsYou.has(item.id) ? wait : (item.statusReason ?? who.label)}
+        </span>
         <span className="ml-auto flex-none">{since(item.updatedAt)}</span>
       </div>
     </Link>
+  );
+}
+
+/** The list's "Waiting on" cell: what the stage waits on when no agent works on it (stage-wait.ts). */
+function WhoCell({
+  item,
+  who,
+  needsYou,
+}: {
+  item: ActiveItem;
+  who: { label: string; status: "waiting" | "running" | "idle" };
+  needsYou: boolean;
+}) {
+  const wait = stageWait(item);
+  const shown = wait && !needsYou ? { label: wait, status: "waiting" as const } : who;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <StatusDot status={shown.status} />
+      {shown.label}
+    </span>
   );
 }
 
@@ -405,10 +438,7 @@ function ActiveTable({
                     : PHASE_COLUMNS.find((c) => c.key === phaseColumn(i))?.label}
                 </td>
                 <td className="whitespace-nowrap py-2.5 pr-3">
-                  <span className="inline-flex items-center gap-1.5">
-                    <StatusDot status={who.status} />
-                    {who.label}
-                  </span>
+                  <WhoCell item={i} who={who} needsYou={needsYou.has(i.id)} />
                 </td>
                 {showProject && (
                   <td className="whitespace-nowrap py-2.5 pr-3 text-ink-3 @max-[560px]:hidden">
@@ -447,14 +477,17 @@ export function ActiveAll({ layout, onLayout }: { layout: Layout; onLayout: (l: 
   const count = (f: (i: ActiveItem) => boolean) => inFactory.filter(f).length;
   const cards: [string, number, string][] = [
     ["Waiting on you", count((i) => needsYou.has(i.id)), "a gate or a question"],
-    [
-      "Agent working",
-      count((i) => !needsYou.has(i.id) && i.status === "running"),
-      "on a runner now",
-    ],
+    // Only an item a runner has claimed a job for (the board's waitingOn): a running item between
+    // jobs, waiting on CI or a runner, is waiting.
+    ["Agent working", count((i) => !needsYou.has(i.id) && agentWorking(i)), "on a runner now"],
     [
       "Waiting",
-      count((i) => !needsYou.has(i.id) && (i.status === "waiting" || i.status === "paused")),
+      count(
+        (i) =>
+          !needsYou.has(i.id) &&
+          !agentWorking(i) &&
+          (i.status === "running" || i.status === "waiting" || i.status === "paused"),
+      ),
       "on someone else or an event",
     ],
     ["Queued", count((i) => i.status === "queued"), "released, not started"],
@@ -585,6 +618,7 @@ function PhaseCard({
     stage?: string;
     priority?: string | null;
     blockedBy?: ActiveItem["blockedBy"];
+    waitingOn?: ActiveItem["waitingOn"];
   };
   needsYou: Set<string>;
   column: PhaseColumn;
@@ -592,15 +626,18 @@ function PhaseCard({
   const projects = useProjects();
   const open = useOpenItem() === item.id;
   const project = projects.data?.find((p) => p.id === item.projectId)?.name ?? "project";
+  const wait = item.stage ? stageWait({ ...item, stage: item.stage }) : null;
   const line =
-    column === "done"
-      ? outcomeOf(item)
-      : column === "queued" || column === "delivery"
-        ? waitingOn({ ...item, blockedBy: item.blockedBy ?? [] }, needsYou)
-        : {
-            label: `${PRIORITY_SHORT[(item.priority ?? "normal") as Priority]}${item.statusReason ? ` · ${item.statusReason}` : ""}`,
-            status: "idle" as const,
-          };
+    wait && column === "delivery" && !needsYou.has(item.id)
+      ? { label: wait, status: "waiting" as const }
+      : column === "done"
+        ? outcomeOf(item)
+        : column === "queued" || column === "delivery"
+          ? waitingOn({ ...item, blockedBy: item.blockedBy ?? [] }, needsYou)
+          : {
+              label: `${PRIORITY_SHORT[(item.priority ?? "normal") as Priority]}${item.statusReason ? ` · ${item.statusReason}` : ""}`,
+              status: "idle" as const,
+            };
   return (
     <Link
       {...peekItem(item.id)}

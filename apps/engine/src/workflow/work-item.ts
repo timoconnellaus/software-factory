@@ -17,6 +17,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import {
   ATTACHED_SKIP_REASON,
   approvalEvent,
+  askWorkflowUnreadable,
   BRANCH_MOVED_AFTER_APPROVAL,
   ciEvent,
   DEFAULT_BUILDER,
@@ -34,6 +35,7 @@ import {
   type RunEventPayload,
   releaseEvent,
   resolveOrgWorkflow,
+  resolveScope,
   runEvent,
   SLOTS,
   splitSettledEvent,
@@ -158,7 +160,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 16;
+export const WORKFLOW_VERSION = 17;
 /** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
@@ -183,6 +185,12 @@ export const MERGEABLE_WAIT = "20 seconds";
 export const MERGE_ROUNDS = 3;
 /** v3: the answers to the no-CI question. */
 export const NO_CI_RECHECK = "Re-check CI";
+/** v17: the most times one call parks on an unreadable workflow before it ends (review of #185). */
+const MAX_UNREADABLE_PARKS = 10;
+/** v17: the pause after a park before the call tries again. */
+const UNREADABLE_PAUSE_MS = 60_000;
+/** v17 (review of #185): the item's pinned workflow version can't be read. */
+export const UNREADABLE_RECHECK = "Check again";
 export const NO_CI_STOP = "Stop this work item";
 /** v4: how long a queued item waits for its turn before it reads its position again. */
 export const QUEUE_WAIT = "1 hour";
@@ -395,8 +403,12 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
+  /** v17: park on a `workflow_unreadable` refusal instead of ending (set once, from the version). */
+  private parksOnUnreadable = false;
+
   async runV1(version = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
+    this.parksOnUnreadable = has(version, "repin-reverify");
     try {
       let meta = await this.meta();
       await this.act("triage: enter", "workItem.enterStage", {
@@ -568,6 +580,8 @@ class ItemFlow {
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
       let plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
+      // v17: never run without the item's workflow when its pinned version can't be read.
+      if (has(version, "repin-reverify")) plan = await this.planOrPark(meta, "workflow", plan);
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -634,6 +648,9 @@ class ItemFlow {
       // v12: an approval that held over a clean merge of main (`reverify`, second review of #105):
       // used again only if the new head passes its own verification in this round.
       let carried: string | null = null;
+      // v17: the merge boundary adopted a tightening of a stage the item already passed, so the
+      // re-verify runs the checks before verify too (a check adopted there would be skipped otherwise).
+      let slotsAgain = false;
       for (let b = 1; ; b++) {
         const carriedNow = carried;
         carried = null;
@@ -652,6 +669,18 @@ class ItemFlow {
               headSha,
             });
             checkNames = (declared.declared as string[]) ?? [];
+          }
+          if (slotsAgain && plan) {
+            slotsAgain = false;
+            const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+              criteria,
+              specPath,
+              headSha,
+            });
+            if (before.kind === "sendBack") {
+              note = await failed(b, before.note, null);
+              continue;
+            }
           }
         } else {
           const build = await this.runJob(
@@ -730,7 +759,9 @@ class ItemFlow {
           }
 
           // v13: a tightened org workflow reaches the item here, before verify (spec 52, Q3).
-          if (plan && has(version, "repin-tightening"))
+          if (plan && has(version, "repin-reverify"))
+            plan = (await this.repinAt(`verify #${b}`, plan, meta)).plan;
+          else if (plan && has(version, "repin-tightening"))
             plan = await this.repin(`verify #${b}`, plan);
           if (plan) {
             const before = await this.runSlot(meta, plan, "beforeVerify", b, {
@@ -872,7 +903,18 @@ class ItemFlow {
         }
 
         // v13: and here, before the merge gate (spec 52, Q3).
-        if (plan && has(version, "repin-tightening")) plan = await this.repin(`merge #${b}`, plan);
+        if (plan && has(version, "repin-reverify")) {
+          const moved = await this.repinAt(`merge #${b}`, plan, meta);
+          plan = moved.plan;
+          // v17: a tightening of a stage already passed (verify's checks, a check before it) isn't
+          // skipped: the item verifies its head again under it, then comes back to the gate.
+          if (moved.behind.length) {
+            withdrawn = `the org's workflow tightened a stage this item already passed: ${moved.behind.join(" ")}`;
+            slotsAgain = true;
+            continue;
+          }
+        } else if (plan && has(version, "repin-tightening"))
+          plan = await this.repin(`merge #${b}`, plan);
         if (plan) {
           const after = await this.runSlot(meta, plan, "afterVerify", b, {
             criteria,
@@ -1426,6 +1468,7 @@ class ItemFlow {
    * new step name (spike ADR 0110).
    */
   async call(name: string, op: string, input: unknown, approvalId?: string): Promise<CallResult> {
+    let parks = 0;
     for (let attempt = 1; ; attempt++) {
       const stepName = attempt === 1 ? name : `${name} #${attempt}`;
       const attemptCall = async (): Promise<CallResult> => {
@@ -1462,6 +1505,29 @@ class ItemFlow {
         if (/Aborting engine/.test(String(error))) throw error;
         // The step failed past its retries (an outage, a bug): end the item rather than hang.
         result = { status: "refused", code: "error", message: String(error), resumeEvent: null };
+      }
+      // v17 (reviews of #185): core refuses work on an item whose workflow version can't be read,
+      // on any Workflow row (and asks its owner); this row parks on that question, from any call
+      // (a stage, the merge queue, an approved re-run), and tries again once it reads.
+      if (
+        this.parksOnUnreadable &&
+        result.status === "refused" &&
+        result.code === "workflow_unreadable"
+      ) {
+        // Bounded, and never a tight loop: a pause before trying again, and a cap.
+        parks += 1;
+        if (parks > MAX_UNREADABLE_PARKS)
+          return {
+            status: "refused",
+            code: "workflow_unreadable",
+            message: result.message,
+            resumeEvent: null,
+          };
+        await this.planOrPark(null, `${stepName}: unreadable`, null, true);
+        // It found nothing to ask about yet core refused: pause rather than spin.
+        if (!this.parkedOnQuestion)
+          await this.step.sleep(`${stepName}: unreadable pause`, UNREADABLE_PAUSE_MS);
+        continue;
       }
       if (result.status !== "refused" || result.code !== "killed" || !result.resumeEvent)
         return result;
@@ -2203,7 +2269,7 @@ class ItemFlow {
   }
 
   /** Waits until the open blocking questions are answered, escalating on each timeout. */
-  async waitForAnswers(meta: Meta, name: string): Promise<void> {
+  async waitForAnswers(meta: Meta | null, name: string): Promise<void> {
     const awaited = await this.act(`${name}: await questions`, "workItem.awaitQuestions", {
       workItemId: this.workItemId,
     });
@@ -2222,7 +2288,8 @@ class ItemFlow {
       try {
         await this.step.waitForEvent(`${name}: answers${sfx}`, {
           type: String(awaited.event),
-          timeout: meta.questionTimeoutMs,
+          // No meta (a park inside a gate call): the default question timeout, 72 hours.
+          timeout: meta?.questionTimeoutMs ?? 72 * 3_600_000,
         });
         return;
       } catch (error) {
@@ -2321,12 +2388,77 @@ class ItemFlow {
    * did; a slot already past isn't run again. Unchanged when the item stays where it is.
    */
   async repin(name: string, plan: WorkflowPlan): Promise<WorkflowPlan> {
+    return (await this.repinAt(name, plan)).plan;
+  }
+
+  /** `repin`, with the tightenings the item had already passed (v17, review of #139). */
+  async repinAt(
+    name: string,
+    plan: WorkflowPlan,
+    meta?: Meta,
+  ): Promise<{ plan: WorkflowPlan; behind: string[] }> {
     const moved = await this.act(`${name}: repin`, "workItem.repinWorkflow", {
       workItemId: this.workItemId,
       at: name,
     });
-    if (moved.repinned !== true) return plan;
-    return this.workflowPlan(`${name}: workflow plan`);
+    // v17: the item's version stopped reading since it was planned: ask, never carry on unchecked.
+    // After the park, re-pin again: a tightening saved meanwhile isn't missed (fourth review).
+    if (meta && typeof moved.unreadable === "string") {
+      const parked = (await this.planOrPark(meta, name, plan, true)) ?? plan;
+      return this.repinAt(`${name} (after park)`, parked, meta);
+    }
+    if (moved.repinned !== true) return { plan, behind: [] };
+    const behind = Array.isArray(moved.behind) ? (moved.behind as string[]) : [];
+    const next = await this.workflowPlan(`${name}: workflow plan`);
+    return { plan: meta ? ((await this.planOrPark(meta, name, next)) ?? plan) : next, behind };
+  }
+
+  /**
+   * v17 (review of #185): a plan that came out empty because the item's pinned org workflow version
+   * (or a version it adopted tightenings from) can't be read parks the item with a question for a
+   * person, never runs it without its checks and gates. "Check again" re-reads it; "Stop" ends it.
+   * An item that isn't on an org workflow keeps its plan (null: no workflow) as before.
+   */
+  /** Whether the last `planOrPark` waited on the owner's question (rather than finding it reads). */
+  private parkedOnQuestion = false;
+
+  async planOrPark(meta: Meta | null, name: string, plan: WorkflowPlan | null, force = false) {
+    this.parkedOnQuestion = false;
+    if (plan && !force) return plan;
+    for (let k = 1; ; k++) {
+      // Any policy that doesn't resolve parks (third review of #185): an org version or adopted
+      // list that no longer reads, the item's config that doesn't parse, or no config row at all.
+      // Core's own predicate first (scope.pinnedError, the same check that refuses its calls), then
+      // a plan that can't be made: one answer, so the Workflow and core never disagree (seventh
+      // review of #185).
+      const why = await this.step.do(`${name}: pinned workflow #${k}`, async () => {
+        const scope = await resolveScope(createDb(this.env.DB), { workItemId: this.workItemId });
+        if (scope.pinnedError) return scope.pinnedError;
+        const got = await this.pinnedPolicyResult();
+        return got.policy ? "" : (got.error ?? "the item's config can't be read");
+      });
+      // It reads (again): plan from it, even if the plan journaled before came out empty.
+      if (!why) return await this.workflowPlan(`${name}: workflow plan #${k}`);
+      // One question, whoever asks first (core on a refusal, or here): found again by its asker.
+      const questionId = await this.step.do(`${name}: unreadable #${k}: ask`, async () => {
+        return (await askWorkflowUnreadable(invokeDeps(this.env), this.workItemId, why)) ?? "";
+      });
+      if (!questionId)
+        throw new Ended(
+          "failed",
+          `the item's workflow version can't be read (${why}), and its owner couldn't be asked`,
+        );
+      this.parkedOnQuestion = true;
+      await this.waitForAnswers(meta, `${name}: unreadable #${k}`);
+      const answer = await this.step.do(`${name}: unreadable #${k}: answer`, async () => {
+        const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
+          .bind(questionId)
+          .first<{ answer: string | null }>();
+        return row?.answer ?? CHECKS_STOP;
+      });
+      if (answer === CHECKS_STOP)
+        throw new Ended("failed", `stopped: the item's workflow version can't be read (${why})`);
+    }
   }
 
   /**
@@ -2334,8 +2466,17 @@ class ItemFlow {
    * an org workflow (spec 52 PR (d)), resolved under the org config version the item pinned.
    */
   private async pinnedPolicy() {
+    return (await this.pinnedPolicyResult()).policy;
+  }
+
+  /** `pinnedPolicy`, with whether the item pinned an org version and why it doesn't resolve. */
+  private async pinnedPolicyResult(): Promise<{
+    policy: ProjectPolicy | null;
+    pinned: boolean;
+    error: string | null;
+  }> {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version, w.org_config_adopted FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
@@ -2346,19 +2487,21 @@ class ItemFlow {
         org_id: string;
         project_id: string;
         org_config_version: number | null;
+        org_config_adopted: string | null;
       }>();
-    if (!row) return null;
+    if (!row) return { policy: null, pinned: false, error: null };
+    const pinned = row.org_config_version !== null;
     const parsed = parseProjectPolicy(row.raw);
-    if (!parsed.ok) return null;
-    return (
-      await resolveOrgWorkflow(
-        createDb(this.env.DB),
-        row.org_id,
-        parsed.policy,
-        row.org_config_version,
-        row.project_id,
-      )
-    ).policy;
+    if (!parsed.ok) return { policy: null, pinned, error: parsed.error };
+    const got = await resolveOrgWorkflow(
+      createDb(this.env.DB),
+      row.org_id,
+      parsed.policy,
+      row.org_config_version,
+      row.project_id,
+      row.org_config_adopted,
+    );
+    return { policy: got.policy, pinned, error: got.error };
   }
 
   /**
