@@ -195,6 +195,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.mainObserve,
   delivery.workItemMarkRepair,
   delivery.deliveryStatus,
+  delivery.mainRedAttribute,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
   babysit.babysitWake,
