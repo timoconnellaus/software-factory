@@ -61,6 +61,7 @@ import {
   STAGES,
   workItemId,
 } from "./shared.ts";
+import { queuePlaces, waitingOn, waitingOnOf, waitingOnSelections } from "./waiting-on.ts";
 import { currentOrgConfig, storedOrgConfig } from "./workflows.ts";
 
 /** States before release: no Workflow instance exists in them, except `shaping` (part C). */
@@ -1507,6 +1508,8 @@ const boardItem = z.object({
   releaseFlag: z
     .object({ reason: z.string(), shapedUnder: z.number(), current: z.number() })
     .optional(),
+  /** What a running or waiting item is waiting on (waiting-on.ts); null when the facts don't say. */
+  waitingOn,
   /** The waits-for items that aren't done: what keeps it from being pulled. */
   blockedBy: z.array(
     z.object({
@@ -1565,6 +1568,8 @@ export const workItemBoard = defineOperation({
       // A plan's child held until its parent's plan merges (spec 24, review of #173): a point read
       // of the parent by primary key, only for such a child.
       .select(sql<number>`CASE WHEN ${NOT_HELD} THEN 0 ELSE 1 END`.as("held_for_parent"))
+      // What each running or waiting item waits on, in this same read (waiting-on.ts).
+      .select(waitingOnSelections())
       .where("org_id", "=", input.orgId)
       .where("status", "in", states as never[]);
     if (input.projectId) q = q.where("project_id", "=", input.projectId);
@@ -1585,14 +1590,17 @@ export const workItemBoard = defineOperation({
       c.execute(),
     ]);
     const ids = rows.map((r) => r.id);
-    const links = ids.length
-      ? await ctx.db
-          .selectFrom("core_work_item_links as l")
-          .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")
-          .select(["l.work_item_id", "t.id", "t.number", "t.title", "t.status", "t.project_id"])
-          .where("l.work_item_id", "in", ids)
-          .execute()
-      : [];
+    const [links, places] = await Promise.all([
+      ids.length
+        ? ctx.db
+            .selectFrom("core_work_item_links as l")
+            .innerJoin("core_work_items as t", "t.id", "l.waits_for_id")
+            .select(["l.work_item_id", "t.id", "t.number", "t.title", "t.status", "t.project_id"])
+            .where("l.work_item_id", "in", ids)
+            .execute()
+        : [],
+      queuePlaces(ctx, rows),
+    ]);
     return {
       items: rows.map((w) => {
         const waitsFor = links
@@ -1625,6 +1633,7 @@ export const workItemBoard = defineOperation({
           createdAt: w.created_at,
           updatedAt: w.updated_at,
           waitsFor,
+          waitingOn: waitingOnOf(w, places.get(w.id)),
           ...(() => {
             const flag = releaseFlagOf(w.release_flag);
             return flag

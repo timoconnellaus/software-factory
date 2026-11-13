@@ -100,4 +100,101 @@ describe("restartToUpdate", () => {
     await expect(restartToUpdate(d, { anyway: false })).rejects.toThrow("boom");
     expect(calls.slice(-2)).toEqual(["startRunner", "startLive"]);
   });
+
+  it("a restart that hangs (applyUpdate or its helper) is reported as stalled, and everything comes back", async () => {
+    const { d, calls } = deps({
+      apply: () => {
+        calls.push("apply");
+        return new Promise(() => {});
+      },
+    });
+    d.restarting = () => calls.push("restarting");
+    expect(await restartToUpdate(d, { anyway: false, applyTimeoutMs: 5 })).toBe("stalled");
+    expect(calls).toEqual([
+      "drain",
+      "restarting",
+      "stopLive",
+      "stopRunner",
+      "apply",
+      "startRunner",
+      "startLive",
+    ]);
+  });
+
+  it("an apply given up on is cancelled: it reaches the gate later and never applies", async () => {
+    let reachGate: () => void = () => {};
+    const handedOff: boolean[] = [];
+    const { d, calls } = deps({
+      apply: async (gate) => {
+        calls.push("apply");
+        // The record rewrite and the hash take longer than the watchdog.
+        await new Promise<void>((resolve) => {
+          reachGate = resolve;
+        });
+        const go = gate.handoff();
+        handedOff.push(go);
+        if (go) calls.push("applyUpdate");
+      },
+    });
+    expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 5 })).toBe("stalled");
+    expect(calls.slice(-2)).toEqual(["startRunner", "startLive"]);
+    reachGate();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(handedOff).toEqual([false]);
+    expect(calls).not.toContain("applyUpdate");
+  });
+
+  it("once the handoff has started the watchdog brings nothing back", async () => {
+    let finish: () => void = () => {};
+    const lines: string[] = [];
+    const { d, calls } = deps({
+      log: (line) => lines.push(line),
+      apply: async (gate) => {
+        calls.push("apply");
+        expect(gate.handoff()).toBe(true);
+        // applyUpdate is waiting on the helper.
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    let outcome: string | undefined;
+    const done = restartToUpdate(d, { anyway: true, applyTimeoutMs: 5 }).then((o) => {
+      outcome = o;
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(outcome).toBeUndefined();
+    expect(calls).not.toContain("startRunner");
+    expect(calls).not.toContain("startLive");
+    expect(lines.join("\n")).toMatch(/still restarting/);
+    // applyUpdate returned after all (the app didn't restart): only now does everything come back.
+    finish();
+    await done;
+    expect(outcome).toBe("failed");
+    expect(calls.slice(-2)).toEqual(["startRunner", "startLive"]);
+  });
+
+  it("a handed-off apply that hangs past the stuck bound is stuck, and nothing comes back", async () => {
+    const lines: string[] = [];
+    const { d, calls } = deps({
+      log: (line) => lines.push(line),
+      apply: async (gate) => {
+        calls.push("apply");
+        expect(gate.handoff()).toBe(true);
+        // applyUpdate never returns, and the app never restarts.
+        await new Promise<void>(() => {});
+      },
+    });
+    expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 5, stuckTimeoutMs: 20 })).toBe(
+      "stuck",
+    );
+    expect(calls).not.toContain("startRunner");
+    expect(calls).not.toContain("startLive");
+    expect(lines.join("\n")).toMatch(/quit and reopen/);
+  });
+
+  it("an apply that returns in time is not stalled", async () => {
+    const { d } = deps();
+    expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 1_000 })).toBe("failed");
+  });
 });

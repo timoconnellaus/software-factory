@@ -13,7 +13,13 @@ import Electrobun, {
   Utils,
 } from "electrobun/main";
 import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
-import { type ApplyEvent, type ApplyState, applyTransition, IDLE } from "../shared/update-apply.ts";
+import {
+  type ApplyEvent,
+  type ApplyState,
+  applyTransition,
+  IDLE,
+  STUCK_TEXT,
+} from "../shared/update-apply.ts";
 import { checkSummary } from "../shared/update-check.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
@@ -23,7 +29,11 @@ import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
 import { loginItemEnabled, setDockBadge, setLoginItem } from "./macos.ts";
 import { operationHandlers } from "./operations.ts";
-import { DRAIN_TIMEOUT_MS, restartToUpdate as restartUpdate } from "./restart-update.ts";
+import {
+  APPLY_TIMEOUT_MS,
+  DRAIN_TIMEOUT_MS,
+  restartToUpdate as restartUpdate,
+} from "./restart-update.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
 import { saveTo } from "./save.ts";
@@ -182,6 +192,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         if (action === "check") void updates.checkByPerson();
         // Back from a refused update's screen.
         if (action === "back") applyStep({ type: "back" });
+        // A restart stuck in the updater: quitting is the way on (the person reopens the app).
+        if (action === "quit" && applying.step === "stuck") void quit();
         pushUpdate();
         return updateStatus();
       },
@@ -427,6 +439,7 @@ function updateItems() {
 }
 
 let restarting = false;
+const STALLED_REASON = `The app didn't restart into the update within ${APPLY_TIMEOUT_MS / 1000} seconds. Try Restart to update again.`;
 /**
  * Drain the runner (unless the person chose to cancel its jobs), stop it and the live socket, then
  * restart into the update (restart-update.ts). If a job turned up meanwhile, wait for idle. If the
@@ -434,7 +447,8 @@ let restarting = false;
  * come back.
  */
 async function restartToUpdate(anyway = false) {
-  if (restarting) return;
+  // Stuck in the updater: the app may be half replaced; only quitting and reopening moves on.
+  if (restarting || applying.step === "stuck") return;
   restarting = true;
   const wasWaiting = restartWhenIdle;
   restartWhenIdle = false;
@@ -479,16 +493,19 @@ async function restartToUpdate(anyway = false) {
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
         // The relaunch comes back where the window is now (window-frame.ts).
-        apply: () => {
+        apply: (gate) => {
           laps.push(`stop runner ${lap()} ms`);
           frames.flush(win);
           console.log(`updates: restart to update: ${laps.join(", ")}; applying`);
-          return updates.apply();
+          return updates.apply(gate);
         },
+        log: (line) => console.log(line),
       },
       { anyway },
     );
-    if (outcome !== "failed") applyStep({ type: "deferred" });
+    if (outcome === "stuck") applyStep({ type: "stuck" });
+    else if (outcome === "stalled") applyStep({ type: "refused", reason: STALLED_REASON });
+    else if (outcome !== "failed") applyStep({ type: "deferred" });
     else
       applyStep({
         type: "refused",
@@ -508,6 +525,11 @@ async function restartToUpdate(anyway = false) {
           title: "Software Factory",
           body: "The runner is busy: it takes no new jobs, and the app updates once it is idle.",
         });
+    } else if (outcome === "stuck") {
+      Utils.showNotification({ title: "Software Factory", body: STUCK_TEXT });
+    } else if (outcome === "stalled") {
+      console.log(`updates: restart to update: no restart after ${APPLY_TIMEOUT_MS / 1000} s`);
+      Utils.showNotification({ title: "Software Factory", body: STALLED_REASON });
     } else {
       Utils.showNotification({
         title: "Software Factory",

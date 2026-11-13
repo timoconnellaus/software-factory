@@ -48,6 +48,13 @@ import {
   setItemStatus,
   workItemId,
 } from "./shared.ts";
+import {
+  placesIn,
+  queuePlaces,
+  waitingOn,
+  waitingOnOf,
+  waitingOnSelections,
+} from "./waiting-on.ts";
 
 export const SIZES = ["small", "medium", "large"] as const;
 export const ITEM_STATUSES = [
@@ -109,6 +116,8 @@ const itemSummary = z.object({
   releasedAt: z.string().nullable().optional(),
   /** Spec 24: the item whose plan split this one off (null when not split off a plan). */
   parentWorkItemId: z.string().nullable().optional(),
+  /** workItem.list: what a running or waiting item is waiting on (waiting-on.ts). */
+  waitingOn: waitingOn.optional(),
 });
 
 type ItemRow = NonNullable<HandlerContext["scope"]["workItem"]>;
@@ -357,13 +366,19 @@ export const workItemList = defineOperation({
     let query = ctx.db
       .selectFrom("core_work_items")
       .selectAll()
+      // What each running or waiting item waits on, in this same read (waiting-on.ts).
+      .select(waitingOnSelections())
       .orderBy(input.status?.length ? sql`+updated_at` : sql`updated_at`, "desc")
       .limit(input.limit);
     if (input.projectId) query = query.where("project_id", "=", input.projectId);
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
     if (input.status?.length) query = query.where("status", "in", input.status);
     if (input.number !== undefined) query = query.where("number", "=", input.number);
-    return { items: (await query.execute()).map(summarise) };
+    const rows = await query.execute();
+    const places = await queuePlaces(ctx, rows);
+    return {
+      items: rows.map((w) => ({ ...summarise(w), waitingOn: waitingOnOf(w, places.get(w.id)) })),
+    };
   },
 });
 
@@ -543,6 +558,8 @@ export const workItemGet = defineOperation({
      * `position` 1 is the head, which lands next; `ahead` the work item numbers before it.
      */
     mergeQueue: z.object({ position: z.number(), ahead: z.array(z.number()) }).nullable(),
+    /** What a running or waiting item waits on (waiting-on.ts); null when the facts don't say. */
+    waitingOn: waitingOn.optional(),
     /**
      * The project's policy as the detail page and review packet need it (spec 13, 14): null when
      * the project has no valid `.factory/policy.json`. `reviewPacketSections` null: show all.
@@ -595,6 +612,7 @@ export const workItemGet = defineOperation({
         resolutionRows,
         parentRows,
         childRows,
+        factRows,
       ],
     ] = await Promise.all([
       approversLookup,
@@ -672,6 +690,12 @@ export const workItemGet = defineOperation({
           .where("source", "=", "planning")
           // At most SPLIT_MAX rows: sorted below, not by a temp B-tree (the query-plan guard).
           .limit(SPLIT_MAX),
+        // What it waits on (waiting-on.ts), by primary key.
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "project_id", "status", "stage"])
+          .select(waitingOnSelections())
+          .where("id", "=", w.id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -827,6 +851,8 @@ export const workItemGet = defineOperation({
           }
         : null,
       mergeQueue: queuePosition(queue, w.id),
+      /** What a running or waiting item waits on (waiting-on.ts), as the board and list say it. */
+      waitingOn: factRows[0] ? waitingOnOf(factRows[0], placesIn(queue, ctx.now).get(w.id)) : null,
       policy: policy
         ? {
             autonomyPolicy: policy.autonomyPolicy,

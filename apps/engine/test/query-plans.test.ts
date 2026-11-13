@@ -566,6 +566,41 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     run: (e) => as(e, "workItem.list", { projectId: w.projectId }, w.human),
   },
   {
+    // What each item waits on (waiting-on.ts): subqueries on the items' own indexes, in the read.
+    name: "workItem.board by org (polled), with what each item waits on",
+    run: (e) => as(e, "workItem.board", { orgId: w.orgId }, w.human),
+  },
+  {
+    name: "workItem.board by project (polled)",
+    run: (e) => as(e, "workItem.board", { orgId: w.orgId, projectId: w.projectId }, w.human),
+  },
+  {
+    // An item in merge: the board and the list read the projects' merge queues once, and
+    // delivery.status and mergeQueue.list say which step the head is on.
+    name: "the board, list and delivery reads with an item in the merge queue",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "In merge" },
+        w.human,
+      );
+      const now = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare(
+          "UPDATE core_work_items SET stage = 'merge', status = 'waiting' WHERE id = ?",
+        ).bind(item.workItemId),
+        env.DB.prepare(
+          `INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, enqueued_at, updated_at, driver)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'babysitter')`,
+        ).bind(uid("mq-"), w.projectId, item.workItemId, "a".repeat(40), "a".repeat(40), now, now),
+      ]);
+      await as(e, "workItem.board", { orgId: w.orgId }, w.human);
+      await as(e, "workItem.list", { orgId: w.orgId }, w.human);
+      await as(e, "delivery.status", { projectId: w.projectId }, w.human);
+      return as(e, "mergeQueue.list", { projectId: w.projectId }, w.human);
+    },
+  },
+  {
     name: "workItem.list by project and status",
     run: (e) =>
       as(e, "workItem.list", { projectId: w.projectId, status: ["queued", "running"] }, w.human),
@@ -918,6 +953,71 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
       .bind(...list.params)
       .all<{ detail: string }>();
     expect(results.map((r) => r.detail).join("\n")).toMatch(/USING INDEX \w+ \(status=\?/);
+  });
+
+  it("what an item waits on reads its own jobs through core_jobs_item_idx, never every org's queue", async () => {
+    // An item in verify (its subqueries run only for running or waiting rows), and many queued
+    // jobs of another item: through core_jobs_status_idx the read would walk all of them.
+    const mine = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Waits" },
+      w.human,
+    );
+    const other = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Busy elsewhere" },
+      w.human,
+    );
+    const now = new Date().toISOString();
+    const insert = env.DB.prepare(
+      `INSERT INTO core_jobs (id, work_item_id, project_id, org_id, stage, role, prompt, session_timeout_ms, status, created_at)
+       VALUES (?, ?, ?, ?, 'build', 'review', 'p', 1000, ?, ?)`,
+    );
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE core_work_items SET stage = 'verify', status = 'running' WHERE id = ?",
+      ).bind(mine.workItemId),
+      // Not moving: its jobs are no item's on the board to read.
+      env.DB.prepare("UPDATE core_work_items SET status = 'paused' WHERE id = ?").bind(
+        other.workItemId,
+      ),
+      env.DB.prepare(
+        "INSERT INTO core_stages (id, work_item_id, stage, attempt, started_at) VALUES (?, ?, 'verify', 1, ?)",
+      ).bind(uid("st-"), mine.workItemId, now),
+      ...Array.from({ length: 400 }, (_, i) =>
+        insert.bind(
+          uid("job-"),
+          other.workItemId,
+          w.projectId,
+          w.orgId,
+          i % 2 ? "queued" : "claimed",
+          now,
+        ),
+      ),
+    ]);
+    const seen: Recorded[] = [];
+    await as(recordingEnv(env, seen), "workItem.board", { orgId: w.orgId }, w.human);
+    await as(recordingEnv(env, seen), "workItem.list", { orgId: w.orgId }, w.human);
+    await as(recordingEnv(env, seen), "workItem.get", { workItemId: mine.workItemId }, w.human);
+    const reads = seen.filter((r) => /core_jobs j\b/.test(r.sql) && /core_jobs vj\b/.test(r.sql));
+    expect(reads.length).toBe(3);
+    for (const { sql, params } of reads) {
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .bind(...params)
+        .all<{ detail: string }>();
+      const jobs = results.map((r) => r.detail).filter((d) => /^(SEARCH|SCAN) (j|vj)\b/.test(d));
+      expect(jobs.length, sql).toBe(2);
+      for (const d of jobs)
+        expect(d, sql).toMatch(/USING INDEX core_jobs_item_idx \(work_item_id=\?\)/);
+      // And what it costs: the other item's 400 jobs are never read.
+      const { meta } = await env.DB.prepare(sql)
+        .bind(...params)
+        .all();
+      expect(meta.rows_read, sql).toBeLessThan(200);
+    }
+    await env.DB.prepare("DELETE FROM core_jobs WHERE work_item_id = ?")
+      .bind(other.workItemId)
+      .run();
   });
 
   it("job.claim reads the queue in claim order from its index: no sort of the queued jobs", async () => {

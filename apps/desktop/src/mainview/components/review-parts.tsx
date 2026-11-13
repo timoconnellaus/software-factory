@@ -12,8 +12,10 @@ import { Button } from "@software-factory/ui/components/button";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { useEffect, useState } from "react";
+import { OPENED_DIFF_PREFIX } from "../lib/account.ts";
 import { useDecide } from "../lib/decisions.tsx";
 import { verdictChips, verdictHeadline } from "../lib/review.ts";
+import { useSession } from "../lib/session.ts";
 import {
   CriterionProofNote,
   criterionMark,
@@ -22,11 +24,16 @@ import {
 } from "./factory-checks.tsx";
 import { Chip, Field, Panel } from "./shell-list.tsx";
 
-const OPENED_KEY = (id: string) => `sf:opened-diff:${id}`;
+/**
+ * The sessionStorage key: one account's, so another account signed in on this Mac never sends
+ * `openedFullDiff` for a diff it didn't open (lib/account.ts also clears them on a switch).
+ */
+export const openedDiffKey = (userId: string, workItemId: string, headSha: string | undefined) =>
+  `${OPENED_DIFF_PREFIX}${userId}:${workItemId}:${headSha ?? ""}`;
 
 /** Whether the approver opened the full diff (or the GitHub PR) for this head SHA. */
 export function useOpenedFullDiff(workItemId: string, headSha: string | undefined) {
-  const key = `${OPENED_KEY(workItemId)}:${headSha ?? ""}`;
+  const key = openedDiffKey(useSession().user.id, workItemId, headSha);
   const [opened, setOpened] = useState(false);
   useEffect(() => {
     try {
