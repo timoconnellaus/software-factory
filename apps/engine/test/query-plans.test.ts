@@ -4,6 +4,7 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
@@ -235,6 +236,88 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       const scope = await resolveScope(createDb(e.DB), { workItemId: item.workItemId });
       if (scope.policy?.workflow !== "wf_ship") throw new Error("the org workflow didn't resolve");
       return as(e, "workItem.timeline", { workItemId: item.workItemId }, o.human);
+    },
+  },
+  {
+    // Spec 52 (f), review of #155: a job's skills resolved at enqueue (the pinned org config by
+    // primary key, the needed skill versions by primary key, without bodies), and the runner's read
+    // of one (`skill.forJob`: the job, its run and lease by key, then the version by primary key).
+    name: "job.enqueue with skills, and skill.forJob",
+    run: async (e) => {
+      const o = await world();
+      await ok(
+        "agent.save",
+        {
+          orgId: o.orgId,
+          baseVersion: 0,
+          agent: { name: "Builder", role: "implement", tier: "standard", instructions: "" },
+        },
+        o.human,
+      );
+      await ok(
+        "skill.save",
+        {
+          orgId: o.orgId,
+          baseVersion: 1,
+          skill: { name: "Write a migration", description: "d", body: "b" },
+        },
+        o.human,
+      );
+      const list = await ok<{ skills: { id: string; builtin: boolean }[] }>(
+        "skill.list",
+        { orgId: o.orgId },
+        o.human,
+      );
+      const skillId = list.skills.find((x) => !x.builtin)?.id as string;
+      await ok(
+        "skill.attach",
+        { orgId: o.orgId, baseVersion: 2, skillId, target: { agent: "Builder" } },
+        o.human,
+      );
+      const ship = {
+        ...SOFTWARE,
+        id: "wf_ship",
+        name: "Ship",
+        stages: SOFTWARE.stages.map((x) => (x.id === "build" ? { ...x, agent: "Builder" } : x)),
+      };
+      await ok("workflow.save", { orgId: o.orgId, baseVersion: 3, workflow: ship }, o.human);
+      const cfg = await ok<{
+        current: { version: number; policy: Record<string, unknown> | null } | null;
+      }>("config.get", { projectId: o.projectId }, o.human);
+      await ok(
+        "config.save",
+        {
+          projectId: o.projectId,
+          baseVersion: cfg.current?.version ?? 0,
+          policy: {
+            ...(cfg.current?.policy ?? {}),
+            workflow: "wf_ship",
+            workflows: [],
+            agents: [],
+          },
+        },
+        o.human,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "backlog", projectId: o.projectId, title: "Skilled" },
+        o.human,
+      );
+      await e.DB.prepare("UPDATE core_work_items SET org_config_version = 4 WHERE id = ?")
+        .bind(item.workItemId)
+        .run();
+      return as(
+        e,
+        "job.enqueue",
+        {
+          workItemId: item.workItemId,
+          stage: "build",
+          role: "implement",
+          prompt: "x",
+          context: {},
+        },
+        FOREMAN as never,
+      );
     },
   },
   {

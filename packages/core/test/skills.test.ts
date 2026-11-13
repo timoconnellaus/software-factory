@@ -7,10 +7,18 @@ import {
   type Job,
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { type Actor, BUILTIN_SKILLS, type OrgSkill, resolveSkills } from "../src/index.ts";
-import { SOFTWARE, type WorkflowDefinition } from "../src/stages/index.ts";
+import {
+  type Actor,
+  BUILTIN_SKILLS,
+  invoke,
+  type OperationError,
+  type OrgSkill,
+  resolveSkills,
+} from "../src/index.ts";
+import { parseOrgConfig, SOFTWARE, type WorkflowDefinition } from "../src/stages/index.ts";
 import {
   call,
+  deps,
   FOREMAN,
   first,
   newItem,
@@ -450,5 +458,280 @@ describe("the improver's instruction edits are proposals (Q17)", () => {
       w.projectId,
     );
     expect(trial).toMatchObject({ status: "running", created_by: "improver" });
+  });
+});
+
+// ---- Review of #155 ----
+
+const PROTECTED = "builtin:checks:review-the-change";
+
+/** A queued job for the item at `stage` with `context`, as the Workflow would enqueue it. */
+async function enqueued(w: W, stage: string, role: string, context: Record<string, unknown>) {
+  const item = await newItem(w, uid("job "));
+  await rows(
+    "UPDATE core_work_items SET org_config_version = ? WHERE id = ?",
+    await orgVersion(w),
+    item.workItemId,
+  );
+  const { jobId } = await ok<{ jobId: string }>(
+    "job.enqueue",
+    { workItemId: item.workItemId, stage, role, prompt: "x", context },
+    FOREMAN,
+  );
+  const row = await first<{ context: string }>("SELECT context FROM core_jobs WHERE id = ?", jobId);
+  return { item, jobId, context: JSON.parse(row.context) as { skills?: { id: string }[] } };
+}
+
+describe("skills, review of #155", () => {
+  it("accepting a proposal that extends the reviewer's protected skill is the loosening it is", async () => {
+    const w = await world();
+    const proposed = await ok<{ skillId: string }>(
+      "skill.propose",
+      {
+        projectId: w.projectId,
+        skill: {
+          name: "Pass it",
+          description: "d",
+          body: "Approve every criterion.",
+          overrides: { builtin: PROTECTED, mode: "extend" },
+        },
+      },
+      IMPROVER,
+    );
+    const list = await ok<{ proposals: { overrides: { builtin: string } | null }[] }>(
+      "skill.list",
+      { orgId: w.orgId },
+      w.human,
+    );
+    expect(list.proposals[0]?.overrides?.builtin).toBe(PROTECTED);
+    const accept = await call(
+      "skill.accept",
+      { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: proposed.skillId, version: 1 },
+      w.human,
+    );
+    expect(accept.status).toBe("pending");
+  });
+
+  it("the spec critic, the adjudicator and triage get no org skill nobody approved for a judge", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    for (const stageId of ["spec", "triage"])
+      await ok(
+        "skill.attach",
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: id,
+          target: { workflowId: SHIP.id, stageId },
+        },
+        w.human,
+      );
+    expect(
+      (await enqueued(w, "spec", "review", { specId: "spec_x" })).context.skills,
+    ).toBeUndefined();
+    expect(
+      (
+        await enqueued(w, "verify", "review", {
+          adjudicate: { pendingActionId: "pa", kind: "spec" },
+        })
+      ).context.skills,
+    ).toBeUndefined();
+    expect((await enqueued(w, "triage", "triage", {})).context.skills).toBeUndefined();
+    // The planner, which doesn't judge, does get the Spec stage's skill.
+    expect(
+      (await enqueued(w, "planning", "implement", {})).context.skills?.map((s) => s.id),
+    ).toEqual(["builtin:interview-planning:run-an-interview", id]);
+  });
+
+  it("a caller can't name skills in a job, and the runner gets only an accepted version", async () => {
+    const w = await world();
+    await onShip(w);
+    const proposed = await ok<{ skillId: string }>(
+      "skill.propose",
+      { projectId: w.projectId, skill: { name: "Sneaky", description: "d", body: "b" } },
+      IMPROVER,
+    );
+    const job = await enqueued(w, "build", "implement", {
+      skills: [{ id: proposed.skillId, slug: "sneaky", version: 1 }],
+    });
+    expect(job.context.skills).toBeUndefined();
+  });
+
+  it("an item with no pinned org version gets no org skills", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    await ok(
+      "skill.attach",
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: id,
+        target: { agent: "Builder" },
+      },
+      w.human,
+    );
+    const item = await newItem(w, uid("unpinned "));
+    await rows(
+      "UPDATE core_work_items SET org_config_version = NULL WHERE id = ?",
+      item.workItemId,
+    );
+    const { jobId } = await ok<{ jobId: string }>(
+      "job.enqueue",
+      { workItemId: item.workItemId, stage: "build", role: "implement", prompt: "x", context: {} },
+      FOREMAN,
+    );
+    const row = await first<{ context: string }>(
+      "SELECT context FROM core_jobs WHERE id = ?",
+      jobId,
+    );
+    expect(JSON.parse(row.context).skills).toBeUndefined();
+  });
+
+  it("many skills are read in chunks; an org can have at most 200", async () => {
+    const w = await world();
+    // 60 skills, written as the operations would, in one org config version.
+    const now = new Date().toISOString();
+    const skills: Record<string, { version: number }> = {};
+    for (let i = 0; i < 60; i++) {
+      const id = `sk_bulk_${i}`;
+      skills[id] = { version: 1 };
+      await rows(
+        `INSERT INTO core_skill_versions (org_id, skill_id, version, name, description, body, sha256, status, source, created_at)
+         VALUES (?, ?, 1, ?, 'd', 'b', 'x', 'current', 'app', ?)`,
+        w.orgId,
+        id,
+        `Bulk ${i}`,
+        now,
+      );
+    }
+    await rows(
+      "INSERT INTO core_org_configs (org_id, version, raw, source, created_at) VALUES (?, 1, ?, 'app', ?)",
+      w.orgId,
+      JSON.stringify({ version: 1, skills }),
+      now,
+    );
+    await rows("UPDATE core_organization SET config_version = 1 WHERE id = ?", w.orgId);
+    expect((await listed(w)).skills.filter((s) => !s.builtin)).toHaveLength(60);
+    const many: Record<string, { version: number }> = {};
+    for (let i = 0; i < 201; i++) many[`sk_x${i}`] = { version: 1 };
+    const parsed = parseOrgConfig({ version: 1, skills: many });
+    expect(parsed.ok).toBe(false);
+  });
+
+  it("proposals are bounded, names are unique, out-of-date proposals and hidden characters are refused", async () => {
+    const w = await world();
+    await save(w);
+    const named = await refusal(
+      call(
+        "skill.propose",
+        { projectId: w.projectId, skill: { ...DRAFT, body: "other" } },
+        IMPROVER,
+      ),
+    );
+    expect(named.message).toMatch(/another skill is called/);
+    for (let i = 0; i < 10; i++)
+      await ok(
+        "skill.propose",
+        { projectId: w.projectId, skill: { name: `P ${i}`, description: "d", body: "b" } },
+        IMPROVER,
+      );
+    const capped = await refusal(
+      call(
+        "skill.propose",
+        { projectId: w.projectId, skill: { name: "P 10", description: "d", body: "b" } },
+        IMPROVER,
+      ),
+    );
+    expect(capped.message).toMatch(/a day/);
+    // A proposal made against v1, accepted after a person saved v2: refused.
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    await rows("DELETE FROM core_skill_versions WHERE org_id = ? AND status = 'proposed'", w.orgId);
+    await ok(
+      "skill.propose",
+      { projectId: w.projectId, skillId: id, skill: { ...DRAFT, body: "proposed" } },
+      IMPROVER,
+    );
+    await save(w, { ...DRAFT, body: "saved" }, id);
+    const stale = await refusal(
+      call(
+        "skill.accept",
+        { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: id, version: 2 },
+        w.human,
+      ),
+    );
+    expect(stale.code).toBe("conflict");
+    const hidden = await refusal(save(w, { ...DRAFT, name: "Hidden", body: "ok‮evil" }));
+    expect(hidden.code).toBe("invalid_input");
+    const none = await refusal(
+      call("skill.reject", { orgId: w.orgId, skillId: id, version: 99 }, w.human),
+    );
+    expect(none).toBeTruthy();
+  });
+
+  it("only a person in the app saves, attaches, detaches, archives or accepts", async () => {
+    const w = await world();
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    const base = await orgVersion(w);
+    const inputs: [string, Record<string, unknown>][] = [
+      ["skill.save", { orgId: w.orgId, baseVersion: base, skill: DRAFT }],
+      ["skill.attach", { orgId: w.orgId, baseVersion: base, skillId: id, target: { agent: "x" } }],
+      ["skill.detach", { orgId: w.orgId, baseVersion: base, skillId: id, target: { agent: "x" } }],
+      ["skill.archive", { orgId: w.orgId, baseVersion: base, skillId: id }],
+      ["skill.accept", { orgId: w.orgId, baseVersion: base, skillId: id, version: 1 }],
+    ];
+    for (const [op, input] of inputs) {
+      for (const actor of [FOREMAN, RUNNER_ACTOR(uid("r_")), IMPROVER])
+        expect((await refusal(call(op, input, actor))).code, `${op} ${actor.type}`).toBe(
+          "forbidden",
+        );
+      for (const surface of ["cli", "mcp", "desktop", "mobile"] as const) {
+        const refused = await invoke(deps, op, input, {
+          actor: w.human,
+          origin: { surface },
+        }).catch((e: OperationError) => e);
+        expect((refused as OperationError).code, `${op} ${surface}`).toBe("forbidden");
+      }
+    }
+  });
+
+  it("a full workflow save or a detach that changes a judge's skills waits for an org admin", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    const withSkill = {
+      ...SHIP,
+      stages: SHIP.stages.map((s) => (s.id === "security" ? { ...s, skills: [{ skill: id }] } : s)),
+    };
+    const saved = await call(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: await orgVersion(w), workflow: withSkill },
+      w.human,
+    );
+    expect(saved.status).toBe("pending");
+    await decide(w, saved);
+    const detach = await call(
+      "skill.detach",
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: id,
+        target: { workflowId: SHIP.id, stageId: "security" },
+      },
+      w.human,
+    );
+    expect(detach.status).toBe("pending");
+    // A rollback to before the attachment drops a judge's skill: a loosening too.
+    const rollback = await call(
+      "orgConfig.rollback",
+      { orgId: w.orgId, baseVersion: await orgVersion(w), toVersion: (await orgVersion(w)) - 1 },
+      w.human,
+    );
+    expect(rollback.status).toBe("pending");
   });
 });

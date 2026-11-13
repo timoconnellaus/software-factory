@@ -561,7 +561,9 @@ export const jobEnqueue = defineOperation({
             input.context,
           )
         : [];
-    const context = skills.length ? { ...input.context, skills } : input.context;
+    // The engine's resolved list only: whatever a caller put under `skills` is dropped (review of #155).
+    const { skills: _caller, ...given } = input.context;
+    const context = skills.length ? { ...given, skills } : given;
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
         id,

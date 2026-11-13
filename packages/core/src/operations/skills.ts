@@ -14,6 +14,8 @@ import { onOrgWorkflow, type ProjectPolicy } from "../policy/project-policy.ts";
 import { BUILTIN_BY_ID, BUILTIN_SKILLS } from "../skills/builtin.ts";
 import { type OrgSkill, type ResolvedSkill, resolveSkills } from "../skills/resolve.ts";
 import {
+  MAX_OPEN_PROPOSALS,
+  MAX_PROPOSALS_A_DAY,
   MAX_SKILL_VERSIONS,
   type SkillDraft,
   skillConditionSchema,
@@ -21,10 +23,12 @@ import {
   skillIdSchema,
   skillSlug,
 } from "../skills/schema.ts";
+import { slotStepId } from "../stages/compile.ts";
 import type { Size } from "../stages/contract.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import { resolveProjectWorkflow } from "../stages/project-workflow.ts";
 import { stageType } from "../stages/registry.ts";
+import type { StageInstance, WorkflowDefinition } from "../stages/workflow.ts";
 import { fencingToken, jobId, projectId, requireProject, workItemId } from "./shared.ts";
 import {
   currentOrgConfig,
@@ -61,35 +65,53 @@ async function latestVersion(db: Db, org: string, skill: string): Promise<number
   return row?.version ?? 0;
 }
 
-/** The skills' rows at the versions an org config names (primary key reads). */
+/**
+ * The skills' rows at the versions an org config names (primary key reads), in chunks so no query
+ * binds too many values (review of #155), with or without their bodies.
+ */
 async function versionsOf(
   db: Db,
   org: string,
   wanted: readonly { id: string; version: number }[],
-): Promise<Map<string, OrgSkill & { body: string }>> {
-  const out = new Map<string, OrgSkill & { body: string }>();
-  if (wanted.length === 0) return out;
-  const rows = await db
-    .selectFrom("core_skill_versions")
-    .select(["skill_id", "version", "name", "description", "sha256", "overrides", "body"])
-    .where("org_id", "=", org)
-    .where((eb) =>
-      eb.or(wanted.map((w) => eb.and([eb("skill_id", "=", w.id), eb("version", "=", w.version)]))),
-    )
-    .limit(wanted.length)
-    .execute();
-  for (const r of rows)
-    out.set(r.skill_id, {
-      id: r.skill_id,
-      version: r.version,
-      name: r.name,
-      description: r.description,
-      sha256: r.sha256,
-      overrides: r.overrides ? (JSON.parse(r.overrides) as OrgSkill["overrides"]) : null,
-      body: r.body,
-    });
+  withBody = true,
+): Promise<Map<string, OrgSkill & { body: string; status: string }>> {
+  const out = new Map<string, OrgSkill & { body: string; status: string }>();
+  for (let i = 0; i < wanted.length; i += VERSION_CHUNK) {
+    const chunk = wanted.slice(i, i + VERSION_CHUNK);
+    const rows = await db
+      .selectFrom("core_skill_versions")
+      .select([
+        "skill_id",
+        "version",
+        "name",
+        "description",
+        "sha256",
+        "overrides",
+        "status",
+        ...(withBody ? (["body"] as const) : []),
+      ])
+      .where("org_id", "=", org)
+      .where((eb) =>
+        eb.or(chunk.map((w) => eb.and([eb("skill_id", "=", w.id), eb("version", "=", w.version)]))),
+      )
+      .limit(chunk.length)
+      .execute();
+    for (const r of rows)
+      out.set(r.skill_id, {
+        id: r.skill_id,
+        version: r.version,
+        name: r.name,
+        description: r.description,
+        sha256: r.sha256,
+        overrides: r.overrides ? (JSON.parse(r.overrides) as OrgSkill["overrides"]) : null,
+        body: (r as { body?: string }).body ?? "",
+        status: r.status,
+      });
+  }
   return out;
 }
+/** Skill keys a query binds at most (two values each, well under D1's limit). */
+const VERSION_CHUNK = 40;
 
 /** Where a skill is attached in a config: agents and stages, for people and for archive's check. */
 function attachments(config: OrgConfig, skill: string): string[] {
@@ -330,13 +352,21 @@ async function acceptSkill(ctx: HandlerContext, input: AcceptInput, createdBy?: 
   requireBase(version, input.baseVersion);
   const row = await ctx.db
     .selectFrom("core_skill_versions")
-    .select(["status", "overrides", "name"])
+    .select(["status", "overrides", "name", "parent_version"])
     .where("org_id", "=", input.orgId)
     .where("skill_id", "=", input.skillId)
     .where("version", "=", input.version)
     .executeTakeFirst();
   if (!row || row.status !== "proposed")
     throw new OperationError("not_found", "no such proposal waiting for a decision");
+  // A proposal made against an older version would quietly replace a later save (review of #155).
+  if ((row.parent_version ?? null) !== (config.skills[input.skillId]?.version ?? null))
+    throw new OperationError(
+      "conflict",
+      `this proposal was made against v${row.parent_version ?? "none"}; the skill is at v${config.skills[input.skillId]?.version ?? "none"} now: propose again`,
+    );
+  if ((await currentNames(ctx.db, input.orgId, config, input.skillId)).has(skillSlug(row.name)))
+    throw new OperationError("invalid_input", `another skill is called "${row.name}"`);
   const overrides = row.overrides
     ? (JSON.parse(row.overrides) as SkillDraft["overrides"])
     : undefined;
@@ -397,6 +427,8 @@ export const skillList = defineOperation({
         createdBy: z.string().nullable(),
         note: z.string().nullable(),
         createdAt: z.string(),
+        overrides: z.object({ builtin: z.string(), mode: z.string() }).nullable(),
+        attachedTo: z.array(z.string()),
       }),
     ),
   }),
@@ -410,7 +442,7 @@ export const skillList = defineOperation({
     // core_skill_versions_status_idx: the org's open proposals.
     const proposals = await ctx.db
       .selectFrom("core_skill_versions")
-      .select(["skill_id", "version", "name", "created_by", "note", "created_at"])
+      .select(["skill_id", "version", "name", "created_by", "note", "created_at", "overrides"])
       .where("org_id", "=", input.orgId)
       .where("status", "=", "proposed")
       .limit(50)
@@ -448,6 +480,12 @@ export const skillList = defineOperation({
         createdBy: p.created_by,
         note: p.note,
         createdAt: p.created_at,
+        // What accepting it would change: the built-in it extends or replaces, and every place the
+        // skill is attached now (review of #155).
+        overrides: p.overrides
+          ? (JSON.parse(p.overrides) as { builtin: string; mode: string })
+          : null,
+        attachedTo: attachments(config, p.skill_id),
       })),
     };
   },
@@ -651,6 +689,36 @@ export const skillPropose = defineOperation({
         "invalid_input",
         `a skill keeps at most ${MAX_SKILL_VERSIONS} versions`,
       );
+    // Bounded (review of #155): open proposals per org, and per proposer a day
+    // (core_skill_versions_status_idx, at most MAX_OPEN_PROPOSALS + 1 rows).
+    const open = await ctx.db
+      .selectFrom("core_skill_versions")
+      .select(["created_by", "created_at"])
+      .where("org_id", "=", input.orgId)
+      .where("status", "=", "proposed")
+      .limit(MAX_OPEN_PROPOSALS + 1)
+      .execute();
+    if (open.length >= MAX_OPEN_PROPOSALS)
+      throw new OperationError(
+        "conflict",
+        `${open.length} proposals are waiting for a person: decide some first`,
+      );
+    const today = ctx.now.slice(0, 10);
+    if (
+      open.filter((o) => o.created_by === ctx.actor.id && o.created_at.startsWith(today)).length >=
+      MAX_PROPOSALS_A_DAY
+    )
+      throw new OperationError("conflict", `at most ${MAX_PROPOSALS_A_DAY} proposals a day`);
+    if ((await currentNames(ctx.db, input.orgId, config, id)).has(skillSlug(input.skill.name)))
+      throw new OperationError("invalid_input", `another skill is called "${input.skill.name}"`);
+    // Rejected proposals go after 30 days, a few at a time (by the primary key's prefix).
+    ctx.write(
+      ctx.db
+        .deleteFrom("core_skill_versions")
+        .where("org_id", "=", input.orgId)
+        .where("status", "=", "rejected")
+        .where("created_at", "<", new Date(Date.parse(ctx.now) - 30 * 86_400_000).toISOString()),
+    );
     draftRow(
       ctx,
       input.orgId,
@@ -665,13 +733,17 @@ export const skillPropose = defineOperation({
         parent: config.skills[id]?.version ?? null,
       },
     );
-    const admins = await ctx.db
-      .selectFrom("core_member")
-      .select("user_id")
-      .where("organization_id", "=", input.orgId)
-      .where("role", "in", ["owner", "admin"])
-      .limit(10)
-      .execute();
+    // One notice while proposals wait, not one each: only the first open proposal tells the admins.
+    const admins =
+      open.length > 0
+        ? []
+        : await ctx.db
+            .selectFrom("core_member")
+            .select("user_id")
+            .where("organization_id", "=", input.orgId)
+            .where("role", "in", ["owner", "admin"])
+            .limit(10)
+            .execute();
     for (const a of admins)
       ctx.emit({
         kind: "notify",
@@ -692,10 +764,23 @@ export const skillAccept = defineOperation({
   description:
     "Accept a proposed skill version (ADR 0513): it becomes the skill's current version in a new org config version. A person's decision, in the app; one a judge follows is policy and waits for an org admin. Org admins only.",
   risk: "write",
-  riskOf: (input, at) =>
-    riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
-      withSkill(c, input.skillId, input.version, c.skills[input.skillId]?.overrides),
-    ),
+  // Judged by the proposal being accepted: its own overrides (review of #155), so a proposal that
+  // extends the reviewer's protected skill is the loosening it is.
+  riskOf: async (input, at) => {
+    const row = await at.db
+      .selectFrom("core_skill_versions")
+      .select("overrides")
+      .where("org_id", "=", input.orgId)
+      .where("skill_id", "=", input.skillId)
+      .where("version", "=", input.version)
+      .executeTakeFirst();
+    const overrides = row?.overrides
+      ? (JSON.parse(row.overrides) as SkillDraft["overrides"])
+      : undefined;
+    return riskOfSave(at.db, input.orgId, input.baseVersion, (c) =>
+      withSkill(c, input.skillId, input.version, overrides),
+    );
+  },
   actors: ["human"],
   permission: "admin",
   // Config is a decision made in the app (ADR 0340): never from the CLI, MCP or a device token.
@@ -734,6 +819,7 @@ export const skillReject = defineOperation({
         .where("version", "=", input.version)
         .where("status", "=", "proposed"),
     );
+    ctx.guardChanged("a proposal waiting for a decision");
     ctx.change({
       entity: "skill",
       id: input.skillId,
@@ -745,17 +831,40 @@ export const skillReject = defineOperation({
 
 // ---- Jobs ----
 
-/** A job's stage in the definition, from the job's stage and its slot step (as the shadow maps it). */
-function jobStageId(stage: string, context: Record<string, unknown>): string {
+/**
+ * The stage instance a job runs for, by the stage's type and the job's role, never by id alone
+ * (review of #155: a custom stage called "verify" isn't the reviewer's). Null for the spec critic
+ * and the adjudicator, which judge and get no org skills.
+ */
+function jobStage(
+  def: WorkflowDefinition,
+  stage: string,
+  context: Record<string, unknown>,
+): StageInstance | null {
+  if (context.specId !== undefined || context.adjudicate !== undefined) return null;
   const step = (context.step as { id?: unknown } | undefined)?.id;
-  if (typeof step === "string") return step;
-  if (stage === "planning") return "spec";
-  return stage;
+  if (typeof step === "string")
+    return def.stages.find((s) => stageType(s.type)?.small && slotStepId(s.id) === step) ?? null;
+  const type =
+    stage === "triage"
+      ? "triage"
+      : stage === "planning" || stage === "spec"
+        ? "interview-planning"
+        : stage === "build"
+          ? "build"
+          : stage === "verify"
+            ? "checks"
+            : null;
+  return type ? (def.stages.find((s) => s.type === type) ?? null) : null;
 }
 
 /**
  * The skills a job follows (spec 52, "How a run's skills are resolved"), as references for its
- * context: for an item on an org workflow, at the org config version it pinned. Empty otherwise.
+ * context, at the org config version the item pinned (an item with none gets none: a skill edit
+ * never reaches work it wasn't pinned for). A job that judges the work (the reviewer, an agent
+ * check, triage, which ties criteria to checks) gets only its built-ins and the skills an org admin
+ * approved for that judge (their attachment was a loosening); the spec critic and the adjudicator
+ * get none. Reads only the skills it needs, without their bodies.
  */
 export async function jobSkills(
   ctx: HandlerContext,
@@ -764,25 +873,32 @@ export async function jobSkills(
   stage: string,
   context: Record<string, unknown>,
 ): Promise<ResolvedSkill[]> {
-  if (!raw || !onOrgWorkflow(raw)) return [];
-  const org =
-    w.org_config_version !== null
-      ? await storedOrgConfig(ctx.db, w.org_id, w.org_config_version)
-      : (await currentOrgConfig(ctx.db, w.org_id)).config;
+  if (!raw || !onOrgWorkflow(raw) || w.org_config_version === null) return [];
+  const org = await storedOrgConfig(ctx.db, w.org_id, w.org_config_version);
   if (!org) return [];
   const def = resolveProjectWorkflow(raw, org);
   if (!def?.ok) return [];
-  const id = jobStageId(stage, context);
-  const inst = def.value.stages.find(
-    (s) =>
-      s.id === id || s.id === `step-${id}` || (id === "spec" && s.type === "interview-planning"),
-  );
+  const inst = jobStage(def.value, stage, context);
   if (!inst) return [];
-  const rows = await versionsOf(
-    ctx.db,
-    w.org_id,
-    Object.entries(org.skills).map(([sid, s]) => ({ id: sid, version: s.version })),
-  );
+  const type = stageType(inst.type);
+  const judging = !!type?.judges || inst.type === "triage";
+  // A judge's own attachments were approved as loosenings; triage's aren't (its type doesn't judge
+  // by policy yet), so it takes none. Others take what's attached.
+  const stageSkills = judging && !type?.judges ? [] : (inst.skills ?? []);
+  const agentSkills =
+    inst.agent && (!judging || type?.judges === "agent")
+      ? (org.agentSkills[inst.agent.toLowerCase()] ?? [])
+      : [];
+  const builtins = new Set(BUILTIN_SKILLS.filter((b) => b.type === inst.type).map((b) => b.id));
+  const overriding = Object.entries(org.skills)
+    .filter(([, s]) => s.overrides && builtins.has(s.overrides.builtin))
+    // A judge's built-in may only be extended where it is protected (an org admin approved that).
+    .filter(([, s]) => !judging || !!BUILTIN_BY_ID.get(s.overrides?.builtin ?? "")?.protected)
+    .map(([id]) => id);
+  const needed = [...new Set([...overriding, ...agentSkills, ...stageSkills.map((a) => a.skill)])]
+    .filter((id) => org.skills[id])
+    .map((id) => ({ id, version: org.skills[id]?.version ?? 0 }));
+  const rows = await versionsOf(ctx.db, w.org_id, needed, false);
   let domains: string[] = [];
   try {
     domains = w.domains ? (JSON.parse(w.domains) as string[]) : [];
@@ -792,8 +908,8 @@ export async function jobSkills(
   return resolveSkills({
     stageType: inst.type,
     orgSkills: rows,
-    agentSkills: inst.agent ? (org.agentSkills[inst.agent.toLowerCase()] ?? []) : [],
-    stageSkills: inst.skills ?? [],
+    agentSkills,
+    stageSkills,
     facts: { size: (w.size as Size | null) ?? null, domains, paths: null },
   });
 }
@@ -839,7 +955,9 @@ export const skillForJob = defineOperation({
     const row = (await versionsOf(ctx.db, job.org_id, [{ id: ref.id, version: ref.version }])).get(
       ref.id,
     );
-    if (!row) throw new OperationError("not_found", "no such skill on your job");
+    // Only an accepted version, exactly the one the job names (review of #155).
+    if (!row || row.status !== "current" || row.version !== ref.version)
+      throw new OperationError("not_found", "no such skill on your job");
     return { slug: ref.slug, version: row.version, body: row.body, sha256: row.sha256 };
   },
 });

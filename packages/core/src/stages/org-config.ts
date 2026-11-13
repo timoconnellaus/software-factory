@@ -4,7 +4,12 @@
 import { z } from "zod";
 import { type AgentConfig, agentSchema } from "../policy/project-policy.ts";
 import { BUILTIN_BY_ID } from "../skills/builtin.ts";
-import { anySkillIdSchema, builtinSkillIdSchema, skillIdSchema } from "../skills/schema.ts";
+import {
+  anySkillIdSchema,
+  builtinSkillIdSchema,
+  MAX_ORG_SKILLS,
+  skillIdSchema,
+} from "../skills/schema.ts";
 import {
   ATTACHED_PR,
   BUILT_IN_WORKFLOWS,
@@ -176,6 +181,8 @@ export function parseOrgConfig(input: unknown): OrgConfigParse {
   // Skills (ADR 0513): every attachment names a skill the org has or a built-in; a protected
   // built-in (one that judges the work) can be added to, never replaced (Q16).
   const known = (id: string) => Object.hasOwn(config.skills, id) || BUILTIN_BY_ID.has(id);
+  if (Object.keys(config.skills).length > MAX_ORG_SKILLS)
+    doc(`an org can have at most ${MAX_ORG_SKILLS} skills: archive one first`);
   for (const [id, s] of Object.entries(config.skills)) {
     const builtin = s.overrides ? BUILTIN_BY_ID.get(s.overrides.builtin) : undefined;
     if (s.overrides && !builtin)
