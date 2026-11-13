@@ -11,6 +11,7 @@ import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
 import * as connector from "./operations/connector.ts";
+import * as delivery from "./operations/delivery.ts";
 import * as desktop from "./operations/desktop.ts";
 import * as device from "./operations/device.ts";
 import * as devices from "./operations/devices.ts";
@@ -46,6 +47,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   backlog.workItemShape,
   backlog.workItemReleaseChoice,
   backlog.workItemShaped,
+  backlog.workItemParkForInfo,
   backlog.workItemMove,
   backlog.workItemUpdate,
   backlog.workItemReorder,
@@ -97,6 +99,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   attachments.workItemAttachmentGet,
   attachments.workItemAttachmentRemove,
   questions.questionAsk,
+  questions.planningSeedQuestions,
   questions.workItemAwaitQuestions,
   questions.questionAnswer,
   questions.questionAcceptDefaults,
@@ -124,6 +127,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   artifacts.artifactShow,
   artifacts.artifactGet,
   artifacts.artifactRead,
+  artifacts.designPull,
   planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
@@ -135,9 +139,12 @@ export const OPERATIONS: readonly AnyOperation[] = [
   planning.planningPause,
   planning.planningResume,
   planning.planningGet,
+  planning.specCritique,
+  planning.planningRequestYield,
   specs.specPropose,
   specs.specAccept,
   specs.specCommit,
+  specs.specWriteBack,
   gates.approvalDecide,
   cli.cliDeviceStart,
   cli.cliDevicePoll,
@@ -181,6 +188,11 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueList,
   mergeQueue.mergeQueueUpdate,
   mergeQueue.mergeQueueLeave,
+  delivery.mainObserve,
+  delivery.workItemMarkRepair,
+  delivery.deliveryStatus,
+  mergeQueue.mergeQueueMerging,
+  mergeQueue.mergeQueueHold,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,

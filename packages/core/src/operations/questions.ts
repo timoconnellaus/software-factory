@@ -28,6 +28,7 @@ import { checkQuestionVisuals } from "../planning-visuals.ts";
 import { approverIds, backupOwnerId } from "../scope.ts";
 import { questionsEvent } from "../workflow-events.ts";
 import { resumeParked } from "./backlog.ts";
+import { holdingEntry, wakeDelivery } from "./merge-queue.ts";
 import { byJob, notifyAway, planningJob, planningJobFields } from "./planning.ts";
 import { fencingToken, jobId, questionId, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -727,6 +728,12 @@ async function answerQuestion(
     await wakeSession(ctx, requireWorkItem(ctx));
     return { answered: true, revised: revisable, roundComplete: false };
   }
+  // The babysitter's hold (spec 53 review): no spec round waits on it; its deliverer reads it.
+  const hold = await holdingEntry(ctx, q.work_item_id, q.id);
+  if (hold) {
+    wakeDelivery(ctx, hold);
+    return { answered: true, revised: false, roundComplete: false };
+  }
   // A parked item's needs-info question (spec 23): the item goes on once the request is clear.
   // Its Workflow hasn't started (or ended when triage parked it): no round to close.
   const resumed = await resumeParked(ctx, requireWorkItem(ctx), {
@@ -1045,5 +1052,71 @@ export const questionAnswerFromEdit = defineOperation({
       { editId: edit.id, by: edit.author_id },
     );
     return { questionId: q.id, revision: q.answer_revision + 1 };
+  },
+});
+
+export const planningSeedQuestions = defineOperation({
+  name: "planning.seedQuestions",
+  description:
+    "The Workflow asks triage's questions in a work item's planning session as it opens (spec 23): a medium or large item triage found needs answers enters the spec stage with them already open in the Planning tab, as the planner's questions. They're ordinary blocking planning questions the person answers and the planner reads as news.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, questions: z.array(questionDraftSchema).min(1).max(5) }),
+  output: z.object({ questionIds: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const session = await openSession(ctx, w.id);
+    if (!session) throw new OperationError("conflict", "no planning session is open to ask in");
+    const approvers = await approverIds(ctx.db, w.org_id, ctx.scope.policy);
+    const assignee = approvers.includes(w.requester_user_id)
+      ? w.requester_user_id
+      : (approvers[0] ?? null);
+    const hours = ctx.scope.policy?.timeouts.questionHours ?? 48;
+    const timeoutAt = new Date(Date.parse(ctx.now) + hours * 3_600_000).toISOString();
+    const counters = await ctx.db
+      .selectFrom("core_questions")
+      .select((eb) => [eb.fn.max("number").as("n"), eb.fn.max("position").as("p")])
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst();
+    let number = Number(counters?.n ?? 0);
+    let position = Number(counters?.p ?? 0);
+    const ids: string[] = [];
+    for (const q of input.questions) {
+      const id = newId("question");
+      ids.push(id);
+      ctx.write(
+        ctx.db.insertInto("core_questions").values({
+          id,
+          work_item_id: w.id,
+          project_id: w.project_id,
+          org_id: w.org_id,
+          assignee_user_id: assignee,
+          planning_round: w.planning_round,
+          planning_session_id: session.id,
+          timeout_at: timeoutAt,
+          asked_by: ctx.actor.id,
+          created_at: ctx.now,
+          number: ++number,
+          position: ++position,
+          domain: q.domain,
+          prompt: q.prompt,
+          context:
+            q.context ??
+            "Asked at triage: the request needs this answered before it can be planned.",
+          options: JSON.stringify(q.options),
+          default_answer: q.defaultAnswer ?? null,
+          default_values: q.defaultAnswer ? JSON.stringify([q.defaultAnswer]) : null,
+          recommendation: q.recommendation ?? null,
+          recommendation_reason: q.recommendationReason ?? null,
+          kind: q.options.length ? "single-choice" : "text",
+          blocking: 1,
+          irreversible: q.irreversible ? 1 : 0,
+        }),
+      );
+    }
+    logPlanning(ctx, w.id, "question.asked", { questionIds: ids, fromTriage: true });
+    ctx.change({ entity: "work_item", id: w.id, after: { triageQuestions: ids.length } });
+    return { questionIds: ids };
   },
 });

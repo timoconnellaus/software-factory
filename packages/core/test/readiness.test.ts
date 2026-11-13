@@ -219,3 +219,159 @@ describe("the readiness pre-check (spec 23)", () => {
     expect(view.item.readinessHint).toContain("triage will ask");
   });
 });
+
+/** Puts an item in triage, as its Workflow does. */
+const inTriage = (id: string) =>
+  rows("UPDATE core_work_items SET stage = 'triage' WHERE id = ?", id);
+
+/** Parks an item as Workflow instance `instance` would (`workItem.parkForInfo`). */
+async function parkAs(workItemId: string, instance: string) {
+  await inTriage(workItemId);
+  const r = await invoke(
+    deps,
+    "workItem.parkForInfo",
+    {
+      workItemId,
+      reason: "It doesn't say which issues",
+      questions: [
+        {
+          prompt: "Which label marks an issue for the factory?",
+          options: ["factory", "sf"],
+          defaultAnswer: "factory",
+        },
+      ],
+    },
+    { actor: FOREMAN, origin: { surface: "workflow", workflowId: instance } },
+  );
+  if (r.status !== "ok") throw new Error(JSON.stringify(r));
+  return r.output;
+}
+
+describe("triage's parking and questions (spec 23 part B)", () => {
+  it("parks only from the item's own Workflow, in triage (review of #125, 2)", async () => {
+    const w = await world();
+    const created = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    // Another instance: refused.
+    await expect(parkAs(created.workItemId, `${created.workItemId}-r9`)).rejects.toThrow(
+      /current Workflow, in triage/,
+    );
+    // Not in triage: refused.
+    await rows("UPDATE core_work_items SET stage = 'build' WHERE id = ?", created.workItemId);
+    await expect(
+      invoke(
+        deps,
+        "workItem.parkForInfo",
+        { workItemId: created.workItemId, reason: "x", questions: [{ prompt: "?" }] },
+        { actor: FOREMAN, origin: { surface: "workflow", workflowId: created.workItemId } },
+      ),
+    ).rejects.toThrow(/current Workflow, in triage/);
+  });
+
+  it("stops parking at three cycles: a person decides, with everything asked (review of #125, 3)", async () => {
+    const w = await world();
+    const created = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    const id = created.workItemId;
+    await rows("UPDATE core_work_items SET workflow_id = ? WHERE id = ?", `${id}-r3`, id);
+    const parked = (await parkAs(id, `${id}-r3`)) as { questionIds: string[] };
+    const marker = JSON.parse((await item(id)).needs_info ?? "{}");
+    expect(marker).toMatchObject({ capped: true, reason: expect.stringContaining("3 times") });
+    expect(marker.asked).toContain("Which label marks an issue for the factory?");
+    // Answering doesn't send it on; a person releasing it does.
+    await ok("question.answer", { questionId: parked.questionIds[0], answer: "factory" }, w.human);
+    expect((await item(id)).status).toBe("backlog");
+    expect(
+      (await ok<{ status: string }>("workItem.release", { workItemId: id }, w.human)).status,
+    ).toBe("queued");
+  });
+
+  it("parks an item triage found not actionable on a new Workflow generation, and answering re-releases it there", async () => {
+    const w = await world();
+    const created = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    const parked = (await parkAs(created.workItemId, created.workItemId)) as {
+      status: string;
+      questionIds: string[];
+    };
+    expect(parked.status).toBe("backlog");
+    const row = await first<{
+      status: string;
+      workflow_id: string;
+      pulled_at: string | null;
+      needs_info: string;
+    }>(
+      "SELECT status, workflow_id, pulled_at, needs_info FROM core_work_items WHERE id = ?",
+      created.workItemId,
+    );
+    expect(row).toMatchObject({
+      status: "backlog",
+      workflow_id: `${created.workItemId}-r2`,
+      pulled_at: null,
+    });
+    expect(JSON.parse(row.needs_info)).toMatchObject({ source: "triage", heading: "queued" });
+    const [q] = parked.questionIds;
+    await ok("question.answer", { questionId: q, answer: "factory" }, w.human);
+    const after = await first<{ status: string; body: string; needs_info: string | null }>(
+      "SELECT status, body, needs_info FROM core_work_items WHERE id = ?",
+      created.workItemId,
+    );
+    expect(after.needs_info).toBeNull();
+    expect(["queued", "running"]).toContain(after.status);
+    expect(after.body).toContain("factory");
+    // The new run is the new generation.
+    const starts = await rows<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'workflow.create' AND payload LIKE ?",
+      `%${created.workItemId}-r2%`,
+    );
+    expect(starts).toHaveLength(1);
+  });
+
+  it("asks triage's questions into an open planning session", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { projectId: w.projectId, title: "Issues", body: CLEAR, state: "queued" },
+      w.human,
+    );
+    const closed = await refusal(
+      ok(
+        "planning.seedQuestions",
+        { workItemId: item.workItemId, questions: [{ prompt: "Which label?" }] },
+        FOREMAN,
+      ),
+    );
+    expect(closed.code).toBe("conflict");
+    await ok("branch.ensure", { workItemId: item.workItemId }, FOREMAN);
+    await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+    const seeded = await ok<{ questionIds: string[] }>(
+      "planning.seedQuestions",
+      {
+        workItemId: item.workItemId,
+        questions: [{ prompt: "Which label?", options: ["factory", "sf"] }],
+      },
+      FOREMAN,
+    );
+    const view = await ok<{ questions: { id: string; prompt: string; status: string }[] }>(
+      "planning.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(view.questions).toEqual([
+      expect.objectContaining({
+        id: seeded.questionIds[0],
+        prompt: "Which label?",
+        status: "open",
+      }),
+    ]);
+  });
+});

@@ -13,6 +13,11 @@ const base: UpdateStatus = {
   jobs: 0,
   waitingForRunner: null,
   downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
+  phase: "idle",
+  checkedAt: null,
+  installed: null,
+  channel: null,
+  reason: null,
 };
 const actions = (u: Partial<UpdateStatus>) =>
   updateRequiredView({ ...base, ...u }).actions.map((a) => a.action);
@@ -64,7 +69,8 @@ describe("checkNow", () => {
     const updates = new Updates(
       {
         updater,
-        exec: async () => ({ code: 0, out: "" }),
+        // A signed build: an unsigned one takes no updates and never checks.
+        exec: async () => ({ code: 0, out: "TeamIdentifier=ABCDE12345\n" }),
         appPath: "/Applications/Software Factory.app",
         writable: () => {},
         setInterval: () => 0,

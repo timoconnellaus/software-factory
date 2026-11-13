@@ -44,6 +44,11 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /**
+   * Run the babysitter's deliverer for one repository queue after this call commits (spec 53, ADR
+   * 0580). `repositoryId` null: the project's items that record no repository.
+   */
+  | { kind: "delivery.wake"; payload: { projectId: string; repositoryId: string | null } }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
@@ -159,6 +164,14 @@ export interface HandlerContext {
    * a moved head, a cancelled item); `apply` marks an approved one carried out.
    */
   writePendingStatus(how: PendingStatusWrite, statement: Compilable | D1PreparedStatement): void;
+  /**
+   * Queue a write that records something that already happened outside the factory (GitHub merged
+   * the PR, spec 53 review). It commits with the batch; if a guard fails the batch, it commits
+   * anyway in a second batch with the approval marked used and an audit row saying what happened,
+   * so the record never says it didn't. Write it so it is right in both cases (it runs against the
+   * state the guard found changed).
+   */
+  happened(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
   guardChanged(name: string): void;
   /** Abort the whole batch unless `query` returns a row when the batch runs. */
@@ -290,6 +303,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * step, ADR 0371). `deny` still refuses.
    */
   alwaysReview?: boolean;
+  /**
+   * A write operation that, when its handler queued nothing (no write, event or change), commits
+   * nothing either: no audit row (spec 53 review, the Cloudflare cost rule). For observations
+   * repeated on every webhook (`main.observe`), where only a change is worth a row. Its
+   * idempotency key then records nothing, so a retry runs it again: it must be safe to repeat.
+   */
+  quietWhenUnchanged?: true;
   /** Who should decide a `review` (a GitHub login); falls back to the approvers. */
   assignee?: (input: z.output<I>) => string | null;
   /** Which inbox card a `review` answer becomes. Default `approval`. */

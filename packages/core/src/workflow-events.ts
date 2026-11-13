@@ -46,6 +46,25 @@ export const prHeadEvent = (workItemId: string) => `pr-head-${workItemId}`;
 export const mergeQueueEvent = (workItemId: string) => `mergeq-${workItemId}`;
 
 /**
+ * The babysitter finished delivering a work item (spec 53, ADR 0580): payload
+ * `DeliveredEventPayload`. Sent once, when its queue entry ends. The outcome is also on the entry
+ * (`mergeQueue.position`), so a Workflow that missed it reads it back after a timeout.
+ */
+export const deliveredEvent = (workItemId: string) => `delivered-${workItemId}`;
+
+export interface DeliveredEventPayload {
+  /** `withdrawn`: the approval no longer holds for the head (ADR 0582); it goes back to the gate. */
+  /**
+   * `reverify`: the change is the one approved but the head is new; it is verified on its own and
+   * then re-enters with the same approval (second review of #105).
+   */
+  outcome: "merged" | "conflict" | "failed" | "withdrawn" | "reverify";
+  reason: string;
+  /** The entry's head when it ended: for `withdrawn`, the head to decide again. */
+  headSha?: string;
+}
+
+/**
  * A shaped work item was released and pulled (ADR 0493): its Workflow, waiting at `release: wait`
  * after the shaping stages, goes on to delivery. Sent once, by the pull that starts it.
  */

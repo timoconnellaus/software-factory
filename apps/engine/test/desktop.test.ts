@@ -252,6 +252,83 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await callOp(token, "spec.approve", input, late)).status).toBe(403);
   });
 
+  it("a merge approval names its commit: a push between opening the gate and approving is refused (spec 40 M4b)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    const opened = "3f2a91c".padEnd(40, "0");
+    const pushed = "9b1e004".padEnd(40, "0");
+    const mergeGate = async (headSha: string) => {
+      const id = `pa_${crypto.randomUUID().replaceAll("-", "")}`;
+      await env.DB.prepare(
+        `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, assignee_user_id, created_at)
+         VALUES (?, ?, ?, ?, 'merge', 'pr.merge', 'merge', 'agent', 'foreman', ?, ?, ?)`,
+      )
+        .bind(
+          id,
+          w.orgId,
+          w.projectId,
+          workItemId,
+          JSON.stringify({ workItemId, headSha }),
+          w.userId,
+          new Date().toISOString(),
+        )
+        .run();
+      return id;
+    };
+    const status = async (id: string) =>
+      (await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", id))
+        ?.status;
+    const first_ = await mergeGate(opened);
+    // A desktop build older than door protocol 2 doesn't name the commit: refused, told to update,
+    // and nothing is decided (ADR 0393).
+    const noSha = { workItemId, openedFullDiff: true };
+    const old = await callOp(
+      token,
+      "review.merge",
+      noSha,
+      await prove(token, device, "review.merge", noSha),
+    );
+    expect(old.status).toBe(400);
+    expect((await json<{ error: string }>(old)).error).toMatch(
+      /can't approve a merge.*Update the app/,
+    );
+    expect(await status(first_)).toBe("pending");
+    // The person opens the gate on `opened`: the prompt names that commit and the repository.
+    const input = { workItemId, openedFullDiff: true, headSha: opened };
+    const proof = await prove(token, device, "review.merge", input);
+    expect(proof.summary).toMatch(/^Merge 3f2a91c "From the desktop" into main of [^ ]+\/[^ ]+$/);
+    // Merging without checks says so in the prompt.
+    const without = await prove(token, device, "review.merge", {
+      ...input,
+      mergeWithoutChecks: true,
+    });
+    expect(without.summary).toMatch(/, without its checks$/);
+
+    // An agent pushes before the person approves: the gate is withdrawn (as moveAttachedHead does).
+    await env.DB.prepare(
+      "UPDATE core_pending_actions SET status = 'rejected', decision = 'withdrawn', decided_at = ? WHERE id = ?",
+    )
+      .bind(new Date().toISOString(), first_)
+      .run();
+    const refused = await callOp(token, "review.merge", input, proof);
+    expect(refused.status).toBe(409);
+    expect((await json<{ error: string }>(refused)).error).toBe(
+      "A new push withdrew this approval: 3f2a91c is no longer the head. The factory verifies the new commit and asks again.",
+    );
+
+    // Verify passes on the pushed commit and a new gate opens for it: the old approval still can't
+    // merge it, and nothing is decided.
+    const second = await mergeGate(pushed);
+    const again = await prove(token, device, "review.merge", input);
+    const stale = await callOp(token, "review.merge", input, again);
+    expect(stale.status).toBe(409);
+    expect((await json<{ error: string }>(stale)).error).toBe(
+      "A new push withdrew this approval: the merge gate is for 9b1e004 now, not 3f2a91c. Review the new commit.",
+    );
+    expect(await status(second)).toBe("pending");
+  });
+
   it("keeps authority-granting operations browser-only even with a proof (criterion 5)", async () => {
     const w = await world();
     const { token } = await signIn(w);
@@ -476,8 +553,8 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await at("1", undefined, "call", null)).status).toBe(401);
     // A floor above the newest protocol this engine knows would lock every build out, sign-in
     // included: it is ignored, not enforced.
-    expect(DESKTOP_PROTOCOL_LATEST).toBe(1);
-    expect((await at("2", "1")).status).toBe(200);
+    expect(DESKTOP_PROTOCOL_LATEST).toBe(2);
+    expect((await at("3", "2")).status).toBe(200);
     expect((await at("99", undefined, "desktop/start", null)).status).not.toBe(426);
   });
 

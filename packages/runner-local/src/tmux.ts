@@ -86,6 +86,8 @@ export interface TmuxSession {
  */
 export const TMUX_GONE =
   /^(can't find (session|window|pane): |no server running on |error connecting to \S+ \(No such file or directory\))/m;
+/** The client reached a server that went before answering: one that was exiting, or crashed. */
+const SERVER_EXITED = /^(server exited unexpectedly|lost server)/m;
 const NO_SERVER = /^(no server running on |error connecting to \S+ \(No such file or directory\))/m;
 
 export type TmuxAnswer = "ok" | "gone" | "error";
@@ -192,7 +194,13 @@ export function tmuxCli(options: TmuxOptions = {}) {
         "remain-on-exit",
         "on",
       ];
-      const r = await call(args);
+      // Retried only when the server it reached was exiting (its last session had just gone, and
+      // tmux's server exits with it): then nothing was started, as the server went with it.
+      let r = await call(args);
+      for (let i = 1; i < attempts && !r.timedOut && SERVER_EXITED.test(r.stderr); i++) {
+        await sleep(backoffMs / 2 + Math.random() * backoffMs);
+        r = await call(args);
+      }
       if (r.code !== 0 || r.timedOut) {
         if (classifyTmux(r) === "error") throw new TmuxUnavailable(explain(args, r));
         throw new TmuxError(explain(args, r));

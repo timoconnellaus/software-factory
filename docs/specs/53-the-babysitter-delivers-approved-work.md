@@ -77,14 +77,16 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   a lost event costs time, not the item.
 - **Workflow versions.** A running instance replays on the code it started with, so a feature
   must never switch on inside an instance of an older version. No `version >= N` comparisons for
-  features: one table in the Workflow (`WORKFLOW_FEATURES`) maps each version number to the set of
+  features: one table in core (`packages/core/src/workflow-features.ts`, `WORKFLOW_VERSION_FEATURES`) maps each version number to the set of
   features it has, a row per version, immutable once merged, and code asks
   `has(version, "feature")`. v1 to v7's rows reproduce today's behaviour exactly (the existing
   version tests prove it). A PR takes the next number above whatever is on `main` **at merge
   time** and adds its row; rows of other open PRs do not exist until they merge. This spec's PRs
   say v11 today (`#73`, planning and spec 52's build had claimed v8 to v10); whichever merges first
   renumbers to the next free number then. Each of (b) and (c) that changes the Workflow's steps adds
-  its own row rather than folding into v11's after v11 has merged.
+  its own row rather than folding into v11's after v11 has merged. (2026-11-13: main has v9,
+  triage readiness, and v10, the spec critic, so v11 is v10 plus `babysitter-delivery` and v12 is
+  v11 plus `reverify-on-withdrawal`; each new row keeps every feature of the one before.)
 - **The deliverer** does what `landV4` did, per repository instead of per item: pick the head, bring
   it up to date, wait for CI on the new head, merge it with `pr.merge` at the head SHA it recorded
   and the approval id, and send `delivered-<item>`.
@@ -99,7 +101,32 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     repositories whose `next_check_at` has passed. It re-reads GitHub on the cron, which heals a lost
     webhook.
   - **One pass per repository at a time**: a compare-and-set on `core_delivery_state.rev`
-    (migration 0350), as ADR 0511 does per item.
+    (migration 0350), as ADR 0511 does per item. The key is the repository (an item with no
+    repository is never the babysitter's), and `rev` is a fencing token: every operation the pass
+    calls carries it and is refused once another pass took over (ADR 0586).
+  - **Bounded re-updates.** Each pass brings the head up to date again (a `main` that moved while CI
+    ran gets one more update and CI run), at most three update-branch requests per entry
+    (`mergeQueue.update`'s `maxUpdates`). Past that the head is **held**, never sent back to build
+    (approved, green work is not rebuilt because `main` is busy): `mergeQueue.hold` asks a person
+    "main keeps moving: updated 3 times; update once more and merge when CI passes, or wait?". Each
+    answer allows one more update, now or after an hour; another bound reached asks again.
+  - **A merge GitHub refuses is re-snapshotted**, never retried as is and not sent straight back to
+    build: the pass brings the head up to date again (a moved `main` updates it and CI runs there);
+    a refusal with nothing changed goes back as `failed` (PR (d) asks a person instead).
+  - **Only an open item merges.** `pr.merge` refuses an item that is no longer open, and for the
+    babysitter an entry no longer open in its queue, read before GitHub is asked and guarded in
+    the same batch. Cancelling an item withdraws its approved, unused actions too, not only its
+    pending ones.
+  - **The merge window** (second review of #103). GitHub merges inside `pr.merge`'s handler, before
+    its guarded batch, so a cancel or a takeover can land in the 1–3 s between. Three rules close it:
+    the deliverer marks the entry **merging** (`mergeQueue.merging`, guarded) before it asks GitHub,
+    and a cancel while the mark holds is refused ("this is merging; it cannot be cancelled now"); the
+    mark goes when GitHub refuses. When GitHub has merged but the batch fails, the merge is
+    **recorded anyway** in a second write unguarded by state (`HandlerContext.happened`): the audit
+    says merged, the approval is used, and **merged wins over a cancel that raced it**: the item is
+    Done with the note "cancelled after its merge had started". And `pr.merge` reads the PR first: one
+    GitHub already shows merged at the pinned head is recorded as merged, never merged again (GitHub
+    answers a second merge with 405), so a pass that took over mid-merge finishes it.
 - **Merge method and order (decision 4):** merge commits only (`method: "merge"`), one PR at a time
   per repository, in approval order, each updated to the current default branch and CI'd once before
   it lands. The engine's own ordering stays; GitHub's merge queue is not used (ADR 0580 §4).
@@ -119,8 +146,11 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     red", with the episode's start time and failing checks;
   - an item's own verify still runs, and its merge gate can still be approved: holding is about
     landing, not about work;
-  - a delivery already updated and waiting for CI when `main` turns red finishes its CI and is held
-    before the merge.
+  - a held delivery isn't brought up to date either: merging a red `main` in would fail its CI and
+    send good work back to build. One already updated and waiting for CI when `main` turns red
+    finishes its CI and is held before the merge;
+  - repairs land first: a repair goes ahead of everything else in its queue. Until the `babysit` job
+    opens repairs itself (§4), a person marks one with `workItem.markRepair` (an approver's call).
 - **Who is told, and where** (decision 3):
   - **Inbox**: one card per red episode for the project's approvers, "`main` is red on <repo>", with
     the failing checks, the suspects, what the babysitter is doing (rerunning, attributing, a fix or
@@ -130,6 +160,42 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
   - **The phone** (spec 60, once push lands): a push to the project's approvers when an episode
     starts, when a revert needs a person (§5), and when `main` is green again. Nothing per held item.
 - `main` turning green releases every hold on the next pass, in approval order.
+- **As built (PR b):** `core_main_health` (migration 0351) is per repository, and the episode is its
+  `red_since`/`first_red_sha` (a separate episodes table with suspects comes with §5). Health counts
+  every check on the head except the factory's own, as verify's CI read does; narrowing it to the
+  ruleset's required checks waits for per-repository protection (spec 50). The Inbox card is
+  `inbox.list`'s `mainRed`; the phone push is a `notify` (`main.red`, `main.green`) that spec 60 can
+  deliver.
+- **Review fixes (PR b):**
+  - **Reconciled from GitHub.** A held queue's recheck (every 30 minutes, `HELD_RECHECK_MS`, or on
+    any wake) calls `main.observe` before it holds anything, so one missed green webhook costs at
+    most one recheck. Cost: per repository with held work, one recheck per 30 minutes: two GitHub
+    reads (the branch ref, its check runs), two D1 point reads, and a D1
+    write and audit row only when the state changed.
+  - **Ordered by what the engine knows** (second review of #104). Which commit is `main`'s head is
+    what GitHub reports when the engine reads the branch, never inferred from commit dates (whoever
+    pushes sets those: a force-push back to an older commit, or a future-dated one, must not freeze
+    the state). Observations are ordered by when the engine read them (`observed_at`, the call's
+    start), GitHub's newest check run id on the head breaking a tie (a rerun is a new run with a
+    higher id; the check-runs API has no run attempt). `main.observe` writes only an observation
+    newer than the stored one, checked when it reads and guarded in SQL in its batch, so a push and a
+    check suite read together, or a read that commits late, never put an older state back. A rerun in flight is `pending` and keeps the
+    episode open; a run cancelled or timed out after it started is red; one cancelled before it
+    started (or GitHub's `stale`) doesn't count. Flapping opens one episode per red spell.
+  - **Only changes are written.** An observation that changes nothing (the same head, state,
+    failing checks and episode) writes nothing, not even an audit row (`quietWhenUnchanged`).
+  - **`workItem.markRepair`** is refused unless the line is stopped on the item's repository
+    (guarded in its batch). It is browser-only: a person in sf-app, or on the desktop or phone with a
+    presence proof for that call (like a merge decision); never the CLI, MCP, a runner or an agent.
+    Risk stays `write`: the classes above it would make a person's own mark open a gate for another
+    person; the presence proof is the confirmation. A repair sorts first **only while** its
+    repository is red; the green that closes the episode clears every mark in that repository, so an
+    item marked in one episode is held in the next unless someone marks it again.
+  - **Items landing through their own Workflow (v4 to v7) are never held**: they started before the
+    babysitter and land as they always did until they drain. Only the babysitter's deliveries hold.
+  - **Who is told (owner question 4, recommended, not yet answered):** the project's approvers,
+    fixed when the episode opens (`core_main_health.audience`, one function: `mainRedAudience`).
+    The Inbox card and the `main.red`/`main.green` pushes go to them only.
 
 ### 3. An approval survives a clean merge of main (ADR 0582, decision 1)
 ADR 0330 already carries an approval over GitHub's update-branch when the new head's first parent is
@@ -150,6 +216,57 @@ approval is actually about: the change.
   with `autoApprove` on, the five conditions decide it as for any head.
 - The review packet is copied to a surviving head with `carriedFrom` (ADR 0330), now also recording
   the change digest it was checked against.
+- **As built (PR c), after review: it fails closed.**
+  - **The change** of a head is every path whose mode or blob SHA differs between the head and its
+    merge base with the default branch, with both sides' mode and blob, read from git trees
+    (`git/trees?recursive=1`), never from patch text. **Identical** means that set is equal entry for
+    entry: each changed file has byte-identical content and the same mode on the head, and the same
+    content and mode at the base. A merge of main that touched only files the PR didn't change
+    leaves it identical. **A file both sides changed withdraws** (its base and its merged content both
+    moved), as does a mode change, a moved line (a new blob), a binary file with other bytes, and
+    anything that can't be read in full: an error or a truncated tree has no digest, and no digest
+    never matches. Taken when the item enters delivery (`approved_digest`, migration 0352).
+  - **Only the merge the factory asked for counts.** The queue records its update-branch request
+    (`update_from_sha`, `update_base_sha`, migration 0352). A new head is accepted only when the
+    request was made from the approved head, the commit is GitHub's own (committer
+    `noreply@github.com`, signature verified), its parents are exactly the approved head and a commit
+    on the default branch, and every file in it is exactly the approved head's or that commit's, never
+    a third thing. Anything else: `moved` for an item landing itself (v4 to v7) and `withdrawn` for
+    the babysitter.
+  - **A withdrawal closes the approval** (`core_pending_actions` → `rejected`, decision `withdrawn`),
+    copies no review packet and posts no `factory/verify` to the new head, so nobody can merge it on
+    GitHub either. **Workflow v12** (provisional number; feature `reverify-on-withdrawal`) sends the
+    item back to verify the new head without a build (`verify #b: head`), then to the merge gate: the
+    person decides on a new packet. v11 instances, which have no such path, treat a withdrawal as a
+    failed delivery and go back to build.
+  - **Owner questions behind one function each:** Q1 `approvalSurvivesMergeOfMain`
+    (`packages/core/src/verify/change-digest.ts`), Q4 `mainRedAudience` (`delivery.ts`), Q6
+    `mergedForGood` (the deliverer: Done on GitHub's merge response).
+  - The deliverer reads CI before every merge, not only after an update. Re-running the criteria's
+    checks (spec 51 PR B) and re-checking `autoApprove` (ADR 0515) on the new head wait for those.
+- **After the second review (2026-11-13): a surviving approval waits for the new head's own
+  verification.** Owner's answer to question 1: it survives when the change is identical **and all
+  checks pass again**. So nothing from the old head's evidence is used on the new one: no packet is
+  copied and `factory/verify` is not posted from the old packet. The delivery ends `reverify` (a new
+  outcome); the approval stays approved but unused; the item's Workflow (v12) verifies the new head
+  without a build (the verify job runs again there; with spec 51 PR B, #73, that is where the
+  runner host re-runs the checks), and only if that passes re-enters delivery **with the same
+  approval** and no new gate. `mergeQueue.enter` takes a carried approval back only for a head whose
+  change digest is still the approved one, and the new entry keeps the old one's update count, so a
+  `main` that keeps moving still reaches the bound and asks a person rather than re-verifying for
+  ever. A head that fails its verification goes back to build like any failed verify. Cost: one
+  verify job per update of an approved delivery, instead of a second human approval.
+- **Reading a change costs its changed paths, not its trees** (second review). The digest and the
+  both-sides check read GitHub's compare (the changed paths and the merge base) and then only those
+  paths' mode and blob, from their directories, one GraphQL query per 50 directories. **Past 250
+  changed paths** (`MAX_CHANGED_PATHS`, below the compare's 300-file cap) there is no digest and the
+  approval doesn't carry over. Per update, about seven GitHub calls (update-branch, the PR, the
+  commit, the parent's compare, two compares and one or two GraphQL queries), none of them a tree.
+- **GitHub's signature on update-branch merges** (checked 2026-11-13, read-only, against a public
+  repository): a merge of `main` into a PR branch made through an App's installation token
+  (`github-actions[bot]`) is committed by `GitHub <noreply@github.com>`, signature `verified`
+  (`valid`), two parents, which is what the check requires. Not yet seen for the factory's own App:
+  the first real update-branch it makes is the check (see the PR).
 
 ### 4. The `babysit` job (ADR 0583, decision 2)
 - **A new built-in job kind** `babysit` (runner contract `JOB_STAGES`, harness prompt in

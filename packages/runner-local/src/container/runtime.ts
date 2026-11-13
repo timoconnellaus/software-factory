@@ -49,7 +49,7 @@ export interface ContainerInspect {
   Id?: string;
   Name?: string;
   Image?: string;
-  State?: { Running?: boolean; Status?: string };
+  State?: { Running?: boolean; Status?: string; OOMKilled?: boolean; ExitCode?: number };
   Config?: {
     User?: string;
     WorkingDir?: string;

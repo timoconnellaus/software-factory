@@ -272,6 +272,7 @@ describe("a planning job on the runner host (spec 20)", () => {
       "artifact_show",
       "artifact_update",
       "chat_reply",
+      "design_pull",
       "planning_news",
       "planning_ready",
       "planning_yield",
