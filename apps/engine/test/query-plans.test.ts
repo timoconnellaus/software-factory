@@ -187,6 +187,52 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Per check suite on the default branch (spec 53 part e, decision 7): main.observe opening a
+    // red episode reads the suspects and the heads to hold, asks for the rerun, and records them.
+    name: "main.observe opening a red episode (suspects, held heads)",
+    run: async (e) => {
+      const repo = { owner: w.repo.owner, name: w.repo.repo };
+      const github_ = {
+        actor: { type: "intake", id: "github" } as const,
+        origin: { surface: "test" as const },
+      };
+      const main = String(await github.getBranchSha(w.repo, "main"));
+      const ci = (conclusion: string) => [
+        {
+          name: "ci",
+          status: "completed" as const,
+          conclusion,
+          appSlug: "github-actions",
+          url: null,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+        },
+      ];
+      await github.setChecks(w.repo, main, ci("success"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+      await github.setChecks(w.repo, main, ci("failure"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+      // While red: verify.refresh's held check, and naming a culprit (refused: not a suspect).
+      await invoke(
+        invokeDeps(e),
+        "verify.refresh",
+        { repo, headSha: main, trigger: "rerequested" },
+        github_,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { projectId: w.projectId, title: "Not a suspect" },
+        w.human,
+      );
+      await as(e, "mainRed.attribute", { workItemId: item.workItemId, why: "x" }, w.human).catch(
+        () => null,
+      );
+      // Green again: the release.
+      await github.setChecks(w.repo, main, ci("success"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+    },
+  },
+  {
     name: "workItem.list by org (polled)",
     run: (e) => as(e, "workItem.list", { orgId: w.orgId }, w.human),
   },
