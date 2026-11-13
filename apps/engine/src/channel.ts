@@ -345,15 +345,32 @@ async function steerReply(
         if (!reply.status || reply.status === 200) ack = [];
         return reply;
       }
-      // Still racing after a few tries: end this hold with nothing (the host calls again).
-      if (attempt >= 3) return { exhausted: true as const, body: { steers: [] } };
+      // Still racing after a few tries: end this hold with nothing (the host calls again). Acks
+      // still unsent went with an aborted batch, so they are not answered with a 200, which tells
+      // the host they are in: a retryable 503 keeps them for its next call (review of #189).
+      if (attempt >= 3) {
+        return ack.length > 0
+          ? {
+              exhausted: true as const,
+              status: 503,
+              body: { error: "steers are busy: call again with the same acks", code: "raced" },
+            }
+          : { exhausted: true as const, body: { steers: [] } };
+      }
     }
   };
+  const ended = (reply: { exhausted: true; status?: number; body: unknown }): ChannelReply =>
+    reply.status ? { status: reply.status, body: reply.body } : { body: reply.body };
   const first = await take();
-  if ("exhausted" in first) return { body: first.body };
+  if ("exhausted" in first) return ended(first);
   if (first.status && first.status !== 200) return first;
-  const { runId, steers } = first.body as { runId: string; steers: unknown[] };
-  if (steers.length > 0 || timeout <= 0) return { body: { steers } };
+  const {
+    runId,
+    steers,
+    ended: runEnded,
+  } = first.body as { runId: string; steers: unknown[]; ended?: boolean };
+  // A run that has ended took only the acks (the host flushing them): nothing to wait for.
+  if (steers.length > 0 || timeout <= 0 || runEnded) return { body: { steers } };
   while (Date.now() < deadline) {
     await pause(Math.min(HELD_POLL_MS, deadline - Date.now()));
     // The host has gone: stop, so nothing is taken for nobody (and log it, so a deploy can see
@@ -362,16 +379,20 @@ async function steerReply(
       heldAborted("steer", jobId, started);
       return { body: { steers: [] } };
     }
-    // Queued and, for an acking host, not on offer (an unacked offer lapses after 60 s).
-    const queued = await env.DB.prepare(
-      `SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL
-         ${acking ? "AND (offered_until IS NULL OR offered_until <= ?)" : ""} LIMIT 1`,
+    // Queued and, for an acking host, the oldest queued steer is not on offer: offers keep order,
+    // so a later steer waits while an earlier one is on offer (it lapses after STEER_OFFER_MS).
+    const head = await env.DB.prepare(
+      `SELECT offered_until FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL
+         ORDER BY created_at LIMIT 1`,
     )
-      .bind(...(acking ? [runId, new Date().toISOString()] : [runId]))
-      .first();
-    if (!queued) continue;
+      .bind(runId)
+      .first<{ offered_until: string | null }>();
+    if (!head) continue;
+    if (acking && head.offered_until !== null && head.offered_until > new Date().toISOString()) {
+      continue;
+    }
     const reply = await take();
-    if ("exhausted" in reply) return { body: reply.body };
+    if ("exhausted" in reply) return ended(reply);
     // Any refusal (fenced, killed, the run ended) ends the hold: no re-take every 3 s.
     if (reply.status && reply.status !== 200) return reply;
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
