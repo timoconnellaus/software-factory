@@ -2,7 +2,7 @@
 // and Workflow: the deliverer wakes it only for what code can't decide, the job judges (and for a
 // conflict resolves it on its run branch), and everything after that is code with its own floor.
 import { env } from "cloudflare:workers";
-import { BABYSITTER, FOREMAN } from "@software-factory/core";
+import { BABYSITTER, FOREMAN, NO_BABYSIT_RUNNER } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { deliverRepository } from "../src/deliver/deliverer.ts";
 import {
@@ -167,6 +167,21 @@ describe("the babysit job (spec 53 §4)", () => {
     expect(state?.babysit_job_id).toBeNull();
 
     await gateOpen(a.id, "merge");
+    // No approval of any kind carries to the resolution (for PR #152's auto-approval too): the only
+    // merge decision on its head is the open gate a person (or autoApprove, on the new head's own
+    // evidence) decides.
+    const onResolution = await all<{ status: string; decided_by: string | null }>(
+      "SELECT status, decided_by FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND json_extract(input, '$.headSha') = ?",
+      a.id,
+      resolution,
+    );
+    expect(onResolution).toEqual([{ status: "pending", decided_by: null }]);
+    expect(
+      await first<{ approved_sha: string }>(
+        "SELECT approved_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'",
+        a.id,
+      ),
+    ).toBeNull();
     await approve(w, a.id);
     await itemStatus(a.id, "done");
   });
@@ -186,9 +201,18 @@ describe("the babysit job (spec 53 §4)", () => {
     const job = await babysitJob(a.id);
     expect(JSON.parse(job.context).reason).toMatchObject({ kind: "check-failed", checks: ["ci"] });
     expect(job.prompt).toMatch(/ECONNRESET/);
-    await runStage(w, a.id, "babysit", () => ({
-      result: { verdict: "flake", check: "ci", test: "db connects", note: "a connection reset" },
-    }));
+    await runStage(w, a.id, "babysit", async (claimed) => {
+      // It pushes nothing, so its job token is read-only.
+      await ok(
+        "run.issueToken",
+        { jobId: claimed.jobId, fencingToken: claimed.lease.fencingToken },
+        w.runnerActor,
+      );
+      expect((await github.state(w.repo)).readOnlyTokens).toBe(1);
+      return {
+        result: { verdict: "flake", check: "ci", test: "db connects", note: "a connection reset" },
+      };
+    });
     await waitFor("the rerun asked", async () =>
       ((await github.state(w.repo)).reruns ?? []).length > 0 ? true : null,
     );
@@ -269,6 +293,54 @@ describe("the babysit job (spec 53 §4)", () => {
     await expect(
       call("babysit.next", { workItemId: a.id, deliveryFence: 1 }, BABYSITTER),
     ).rejects.toMatchObject({ code: "fenced" });
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("an older runner never gets a babysit job: it waits saying why, then the delivery ends for a person", async () => {
+    const w = await world();
+    // The only runner online is an older host: it doesn't declare `babysit`.
+    await env.DB.prepare("UPDATE core_runners SET last_seen_at = ? WHERE id != ?")
+      .bind("2026-01-01T00:00:00.000Z", w.runner.runnerId)
+      .run();
+    const older = {
+      ...MANIFEST,
+      capabilities: MANIFEST.capabilities.filter((c) => c !== "babysit"),
+    };
+    const a = await toMergeGate(w, "No one to babysit", "src/a.ts");
+    await ok(
+      "runner.heartbeat",
+      { manifest: older, capacity: { max: 4, inUse: 0, accepting: true }, activeJobs: [] },
+      w.runnerActor,
+    );
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await github.setMergeable(w.repo, a.pr, false);
+    await approve(w, a.id);
+    const job = await babysitJob(a.id);
+    const none = await ok<{ job: unknown }>(
+      "job.claim",
+      { claimId: uid("claim-"), manifest: older, capacity: { max: 4, inUse: 0, accepting: true } },
+      w.runnerActor,
+    );
+    expect(none.job).toBeNull();
+    expect(
+      await first<{ wait_reason: string }>(
+        "SELECT wait_reason FROM core_jobs WHERE id = ?",
+        job.id,
+      ),
+    ).toEqual({ wait_reason: NO_BABYSIT_RUNNER });
+    // Past the recheck, the job is cancelled and the delivery ends saying why.
+    await env.DB.prepare("UPDATE core_jobs SET created_at = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 11 * 60_000).toISOString(), job.id)
+      .run();
+    await deliverRepository(env, a.projectId, a.repositoryId);
+    const left = await waitFor("the delivery ended", async () => {
+      const e = await entry(a.id);
+      return e?.status === "left" ? e : null;
+    });
+    expect(left?.end_reason).toMatch(/no runner that can babysit is online/);
+    expect(
+      await first<{ status: string }>("SELECT status FROM core_jobs WHERE id = ?", job.id),
+    ).toEqual({ status: "cancelled" });
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 

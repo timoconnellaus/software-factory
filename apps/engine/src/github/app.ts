@@ -35,6 +35,8 @@ export interface GitHubAppConfig {
 
 /** Permissions of the job token: push to one repo, nothing else (ADR 0033). */
 export const JOB_TOKEN_PERMISSIONS = { contents: "write" } as const;
+/** A job that pushes nothing (a babysit job judging a failed check, spec 53): read only. */
+export const JOB_READ_TOKEN_PERMISSIONS = { contents: "read" } as const;
 /** Permissions the control plane uses for branches, spec commits, PRs and merges. */
 export const CONTROL_PLANE_PERMISSIONS = { contents: "write", pull_requests: "write" } as const;
 /** Posting and reading check runs (`factory/verify`, CI). A separate token, so an App installed
@@ -263,7 +265,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     app: { id: config.appId, slug: config.appSlug },
     appJwt,
     installationToken,
-    mintRepoToken: (repo) => installationToken(repo, JOB_TOKEN_PERMISSIONS),
+    mintRepoToken: (repo, opts) =>
+      installationToken(repo, opts?.readOnly ? JOB_READ_TOKEN_PERMISSIONS : JOB_TOKEN_PERMISSIONS),
     async getInstallation(installationId): Promise<InstallationInfo | null> {
       const response = await asApp(`/app/installations/${encodeURIComponent(installationId)}`);
       if (response.status === 404) return null;

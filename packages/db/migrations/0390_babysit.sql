@@ -1,11 +1,29 @@
--- Migration 0390 (spec 53 part d, ADR 0583): the `babysit` job kind, the delivery fence and the
+-- Migration 0390 (spec 53 part d, ADRs 0583 and 0620): the `babysit` job kind, the delivery fence and the
 -- known-flake list. Block AT: it rebuilds core_jobs, so it must come after 0363 (which added
 -- `shaping` to it); block AP's numbers (0350–0359) sort before that.
 
--- Jobs gain the `babysit` stage. SQLite can't alter a CHECK, so core_jobs is rebuilt with the same
--- columns, indexes and data, the way 0120 did it: the rows are held in a plain copy, core_jobs is
--- dropped and created again under its own name (core_runs references it by name), and the rows go
--- back in.
+-- core_jobs is rebuilt once more, and for the last time: without the CHECK on `stage`. SQLite
+-- can't alter a CHECK, so every new stage meant a rebuild (0120 for `planning`); from here the
+-- stage is validated in code (runner-contract's `JOB_STAGES`, the zod schema of every operation
+-- that writes a job), and a new stage needs no migration. Same columns, same four indexes.
+--
+-- It needs 0363 (core_jobs.shaping). Every database that reaches here has it (block AQ is on main
+-- and deployed); one that doesn't fails on the next statement ("no such column: shaping") instead
+-- of copying a column that isn't there.
+CREATE TABLE core_jobs_0390_needs_0363_shaping AS SELECT shaping FROM core_jobs LIMIT 0;
+DROP TABLE core_jobs_0390_needs_0363_shaping;
+
+-- Orphans first: foreign-key checks are deferred to the commit, so one job whose work item is
+-- gone would fail the whole migration there. Such a job can never run (job.claim joins its item)
+-- and nothing reads it; a job a run still references is kept, so no run loses its job. Run
+-- `PRAGMA foreign_key_check` against production before deploying (see PR #158).
+DELETE FROM core_jobs
+WHERE work_item_id NOT IN (SELECT id FROM core_work_items)
+  AND id NOT IN (SELECT job_id FROM core_runs);
+
+-- The rows are held in a plain copy, core_jobs is dropped and created again under its own name
+-- (core_runs references it by name), and the rows go back in, as 0120 did. Rows written: about
+-- twice the job count, plus four index entries per job.
 PRAGMA defer_foreign_keys = on;
 
 CREATE TABLE core_jobs_0390_copy AS SELECT * FROM core_jobs;
@@ -16,7 +34,8 @@ CREATE TABLE core_jobs (
   work_item_id TEXT NOT NULL REFERENCES core_work_items (id),
   project_id TEXT NOT NULL,
   org_id TEXT NOT NULL,
-  stage TEXT NOT NULL CHECK (stage IN ('triage', 'spec', 'planning', 'build', 'verify', 'babysit')),
+  -- Validated in code (runner-contract `JOB_STAGES`): no CHECK, so a new stage needs no rebuild.
+  stage TEXT NOT NULL,
   -- The model role the harness runs as (ADR 0018).
   role TEXT NOT NULL,
   harness TEXT NOT NULL DEFAULT 'claude-code',

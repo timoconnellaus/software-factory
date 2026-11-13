@@ -164,7 +164,11 @@ export interface GitHubService {
    * A short-lived installation token scoped to this one repository, `contents: write` only
    * (ADR 0033). GitHub can't scope a token to a branch: see ADR 0052 for how pushes are confined.
    */
-  mintRepoToken(repo: RepoRef): Promise<{ token: string; expiresAt: string }>;
+  mintRepoToken(
+    repo: RepoRef,
+    /** `contents: read` only: a job that pushes nothing (a babysit job judging a check). */
+    opts?: { readOnly?: boolean },
+  ): Promise<{ token: string; expiresAt: string }>;
   /** The branch's head SHA, or null if it doesn't exist. */
   getBranchSha(repo: RepoRef, branch: string): Promise<string | null>;
   /** Creates `branch` at `sha`. A no-op if it already exists. */

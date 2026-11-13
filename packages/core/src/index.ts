@@ -25,6 +25,7 @@ export {
   CLI_TOKEN_PREFIX,
   resolveCliToken,
 } from "./operations/cli.ts";
+export { PENDING_SHOWN } from "./operations/config.ts";
 export { HELD_TITLE } from "./operations/delivery.ts";
 export {
   DESKTOP_APPROVE_PATH,
@@ -58,7 +59,7 @@ export {
 } from "./operations/mobile.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";
 export { NEVER_BULK_ACCEPTED_DOMAINS } from "./operations/questions.ts";
-export { LEASE_TTL_MS } from "./operations/runners.ts";
+export { LEASE_TTL_MS, NO_BABYSIT_RUNNER } from "./operations/runners.ts";
 export { ATTACHED_SKIP_REASON, RUN_ARCHIVE_AFTER_DAYS, STAGE_PHASE } from "./operations/shared.ts";
 export { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./operations/work-items.ts";
 export {

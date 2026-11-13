@@ -29,6 +29,24 @@ import { currentOrgConfig } from "./workflows.ts";
 /** The config operations whose loosening saves wait for an approver. */
 export const CONFIG_WRITES = ["config.save", "config.rollback"] as const;
 
+/** How many waiting config changes `config.get` lists. */
+export const PENDING_SHOWN = 20;
+
+/** A waiting config save's or rollback's stored input; `{}` when it isn't readable. */
+function pendingInput(raw: string): {
+  note?: string;
+  baseVersion?: number;
+  toVersion?: number;
+  policy?: Record<string, unknown>;
+} {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" ? (v as Record<string, never>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export const CONFIG_SOURCES = ["app", "import", "migrated", "improver", "rollback"] as const;
 export type ConfigSource = (typeof CONFIG_SOURCES)[number];
 
@@ -402,8 +420,17 @@ export const configGet = defineOperation({
         by: z.string().nullable(),
         createdAt: z.string(),
         baseVersion: z.number().nullable(),
+        /**
+         * What the save would make current (a rollback: the version it restores), so a client can
+         * show its classified impact with `config.preview` before an approver decides.
+         */
+        policy: z.record(z.string(), z.unknown()).nullable(),
+        /** A rollback's target version; null for a save. */
+        toVersion: z.number().nullable(),
       }),
     ),
+    /** More than `pending` shows are waiting (it shows the newest 20). */
+    pendingMore: z.boolean(),
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
@@ -457,6 +484,8 @@ export const configGet = defineOperation({
     const current =
       history.find((h) => h.sha === project.policy_sha) ??
       (project.policy_sha ? await legacyCurrent(ctx, project) : null);
+    // The newest PENDING_SHOWN waiting saves, and whether there are more (no count: the table
+    // grows). Any member can make one with a loosening save, and each carries a whole document.
     const waiting = await ctx.db
       .selectFrom("core_pending_actions as pa")
       .leftJoin("core_user as u", "u.id", "pa.actor_id")
@@ -465,31 +494,66 @@ export const configGet = defineOperation({
       .where("pa.status", "=", "pending")
       .where("pa.operation", "in", [...CONFIG_WRITES])
       .orderBy("pa.created_at", "desc")
+      .limit(PENDING_SHOWN + 1)
       .execute();
-    const pending = waiting.map((p) => {
-      let input: { note?: string; baseVersion?: number; toVersion?: number } = {};
+    const inputs = waiting
+      .slice(0, PENDING_SHOWN)
+      .map((p) => ({ p, input: pendingInput(p.input) }));
+    // A rollback's target by version, in one read for those older than the history above.
+    const missing = [
+      ...new Set(
+        inputs
+          .filter(({ p }) => p.operation === "config.rollback")
+          .map(({ input }) => input.toVersion)
+          .filter(
+            (v): v is number =>
+              typeof v === "number" && !history.some((h) => h.version === v && h.policy),
+          ),
+      ),
+    ];
+    const older = missing.length
+      ? await ctx.db
+          .selectFrom("core_project_policies")
+          .select(["version", "raw"])
+          .where("project_id", "=", project.id)
+          .where("version", "in", missing)
+          .where("valid", "=", 1)
+          .execute()
+      : [];
+    const targetOf = (v: number | undefined) => {
+      const h = history.find((x) => x.version === v)?.policy;
+      if (h) return h;
+      const row = older.find((r) => r.version === v);
       try {
-        input = JSON.parse(p.input);
+        return row ? (JSON.parse(row.raw) as Record<string, unknown>) : null;
       } catch {
-        input = {};
+        return null;
       }
-      return {
-        pendingActionId: p.id,
-        operation: p.operation,
-        note:
-          input.note ??
-          (p.operation === "config.rollback" ? `Roll back to v${input.toVersion}` : null),
-        by: p.github_login ?? p.name ?? null,
-        createdAt: p.created_at,
-        baseVersion: input.baseVersion ?? null,
-      };
-    });
+    };
+    const pending = inputs.map(({ p, input }) => ({
+      pendingActionId: p.id,
+      operation: p.operation,
+      note:
+        input.note ??
+        (p.operation === "config.rollback" ? `Roll back to v${input.toVersion}` : null),
+      by: p.github_login ?? p.name ?? null,
+      createdAt: p.created_at,
+      baseVersion: input.baseVersion ?? null,
+      policy:
+        p.operation === "config.rollback"
+          ? targetOf(input.toVersion)
+          : input.policy && typeof input.policy === "object"
+            ? input.policy
+            : null,
+      toVersion: p.operation === "config.rollback" ? (input.toVersion ?? null) : null,
+    }));
     return {
       projectId: project.id,
       current,
       error: ctx.scope.policyError,
       history,
       pending,
+      pendingMore: waiting.length > PENDING_SHOWN,
     };
   },
 });
@@ -754,3 +818,128 @@ export async function applyApprovedConfig(
   );
   return written;
 }
+
+/** At most this much of a summary lists changes; the Touch ID prompt has little room. */
+const SUMMARY_CHANGES = 3;
+
+/**
+ * The words for deciding a waiting config save or rollback (ADR 0391, 0610), from the engine's own
+ * records, never the caller's: the project, the versions, and the change as the engine classifies
+ * it against the current version. The Touch ID prompt and the audit journal show them. Null when
+ * the pending action isn't a project config change.
+ */
+export async function describeConfigDecision(
+  ctx: { db: Db; floor: FloorParse },
+  pa: { operation: string; input: string; project_id: string | null },
+  verb: "Approve" | "Reject",
+): Promise<string | null> {
+  if (!(CONFIG_WRITES as readonly string[]).includes(pa.operation) || !pa.project_id) return null;
+  const project = (await ctx.db
+    .selectFrom("core_projects")
+    .selectAll()
+    .where("id", "=", pa.project_id)
+    .executeTakeFirst()) as ProjectRow | undefined;
+  if (!project) return null;
+  const input = pendingInput(pa.input);
+  const name = quotedName(project.name);
+  const current = versionOf(project.policy_sha) ?? 0;
+  const versions =
+    input.baseVersion !== undefined && input.baseVersion !== current
+      ? `drafted on v${input.baseVersion}, the policy is now v${current}`
+      : `v${current} to v${current + 1}`;
+  const rollback = pa.operation === "config.rollback";
+  const head = rollback
+    ? `${verb}: roll ${name} back to v${input.toVersion} (${versions})`
+    : `${verb} a change to ${name}'s policy (${versions})`;
+  const before = current ? await storedVersion(ctx.db, project.id, current) : null;
+  const target = rollback
+    ? typeof input.toVersion === "number"
+      ? (await storedVersion(ctx.db, project.id, input.toVersion))?.policy
+      : undefined
+    : (() => {
+        const parsed = parseProjectPolicy(JSON.stringify(input.policy ?? null));
+        return parsed.ok ? parsed.policy : undefined;
+      })();
+  if (!target) return `${head}: the change can't be read`;
+  const impact = await impactOf(ctx.db, project, before?.policy ?? null, target, ctx.floor);
+  const shown = impact.changes.filter((c) => c.class === impact.class).slice(0, SUMMARY_CHANGES);
+  const rest = impact.changes.length - shown.length;
+  const what = shown.map((c) => c.summary.replace(/\.$/, "")).join("; ");
+  return `${head}: ${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`;
+}
+
+const quotedName = (name: string) => `"${name.replace(/\s+/g, " ").slice(0, 60)}"`;
+
+/**
+ * An org admin approves a project's existing looser override in one step (review of spec 52 (d2)):
+ * the override the project already has, which the stricter org value overrides until approved (it
+ * lapsed with an org change, or an org change made it looser). The approval counts for the org's
+ * current version, as one given on a save does, and carries to later versions that leave the
+ * setting's value unchanged. An override that isn't looser than the org's value has nothing to
+ * approve.
+ */
+export const overrideApprove = defineOperation({
+  name: "override.approve",
+  description:
+    "Approve a project's existing looser workflow override (spec 52, Q5/Q6): the value the project's config already sets for one stage setting, looser than the org workflow's, which the stricter org value replaces until an org admin approves it. Name the org config version you saw (`orgVersion`); a stale one is a conflict. Refused when the project has no such override or it isn't looser. Org admins only, in the app.",
+  risk: "write",
+  actors: ["human"],
+  permission: "admin",
+  // A policy decision (it lets a looser setting apply): made in the app (ADR 0340), never from the
+  // CLI, MCP or a desktop device until a presence proof covers policy decisions.
+  browserOnly: true,
+  input: z.object({
+    projectId,
+    stageId: z.string().min(1).max(40),
+    setting: z.string().min(1).max(40),
+    orgVersion: z.number().int().positive(),
+    note: z.string().max(2_000).optional(),
+  }),
+  output: z.object({ approved: z.boolean(), orgVersion: z.number(), value: z.unknown() }),
+  async handler(input, ctx) {
+    const project = requireProject(ctx);
+    if (ctx.origin.surface !== "app" && ctx.origin.surface !== "test")
+      throw new OperationError(
+        "forbidden",
+        `an override is approved in the app, not from ${ctx.origin.surface}`,
+        { browserOnly: true },
+      );
+    const raw = ctx.scope.rawPolicy;
+    if (!raw || !onOrgWorkflow(raw))
+      throw new OperationError("invalid_input", "the project isn't on an org workflow");
+    const { version, config } = await currentOrgConfig(ctx.db, project.org_id);
+    if (version !== input.orgVersion)
+      throw new OperationError(
+        "conflict",
+        `the org's workflows are at v${version}, not v${input.orgVersion}: look again before approving`,
+      );
+    const looser = normaliseOverrides(raw, config).looser.find(
+      (l) => l.stageId === input.stageId && l.key === input.setting,
+    );
+    if (!looser)
+      throw new OperationError(
+        "invalid_input",
+        `the project has no ${input.stageId} ${input.setting} override looser than the org's value: nothing to approve`,
+      );
+    // Guarded on the org still being at the version the admin saw.
+    ctx.guardExists(
+      "org config unchanged",
+      ctx.db
+        .selectFrom("core_organization")
+        .select("id")
+        .where("id", "=", project.org_id)
+        .where("config_version", "=", version),
+    );
+    approveOverrides(ctx, project, { looser: [looser], orgVersion: version });
+    ctx.change({
+      entity: "project",
+      id: project.id,
+      after: {
+        overrideApproved: { stage: input.stageId, setting: input.setting, value: looser.value },
+        orgVersion: version,
+        ...(input.note ? { note: input.note } : {}),
+      },
+    });
+    return { approved: true, orgVersion: version, value: looser.value };
+  },
+});

@@ -1,6 +1,13 @@
 // The release scripts (spec 40 M4): what CI uploads, in what order, and what it refuses.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { zipPlan } from "../scripts/hook-post-package.ts";
+import {
+  helperEntitlements,
+  helperPlan,
+  rewriteManifest,
+  smokeVerdict,
+} from "../scripts/keys-helper.ts";
 import {
   headResult,
   refusal,
@@ -148,5 +155,93 @@ describe("the postPackage hook", () => {
       assess: true,
     });
     expect(() => zipPlan(signed, [])).toThrow(/no canary/);
+  });
+});
+
+describe("the key helper in the release (spec 40 M4b)", () => {
+  const TEAM = "ABCDE12345";
+  const signed = {
+    ELECTROBUN_BUILD_ENV: "canary",
+    ELECTROBUN_DEVELOPER_ID: "Developer ID Application: X",
+    ELECTROBUN_OS: "macos",
+    ELECTROBUN_TEAMID: TEAM,
+  };
+  const files = [TAR, "canary-macos-arm64-update.json", "canary-macos-arm64-update-v2.json"];
+
+  it("skips cleanly without the helper's profile, and on dev or unsigned builds", () => {
+    expect(helperPlan(signed, files, false)).toEqual({
+      skip: expect.stringMatching(/MACOS_KEYS_PROFILE/),
+    });
+    expect(helperPlan({}, files, true)).toEqual({ skip: "dev build" });
+    expect(helperPlan({ ELECTROBUN_BUILD_ENV: "canary" }, files, true)).toEqual({
+      skip: "unsigned build",
+    });
+  });
+
+  it("plans the archive, both manifests and notarization", () => {
+    expect(helperPlan(signed, files, true)).toEqual({
+      archive: TAR,
+      manifests: ["canary-macos-arm64-update.json", "canary-macos-arm64-update-v2.json"],
+      teamId: TEAM,
+      identity: "Developer ID Application: X",
+      notarize: null,
+    });
+    const notarized = {
+      ...signed,
+      ELECTROBUN_APPLEAPIKEYPATH: "/k.p8",
+      ELECTROBUN_APPLEAPIKEY: "KEY",
+      ELECTROBUN_APPLEAPIISSUER: "ISS",
+    };
+    expect(helperPlan(notarized, files, true)).toMatchObject({
+      notarize: { key: "/k.p8", keyId: "KEY", issuer: "ISS" },
+    });
+  });
+
+  it("refuses a half-configured release rather than shipping a broken helper", () => {
+    expect(() => helperPlan({ ...signed, ELECTROBUN_TEAMID: "" }, files, true)).toThrow(/Team ID/);
+    expect(() => helperPlan(signed, [], true)).toThrow(/no canary/);
+    // A delta patch would rebuild Electrobun's archive, without the helper's signature.
+    expect(() => helperPlan(signed, [...files, "1abc.patch"], true)).toThrow(/delta patches/);
+  });
+
+  it("fills the Team ID into exactly the three entitlements ADR 0394 names", () => {
+    const template = readFileSync("native/sf-keys-app/sf-keys.entitlements", "utf8");
+    const filled = helperEntitlements(template, TEAM);
+    expect(filled).not.toContain("TEAM_ID");
+    const keys = [...filled.matchAll(/<key>([^<]+)<\/key>/g)].map((m) => m[1]);
+    expect(keys).toEqual([
+      "com.apple.application-identifier",
+      "com.apple.developer.team-identifier",
+      "keychain-access-groups",
+    ]);
+    expect(filled).toContain(`<string>${TEAM}.com.software-factory.desktop.keys</string>`);
+    expect(() => helperEntitlements("<plist/>", TEAM)).toThrow(/TEAM_ID/);
+  });
+
+  it("rewrites the v2 manifest's hash and size and leaves the v1 manifest alone", () => {
+    const v2 = JSON.stringify({
+      version: "0.1.7",
+      hash: "h",
+      artifact: { file: TAR, tarSha256: "old", tarSize: 1 },
+    });
+    expect(JSON.parse(rewriteManifest(v2, "new", 42))).toEqual({
+      version: "0.1.7",
+      hash: "h",
+      artifact: { file: TAR, tarSha256: "new", tarSize: 42 },
+    });
+    const v1 = JSON.stringify({ version: "0.1.7", artifact: { file: TAR } });
+    expect(rewriteManifest(v1, "new", 42)).toBe(v1);
+  });
+
+  it("passes the launch smoke test only for a helper that runs and holds its group", () => {
+    const group = `${TEAM}.com.software-factory.desktop.keys`;
+    const ok = JSON.stringify({
+      "com.apple.application-identifier": group,
+      "keychain-access-groups": [group],
+    });
+    expect(smokeVerdict({ status: 0, signal: null, stdout: ok }, TEAM)).toBeNull();
+    expect(smokeVerdict({ status: null, signal: "SIGKILL", stdout: "" }, TEAM)).toMatch(/killed/);
+    expect(smokeVerdict({ status: 0, signal: null, stdout: "{}" }, TEAM)).toMatch(/access groups/);
+    expect(smokeVerdict({ status: 1, signal: null, stdout: ok }, TEAM)).toMatch(/exited 1/);
   });
 });

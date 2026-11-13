@@ -119,6 +119,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "refused",
           "mobile": "refused",
         },
+        "override.approve": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "planning.acceptDefaults": {
           "desktop": "one tap",
           "mobile": "one tap",

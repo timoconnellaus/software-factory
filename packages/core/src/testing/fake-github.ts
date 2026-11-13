@@ -35,6 +35,8 @@ interface RepoState {
   checkOutputs?: Record<string, { title: string; summary: string }>;
   /** What a SHA with no check runs of its own reports (default: one green `ci`). */
   ciDefault?: Omit<CheckRunInfo, "id">[];
+  /** How many of the minted job tokens were read-only. */
+  readOnlyTokens?: number;
   /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
   reruns?: string[];
   /** What `checkRunDetail` says, by check run id. */
@@ -405,9 +407,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
 
   const github: FakeGitHub = {
     app: FAKE_APP,
-    async mintRepoToken(r) {
+    async mintRepoToken(r, opts) {
       const state = await load(r);
       state.tokens++;
+      if (opts?.readOnly) state.readOnlyTokens = (state.readOnlyTokens ?? 0) + 1;
       await save(r, state);
       return {
         token: `ghs_fake_${crypto.randomUUID().replaceAll("-", "")}`,
