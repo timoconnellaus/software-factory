@@ -9,6 +9,7 @@ import type { Exec } from "../src/bun/update-verify.ts";
 import {
   bundleInfo,
   requirement,
+  stagedBundle,
   stagedUpdate,
   teamIdOf,
   verifyBundle,
@@ -154,9 +155,11 @@ describe("Updates", () => {
     await updates.check();
     expect(updates.state).toMatchObject({ ready: true, version: "0.1.5", error: null });
     // Pinned to this build's own Team ID, and Gatekeeper asked too.
-    expect(e.runs.some((r) => r.includes(`-R=${requirement(TEAM)}`) && r.includes(STAGED))).toBe(
-      true,
-    );
+    expect(
+      e.runs.some(
+        (r) => r.includes(`-R=${requirement(TEAM)}`) && r.includes(stagedBundle(STAGED, APP)),
+      ),
+    ).toBe(true);
     expect(e.runs.some((r) => r[0]?.endsWith("spctl"))).toBe(true);
   });
 
@@ -291,6 +294,20 @@ describe("update-verify", () => {
   it("reads the Team ID only from a real signature", async () => {
     expect(await teamIdOf(APP, fakeExec().exec)).toBe(TEAM);
     expect(await teamIdOf(APP, fakeExec({ unsigned: true }).exec)).toBeNull();
+  });
+
+  it("checks the app inside Electrobun's staging folder, named as the running app", () => {
+    // The real record: staging_path is `<App>.app.prepared-<hash>`, a folder holding the bundle.
+    expect(
+      stagedBundle(
+        "/Applications/Software Factory-canary.app.prepared-32y1jrsr4ihvs",
+        "/Applications/Software Factory-canary.app",
+      ),
+    ).toBe(
+      "/Applications/Software Factory-canary.app.prepared-32y1jrsr4ihvs/Software Factory-canary.app",
+    );
+    // A record that names a bundle directly is checked as it is.
+    expect(stagedBundle("/tmp/x/New.app", "/Applications/Old.app")).toBe("/tmp/x/New.app");
   });
 
   it("won't check against a malformed Team ID", async () => {

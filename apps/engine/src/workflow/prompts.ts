@@ -26,7 +26,19 @@ export function triagePrompt(
   workflows: { name: string; description: string }[] = [],
   /** Spec 23 (v9): score readiness too; the answers to an earlier round's questions, if any. */
   readiness?: { answers: { prompt: string; answer: string }[] },
+  /**
+   * `triage-ties`: the checks that can prove a criterion (`checks.provable`). Triage names
+   * one for each criterion, or none; any other name is dropped in code.
+   */
+  checks?: { name: string }[],
 ): string {
+  const tie = (shape: string) =>
+    checks
+      ? shape.replace(
+          '"acceptanceCriteria": ["..."], ',
+          '"acceptanceCriteria": ["..."], "criterionChecks": [{ "criterion": "the criterion, as written", "checks": ["a check name from the list, or none: []"] }], ',
+        )
+      : shape;
   return [
     `You are triaging work item #${item.number} for the software factory. Read the repository (AGENTS.md, CONTEXT.md, docs/) but change nothing.`,
     "",
@@ -50,6 +62,16 @@ export function triagePrompt(
             : []),
         ]
       : []),
+    ...(checks
+      ? [
+          "",
+          checks.length
+            ? "For each criterion, name in `criterionChecks` the check that proves it when it passes on the commit, chosen only from these (the project's checks that run tests, and its required CI checks):"
+            : "The project has no checks that could prove a criterion: give each criterion `checks: []` in `criterionChecks`.",
+          ...checks.map((c) => `- ${c.name}`),
+          "Give `checks: []` when no listed check would exercise the criterion: that is an honest answer and is shown as \"not covered by a check\". Don't force a match, and don't invent a name: any name not listed is dropped and the criterion is Not proven.",
+        ]
+      : []),
     ...(workflows.length
       ? [
           "",
@@ -58,11 +80,13 @@ export function triagePrompt(
         ]
       : []),
     footer(
-      readiness
-        ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "readiness": "ready|needs_answers|not_actionable", "readinessReason": "...", "questions": [{ "prompt": "...", "options": ["..."], "defaultAnswer": "..." }], "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
-        : workflows.length
-          ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
-          : '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
+      tie(
+        readiness
+          ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "readiness": "ready|needs_answers|not_actionable", "readinessReason": "...", "questions": [{ "prompt": "...", "options": ["..."], "defaultAnswer": "..." }], "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
+          : workflows.length
+            ? '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "workflow": "name (optional)", "workflowReason": "...", "summary": "..." }'
+            : '{ "size": "small|medium|large", "reason": "...", "domains": ["..."], "acceptanceCriteria": ["..."], "specRequested": "skip|require (optional)", "summary": "..." }',
+      ),
     ),
   ].join("\n");
 }

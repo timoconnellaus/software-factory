@@ -251,8 +251,20 @@ const proofSection = z.array(
     unproven: z.array(z.string()).default([]),
     /** Linked checks that passed but can't prove it (a static check, a reviewer-picked CI job). */
     notCounted: z.array(z.string()).default([]),
-    /** Who linked the checks: the approved spec, or the reviewer agent. */
-    linkedBy: z.enum(["spec", "reviewer"]).default("reviewer"),
+    /**
+     * Who linked the checks: the approved spec, triage for an item without a spec (the Workflow's `triage-ties` feature,
+     * validated in code before any check ran), or the reviewer agent.
+     */
+    linkedBy: z.enum(["spec", "triage", "reviewer"]).default("reviewer"),
+    /** The spec or triage said no declared check can prove it: "not covered by a check". */
+    uncovered: z.boolean().optional(),
+    /**
+     * The checks triage (an agent) tied it to that passed: "Passed `tests`, the check triage named
+     * (not checked by a person)". Never Proven, counted apart.
+     */
+    passedTriageCheck: z.array(z.string()).optional(),
+    /** The criterion comes from triage's list, not a person-approved spec. */
+    fromTriage: z.boolean().optional(),
     /** The tests-intact guard found gate-file edits on this SHA. */
     weakened: z.boolean().default(false),
     reviewerMet: z.boolean(),
@@ -303,3 +315,38 @@ export function packetProof(p: ParsedPacket): Map<string, CriterionProof> | null
   const r = proofSection.safeParse(p.sections.proof);
   return r.success ? new Map(r.data.map((x) => [x.criterion, x])) : null;
 }
+
+/**
+ * The proven count, and whether any check was set up that could prove a criterion (a declared
+ * check, or a required CI check that reported). `checksSetUp` false: the gate says "No checks are
+ * set up for this project, so nothing can be proven", never "0/N proven". Null for a packet from
+ * before proof; `checksSetUp` null for one from before the flag.
+ */
+export function packetProven(p: ParsedPacket): {
+  proven: number;
+  total: number;
+  checksSetUp: boolean | null;
+  /** Criteria from triage's list that passed the check triage named: never "proven". */
+  triage: { passed: number; total: number } | null;
+} | null {
+  const s = p.sections.proven as
+    | {
+        proven?: unknown;
+        total?: unknown;
+        checksSetUp?: unknown;
+        triage?: { passed?: unknown; total?: unknown };
+      }
+    | undefined;
+  if (typeof s?.proven !== "number" || typeof s.total !== "number") return null;
+  return {
+    proven: s.proven,
+    total: s.total,
+    checksSetUp: typeof s.checksSetUp === "boolean" ? s.checksSetUp : null,
+    triage:
+      typeof s.triage?.passed === "number" && typeof s.triage.total === "number"
+        ? { passed: s.triage.passed, total: s.triage.total }
+        : null,
+  };
+}
+
+export { CHECKS_DOCS_URL, whyNotProven } from "@software-factory/core/proof";

@@ -43,12 +43,25 @@ export const WORKFLOW_FEATURES = [
    */
   "reverify-on-withdrawal",
   /**
-   * v13 (provisional: the next number above main's at merge; spec 52, Q3): at each delivery
+   * v13 (spec 52, Q3): at each delivery
    * boundary (before verify, before the merge gate) an item on an org workflow moves onto the org's
    * current version when it only tightens (`workItem.repinWorkflow`), and the stages ahead of it run
    * from the new version's plan. A loosened version never moves a running item.
    */
   "repin-tightening",
+  /**
+   * v14 (ADR 0587): a person's push to the branch of a factory-built item, from verify on, sends
+   * it back to verify the newest head, without a build: an open merge gate (or an approval the
+   * babysitter holds) for the old head is withdrawn, and a verify run that finishes on a stale head
+   * opens no gate.
+   */
+  "reverify-on-push",
+  /**
+   * v15: triage names the declared check that proves each criterion it writes (`criterionChecks`), from the names `checks.provable` gives it;
+   * `workItem.triage` keeps only declared names, and an item without a spec is proven against
+   * those ties, recorded before any check ran (the owner's decision, 2026-11-13).
+   */
+  "triage-ties",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -65,6 +78,8 @@ const v10 = [...v9, "spec-critic"] as const;
 const v11 = [...v10, "babysitter-delivery"] as const;
 const v12 = [...v11, "reverify-on-withdrawal"] as const;
 const v13 = [...v12, "repin-tightening"] as const;
+const v14 = [...v13, "reverify-on-push"] as const;
+const v15 = [...v14, "triage-ties"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -81,6 +96,8 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   11: new Set(v11),
   12: new Set(v12),
   13: new Set(v13),
+  14: new Set(v14),
+  15: new Set(v15),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */
