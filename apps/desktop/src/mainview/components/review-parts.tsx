@@ -14,7 +14,12 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { useEffect, useState } from "react";
 import { useDecide } from "../lib/decisions.tsx";
 import { verdictChips, verdictHeadline } from "../lib/review.ts";
-import { CriterionProofNote, criterionMark } from "./factory-checks.tsx";
+import {
+  CriterionProofNote,
+  criterionMark,
+  NoChecksNotice,
+  noChecksSetUp,
+} from "./factory-checks.tsx";
 import { Chip, Field, Panel } from "./shell-list.tsx";
 
 const OPENED_KEY = (id: string) => `sf:opened-diff:${id}`;
@@ -74,17 +79,19 @@ export function VerdictPanel({
  * a packet from before shows the run's own claim (`met`).
  */
 export function CriteriaList({ packet }: { packet: ParsedPacket }) {
-  const proofs = packetProof(packet);
+  const noChecks = noChecksSetUp(packet);
+  // No checks set up: no per-criterion "Not proven", one notice instead (the owner's decision).
+  const proofs = noChecks ? null : packetProof(packet);
   if (packet.criteria.length === 0) {
     return <Panel className="text-ink-muted">The packet has no criteria.</Panel>;
   }
-  return (
+  const list = (
     <div className="overflow-hidden rounded-[10px] bg-panel shadow-panel" data-testid="criteria">
       {packet.criteria.map((c) => {
         const runner = keptOnRunner(c.evidence);
         // Spec 51 PR B (ADR 0501): Proven only by a check the approved spec links; else opinion.
         const proof = proofs?.get(c.criterion);
-        const mark = criterionMark(c.met, proof);
+        const mark = criterionMark(c.met, proof, noChecks);
         return (
           <div
             key={c.criterion}
@@ -95,7 +102,7 @@ export function CriteriaList({ packet }: { packet: ParsedPacket }) {
               <div className="font-medium">{c.criterion}</div>
               {proof && !runner && <CriterionProofNote proof={proof} />}
               <div className="mt-0.5 font-mono text-[12.5px] text-ink-3 leading-normal">
-                {proof && !runner ? "Reviewer's opinion: " : ""}
+                {(proof || noChecks) && !runner ? "Reviewer's opinion: " : ""}
                 {runner ? `kept on runner · ${runner}` : c.evidence || "no evidence"}
               </div>
             </div>
@@ -106,6 +113,13 @@ export function CriteriaList({ packet }: { packet: ParsedPacket }) {
           </div>
         );
       })}
+    </div>
+  );
+  if (!noChecks) return list;
+  return (
+    <div className="flex flex-col gap-2">
+      <NoChecksNotice />
+      {list}
     </div>
   );
 }
