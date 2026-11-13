@@ -52,17 +52,17 @@ proves how the commit was made, not that the change the person approved is the c
 > withdraws) for bound updates only; every other case keeps it, and the change digest stays the strict
 > one (mode and blob per changed path).
 >
-> - **Bound.** The trust anchor is the commit's identity. GitHub's update-branch API doesn't return
->   the merge commit, so a new head is bound only when all of these hold: exactly two parents; the
->   first is the head the queue asked GitHub to update from (`update_from_sha`); the second is exactly
->   the default branch's head the queue read when it asked (`update_base_sha`), not any commit on it;
->   GitHub signed it and committed it as its web-flow identity (`GitHub <noreply@github.com>`); and its
->   author is this App's bot (`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`), which is how
->   GitHub authors an update made through the API by the App (recorded from a real one:
->   `packages/core/test/fixtures/update-branch-merge.json`). A merge in GitHub's web conflict editor
->   is signed the same way and has the same parents, but is authored by the person: it isn't bound.
->   The commit is the PR's head, so a commit pushed after it fails the parents. A request no merge
->   answered (already current, a conflict, a refusal) is cleared, and an accepted merge uses it up.
+> - **Bound** (revised in the second review of #190). The trust anchor is the SHA. An identity
+>   fingerprint isn't one: a commit the factory's own `commitFiles` wrote (any per-job token of the
+>   App can) has the same author (`<slug>[bot]`), committer (`GitHub <noreply@github.com>`) and
+>   signature as GitHub's update-branch merge, with any parents and content. So the queue makes the
+>   merge itself with `POST /repos/{o}/{r}/merges` (base: the PR's branch, head: the exact default
+>   branch SHA it read), which is synchronous and returns the merge commit; it records that SHA
+>   (`update_merge_sha`, migration 0394) with the approved head and main's head, and accepts only a
+>   PR head equal to it, whose parents are exactly [approved head, main's head]. Any other head (a
+>   commit beside it with the same parents, a push after it, a merge onto a branch that had moved)
+>   withdraws. A request no merge answered is cleared, and an accepted one is used up. This also
+>   ends the false withdrawal when main moved between reading its head and update-branch.
 > - **Judged from the merge base** (as a resolution is, #175): a path only the item changed must be
 >   the approved head's, a path only the default branch changed must be its, a path neither changed
 >   must be unchanged. An ambiguous merge base (criss-cross history) withdraws. A path both changed
@@ -71,12 +71,18 @@ proves how the commit was made, not that the change the person approved is the c
 >   looked at**: GitHub's textual merge, in which the default branch's change can land next to, or
 >   inside the context of, the PR's hunk. The safeguards are only these: the binding above; the full
 >   verify stage on the new head (Workflow v12), which the approval waits for; and the factory's own
->   proof that this exact head was verified, checked by `pr.merge` before GitHub is asked
->   (`requireVerifiedHead`): a review packet for that SHA with verdict `pass` and the factory's
->   `factory/verify` for that SHA completed with `success`, read from D1, never from GitHub alone.
->   That check was added with this amendment: tracing it showed `pr.merge` had relied on GitHub's
->   ruleset requiring `factory/verify`, and that ruleset may be off (it was off on this repository
->   on 2026-11-13) or absent on a customer's. GitHub's required check, where it is on, is a second guard.
+>   proof that this exact head was verified, checked before GitHub is asked by `pr.merge` and
+>   `pr.autoMerge` alike (`requireVerifiedHead`; a test fails any other caller of the adapter's
+>   merge): a review packet made for that SHA with verdict `pass` (`reviewPacket.record` takes only
+>   the item's current head; a packet carried from another head doesn't count) and the factory's
+>   `factory/verify` for that SHA completed with `success` (a head held while main is red isn't), read
+>   from D1, never from GitHub alone. Tracing it showed both merges had relied on GitHub's ruleset
+>   requiring `factory/verify`, and that ruleset may be off (it was off on this repository on
+>   2026-11-13) or absent on a customer's. GitHub's required check, where it is on, is a second guard.
+> - **No packet is carried to another head**, on any row. ADR 0330's carry for items that land
+>   themselves (Workflow v4–v10) is gone: such an item can't verify a new head before it merges, so
+>   the queue's update ends its turn (`moved`) and it goes back to build and verify on the new head.
+>   That costs it a rebuild and a new approval each time main moves before it lands.
 > - **The new head's digest becomes the approval's** (`approved_digest`), so `mergeQueue.enter` takes
 >   the approval back only for that change. The timeline says, in words, that the default branch was
 >   merged in cleanly, the approval carried, and on which head it was verified again.

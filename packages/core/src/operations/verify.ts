@@ -49,7 +49,7 @@ import {
   HOLD_ATTACHED,
   lineStopped,
 } from "./delivery.ts";
-import { requireQueueHead } from "./merge-queue.ts";
+import { requireQueueHead, requireVerifiedHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
   endWorkItem,
@@ -175,7 +175,7 @@ const reviewerSchema = z.object({
 export const reviewPacketRecord = defineOperation({
   name: "reviewPacket.record",
   description:
-    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it (a check the runner could not run is not a failure: the verdict may pass, but `factory/verify` is then posted as action required, and the merge gate needs a person's explicit decision to merge without it, review.merge `mergeWithoutChecks`), and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
+    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041; refused for any other SHA), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it (a check the runner could not run is not a failure: the verdict may pass, but `factory/verify` is then posted as action required, and the merge gate needs a person's explicit decision to merge without it, review.merge `mergeWithoutChecks`), and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -221,6 +221,14 @@ export const reviewPacketRecord = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
+    // A packet is for the item's current head only (#190 review, round 2): pr.merge trusts a pass
+    // packet for the SHA it merges, so an agent can't record one for any other commit.
+    if (w.head_sha !== input.headSha) {
+      throw new OperationError(
+        "conflict",
+        `the review packet must be for the item's head (${w.head_sha ? w.head_sha.slice(0, 7) : "none"}), not ${input.headSha.slice(0, 7)}`,
+      );
+    }
     const project = requireProject(ctx);
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);
@@ -1044,89 +1052,6 @@ async function moveAttachedHead(
   };
 }
 
-/**
- * The merge queue brought a verified head up to date with the default branch by a clean merge
- * (ADR 0330): the reviewed diff is unchanged, so the review packet carries over to the new head,
- * marked with where it came from. `factory/verify` on the new head then passes only on green CI
- * there, like any packet.
- */
-export async function carryReviewPacket(
-  ctx: HandlerContext,
-  args: {
-    item: WorkItemRow;
-    project: ProjectRow;
-    repo: RepoRef;
-    fromSha: string;
-    toSha: string;
-    /** Sections to add to the copy (spec 53: the change digest it was checked against). */
-    extra?: Record<string, unknown>;
-  },
-): Promise<{ packetId: string | null }> {
-  const from = await ctx.db
-    .selectFrom("core_review_packets")
-    .selectAll()
-    .where("work_item_id", "=", args.item.id)
-    .where("head_sha", "=", args.fromSha)
-    .orderBy("created_at", "desc")
-    .executeTakeFirst();
-  if (!from) return { packetId: null };
-  const previous = parseObject(from.sections);
-  const sections: Record<string, unknown> = {
-    ...previous,
-    carriedFrom: args.fromSha,
-    ...args.extra,
-    // The factory's checks ran on the commit they ran on, not this one (ADR 0501): say so.
-    ...(previous.executed
-      ? {
-          checksRanOn:
-            typeof previous.checksRanOn === "string" ? previous.checksRanOn : args.fromSha,
-        }
-      : {}),
-  };
-  const id = newId("reviewPacket");
-  ctx.write(
-    ctx.db.insertInto("core_review_packets").values({
-      id,
-      work_item_id: args.item.id,
-      run_id: from.run_id,
-      head_sha: args.toSha,
-      verdict: from.verdict,
-      summary: from.summary,
-      criteria: from.criteria,
-      checks: from.checks,
-      reviewer: from.reviewer,
-      risk_flags: from.risk_flags,
-      sections: JSON.stringify(sections),
-      created_at: ctx.now,
-    }),
-  );
-  ctx.change({
-    entity: "review_packet",
-    id,
-    after: { headSha: args.toSha, carriedFrom: args.fromSha },
-  });
-  const ci = await readCi(ctx, args.repo, args.toSha);
-  await postVerify(ctx, {
-    project: args.project,
-    repo: args.repo,
-    headSha: args.toSha,
-    item: args.item,
-    prNumber: args.item.pr_number,
-    packetId: id,
-    output: verifyCheckOutput({
-      evidencePass: sections.evidencePass === true,
-      evidenceReasons: strings(sections.evidenceReasons),
-      warnings: strings(sections.warnings),
-      riskFlags: strings(parseJson(from.risk_flags)),
-      ci,
-      workItem: args.item,
-      ...storedTestFindings(sections),
-      ...storedProof(sections),
-    }),
-  });
-  return { packetId: id };
-}
-
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
@@ -1188,6 +1113,9 @@ export const prAutoMerge = defineOperation({
         `some checks could not be run on this runner (${executed.notRun.map((n) => String(n.name)).join(", ")}): a person decides`,
       );
     }
+    // Verified on this exact head by the factory's own records, as pr.merge requires (#190 review):
+    // its factory/verify a success, so a head held while main is red doesn't merge.
+    await requireVerifiedHead(ctx, w, input.headSha);
     const merged = await ctx.services.github.mergePullRequest(repo, {
       number: w.pr_number,
       sha: input.headSha,

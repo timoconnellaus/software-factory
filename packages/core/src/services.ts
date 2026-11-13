@@ -325,14 +325,19 @@ export interface GitHubService {
    */
   mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | null>;
   /**
-   * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
-   * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
-   * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.
+   * Merges `head` (an exact SHA, the default branch's head the merge queue read) into `branch` on
+   * GitHub (`POST /repos/{o}/{r}/merges`, #190 review). Synchronous: `merged` returns the merge
+   * commit GitHub made and its parents, so the queue records that exact SHA and accepts no other
+   * head. `current`: nothing to merge. `conflict`: it can't merge cleanly. `refused`: anything else.
    */
-  updatePullRequestBranch(
+  mergeIntoBranch(
     repo: RepoRef,
-    input: { number: number; expectedHeadSha: string },
-  ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
+    input: { branch: string; head: string; message: string },
+  ): Promise<
+    | { status: "merged"; sha: string; parents: string[] }
+    | { status: "current" }
+    | { status: "conflict" | "refused"; reason: string }
+  >;
   /**
    * Merges the PR if its head is still `sha`. `headMoved`: refused because the head is no longer
    * `sha` (GitHub's 409 "Head branch was modified").

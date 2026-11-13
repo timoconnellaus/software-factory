@@ -57,7 +57,7 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
 - Workflow v4+ (`runV1`, `mergeV4`, `landV4` in `apps/engine/src/workflow/work-item.ts`): the
   merge gate opens `pr.merge` with `apply: false`; once approved, the **item's own Workflow** enters
   the queue (`mergeQueue.enter`), waits for its turn (`mergeQueue.position`, the `mergeq-<item>`
-  event), updates the head (`mergeQueue.update`, GitHub's update-branch), waits for CI on the new
+  event), updates the head (`mergeQueue.update`, the queue's own merge of main, `POST /merges`), waits for CI on the new
   head, and lands with `pr.merge` and the approval id. A conflict or red CI after the update leaves
   the queue and goes back to build.
 - `main`'s own CI arrives as a `check_suite` webhook and goes to `verify.refresh`, which finds no
@@ -226,23 +226,23 @@ approval is actually about: the change.
     moved), as does a mode change, a moved line (a new blob), a binary file with other bytes, and
     anything that can't be read in full: an error or a truncated tree has no digest, and no digest
     never matches. Taken when the item enters delivery (`approved_digest`, migration 0352).
-  - **Only the merge the factory asked for counts.** The queue records its update-branch request
-    (`update_from_sha`, `update_base_sha`, migration 0352). A new head is accepted only when it is
-    bound to that request by its identity (`boundUpdate`, #190 review): exactly two parents, the
-    approved head the request was made from and exactly the default branch's head read when asking;
-    signed by GitHub and committed as `GitHub <noreply@github.com>`; authored by this App's bot, as
-    GitHub authors an update-branch the App asked for (a merge in GitHub's web conflict editor is
-    authored by the person, and isn't bound). A request no merge answered is cleared, and an accepted
-    merge uses it up. Anything else: `moved` for an item landing itself (v4 to v7) and `withdrawn`
-    for the babysitter.
+  - **Only the merge the queue made counts** (#190 review, round 2). The queue merges the default
+    branch in itself with `POST /merges` of the exact main SHA it read (synchronous), records the
+    merge commit GitHub returns (`update_merge_sha`, migration 0394) with the approved head and
+    main's head, and accepts only a PR head equal to that SHA, with exactly those two parents
+    (`boundUpdate`). Author, committer and signature are not checked: any token of the same App can
+    write a commit with the same ones. A request no merge answered is cleared, and an accepted merge
+    uses it up. Anything else: `withdrawn` for the babysitter; an item landing itself (v4 to v10)
+    ends its turn on any update (`moved`) and verifies the new head from build, since no packet is
+    carried to a head it wasn't made for.
   - **A bound update keeps the approval over a file both sides changed** (#61, ADR 0582 amended
     2026-11-13). Judged from the merge base: a path only the item changed must be the approved head's,
     a path only main changed must be main's (`oneSidedMismatches`); an ambiguous merge base withdraws.
     A path both changed is GitHub's three-way result, which **no person looked at**: main's change can
     sit next to or inside the PR's hunk. It is covered only by the binding, the full verify stage on
-    the new head, and `pr.merge`'s own check that this exact head was verified (a `pass` packet
-    and the factory's `factory/verify` success for that SHA, from D1: `requireVerifiedHead`), which
-    holds even with GitHub's ruleset off. With no path changed on both sides the change must also be
+    the new head, and the merge's own check that this exact head was verified (a `pass` packet made
+    for that SHA and the factory's `factory/verify` success for it, from D1: `requireVerifiedHead`,
+    in `pr.merge` and `pr.autoMerge`), which holds even with GitHub's ruleset off. With no path changed on both sides the change must also be
     identical by the strict digest. The new head's digest then becomes the approval's. This reverses
     the "a file both sides changed withdraws" rule above for bound updates only.
   - **The loop guard:** after two withdrawals in a row at an update for the same reason (with no
@@ -276,13 +276,12 @@ approval is actually about: the change.
   both-sides check read GitHub's compare (the changed paths and the merge base) and then only those
   paths' mode and blob, from their directories, one GraphQL query per 50 directories. **Past 250
   changed paths** (`MAX_CHANGED_PATHS`, below the compare's 300-file cap) there is no digest and the
-  approval doesn't carry over. Per update, about seven GitHub calls (update-branch, the PR, the
+  approval doesn't carry over. Per update, about seven GitHub calls (the merge, the PR, the
   commit, the parent's compare, two compares and one or two GraphQL queries), none of them a tree.
-- **GitHub's signature on update-branch merges** (checked 2026-11-13, read-only, against a public
-  repository): a merge of `main` into a PR branch made through an App's installation token
-  (`github-actions[bot]`) is committed by `GitHub <noreply@github.com>`, signature `verified`
-  (`valid`), two parents, which is what the check requires. Not yet seen for the factory's own App:
-  the first real update-branch it makes is the check (see the PR).
+- **GitHub's signature on update-branch merges** (checked 2026-11-13): no longer the check. The
+  factory App's own merge (PR #135, `03d0394b`) and a commit its `commitFiles` wrote (PR #23,
+  `5402e151`) have the same author, committer and signature, so the queue makes the merge itself
+  and accepts only the SHA GitHub returned (#190 review, round 2).
 
 ### 4. The `babysit` job (ADR 0583, decision 2)
 - **A new built-in job kind** `babysit` (runner contract `JOB_STAGES`, harness prompt in

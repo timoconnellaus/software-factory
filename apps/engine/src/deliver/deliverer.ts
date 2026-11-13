@@ -34,6 +34,8 @@ export const UPDATE_GIVE_UP_MS = 2 * 60_000;
 export const CI_RECHECK_MS = 10 * 60_000;
 export const CI_GIVE_UP_MS = 12 * CI_RECHECK_MS;
 export const CI_MISSING_GIVE_UP_MS = 3 * CI_RECHECK_MS;
+/** A verified head whose factory/verify still waits at the merge (#190 review): bounded like CI. */
+export const UNVERIFIED_GIVE_UP_MS = CI_GIVE_UP_MS;
 /** A held queue: `main.observe` wakes it when main is green; this is only the safety look. */
 const HELD_RECHECK_MS = 30 * 60_000;
 /** A queue whose head is someone else's (a v4–v7 Workflow) or empty: a slow safety look. */
@@ -504,9 +506,17 @@ async function deliverHead(
   // nothing changed goes back (spec 53 review; asking a person is PR d's). A moved head is the
   // babysitter's to handle on a v11 item: pr.merge leaves the approval to it.
   const mergeRefused = landed.status === "refused" ? landed.details?.mergeRefused : undefined;
-  // Verified, but its factory/verify hasn't caught up with CI yet (#190 review): wait, then retry.
+  // Verified, but its factory/verify hasn't caught up with CI yet (#190 review): wait, then retry,
+  // as long as CI may take (UNVERIFIED_GIVE_UP_MS since the entry last changed), then end.
   if (mergeRefused === "unverified" && landed.status === "refused" && landed.details?.pending) {
-    return CI_RECHECK_MS;
+    const since = Date.parse(head.updated_at);
+    const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
+    if (waited < UNVERIFIED_GIVE_UP_MS) return CI_RECHECK_MS;
+    return end(
+      "left",
+      "failed",
+      `factory/verify never became a success on ${at.slice(0, 7)}: ${why}`,
+    );
   }
   if (mergeRefused === "headMoved" || mergeRefused === "refused") {
     const again = await snapshot();

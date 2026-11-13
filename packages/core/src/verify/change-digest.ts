@@ -10,12 +10,12 @@
 // GitHub can't show in full. Binary and very large files count like any other: by blob.
 //
 // One case carries an approval over a change that isn't identical (#61, ADR 0582 amended
-// 2026-11-13): GitHub's own update-branch merge made for the factory's call, bound to that call by
-// the commit's identity (`boundUpdate`), whose paths only one side changed are exactly that side's
+// 2026-11-13): the merge the queue made itself, accepted only as the exact commit GitHub returned
+// (`boundUpdate`), whose paths only one side changed are exactly that side's
 // (`oneSidedMismatches`). A path both sides changed is then GitHub's three-way result.
 //
 // It fails closed: an unreadable or truncated tree has no digest, and no digest never matches.
-import type { CommitInfo, Tree, TreeEntry } from "../services.ts";
+import type { Tree, TreeEntry } from "../services.ts";
 
 const same = (a: TreeEntry | undefined, b: TreeEntry | undefined) =>
   a?.mode === b?.mode && a?.sha === b?.sha;
@@ -78,40 +78,43 @@ export function oneSidedMismatches(
   return out.sort();
 }
 
+/** The merge the queue made (`mergeQueue.update`, POST /merges), as recorded on its entry. */
+export interface UpdateRequest {
+  /** The approved head it merged into. */
+  from: string | null;
+  /** The default branch's head it merged in, exactly. */
+  base: string | null;
+  /** The merge commit GitHub returned. */
+  merge: string | null;
+  /** Its parents as GitHub returned them, when known (else read from the commit). */
+  parents: string[] | null;
+}
+
 /**
- * Why `info` is not the merge GitHub made for the factory's own update-branch call, or null when it
- * is (#190 review): the trust anchor is the commit's identity. All of: exactly two parents, the
- * first the head the factory asked GitHub to update from and the second exactly the default
- * branch's head the queue read when it asked; signed by GitHub; committed by GitHub's web-flow
- * identity; and authored by this App's bot (an API call by the App; GitHub's web conflict editor
- * authors the commit as the person, so a hand-resolved merge with the right parents fails here).
- * Recorded from a real update-branch merge: test/fixtures/update-branch-merge.json. The commit is
- * the PR's head, so a commit pushed after the merge is a different head and fails the parents.
+ * Why `prHead` is not the merge the queue made of the default branch into the approved head, or
+ * null when it is (#190 review, round 2). The trust anchor is the SHA: the queue makes the merge
+ * itself (POST /merges is synchronous and returns it), records it, and accepts only that exact
+ * commit as the new head, with parents exactly [the approved head, the default branch's head it
+ * read]. An author, committer or signature proves nothing: any token of the same App can write a
+ * commit with the same ones and the same parents. Any other head (a push after the merge, a
+ * commit beside it, a merge onto a branch that had moved) isn't the update.
  */
 export function boundUpdate(
-  info: CommitInfo | null,
-  request: { from: string | null; base: string | null; at: string; appSlug: string },
+  request: UpdateRequest,
+  at: string,
+  prHead: string,
+  parents: string[] | null,
 ): string | null {
-  if (!info) return "its commit couldn't be read";
-  if (request.from === null || request.from !== request.at || request.base === null) {
-    return "the factory didn't ask for this merge";
+  if (!request.from || !request.base || !request.merge || request.from !== at) {
+    return "the merge queue didn't make this merge";
   }
-  if (info.parents.length !== 2) return "it isn't a merge of exactly two commits";
-  if (info.parents[0] !== request.from) return "it isn't a merge into the approved head";
-  if (info.parents[1] !== request.base) {
-    return "it didn't merge in the default branch's head the factory asked GitHub for";
+  if (prHead !== request.merge) {
+    return `the branch is at ${prHead.slice(0, 7)}, not the merge the queue made (${request.merge.slice(0, 7)})`;
   }
-  const bot = `${request.appSlug}[bot]`;
-  const madeByGitHub =
-    info.verified &&
-    info.committer?.name === "GitHub" &&
-    info.committer.email === "noreply@github.com";
-  const forOurApp =
-    info.author?.name === bot &&
-    info.author.email.endsWith(`+${bot}@users.noreply.github.com`) &&
-    /^\d+\+/.test(info.author.email);
-  if (!madeByGitHub || !forOurApp) {
-    return "it isn't GitHub's update-branch merge made for the factory's own call";
+  const p = request.parents ?? parents;
+  if (!p) return "its commit couldn't be read";
+  if (p.length !== 2 || p[0] !== request.from || p[1] !== request.base) {
+    return "it isn't a merge of the approved head and the default branch's head the queue read";
   }
   return null;
 }

@@ -644,20 +644,17 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       }
       return out;
     },
-    async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
-      const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
-        expected_head_sha: expectedHeadSha,
-      });
-      if (r.status === 202) return { status: "requested" };
-      const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
-      // 422: a merge conflict, or the head moved past expected_head_sha.
-      if (r.status === 422) {
-        return /conflict/i.test(reason)
-          ? { status: "conflict", reason }
-          : { status: "refused", reason };
+    async mergeIntoBranch(repo, { branch, head, message }) {
+      const r = await api(repo, "POST", "/merges", { base: branch, head, commit_message: message });
+      if (r.status === 201) {
+        const c = r.json as { sha: string; parents?: { sha: string }[] };
+        return { status: "merged", sha: c.sha, parents: (c.parents ?? []).map((p) => p.sha) };
       }
-      if ([403, 405, 409].includes(r.status)) return { status: "refused", reason };
-      return fail(`update branch #${number}`, r);
+      if (r.status === 204) return { status: "current" };
+      const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
+      if (r.status === 409) return { status: "conflict", reason };
+      if ([403, 404, 422].includes(r.status)) return { status: "refused", reason };
+      return fail(`merge into ${branch}`, r);
     },
     async mergePullRequest(repo, { number, sha, method }) {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });

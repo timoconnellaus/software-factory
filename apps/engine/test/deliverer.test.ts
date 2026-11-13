@@ -804,34 +804,67 @@ describe("the approval across a merge of main (ADR 0582)", () => {
 
   // Review of #105 (1): the same lines in a different file version hashed the same; a file both
   // sides changed now withdraws, and the item verifies the new head before a person decides again.
-  // #190 review: GitHub's update-branch merge for the factory's own call is bound by the commit's
-  // identity; a file both sides changed is then GitHub's three-way result, verified again on the new
-  // head. Nothing else carries an approval.
-  it("withdraws a merge made in GitHub's web conflict editor: signed by GitHub, the right parents, but a person's", async () => {
-    const w = await world();
-    const a = await toMergeGateWith(w, "Web editor", files("src/a.ts"));
-    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+  // #190 review, round 2: the queue makes the merge itself (POST /merges) and accepts only the exact
+  // commit GitHub returned. Here GitHub's view of the branch lags (`deferUpdates`), so another commit
+  // can reach the branch first. A file both sides changed is GitHub's three-way result only in the
+  // queue's own merge, verified again on the new head.
+  const forgedTwin = async (
+    w: World,
+    a: string,
+    tree?: { set?: Record<string, { mode: string; sha: string }> },
+  ) => {
+    const approved = String(
+      (await first<{ head_sha: string }>("SELECT head_sha FROM core_work_items WHERE id = ?", a))
+        ?.head_sha,
+    );
     await github.deferUpdates(w.repo, true);
     await approve(w, a);
     await updateAsked(a);
-    // GitHub made no merge (main moved into conflict, say); a collaborator resolves it on the web.
-    await github.craftMerge(w.repo, await branchOf(a), "main", { byGitHub: "web-editor" });
+    // Another holder of an App token writes a commit beside the queue's merge: same parents,
+    // authored by the App's bot and signed by GitHub, like the real one.
+    const branch = await branchOf(a);
+    await github.forcePush(w.repo, branch, approved);
+    await github.craftMerge(w.repo, branch, "main", { byGitHub: true, ...(tree ? { tree } : {}) });
     await deliverAgain(a);
-    const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/isn't GitHub's update-branch merge made for the factory/);
+    return expectWithdrawn(w, a);
+  };
+
+  it("withdraws a forged twin of the queue's merge: the right parents, bot-authored, GitHub-signed, foreign content in a both-changed file", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Forged twin", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    const ended = await forgedTwin(w, a, {
+      set: { "src/a.ts": { mode: "100644", sha: "a-not-what-github-merged" } },
+    });
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
     // v12: back to verify on the new head (no build), then the merge gate, then it lands.
     await runStage(w, a, "verify", (job) => {
       expect(job.harness.prompt).toContain(ended.head_sha);
       return verifyPass;
     });
     await gateOpen(a, "merge");
-    await github.deferUpdates(w.repo, false);
     await approve(w, a);
     await itemStatus(a, "done");
     expect(await merges(a)).toHaveLength(1);
   });
 
-  it("withdraws a GitHub-made merge of an older main than the one the queue asked for", async () => {
+  it("withdraws a merge made in GitHub's web conflict editor in place of the queue's", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Web editor", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    const branch = await branchOf(a);
+    await github.craftMerge(w.repo, branch, "main", { byGitHub: "web-editor" });
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
+  });
+
+  it("withdraws a GitHub-made merge of an older main in place of the queue's", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Older main", files("src/a.ts"));
     const older = await github.push(w.repo, "main", undefined, ["README.md"]);
@@ -842,40 +875,46 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     await github.craftMerge(w.repo, await branchOf(a), older, { byGitHub: true });
     await deliverAgain(a);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/didn't merge in the default branch's head the factory asked/);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
   });
 
-  it("withdraws when a commit was pushed after GitHub's merge (it isn't the only new commit)", async () => {
+  it("withdraws when a commit was pushed after the queue's merge", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Extra commit", files("src/a.ts"));
     await github.push(w.repo, "main", undefined, ["README.md"]);
     await github.deferUpdates(w.repo, true);
     await approve(w, a);
     await updateAsked(a);
-    const branch = await branchOf(a);
-    await github.craftMerge(w.repo, branch, "main", { byGitHub: true });
-    await github.push(w.repo, branch, undefined, ["src/a.ts"]);
+    const at = await ids(a);
+    await github.completeUpdate(w.repo, at.pr);
+    await github.push(w.repo, await branchOf(a), undefined, ["src/a.ts"]);
     await deliverAgain(a);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/isn't a merge of exactly two commits/);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
   });
 
-  it("withdraws a GitHub-signed merge that moved the PR's own hunk (the same lines, another blob)", async () => {
+  it("carries the approval once GitHub's view catches up with the queue's own merge", async () => {
     const w = await world();
-    const a = await toMergeGateWith(w, "Moved hunk", files("src/a.ts"));
-    await github.setCiDefault(w.repo, CI(null));
-    await github.push(w.repo, "main", undefined, ["README.md"]);
+    const a = await toMergeGateWith(w, "Slow ref", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
     await github.deferUpdates(w.repo, true);
     await approve(w, a);
     await updateAsked(a);
-    await github.craftMerge(w.repo, await branchOf(a), "main", {
-      byGitHub: true,
-      tree: { set: { "src/a.ts": { mode: "100644", sha: "a-hunk-moved" } } },
-    });
+    await github.completeUpdate(w.repo, (await ids(a)).pr);
+    await github.deferUpdates(w.repo, false);
     await deliverAgain(a);
-    const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/beyond a merge of its two sides \(src\/a\.ts\)/);
-    await github.setCiDefault(w.repo, null);
+    const ended = await waitFor("reverify", () =>
+      first<{ outcome: string }>(
+        "SELECT outcome FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
   });
 
   it("a renamed file: the update keeps the approval, re-verifies and lands", async () => {
@@ -1130,7 +1169,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     const at = await ids(a);
     await deliverRepository(env, at.projectId, at.repositoryId);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/isn't GitHub's update-branch merge/);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
   });
 
   it("withdraws a GitHub-made merge that holds a third thing (a mode change)", async () => {
@@ -1158,7 +1197,8 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     const at = await ids(a);
     await deliverRepository(env, at.projectId, at.repositoryId);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/beyond a merge of its two sides \(src\/a\.ts\)/);
+    // Beside the queue's own merge: not the commit GitHub returned, whatever it holds.
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
     await github.setCiDefault(w.repo, null);
   });
 
@@ -1182,7 +1222,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     };
     await approve(w, a);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/didn't ask for this merge/);
+    expect(ended.end_reason).toMatch(/didn't make this merge/);
     await github.setCiDefault(w.repo, null);
   });
 });

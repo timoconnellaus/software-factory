@@ -19,7 +19,6 @@ import { newId } from "../ids.ts";
 import {
   defineOperation,
   type HandlerContext,
-  type ProjectRow,
   type RepositoryRow,
   type WorkItemRow,
 } from "../operation.ts";
@@ -29,6 +28,7 @@ import {
   boundUpdate,
   changeDigest,
   oneSidedMismatches,
+  type UpdateRequest,
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { askOne } from "./ask.ts";
@@ -43,7 +43,6 @@ import {
   sha,
   workItemId,
 } from "./shared.ts";
-import { carryReviewPacket } from "./verify.ts";
 
 /** Work item statuses whose queue entry still counts (an ended item never holds the head). */
 const OPEN_ITEM = ["running", "waiting", "paused"] as const;
@@ -252,7 +251,7 @@ export async function requireVerifiedHead(
   const [packet, check] = await Promise.all([
     ctx.db
       .selectFrom("core_review_packets")
-      .select("verdict")
+      .select(["verdict", "sections"])
       .where("work_item_id", "=", item.id)
       .where("head_sha", "=", headSha)
       .orderBy("created_at", "desc")
@@ -266,6 +265,14 @@ export async function requireVerifiedHead(
       .executeTakeFirst(),
   ]);
   const at = headSha.slice(0, 7);
+  // A packet copied from an earlier head (ADR 0330's carry, before #190) wasn't made for this one.
+  if (packet && /"carriedFrom"\s*:/.test(packet.sections)) {
+    throw new OperationError(
+      "conflict",
+      `merge refused: the review packet on ${at} was carried from an earlier commit; verify this one`,
+      { mergeRefused: "unverified" },
+    );
+  }
   if (packet?.verdict !== "pass") {
     throw new OperationError(
       "conflict",
@@ -601,7 +608,6 @@ export const mergeQueueUpdate = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const project = requireProject(ctx);
     const entry = await openEntry(ctx, w.id);
     if (!entry) throw new OperationError("conflict", "not in the merge queue");
     const head = (await queuedEntries(ctx, w.project_id, w.repository_id))[0];
@@ -619,12 +625,15 @@ export const mergeQueueUpdate = defineOperation({
     if (prHead !== at)
       return acceptUpdate(ctx, {
         w,
-        project,
         repository,
         repo,
         entry,
-        requestedFrom: entry.update_from_sha,
-        requestedBase: entry.update_base_sha,
+        request: {
+          from: entry.update_from_sha,
+          base: entry.update_base_sha,
+          merge: entry.update_merge_sha,
+          parents: null,
+        },
         at,
         prHead,
       });
@@ -632,11 +641,17 @@ export const mergeQueueUpdate = defineOperation({
     // A request no merge answered (already current, a conflict, a refusal) is cleared, so a later
     // merge can never be taken as the answer to it (#190 review).
     const clearRequest = () => {
-      if (entry.update_from_sha === null && entry.update_base_sha === null) return;
+      if (
+        entry.update_from_sha === null &&
+        entry.update_base_sha === null &&
+        entry.update_merge_sha === null
+      ) {
+        return;
+      }
       ctx.write(
         ctx.db
           .updateTable("core_merge_queue")
-          .set({ update_from_sha: null, update_base_sha: null })
+          .set({ update_from_sha: null, update_base_sha: null, update_merge_sha: null })
           .where("id", "=", entry.id)
           .where("head_sha", "=", at),
       );
@@ -676,52 +691,66 @@ export const mergeQueueUpdate = defineOperation({
         return { state: "held" as const, headSha: at, reason: `${WITHDRAWN_TWICE}${repeated}` };
       }
     }
+    // The queue makes the merge itself (#190 review): POST /merges of the exact default-branch head
+    // it read, synchronous, so it knows the merge commit's SHA and accepts no other head.
     const mainHead = await github.getBranchSha(repo, repository.default_branch);
-    const asked = await github.updatePullRequestBranch(repo, {
-      number: w.pr_number,
-      expectedHeadSha: at,
-    });
-    if (asked.status === "requested") {
-      // When it was asked, so the babysitter knows how long GitHub has been at it (spec 53).
-      ctx.write(
-        ctx.db
-          .updateTable("core_merge_queue")
-          .set((eb) => ({
-            update_asked_at: ctx.now,
-            updates: eb("updates", "+", 1),
-            // The request, so only the merge it asked for is accepted (spec 53 review): the head
-            // GitHub merges into, and the default branch's head when asked.
-            update_from_sha: at,
-            update_base_sha: mainHead,
-          }))
-          .where("id", "=", entry.id),
-      );
-      // GitHub makes the merge commit asynchronously; it is often there already.
-      const after = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
-      if (after && after !== at) {
-        return acceptUpdate(ctx, {
-          w,
-          project,
-          repository,
-          repo,
-          entry,
-          requestedFrom: at,
-          requestedBase: mainHead,
-          at,
-          prHead: after,
-        });
-      }
-      ctx.change({
-        entity: "work_item",
-        id: w.id,
-        after: {
-          mergeQueue: `asked GitHub to merge ${repository.default_branch} in (${behind} behind)`,
-        },
-      });
-      return { state: "updating" as const, headSha: at, reason: null };
+    if (!mainHead) {
+      clearRequest();
+      return {
+        state: "refused" as const,
+        headSha: at,
+        reason: `${repository.default_branch} couldn't be read`,
+      };
     }
-    clearRequest();
-    return { state: asked.status, headSha: at, reason: asked.reason };
+    const made = await github.mergeIntoBranch(repo, {
+      branch: w.branch,
+      head: mainHead,
+      message: `Merge ${repository.default_branch} into ${w.branch} (merge queue)`,
+    });
+    if (made.status === "current") {
+      clearRequest();
+      return { state: "current" as const, headSha: at, reason: null };
+    }
+    if (made.status !== "merged") {
+      clearRequest();
+      return { state: made.status, headSha: at, reason: made.reason };
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set((eb) => ({
+          update_asked_at: ctx.now,
+          updates: eb("updates", "+", 1),
+          // The merge the queue made: from the approved head, of the default branch's head it read,
+          // and the commit GitHub returned. Only that commit is accepted as the update.
+          update_from_sha: at,
+          update_base_sha: mainHead,
+          update_merge_sha: made.sha,
+        }))
+        .where("id", "=", entry.id),
+    );
+    // GitHub merged onto whatever the branch was: a commit pushed after the queue read `at` is under
+    // this merge, so it isn't the approved head merged with main. acceptUpdate withdraws it.
+    const seen = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
+    if (seen && seen !== at) {
+      return acceptUpdate(ctx, {
+        w,
+        repository,
+        repo,
+        entry,
+        request: { from: at, base: mainHead, merge: made.sha, parents: made.parents },
+        at,
+        prHead: seen,
+      });
+    }
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      after: {
+        mergeQueue: `merged ${repository.default_branch} in as ${made.sha.slice(0, 7)} (${behind} behind)`,
+      },
+    });
+    return { state: "updating" as const, headSha: at, reason: null };
   },
 });
 
@@ -743,44 +772,44 @@ async function acceptUpdate(
   ctx: HandlerContext,
   args: {
     w: WorkItemRow;
-    project: ProjectRow;
     repository: RepositoryRow;
     repo: RepoRef;
     entry: Selectable<CoreDatabase["core_merge_queue"]>;
-    /** The head the factory asked GitHub to update from (null: it never asked). */
-    requestedFrom: string | null;
-    /** The default branch's head the queue read when it asked (null: it never asked). */
-    requestedBase: string | null;
+    /** The merge the queue made, as recorded (all null: it made none). */
+    request: UpdateRequest;
     at: string;
     prHead: string;
   },
 ) {
-  const { w, project, repository, repo, entry, at, prHead } = args;
+  const { w, repository, repo, entry, at, prHead } = args;
   const github = ctx.services.github;
-  const info = await github.commitInfo(repo, prHead).catch(() => null);
-  const unbound = boundUpdate(info, {
-    from: args.requestedFrom,
-    base: args.requestedBase,
-    at,
-    appSlug: github.app.slug,
-  });
-  const merged = args.requestedBase;
+  const parents = args.request.parents
+    ? null
+    : ((await github.commitInfo(repo, prHead).catch(() => null))?.parents ?? null);
+  const unbound = boundUpdate(args.request, at, prHead, parents);
+  const merged = args.request.base;
   const babysitter = entry.driver === "babysitter";
   // The request is used up either way: only one merge answers it.
-  const consumed = { update_from_sha: null, update_base_sha: null };
-  if (!babysitter && unbound !== null) {
+  const consumed = { update_from_sha: null, update_base_sha: null, update_merge_sha: null };
+  // An item that lands itself (v4–v10, ADR 0330) has no path to verify a new head before it merges,
+  // and a packet is never carried to a head it wasn't made for (#190 review, round 2): any new head
+  // ends its turn (`moved`), and it goes back to build and verify like any other moved branch.
+  if (!babysitter) {
     ctx.write(ctx.db.updateTable("core_merge_queue").set(consumed).where("id", "=", entry.id));
     return {
       state: "moved" as const,
       headSha: prHead,
-      reason: `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)}`,
+      reason:
+        unbound === null
+          ? `${repository.default_branch} was merged in as ${prHead.slice(0, 7)}: the new head is verified again before it merges`
+          : `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)} (${unbound})`,
     };
   }
   let mismatches: string[] | null = null;
   let bothChanged = 0;
   let ambiguous = false;
   let digestNow: string | null = null;
-  if (babysitter && unbound === null && merged) {
+  if (unbound === null && merged) {
     try {
       // Judged from the merge base, as a resolution is (#175). Only the paths either side changed
       // since it, and the paths the merge changed on the approved head, are read (never whole trees).
@@ -817,16 +846,14 @@ async function acceptUpdate(
     }
     digestNow = await digestOf(ctx, prHead, repository, repo);
   }
-  const survives =
-    !babysitter ||
-    approvalSurvivesMergeOfMain({
-      bound: unbound === null,
-      mergeBaseAmbiguous: ambiguous,
-      mismatches,
-      bothChanged,
-      approvedDigest: entry.approved_digest,
-      digestNow,
-    });
+  const survives = approvalSurvivesMergeOfMain({
+    bound: unbound === null,
+    mergeBaseAmbiguous: ambiguous,
+    mismatches,
+    bothChanged,
+    approvedDigest: entry.approved_digest,
+    digestNow,
+  });
   ctx.write(
     ctx.db
       .updateTable("core_merge_queue")
@@ -836,7 +863,7 @@ async function acceptUpdate(
         head_sha: prHead,
         updated_at: ctx.now,
         ...consumed,
-        ...(babysitter && survives ? { approved_digest: digestNow } : {}),
+        ...(survives ? { approved_digest: digestNow } : {}),
       })
       .where("id", "=", entry.id)
       .where("head_sha", "=", at),
@@ -891,15 +918,11 @@ async function acceptUpdate(
   // `factory/verify` is not posted from the old packet. The new head is verified on its own (its
   // checks run again there), and the approval carries over only once that passes (owner's answer
   // to question 1, 2026-11-12). The approval stays approved meanwhile, bound to the new change.
-  if (babysitter) {
-    return {
-      state: "reverify" as const,
-      headSha: prHead,
-      reason: `${repository.default_branch} was merged in cleanly and the change is the one approved; ${prHead.slice(0, 7)} is verified again before it merges`,
-    };
-  }
-  await carryReviewPacket(ctx, { item: w, project, repo, fromSha: at, toSha: prHead });
-  return { state: "updated" as const, headSha: prHead, reason: null };
+  return {
+    state: "reverify" as const,
+    headSha: prHead,
+    reason: `${repository.default_branch} was merged in cleanly and the change is the one approved; ${prHead.slice(0, 7)} is verified again before it merges`,
+  };
 }
 
 /** How a withdrawal at an update reads (`end_reason`): the loop guard compares what follows it. */

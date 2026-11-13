@@ -2,7 +2,7 @@
 // changed file has the same mode and blob on both sides; anything else (and anything unreadable,
 // see the deliverer tests) withdraws the approval.
 import { describe, expect, it } from "vitest";
-import type { CommitInfo, Tree } from "../src/services.ts";
+import type { Tree } from "../src/services.ts";
 import {
   approvalSurvivesMergeOfMain,
   boundUpdate,
@@ -10,7 +10,6 @@ import {
   oneSidedMismatches,
   onlyEitherSide,
 } from "../src/verify/change-digest.ts";
-import fixture from "./fixtures/update-branch-merge.json";
 
 const f = (sha: string, mode = "100644") => ({ mode, sha });
 
@@ -107,46 +106,35 @@ describe("a merge's one-sided paths (#190 review)", () => {
   });
 });
 
-describe("the update's binding to the factory's call (#190 review)", () => {
-  // A real merge GitHub made for the factory App's PUT /pulls/{n}/update-branch, recorded.
-  const real = fixture as {
-    author: { name: string; email: string };
-    committer: { name: string; email: string };
-    parents: { sha: string }[];
-    verification: { verified: boolean };
-  };
-  const slug = real.author.name.replace(/\[bot\]$/, "");
-  const info: CommitInfo = {
-    parents: real.parents.map((p) => p.sha),
-    author: { name: real.author.name, email: real.author.email },
-    committer: { name: real.committer.name, email: real.committer.email },
-    verified: real.verification.verified,
-  };
-  const [from, base] = info.parents as [string, string];
-  const request = { from, base, at: from, appSlug: slug };
+describe("the update is the exact merge the queue made (#190 review, round 2)", () => {
+  const request = { from: "a1", base: "m1", merge: "x1", parents: ["a1", "m1"] };
 
-  it("binds GitHub's update-branch merge made for the App's own call", () => {
-    expect(boundUpdate(info, request)).toBeNull();
+  it("binds only the commit GitHub returned for the queue's own merge", () => {
+    expect(boundUpdate(request, "a1", "x1", null)).toBeNull();
+    // Parents read from the commit when the merge's answer didn't carry them.
+    expect(boundUpdate({ ...request, parents: null }, "a1", "x1", ["a1", "m1"])).toBeNull();
   });
 
-  it("refuses a merge made in GitHub's web conflict editor, signed and with the right parents", () => {
-    const person = { name: "A Collaborator", email: "1+collab@users.noreply.github.com" };
-    expect(boundUpdate({ ...info, author: person }, request)).toMatch(/update-branch merge/);
+  it("refuses any other head, even one with the same parents, author and signature (a forged twin)", () => {
+    expect(boundUpdate(request, "a1", "y1", ["a1", "m1"])).toMatch(/not the merge the queue made/);
   });
 
-  it("refuses another App's update, an unsigned commit, and a commit not by GitHub", () => {
-    expect(boundUpdate(info, { ...request, appSlug: "another-app" })).not.toBeNull();
-    expect(boundUpdate({ ...info, verified: false }, request)).not.toBeNull();
-    const pusher = { name: "A Person", email: "person@example.com" };
-    expect(boundUpdate({ ...info, committer: pusher }, request)).not.toBeNull();
+  it("refuses a merge onto a branch that had moved, or of another main, or with a third parent", () => {
+    expect(boundUpdate({ ...request, parents: ["b1", "m1"] }, "a1", "x1", null)).toMatch(
+      /isn't a merge of the approved head/,
+    );
+    expect(boundUpdate({ ...request, parents: ["a1", "m0"] }, "a1", "x1", null)).not.toBeNull();
+    expect(
+      boundUpdate({ ...request, parents: ["a1", "m1", "c"] }, "a1", "x1", null),
+    ).not.toBeNull();
+    expect(boundUpdate({ ...request, parents: null }, "a1", "x1", null)).toMatch(
+      /couldn't be read/,
+    );
   });
 
-  it("refuses an older main, a third parent, another head, and a merge nobody asked for", () => {
-    expect(boundUpdate(info, { ...request, base: "0".repeat(40) })).toMatch(/default branch/);
-    expect(boundUpdate({ ...info, parents: [...info.parents, "c"] }, request)).toMatch(/two/);
-    expect(boundUpdate(info, { ...request, from: "f", at: "f" })).toMatch(/approved head/);
-    expect(boundUpdate(info, { ...request, from: null })).toMatch(/didn't ask/);
-    expect(boundUpdate(info, { ...request, base: null })).toMatch(/didn't ask/);
-    expect(boundUpdate(null, request)).not.toBeNull();
+  it("refuses when the queue made no merge, or made it from another head", () => {
+    const none = { from: null, base: null, merge: null, parents: null };
+    expect(boundUpdate(none, "a1", "x1", ["a1", "m1"])).toMatch(/didn't make this merge/);
+    expect(boundUpdate(request, "a0", "x1", null)).toMatch(/didn't make this merge/);
   });
 });
