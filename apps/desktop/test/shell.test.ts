@@ -421,9 +421,15 @@ describe("Work views and the board", () => {
     expect(waitingOn({ id: "wi_13", status: "waiting", blockedBy: [] }, needs).label).toBe(
       "Waiting on you",
     );
-    expect(waitingOn({ id: "x", status: "running", blockedBy: [] }, needs).label).toBe(
-      "Agent working",
-    );
+    // "Agent working" only when a runner has claimed a job for it (the board's waitingOn).
+    expect(
+      waitingOn({ id: "x", status: "running", blockedBy: [], waitingOn: { kind: "agent" } }, needs)
+        .label,
+    ).toBe("Agent working");
+    expect(
+      waitingOn({ id: "x", status: "running", blockedBy: [], waitingOn: { kind: "ci" } }, needs)
+        .label,
+    ).toBe("In progress");
     expect(
       waitingOn({ id: "x", status: "queued", blockedBy: [{ number: 26 } as never] }, needs).label,
     ).toBe("Waiting for #26");

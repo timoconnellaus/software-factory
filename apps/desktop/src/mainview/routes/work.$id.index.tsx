@@ -25,7 +25,7 @@ import { Kbd } from "@software-factory/ui/components/kbd";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -47,7 +47,6 @@ import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.ts
 import { SplitLinks } from "../components/split-list.tsx";
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
-import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { OpError, op } from "../lib/op.ts";
 import { closeTerminal } from "../lib/open-terminals.ts";
 import {
@@ -103,15 +102,11 @@ export const Route = createRoute({
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
       // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
-      queryClient.ensureQueryData(workItemQuery(params.id)).then((d) =>
-        Promise.all([
+      queryClient
+        .ensureQueryData(workItemQuery(params.id))
+        .then((d) =>
           queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
-          // In merge: whether a red main holds it, for the stage strip (stage-wait.ts).
-          d.item.stage === "merge"
-            ? queryClient.ensureQueryData(deliveryStatusQuery(d.item.projectId)).catch(() => null)
-            : null,
-        ]),
-      ),
+        ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
@@ -580,26 +575,14 @@ function CancelDialog({
 
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
-  // In merge: whether main being red holds it (delivery.status, also read for the Held chip).
-  const merging =
-    detail.item.stage === "merge" && ["running", "waiting"].includes(detail.item.status);
-  const delivery = useQuery({ ...deliveryStatusQuery(detail.item.projectId), enabled: merging });
+  // A read that failed keeps its last data: what it waited on then may no longer be true.
+  const failed =
+    useQueryClient().getQueryState(workItemQuery(detail.item.id).queryKey)?.status === "error";
   if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
-  const repo = delivery.data?.repositories.find((r) =>
-    r.deliveries.some((d) => d.workItemId === detail.item.id),
-  );
-  const entry = repo?.deliveries.find((d) => d.workItemId === detail.item.id);
-  // No job running for the stage: what it waits on (stage-wait.ts), and its dot says waiting.
-  const wait = stageWait({
-    item: detail.item,
-    stages: detail.stages,
-    runs: detail.runs,
-    reviewPacket: detail.reviewPacket,
-    mergeQueue: detail.mergeQueue,
-    delivery:
-      entry && repo ? { position: entry.position, state: entry.state, branch: repo.branch } : null,
-  });
+  // No agent working on the stage: what it waits on (the server's waitingOn, stage-wait.ts), and
+  // its dot says waiting.
+  const wait = failed ? null : stageWait({ ...detail.item, waitingOn: detail.waitingOn });
   const waiting = detail.item.status === "waiting" || wait !== null;
   return (
     <div

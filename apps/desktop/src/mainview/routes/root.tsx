@@ -16,7 +16,15 @@ import { KeyNotices } from "../components/key-notices.tsx";
 import { UpdateRequired } from "../components/update-required.tsx";
 import { Updating } from "../components/updating.tsx";
 import { WindowSkeleton } from "../components/window-skeleton.tsx";
-import { accountKey, clearAccountData } from "../lib/account.ts";
+import {
+  accountKey,
+  clearAccountData,
+  clearAccountLocal,
+  gateAccount,
+  gateLoaded,
+  initialGate,
+  shownFor,
+} from "../lib/account.ts";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 import { DRAG } from "../lib/title-bar.ts";
 
@@ -105,40 +113,34 @@ function Root() {
  * Which signed-in session the routes are shown for (a number that changes with each sign-in), or
  * null while they load again for it. Signed in at launch: shown at once, as the router loads them.
  * Signing in or out, or a sign-in as another login or device while signed in (`account`, from
- * lib/account.ts), empties the cache and reloads the routes; only then are they shown, keyed
- * afresh, so nothing the previous account read, or caught while signed out, is shown.
+ * lib/account.ts), empties the cache and this Mac's account state (tabs, pins, the chosen org,
+ * drafts, open terminals), goes back to the start and reloads the routes; only then are they shown,
+ * keyed afresh. What shows is decided in render against the account rendered (`shownFor`), so not
+ * one frame shows the previous account's routes.
  */
-function useSignedInRoutes(account: string | null): number | null {
-  const signedIn = account === null ? null : account !== "out";
+export function useSignedInRoutes(account: string | null): number | null {
   const router = useRouter();
   const client = useQueryClient();
-  // Signed in when first rendered: shown at once (the router is loading with that session).
-  const [shown, setShown] = useState<number | null>(signedIn ? 0 : null);
-  const generation = useRef(0);
-  /** The account as last known: null until the main process first answers. */
-  const known = useRef<string | null>(account);
+  const [gate, setGate] = useState(() => initialGate(account));
+  const latest = useRef(gate);
+  latest.current = gate;
   useEffect(() => {
-    if (account === null) return;
-    const before = known.current;
-    known.current = account;
-    // The first answer: the router is loading with that session already (`_app` asks it).
-    if (before === null) {
-      if (signedIn) setShown(0);
-      return;
+    const { gate: next, reset } = gateAccount(latest.current, account);
+    if (next !== latest.current) {
+      latest.current = next;
+      setGate(next);
     }
-    if (before === account) return;
-    const mine = ++generation.current;
-    setShown(null);
+    if (reset === null) return;
     // The update status is the app's, not the account's: it survives (ADR 0393).
     clearAccountData(client);
+    clearAccountLocal();
+    router.history.replace("/");
     void router
       .invalidate()
       .catch(() => undefined)
-      .finally(() => {
-        if (signedIn && generation.current === mine) setShown(mine);
-      });
-  }, [account, signedIn, client, router]);
-  return shown;
+      .finally(() => setGate((g) => gateLoaded(g, reset)));
+  }, [account, client, router]);
+  return shownFor(gate, account);
 }
 
 function SignIn({ session }: { session: Session }) {
