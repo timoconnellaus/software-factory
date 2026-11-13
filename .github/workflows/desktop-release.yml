@@ -201,6 +201,11 @@ jobs:
           # The hook rebuilds the update archive with zstd, as Electrobun compresses it.
           command -v zstd > /dev/null || brew install zstd
 
+      # The helper's parser and allowlist (spec 40 M4b), before it is built into a release.
+      - name: Key helper unit tests
+        if: steps.secrets.outputs.ready == 'true' && env.SF_KEYS_PROFILE != ''
+        run: swift test --package-path apps/desktop/native/sf-keys-app
+
       - name: Build, sign and notarize
         if: steps.secrets.outputs.ready == 'true'
         working-directory: apps/desktop
@@ -253,12 +258,15 @@ jobs:
           zstd -dc "$archive" > "$work/app.tar"
           sha=$(shasum -a 256 "$work/app.tar" | cut -d' ' -f1)
           size=$(stat -f %z "$work/app.tar")
-          manifest="artifacts/$CHANNEL-macos-arm64-update-v2.json"
-          want_sha=$(node -p "require('./$manifest').artifact.tarSha256")
-          want_size=$(node -p "require('./$manifest').artifact.tarSize")
-          if [ "$sha" != "$want_sha" ] || [ "$size" != "$want_size" ]; then
-            echo "::error::the update archive ($sha, $size bytes) isn't the one $manifest names ($want_sha, $want_size)"; exit 1
-          fi
+          manifests=$(ls artifacts/*-update-v2.json)
+          [ -n "$manifests" ] || { echo "::error::no -update-v2.json manifest"; exit 1; }
+          for manifest in $manifests; do
+            want_sha=$(node -p "require('./$manifest').artifact.tarSha256")
+            want_size=$(node -p "require('./$manifest').artifact.tarSize")
+            if [ "$sha" != "$want_sha" ] || [ "$size" != "$want_size" ]; then
+              echo "::error::the update archive ($sha, $size bytes) isn't the one $manifest names ($want_sha, $want_size)"; exit 1
+            fi
+          done
           echo "update archive matches its manifest ($sha, $size bytes)"
           rm -rf "$work"
 
