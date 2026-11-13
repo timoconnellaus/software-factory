@@ -16,7 +16,7 @@ import { useMemo } from "react";
 import { svgDataUrl } from "../lib/design-view.ts";
 import { lineDiff } from "../lib/line-diff.ts";
 import { read } from "../lib/op.ts";
-import { TALL_PLANNING, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 
 /** The write-back for the plan as it stands: keyed on the spec and each artifact's revision. */
 const writeBackQuery = (workItemId: string, view: PlanningView) =>
@@ -45,11 +45,9 @@ export function approveLabel(kimCount: number | undefined): string {
 
 export function WriteBack({ workItemId, view }: { workItemId: string; view: PlanningView }) {
   const data = useWriteBack(workItemId, view, true);
-  // In a small window the list starts folded to its one line, so the panes keep their room
+  // In a narrow window the list starts folded to its one line, so the panes keep their room
   // (review of #130); the approve button still says how many files it writes.
-  const wide = useMedia(WIDE_PLANNING);
-  const tall = useMedia(TALL_PLANNING);
-  const roomy = wide && tall;
+  const roomy = planningLayout(true, useMedia(WIDE_PLANNING)).writeBackOpen;
   if (!data) {
     return (
       <div

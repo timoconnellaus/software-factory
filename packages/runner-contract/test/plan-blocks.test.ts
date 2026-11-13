@@ -263,14 +263,33 @@ describe("third review of #85", () => {
     expect(editAnswer(span("- Database: SQLite on disk [Q3]"), [])).toBe("SQLite on disk");
   });
 
-  it("needs an exact match when options differ only by punctuation or case (review of #85)", () => {
+  it("tells options apart by the symbols in their names, and asks when it can't (reviews of #85, #160)", () => {
     const span = (after: string) => changedSpan("- Language: TBD [Q4]", after, "[Q4]");
     const options = ["C", "C#", "C++"];
     expect(editAnswer(span("- Language: C# [Q4]"), options)).toBe("C#");
     expect(editAnswer(span("- Language: C++ [Q4]"), options)).toBe("C++");
     expect(editAnswer(span("- Language: C [Q4]"), options)).toBe("C");
-    expect(editAnswer(span("- Language: c# [Q4]"), options)).toBeNull();
-    expect(editAnswer(span("- Language: C. [Q4]"), options)).toBeNull();
+    expect(editAnswer(span("- Language: c# [Q4]"), options)).toBe("C#");
+    expect(editAnswer(span("- Language: C. [Q4]"), options)).toBe("C");
+    // One loose match isn't enough when the edit names another thing (review of #160).
+    expect(editAnswer(span("- Language: C# [Q4]"), ["C", "Rust"])).toBeNull();
+    expect(editAnswer(span("- Language: C++ [Q4]"), ["C", "Go"])).toBeNull();
+    expect(editAnswer(span("- Language: rust. [Q4]"), ["C", "Rust"])).toBe("Rust");
+    expect(editAnswer(span('- Language: "Go" [Q4]'), ["C", "Go"])).toBe("Go");
+  });
+
+  it("keeps a case-fix edit stored before the case-insensitive comparison (review of #160)", () => {
+    // The old stored shape: `max` counted by exact text, so the edit's own line counted 0.
+    const old: EditFootprint = {
+      blocks: [{ section: "Stack", parent: "", text: "- Use Postgres" }],
+      gone: [{ section: "Stack", parent: "", text: "- use postgres", max: 0 }],
+    };
+    const md = "## Stack\n- Use Postgres";
+    expect(droppedEdits(md, [{ footprint: old }])).toEqual([]);
+    expect(whyNotKept(md, old)).not.toContain("is back");
+    // A new case-fix edit is kept too.
+    const e = edit("## Stack\n- use postgres", 1, 1, "- Use Postgres");
+    expect(droppedEdits(e.result, [e])).toEqual([]);
   });
 
   it("accepts an edit of a fence inside a 10. item (7)", () => {

@@ -63,23 +63,31 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
 }
 
 /**
- * What's left of a body without template headings, HTML comments, checkbox lines (the box and its
- * label: a template's checklist, review of #117), images and links.
+ * What's left of a body without template headings, HTML comments, a template's unticked checklist
+ * (`- [ ] I searched existing issues`, box and label: review of #117), checkbox markers, images and
+ * links. A ticked item keeps its words (`- [x] Crashes when saving a 2GB file` is a request), and
+ * `- [x](url)` is a link, not a box (review of #160).
  */
 function substance(body: string): string {
-  return body
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .split("\n")
-    .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
-    .filter((l) => !/^\s*([-*+]|\d+[.)])\s*\[[ xX]?\]/.test(l))
-    .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s*/, ""))
-    .join(" ")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/<img\b[^>]*>/gi, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/<?https?:\/\/\S+>?/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    body
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .split("\n")
+      .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
+      .filter((l) => !/^\s*([-*+]|\d+[.)])\s+\[ ?\](\s|$)/.test(l))
+      // Reference definitions (`[1]: https://…`) are links.
+      .filter((l) => !/^\s*\[[^\]]+\]:\s*\S+/.test(l))
+      .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s+(\[[xX]\](?=\s|$))?/, ""))
+      .join(" ")
+      // Images, inline (a URL may hold balanced parentheses) or by reference, and HTML images.
+      .replace(/!\[[^\]]*\]\((?:[^()\s]|\([^()]*\))*(?:\s+"[^"]*")?\)/g, " ")
+      .replace(/!\[[^\]]*\]\[[^\]]*\]/g, " ")
+      .replace(/<img\b[^>]*>/gi, " ")
+      .replace(/\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*(?:\s+"[^"]*")?\)/g, "$1")
+      .replace(/<?https?:\/\/\S+>?/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /**

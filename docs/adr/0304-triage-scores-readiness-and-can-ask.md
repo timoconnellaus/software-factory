@@ -49,7 +49,7 @@ parked 13 of 15 ordinary requests ("App crashes on startup on Windows 11", "Upgr
 and triage (an agent stage) already exists to ask what it needs. So the deterministic check parks
 only what code knows for certain:
 - nothing to act on: no body and a title of fewer than four words, or a body that is only a
-  template's headings (or comments and its checklist, a checkbox line with its label) or only
+  template's headings (or comments and its unticked checklist, a box with its label) or only
   images or a link;
 - an exact duplicate of an open item from the same source (same title and body).
 
@@ -59,5 +59,5 @@ Everything else goes to triage, which decides whether to ask.
 phone or the sf CLI is a person. MCP is an agent acting with a person's token. Intake, the foreman,
 autopilots and the improver aren't people either.
 
-> Amended 2026-11-13 (follow-up to #117): a template's checklist lines count as template, label and
-> all, and a body of only images parks, as the PR said it would.
+> Amended 2026-11-13 (follow-up to #117): a template's unticked checklist lines count as template,
+> label and all (a ticked item keeps its words), and a body of only images parks, as the PR said.
