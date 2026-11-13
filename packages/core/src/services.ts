@@ -164,7 +164,11 @@ export interface GitHubService {
    * A short-lived installation token scoped to this one repository, `contents: write` only
    * (ADR 0033). GitHub can't scope a token to a branch: see ADR 0052 for how pushes are confined.
    */
-  mintRepoToken(repo: RepoRef): Promise<{ token: string; expiresAt: string }>;
+  mintRepoToken(
+    repo: RepoRef,
+    /** `contents: read` only: a job that pushes nothing (a babysit job judging a check). */
+    opts?: { readOnly?: boolean },
+  ): Promise<{ token: string; expiresAt: string }>;
   /** The branch's head SHA, or null if it doesn't exist. */
   getBranchSha(repo: RepoRef, branch: string): Promise<string | null>;
   /** Creates `branch` at `sha`. A no-op if it already exists. */
@@ -204,6 +208,17 @@ export interface GitHubService {
   listCheckRuns(repo: RepoRef, sha: string): Promise<CheckRunInfo[]>;
   /** Creates (or, with `checkRunId`, updates) a check run as the App. Needs `checks: write`. */
   postCheckRun(repo: RepoRef, check: CheckRunPost): Promise<{ id: string }>;
+  /**
+   * Asks GitHub to run a check again (`POST /check-runs/{id}/rerequest`; for GitHub Actions it
+   * re-runs the job). Needs `checks: write`. The babysitter's one flake rerun (spec 53 §4).
+   */
+  rerequestCheckRun(repo: RepoRef, checkRunId: string): Promise<{ ok: boolean; reason: string }>;
+  /**
+   * What a check run reported about itself: its output's title, summary and text, and its first
+   * annotations (path:line and message), clipped. The babysit job's evidence for "flake or
+   * regression?": the agent has no GitHub credentials of its own (ADR 0033). Needs `checks: read`.
+   */
+  checkRunDetail(repo: RepoRef, checkRunId: string): Promise<string>;
   /**
    * The App's installation covering `owner/repo`, asked as the App itself (its JWT, `GET
    * /repos/{owner}/{repo}/installation`): no user token involved. `reason` says why there is none.
@@ -316,7 +331,12 @@ export interface FactoryServices {
    * archived (tests that don't need it, sf-app).
    */
   runArchive?: {
-    get(key: string): Promise<string | null>;
+    /**
+     * An archived object's text, or null when it isn't there; throws when R2 can't be read. Objects
+     * are written once, so a read may be served from the isolate's cache, unless `fresh` (what
+     * audit.verify asks for: it checks the bucket as it is now).
+     */
+    get(key: string, opts?: { fresh?: boolean }): Promise<string | null>;
     /** Whether the object is there (an R2 HEAD): run.reportArchiveMissing checks for itself. */
     exists(key: string): Promise<boolean>;
   };

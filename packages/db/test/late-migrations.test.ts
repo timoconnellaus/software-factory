@@ -7,7 +7,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 /** The migrations this branch adds, by file name. Keep in step when one is added. */
-const OWN = ["0373_planning_designs.sql"];
+const OWN = ["0373_planning_designs.sql", "0400_design_previews.sql"];
 
 /** The columns they add, as `table.column`, which must exist both ways. */
 const COLUMNS = [
@@ -15,6 +15,7 @@ const COLUMNS = [
   "core_planning_artifacts.pulled_path",
   "core_planning_artifacts.pulled_base_sha",
   "core_specs.kim_files",
+  "core_planning_artifact_revisions.preview",
 ];
 
 async function columns(db: D1Database): Promise<Set<string>> {

@@ -14,7 +14,13 @@ import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { openIncident } from "./incidents.ts";
-import { pendingActionId, requireWorkItem, sha, workItemId } from "./shared.ts";
+import {
+  pendingActionId,
+  policyDecisionSurface,
+  requireWorkItem,
+  sha,
+  workItemId,
+} from "./shared.ts";
 import { decideNotRun } from "./verify.ts";
 import { applyApprovedOrgConfig, ORG_CONFIG_WRITES } from "./workflows.ts";
 
@@ -157,7 +163,7 @@ export function decidePending(
  * planner merges it); and the `.kim/` files the person sees at the gate are recorded on the spec,
  * revision and content hash, so the commit writes exactly those (review of #130).
  */
-async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
+export async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
   await assertSpecGateCurrent(ctx, pa.work_item_id);
   if (!pa.work_item_id) return;
   const conflicts = await kimConflicts(ctx, { id: pa.work_item_id });
@@ -236,16 +242,15 @@ export const approvalDecide = defineOperation({
     if (pa.kind === "spec" && pa.status === "pending" && input.decision === "approved") {
       await approvingSpecGate(ctx, pa);
     }
-    // An org config proposal is decided in the app only (ADR 0516): not with a desktop device's
-    // presence proof, nor any other surface's token.
+    // An org config proposal is decided in the app, or on the desktop with a presence proof for
+    // this call (ADR 0516 as amended by 0610): never a phone or any other surface's token.
     if (
       (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation) &&
-      ctx.origin.surface !== "app" &&
-      ctx.origin.surface !== "test"
+      !policyDecisionSurface(ctx)
     ) {
       throw new OperationError(
         "forbidden",
-        `an org config change is decided in the app, not from ${ctx.origin.surface}`,
+        `an org config change is decided in the app or on the desktop with Touch ID, not from ${ctx.origin.surface}`,
         { browserOnly: true },
       );
     }

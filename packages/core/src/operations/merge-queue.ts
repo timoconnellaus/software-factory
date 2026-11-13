@@ -119,7 +119,7 @@ export async function queuedEntries(
 }
 
 /** The work item's open entry, if it has one. */
-async function openEntry(ctx: HandlerContext, item: string) {
+export async function openEntry(ctx: HandlerContext, item: string) {
   return (
     (await ctx.db
       .selectFrom("core_merge_queue")
@@ -633,7 +633,7 @@ export const mergeQueueUpdate = defineOperation({
  * second on the default branch. Anything else is a push the queue didn't make: `moved` for an item
  * that lands itself (v4–v7, ADR 0330), and for the babysitter `withdrawn`.
  *
- * For the babysitter the approval is about the change (ADR 0582, owner question 1 as recommended):
+ * For the babysitter the approval is about the change (ADR 0582, spec 53 decision 1):
  * it carries over only when the merge holds nothing but its two parents' files and the change is
  * identical (`approvalSurvivesMergeOfMain`). Any doubt withdraws it: the approval is closed, the
  * review packet is not carried and `factory/verify` is not posted on the new head, so nobody can

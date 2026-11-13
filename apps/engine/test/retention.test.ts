@@ -1,7 +1,7 @@
 // Retention (AGENTS.md "Cloudflare cost", rule 3): expired rows go in bounded batches, an intake
 // event keeps its id forever, and nothing that isn't due is touched.
 import { env } from "cloudflare:workers";
-import { invoke } from "@software-factory/core";
+import { invoke, operations } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import {
@@ -582,6 +582,29 @@ describe("archiving safely", () => {
   });
 });
 
+/** A signed-in person who belongs to no org. */
+async function stranger() {
+  const id = uid("usr_");
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "INSERT INTO core_user (id, name, email, created_at, updated_at) VALUES (?, 'Kim', ?, ?, ?)",
+  )
+    .bind(id, `${id}@example.com`, now, now)
+    .run();
+  return { type: "human" as const, id };
+}
+
+/** A plain member (not an admin) of the org. */
+async function member(orgId: string) {
+  const human = await stranger();
+  await env.DB.prepare(
+    "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
+  )
+    .bind(uid("mem_"), orgId, human.id, new Date().toISOString())
+    .run();
+  return human;
+}
+
 describe("a lost archive object is an incident for a person", () => {
   /** An archived run of 2 events (one chunk), with the chunk's rowid and key. */
   async function archivedRun() {
@@ -604,10 +627,10 @@ describe("a lost archive object is an incident for a person", () => {
   }
   type Report = {
     reported: boolean;
-    incident: { workItemId: string; number: number } | null;
+    incident: { id: string; openedAt: string; resolvedAt: string | null } | null;
   };
 
-  it("checks for itself, opens one incident per run, and starts no agent work", async () => {
+  it("checks for itself, records one incident per run, with no work item to release", async () => {
     const { w, workItemId, runId, chunk } = await archivedRun();
     const report = (firstSeq: number) =>
       ok<Report>("run.reportArchiveMissing", { workItemId, runId, firstSeq }, w.human);
@@ -616,20 +639,20 @@ describe("a lost archive object is an incident for a person", () => {
     // A chunk the index doesn't name: nothing.
     expect(await report(999)).toEqual({ reported: false, incident: null });
     await env.ARCHIVE.delete(chunk.r2_key);
+    const items = async () =>
+      (await first<{ n: number }>("SELECT count(*) AS n FROM core_work_items"))?.n;
+    const before = await items();
     const opened = await report(chunk.first_seq);
     expect(opened.reported).toBe(true);
-    const item = await first<{ kind: string; status: string; parent_work_item_id: string }>(
-      "SELECT kind, status, parent_work_item_id FROM core_work_items WHERE id = ?",
-      opened.incident?.workItemId,
-    );
-    // A record for a person: left in the backlog, so nothing runs until someone releases it.
-    expect(item).toEqual({ kind: "incident", status: "backlog", parent_work_item_id: workItemId });
+    // A record for a person and nothing else: no work item (so nothing to release into the
+    // incident workflow, whose fixes can auto-merge), no job.
+    expect(await items()).toBe(before);
     expect(
-      await all("SELECT 1 FROM core_jobs WHERE work_item_id = ?", opened.incident?.workItemId),
-    ).toEqual([]);
-    expect(
-      await all<{ kind: string }>("SELECT kind FROM core_incidents WHERE run_id = ?", runId),
-    ).toEqual([{ kind: "archive_missing" }]);
+      await all<{ kind: string; fix_work_item_id: string | null; resolved_at: string | null }>(
+        "SELECT kind, fix_work_item_id, resolved_at FROM core_incidents WHERE run_id = ?",
+        runId,
+      ),
+    ).toEqual([{ kind: "archive_missing", fix_work_item_id: null, resolved_at: null }]);
     // Again (another viewer): the same incident, no second one.
     expect(await report(chunk.first_seq)).toEqual({ reported: false, incident: opened.incident });
     expect((await all("SELECT 1 FROM core_incidents WHERE run_id = ?", runId)).length).toBe(1);
@@ -655,6 +678,125 @@ describe("a lost archive object is an incident for a person", () => {
       firstSeq: chunk.first_seq,
       incident: opened.incident,
     });
+  });
+
+  it("is listed for the org until a person resolves it, once, with what they did", async () => {
+    const { w, workItemId, runId, chunk } = await archivedRun();
+    await env.ARCHIVE.delete(chunk.r2_key);
+    const opened = await ok<Report>(
+      "run.reportArchiveMissing",
+      { workItemId, runId, firstSeq: chunk.first_seq },
+      w.human,
+    );
+    const id = opened.incident?.id ?? "";
+    const list = () =>
+      ok<{ incidents: { id: string; workItemId: string; runId: string | null }[]; more: boolean }>(
+        "incident.listArchiveMissing",
+        { orgId: w.orgId },
+        w.human,
+      );
+    expect((await list()).incidents).toContainEqual(
+      expect.objectContaining({ id, workItemId, runId }),
+    );
+    // The item's runs say where the log is.
+    const detail = await ok<{ runs: { id: string; log: string; archiveIncident: unknown }[] }>(
+      "workItem.get",
+      { workItemId },
+      w.human,
+    );
+    expect(detail.runs.find((r) => r.id === runId)).toMatchObject({
+      log: "missing",
+      archiveIncident: { id, resolvedAt: null },
+    });
+    expect(
+      await ok(
+        "incident.resolve",
+        { workItemId, incidentId: id, resolution: "lost, accepted" },
+        w.human,
+      ),
+    ).toEqual({ resolved: true });
+    expect(
+      await ok("incident.resolve", { workItemId, incidentId: id, resolution: "again" }, w.human),
+    ).toEqual({ resolved: false });
+    expect((await list()).incidents.map((i) => i.id)).not.toContain(id);
+    const row = await first<{ resolution: string; resolved_by: string }>(
+      "SELECT resolution, resolved_by FROM core_incidents WHERE id = ?",
+      id,
+    );
+    expect(row).toEqual({ resolution: "lost, accepted", resolved_by: w.human.id });
+  });
+
+  it("resolve and list refuse callers outside the org, resolve is for admins, and wrong ids", async () => {
+    const { w, workItemId, runId, chunk } = await archivedRun();
+    await env.ARCHIVE.delete(chunk.r2_key);
+    const opened = await ok<Report>(
+      "run.reportArchiveMissing",
+      { workItemId, runId, firstSeq: chunk.first_seq },
+      w.human,
+    );
+    const id = opened.incident?.id ?? "";
+    const resolve = (actor: typeof w.human, incidentId = id) =>
+      ok("incident.resolve", { workItemId, incidentId, resolution: "lost" }, actor);
+    const list = (actor: typeof w.human, orgId = w.orgId) =>
+      ok("incident.listArchiveMissing", { orgId }, actor);
+    const outsider = await stranger();
+    const other = await world();
+    const plain = await member(w.orgId);
+    for (const actor of [outsider, other.human]) {
+      await expect(list(actor)).rejects.toMatchObject({ code: "forbidden" });
+      await expect(resolve(actor)).rejects.toMatchObject({ code: "forbidden" });
+    }
+    // A member may see them; resolving is an org admin's.
+    await expect(list(plain)).resolves.toMatchObject({ more: false });
+    await expect(resolve(plain)).rejects.toMatchObject({ code: "forbidden" });
+    // Another org's list is that org's own: none of these.
+    expect(await list(other.human, other.orgId)).toEqual({
+      incidents: [],
+      more: false,
+      auditArchiveStopped: null,
+    });
+    await expect(resolve(w.human, "inc_nope")).rejects.toMatchObject({ code: "not_found" });
+    // An incident with a fix work item closes with its item, not here.
+    const fix = await ok<{ incidentId: string }>(
+      "incident.open",
+      { workItemId, kind: "manual", reason: "a person's note", runId: null },
+      w.human,
+    );
+    await expect(resolve(w.human, fix.incidentId)).rejects.toMatchObject({ code: "conflict" });
+    // One recorded before migration 0365 (with a backlog work item) still resolves here.
+    await env.DB.prepare("UPDATE core_incidents SET fix_work_item_id = ? WHERE id = ?")
+      .bind(workItemId, id)
+      .run();
+    expect(await resolve(w.human)).toEqual({ resolved: true });
+  });
+
+  it("lists at most 50 open archive incidents, newest first, and says there are more", async () => {
+    const { w, workItemId } = await archivedRun();
+    const now = Date.now();
+    await env.DB.batch(
+      Array.from({ length: operations.ARCHIVE_INCIDENTS_MAX + 1 }, (_, i) =>
+        env.DB.prepare(
+          `INSERT INTO core_incidents (id, org_id, project_id, source_work_item_id, run_id, kind,
+             reason, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, 'archive_missing', 'gone', 'system', ?)`,
+        ).bind(
+          uid("inc_"),
+          w.orgId,
+          w.projectId,
+          workItemId,
+          uid("run_"),
+          new Date(now - i * 1000).toISOString(),
+        ),
+      ),
+    );
+    const listed = await ok<{ incidents: { createdAt: string }[]; more: boolean }>(
+      "incident.listArchiveMissing",
+      { orgId: w.orgId },
+      w.human,
+    );
+    expect(listed.incidents).toHaveLength(operations.ARCHIVE_INCIDENTS_MAX);
+    expect(listed.more).toBe(true);
+    expect(listed.incidents[0]?.createdAt).toBe(new Date(now).toISOString());
   });
 
   it("the daily sample finds a lost object with a HEAD and opens its incident", async () => {

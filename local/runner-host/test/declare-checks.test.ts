@@ -9,7 +9,15 @@ import type { ContainerRuntime } from "@software-factory/runner-local";
 import { afterEach, describe, expect, it } from "vitest";
 import { localChecks, NO_MAC_CONTAINER_LINE } from "../src/check-mode.ts";
 import { RunnerHost } from "../src/host.ts";
-import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
+import {
+  controlPlane,
+  fakeAdapter,
+  fakeCloud,
+  git,
+  job,
+  NO_GIT_ATTR_SOURCE,
+  scratchRepo,
+} from "./helpers.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -57,22 +65,25 @@ async function host(declareChecks: boolean) {
 }
 
 describe("declaring `checks` (fifth review)", () => {
-  it("a Mac sandbox runner with no runtime declares them, builds, and hands each back not run with the reason", async () => {
-    const { cloud, j } = await host(true);
-    const manifest = cloud.heartbeats[0]?.manifest;
-    expect(manifest?.capabilities).toContain("checks");
-    expect(manifest?.checksNote).toBe(
-      "not run here: this Mac runner has no container runtime (neither Docker Desktop nor OrbStack is answering): start one, or set checks.weakerMacSandbox",
-    );
-    const handback = cloud.handbacks.get(j.jobId) as {
-      outcome: string;
-      checks?: ExecutedCheck[];
-    };
-    expect(handback.outcome).toBe("completed");
-    expect(handback.checks).toMatchObject([
-      { name: "tests", exitCode: null, notRun: NO_MAC_CONTAINER_LINE },
-    ]);
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "a Mac sandbox runner with no runtime declares them, builds, and hands each back not run with the reason",
+    async () => {
+      const { cloud, j } = await host(true);
+      const manifest = cloud.heartbeats[0]?.manifest;
+      expect(manifest?.capabilities).toContain("checks");
+      expect(manifest?.checksNote).toBe(
+        "not run here: this Mac runner has no container runtime (neither Docker Desktop nor OrbStack is answering): start one, or set checks.weakerMacSandbox",
+      );
+      const handback = cloud.handbacks.get(j.jobId) as {
+        outcome: string;
+        checks?: ExecutedCheck[];
+      };
+      expect(handback.outcome).toBe("completed");
+      expect(handback.checks).toMatchObject([
+        { name: "tests", exitCode: null, notRun: NO_MAC_CONTAINER_LINE },
+      ]);
+    },
+  );
 
   it("a runner that never runs checks here doesn't declare them", async () => {
     const { cloud } = await host(false);

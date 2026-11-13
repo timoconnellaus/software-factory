@@ -93,6 +93,42 @@ export const SCREENS = [
     keys: ["f"],
     clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
   },
+  // Spec 22 part B: the System tab, a pulled data model with its changes against the default
+  // branch and a pinned comment; an architecture the planner made; and the source view.
+  {
+    name: "plan-system",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
+  {
+    name: "plan-system-flow",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-design"]:nth-of-type(2)'],
+  },
+  {
+    name: "plan-system-comment",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="comment-mode"]'],
+  },
+  {
+    name: "plan-system-full",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-full"]'],
+  },
+  {
+    name: "plan-system-source",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-source"]'],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
@@ -101,6 +137,39 @@ export const SCREENS = [
     path: "/work/wi_13?tab=review",
     design: "ItemReview.html",
     scrollTo: "factory-checks",
+  },
+  // Honest proof at the gate (the owner's decision, 2026-11-13): no checks set up at all says so,
+  // with no count; checks with every criterion proven; checks with some criteria tied to none.
+  {
+    name: "item-review-proof-no-checks",
+    path: "/work/wi_13?tab=review&fixture=nochecks",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-all-proven",
+    path: "/work/wi_13?tab=review&fixture=allproven",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-some-untied",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  // Both kinds of tie: Proven (a person-approved spec) and passed the check triage named.
+  {
+    name: "item-review-proof-triage",
+    path: "/work/wi_13?tab=review&fixture=triage",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  { name: "inbox-merge-triage", path: "/?item=wi_13&fixture=triage", design: "InboxMerge.html" },
+  {
+    name: "inbox-merge-no-checks",
+    path: "/?item=wi_13&fixture=nochecks",
+    design: "InboxMerge.html",
   },
   // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
   {
@@ -117,6 +186,13 @@ export const SCREENS = [
     scrollTo: "decision",
   },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
+  // ADR 0591: the item's archived entries read back from the audit archive.
+  {
+    name: "item-activity-archived",
+    path: "/work/wi_13?tab=activity",
+    design: "ItemActivity.html",
+    clicks: ['[data-testid="show-archived"]'],
+  },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
@@ -194,8 +270,53 @@ export const SCREENS = [
   { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
   { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },
   { name: "factory-policy", path: "/factory/policy", design: "FactoryPolicy.html" },
+  // Policy edited in the app (ADR 0610): the form, a draft that loosens with its impact, History.
+  { name: "policy-edit", path: "/factory/policy?edit=1", design: "FactoryPolicy.html" },
+  {
+    name: "policy-edit-draft",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    clicks: ['[aria-label="Autonomous"]'],
+    scrollTo: "save-bar",
+  },
+  {
+    name: "policy-history",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+  },
+  // Review of #145: the rollback's classification and difference before confirming; a project on an
+  // org workflow; a Mac with a software key (every released build before the key helper).
+  {
+    name: "policy-rollback",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+    clicks: ['[data-testid="history"] button'],
+  },
+  {
+    name: "policy-org-workflow",
+    path: "/factory/policy?project=prj_site&edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "override-retryLimit",
+  },
+  {
+    name: "policy-software-key",
+    path: "/factory/policy",
+    query: "?key=software",
+    design: "FactoryPolicy.html",
+  },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
+  // The project's workflows and agents edited in the app (ADR 0610).
+  { name: "workflows-edit", path: "/factory/workflows?edit=1", design: "FactoryWorkflow.html" },
+  {
+    name: "workflows-edit-steps",
+    path: "/factory/workflows?edit=1",
+    design: "FactoryWorkflow.html",
+    scrollTo: "slot-afterVerify",
+  },
+  { name: "agents-edit", path: "/factory/agents?edit=1", design: "FactoryAgents.html" },
   {
     name: "settings-repositories",
     path: "/settings/repositories",
@@ -213,6 +334,79 @@ export const SCREENS = [
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
   { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
+  // The device key (spec 40 M4b, fake-bridge.ts `?key=`): the fingerprint while signing in, the
+  // offer to sign in again with a Secure Enclave key, and a decision waiting for Touch ID.
+  { name: "key-signing-in", path: "/", query: "?key=signing-in", design: "SignIn.html" },
+  { name: "key-upgrade", path: "/", query: "?key=upgrade", design: "Main.html" },
+  {
+    name: "key-upgrade-this-mac",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+  },
+  { name: "key-touch-id", path: "/", query: "?key=touch-id", design: "InboxMerge.html" },
+  {
+    name: "key-sign-in-again-confirm",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+    clicks: ['[data-testid="sign-in-again"]'],
+  },
+  // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
+  {
+    name: "this-mac-update-idle",
+    path: "/settings",
+    query: "?check=idle",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-checking",
+    path: "/settings",
+    query: "?check=checking",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-up-to-date",
+    path: "/settings",
+    query: "?check=up-to-date",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-downloading",
+    path: "/settings",
+    query: "?check=downloading",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-ready",
+    path: "/settings",
+    query: "?check=ready",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-jobs",
+    path: "/settings",
+    query: "?check=jobs",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-offline",
+    path: "/settings",
+    query: "?check=offline",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-refused",
+    path: "/settings",
+    query: "?check=refused",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-off",
+    path: "/settings",
+    query: "?check=off",
+    design: "SettingsDevices.html",
+  },
 ];
 
 const args = argv;

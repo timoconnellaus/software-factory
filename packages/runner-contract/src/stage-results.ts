@@ -29,6 +29,22 @@ export const triageResultSchema = z.object({
   domains: z.array(z.string().min(1).max(40)).max(10).default([]),
   acceptanceCriteria: z.array(criterion).max(30).default([]),
   /**
+   * The check that proves each criterion (Workflow feature `triage-ties`), matched to
+   * `acceptanceCriteria` by text. `checks` names only the project's declared checks or required CI
+   * checks it was given; an empty list says no declared check can prove the criterion (shown as
+   * "not covered by a check"). Advisory input: `workItem.triage` drops any name the project
+   * doesn't declare, and only a check that passed on the head ever proves anything.
+   */
+  criterionChecks: z
+    .array(
+      z.object({
+        criterion,
+        checks: z.array(z.string().min(1).max(200)).max(5),
+      }),
+    )
+    .max(30)
+    .default([]),
+  /**
    * The foreman may *ask* to skip or require the spec stage. Advisory only: the autonomy policy's
    * threshold decides (spec 02, criterion 4).
    */
@@ -130,6 +146,24 @@ export const verifyResultSchema = z.object({
   riskFlags: z.array(z.string().max(500)).max(20).default([]),
 });
 
+/**
+ * `babysit` (spec 53 §4, ADR 0583): the babysitter's judgement on the one reason it was woken for.
+ * It only judges and, for a conflict, resolves it on its run branch (the host pushes that). Every
+ * action follows from this in code, with its own floor: a `flake` is rerun once (`ci.rerun`), a
+ * `resolved` conflict moves the item's branch (`branch.advance`) and withdraws the approval, a
+ * `regression` goes back to build with the note, `person` asks a person.
+ */
+export const babysitResultSchema = z.object({
+  verdict: z.enum(["flake", "regression", "resolved", "person"]),
+  /** The failing check it judged (a `check-failed` reason). */
+  check: z.string().min(1).max(200).optional(),
+  /** The test inside it, when the log names one: recorded with the known flake. */
+  test: z.string().min(1).max(500).optional(),
+  /** Why: what the log or the conflict showed. Shown on the item's activity. */
+  note: z.string().min(1).max(8_000),
+});
+
+export type BabysitResult = z.infer<typeof babysitResultSchema>;
 export type TriageResult = z.infer<typeof triageResultSchema>;
 export type StepResult = z.infer<typeof stepResultSchema>;
 export type QuestionDraft = z.infer<typeof questionDraftSchema>;

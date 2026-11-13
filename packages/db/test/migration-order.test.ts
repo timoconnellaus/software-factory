@@ -6,8 +6,18 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-/** Blocks whose migrations may land after others' (block AQ, the Cloudflare cost work). */
-const LATE_BLOCKS: [number, number][] = [[360, 369]];
+/**
+ * Blocks whose migrations may land after others'. Block AQ (0360–0369) was one until it was on main
+ * and deployed (2026-11-13): 0390 rebuilds core_jobs with 0363's `shaping`, so AQ can no longer
+ * apply after it. Add a block here while its PR may merge after higher-numbered ones.
+ */
+const LATE_BLOCKS: [number, number][] = [
+  // The audit archive's migration (block AQ, ADR 0591) lands after 0390: it only adds tables and
+  // replaces core_audit's delete trigger, which nothing later rebuilds.
+  [366, 366],
+  // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
+  [367, 367],
+];
 
 const late = (name: string) => {
   const n = Number.parseInt(name, 10);
@@ -24,12 +34,15 @@ async function schema(db: D1Database): Promise<string[]> {
 }
 
 describe("migrations applied out of order", () => {
-  it("each late block's migrations apply after all of the others, to the same schema", async () => {
-    const others = env.TEST_MIGRATIONS.filter((m) => !late(m.name));
-    const mine = env.TEST_MIGRATIONS.filter((m) => late(m.name));
-    expect(mine.length).toBeGreaterThan(0);
-    await applyD1Migrations(env.ORDER_DB, others);
-    await applyD1Migrations(env.ORDER_DB, env.TEST_MIGRATIONS);
-    expect(await schema(env.ORDER_DB)).toEqual(await schema(env.DB));
-  });
+  it.skipIf(LATE_BLOCKS.length === 0)(
+    "each late block's migrations apply after all of the others, to the same schema",
+    async () => {
+      const others = env.TEST_MIGRATIONS.filter((m) => !late(m.name));
+      const mine = env.TEST_MIGRATIONS.filter((m) => late(m.name));
+      expect(mine.length).toBeGreaterThan(0);
+      await applyD1Migrations(env.ORDER_DB, others);
+      await applyD1Migrations(env.ORDER_DB, env.TEST_MIGRATIONS);
+      expect(await schema(env.ORDER_DB)).toEqual(await schema(env.DB));
+    },
+  );
 });

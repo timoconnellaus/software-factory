@@ -62,6 +62,9 @@ export const LABELS: Readonly<Record<string, string>> = {
   "approval.decide": "Approval decided",
   "gate.escalate": "Gate escalated",
   "incident.open": "Factory incident opened",
+  "incident.resolve": "Archive incident resolved",
+  "run.reportArchiveMissing": "Archived log reported missing",
+  "push.observe": "New commit pushed",
 };
 
 /** The operation in words, or its raw name when the table doesn't know it. */
@@ -93,6 +96,11 @@ export function detailOf(e: Pick<TimelineEntry, "operation" | "result">): string
       return Array.isArray(r.questionIds) ? `${r.questionIds.length} questions` : null;
     case "spec.commit":
       return typeof r.path === "string" ? r.path : null;
+    // A person's push to the item's branch (ADR 0587): "<login> pushed <sha>: verifying again".
+    case "push.observe":
+      return (r.outcome === "reverify" || r.outcome === "told") && typeof r.detail === "string"
+        ? r.detail
+        : null;
     default:
       return null;
   }

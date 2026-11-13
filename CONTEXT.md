@@ -101,7 +101,9 @@ item of kind `attached` (`workItem.attachPr`, the `/attach` page that its failin
 check links to, or New work's list of open PRs). Triage drafts criteria from the PR. Spec and build
 are skipped, and the factory never pushes to its branch. Verify runs on the PR's own head and a pass
 opens the merge gate. A failure or send-back waits for a push, a push withdraws a pending merge
-gate, and closing the PR cancels the item (spec 05, ADR 0290).
+gate, and closing the PR cancels the item (spec 05, ADR 0290). A person's push to a factory-built item's
+branch, from verify on, also withdraws its merge gate and verifies the new head without a build
+(Workflow v14, ADR 0587).
 _Avoid_: imported PR, adopted PR, external work item
 
 **Attachment**
@@ -245,9 +247,11 @@ _Avoid_: runner check (the agent's own report), CI
 
 **Proven**
 An acceptance criterion is **Proven** when a check the approved spec links it to (a factory check or
-a CI check run, `[checks: …]` on the criterion) passed on the head SHA; otherwise it is **Not
-proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as opinion
-(ADR 0501).
+a CI check run, `[checks: …]` on the criterion) passed on the head SHA. A check triage (an agent)
+tied it to that passed is never Proven: it is "passed the check triage named", counted apart. A
+setup or static check never proves. Otherwise it is **Not proven**, and the reviewer's reasoning, and any checks the reviewer linked, are shown as
+opinion; `[checks: none]` is **not covered by a check**. With no checks set up at all, the gate says
+nothing can be proven instead of a count (ADR 0501, [`docs/checks.md`](docs/checks.md)).
 _Avoid_: met (the reviewer's judgement)
 
 **Tests intact**
@@ -267,7 +271,10 @@ _Avoid_: API key, PAT
 **Desktop device**
 A Mac running the desktop app, registered by a browser sign-in (ADR 0391): a Secure Enclave key
 plus a desktop token. Its token acts as the person on the `desktop` surface, like a `write` CLI
-token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call).
+token; it can decide a gate only with a **presence proof** (Touch ID signing that exact call). Since
+ADR 0610 the same proof also makes policy decisions there: org workflow and agent saves, org config
+rollbacks and approvals, adopting projects' workflows, approving a looser override, and turning a kill
+switch off. Approving device logins and registering runners stay on the website.
 Listed and revoked on the website.
 _Avoid_: client, install
 
@@ -307,7 +314,7 @@ conflict or red CI at the head sends the item back to build. From Workflow v11 t
 repository, and the queue is its delivery table (spec 53).
 _Avoid_: merge train, landing queue
 
-**Babysitter** (proposed, spec 53)
+**Babysitter** (spec 53)
 What delivers approved work in one repository, from approval to Done: the merge, `main` staying
 green and, later, the deploy (ADR 0580). Two halves: the **deliverer**, engine code with no model
 (a reconcile pass per repository woken by GitHub's events and the minute cron), and the **`babysit`
@@ -315,14 +322,14 @@ job**, a factory job the deliverer starts only for judgement (a conflict, a fail
 `main`; ADR 0583). Not a routine, not a schedule, not a person.
 _Avoid_: merge bot, release manager, routine
 
-**Delivery** (proposed, spec 53)
+**Delivery** (spec 53)
 A work item's life after its merge is approved: waiting to merge, merging, **held**, merged (later
 deployed). An **approval** says "this head may merge"; it survives a clean merge of `main` whose
 **change digest** (the PR's diff against its merge base, read by the engine from GitHub) is unchanged,
 and is withdrawn by any other new commit (ADR 0582).
 _Avoid_: landing (fine in prose for the merge itself), shipping
 
-**Main health, red episode** (proposed, spec 53)
+**Main health, red episode** (spec 53)
 Whether a repository's default branch head is `green`, `red` or `pending` by its required checks. A
 **red episode** runs from the first red head after a green one to the next green; its **suspects** are
 the landings since the last green SHA. While one is open the line stops: only **repairs** (a fix the
@@ -330,9 +337,15 @@ the landings since the last green SHA. While one is open the line stops: only **
 (ADR 0581, 0584).
 _Avoid_: broken build, main-red issue (patientos's claim; here the episode is the claim)
 
-**Known flake** (proposed, spec 53)
+**Suspect, culprit** (spec 53)
+An episode's suspects are the factory's landings since main was last green. Its culprit is the
+one that turned it red: proven in code only when there is one landing and its merge commit is the
+first red head, otherwise named by a person (`mainRed.attribute`). Never a guess (ADR 0621).
+
+**Known flake** (spec 53)
 A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
-repository's flake list. A failed check is rerun at most once per SHA (ADR 0583).
+repository's flake list (`core_flakes`). A failed check is rerun at most once per SHA (ADR 0583);
+a check that flakes three times in 14 days gets a backlog item to fix it (decision 3).
 _Avoid_: flaky test (as a label you add by hand)
 
 **Default-branch ruleset**
@@ -379,6 +392,9 @@ gates. It carries a **root-cause class** (`missing-check`, `prompt-or-skill`, `m
 `policy`, `runner`, `confinement`, `unknown`) saying which part of `.factory/` to change. An
 incident's own failures open no further incidents. Its fix merges with no person only under
 **dark factory mode**, like any change (ADR 0515; the check-only exception of ADR 0230 is superseded).
+One kind is a record only, with no work item: an **archive incident**, when a run's archived log
+lost an object in the archive bucket. No agent can bring it back, so it is listed on the desktop's
+Checks and incidents page until a person resolves it (`incident.resolve`).
 _Avoid_: bug, postmortem, issue
 
 **Check (`.factory/checks/`)**
@@ -697,7 +713,10 @@ _Avoid_: PAT, deploy key, user token
 The append-only record of every operation that changed something: actor, origin, gate decision,
 diff. Machine-frequency calls (heartbeats, empty claims, held waits, presence, log batches) are
 recorded only when they change state, and a runner's input is kept as a digest (ADR 0590). Metrics
-are SQL views over it.
+are SQL views over it. **Machine rows** (a runner's, the scheduler's, an intake's or the foreman's
+routine calls, allowed and successful, on a fixed list of operations) move to the **audit archive**
+in R2 after 90 days as a hash chain, read back by the timeline and checked by `audit.verify`;
+everything else stays in D1 forever (ADR 0591).
 _Avoid_: log, history, event store, analytics
 
 **Outbox**

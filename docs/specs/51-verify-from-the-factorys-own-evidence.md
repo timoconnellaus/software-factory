@@ -149,3 +149,20 @@ step, holdout tests (ADR 0034), apps/desktop's screens until PR #56 merges.
   - Not proven doesn't fail the verdict; an unmet criterion still does.
   - A factory item's verify job doesn't re-run the checks: the build's results are on the same SHA
     (`branch.advance` only fast-forwards). An attached PR's verify job runs them once.
+
+## Amendment 2026-11-13: what counts as proven (the owner's decisions)
+- **No checks set up at all** (no declared checks, no required CI check reported on the SHA): the
+  gate and `factory/verify` say "No checks are set up for this project, so nothing can be proven",
+  with no count.
+- **Setup checks never prove.** A declared check may say `proves: false`; without it only a check
+  that runs tests proves, never one named or running install or build, and never a static one.
+  Saying `proves: true` where the default is false loosens the config.
+- **Triage's ties are not proof.** An item without a spec (small by default) has its criteria from
+  triage, and from the Workflow feature `triage-ties` triage names a check for each, from the checks
+  that can prove (`checks.provable`), validated in code. Triage is an agent, so a criterion whose
+  triage-named check passed is shown as "Passed `tests`, the check triage named (not checked by a
+  person)" and counted apart ("passed the check triage named N of M"), never as Proven. **Proven**
+  means only a check a person tied the criterion to (the approved spec) passed on the SHA.
+- **Auto-approval** (ADR 0515, "every acceptance criterion is proven by a check that ran") counts
+  only person-approved ties: it reads `everyCriterionProven` (`packages/core/src/verify/proof.ts`),
+  which is false for any criterion from triage's list.

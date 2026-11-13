@@ -43,10 +43,32 @@ const session: Session = {
   signedIn: true,
   login: "owner",
   deviceId: "dev_m5",
-  keyStorage: "secure-enclave",
+  // `?key=software` (before the hash): a released build before the key helper (ADR 0610).
+  keyStorage:
+    new URLSearchParams(location.search).get("key") === "software" ? "software" : "secure-enclave",
   signingIn: false,
   error: null,
+  keyFingerprint: null,
+  keyUpgrade: false,
 };
+/**
+ * The device key's screens (spec 40 M4b), from `?key=` before the hash: `signing-in` (signed out,
+ * waiting for the browser, the new key's fingerprint shown), `upgrade` (a software key on a build
+ * with the key helper: the offer to sign in again), `touch-id` (a decision waiting for Touch ID).
+ */
+const KEY_FIXTURE = new URLSearchParams(location.search).get("key");
+if (KEY_FIXTURE === "signing-in")
+  Object.assign(session, {
+    signedIn: false,
+    login: null,
+    deviceId: null,
+    signingIn: true,
+    keyFingerprint: "3f2a-91c0-77be-d41e",
+  });
+if (KEY_FIXTURE === "upgrade") Object.assign(session, { keyStorage: "software", keyUpgrade: true });
+// The open item's merge (#13), worded as the engine writes it (describeDecision).
+const TOUCH_ID_SUMMARY =
+  'Merge 3f2a91c into main of example/software-factory: "Guard the tests in verify"';
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
 /**
@@ -64,7 +86,64 @@ function updateStatus(): UpdateStatus {
     jobs: which === "jobs" ? 2 : 0,
     waitingForRunner: which === "waiting" ? Date.now() + 25_000 : null,
     downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
+    // The Update required screens keep their own state; Settings' check row reads `?check=`.
+    ...(which
+      ? { phase: "idle", checkedAt: null, installed: "0.1.41", channel: "canary", reason: null }
+      : checkState()),
   };
+}
+
+/**
+ * Check for updates in Settings > This Mac (spec 40 M4): `?check=<state>` shows the row in that
+ * state (idle, checking, up-to-date, downloading, ready, jobs, failed, offline, refused, off);
+ * anything else is up to date, checked 12 minutes ago.
+ */
+function checkState(): Pick<
+  UpdateStatus,
+  "phase" | "checkedAt" | "installed" | "channel" | "reason" | "ready" | "version" | "jobs"
+> {
+  const which = new URLSearchParams(location.search).get("check") ?? "up-to-date";
+  const at = Date.now() - 12 * 60_000;
+  const base = { installed: "0.1.41", channel: "canary", checkedAt: at, reason: null };
+  const offline =
+    "Couldn't reach the update server. Check that this Mac is online, then try again.";
+  switch (which) {
+    case "idle":
+      return { ...base, phase: "idle", checkedAt: null, ready: false, version: null, jobs: 0 };
+    case "checking":
+      return { ...base, phase: "checking", ready: false, version: null, jobs: 0 };
+    case "downloading":
+      return { ...base, phase: "downloading", ready: false, version: "0.1.42", jobs: 0 };
+    case "ready":
+      return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 0 };
+    case "jobs":
+      return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 2 };
+    case "offline":
+      return { ...base, phase: "failed", ready: false, version: null, jobs: 0, reason: offline };
+    case "refused":
+      return {
+        ...base,
+        phase: "failed",
+        ready: false,
+        version: "0.1.42",
+        jobs: 0,
+        reason: "Version 0.1.42 was refused: its signature didn't check out.",
+      };
+    case "off":
+      return {
+        ...base,
+        channel: "dev",
+        installed: "0.0.1",
+        phase: "off",
+        checkedAt: null,
+        ready: false,
+        version: null,
+        jobs: 0,
+        reason: "Updates are off in this build (a development build).",
+      };
+    default:
+      return { ...base, phase: "up-to-date", ready: false, version: null, jobs: 0 };
+  }
 }
 
 function answer(op: string, input: unknown): CallResult {
@@ -92,6 +171,8 @@ export const bun = {
   session: async () => session,
   signIn: async () => session,
   signOut: async () => session,
+  signInAgain: async () => session,
+  cancelTouchId: async () => ({ cancelled: true }),
   call: (p: { op: string; input: unknown }) => write(p),
   batch: async (p: { calls: { op: string; input: unknown }[] }) =>
     p.calls.map((c) => answer(c.op, c.input)),
@@ -199,6 +280,10 @@ export const onInbox = none;
 export const onPlanningChanged = none;
 export const onNavigate = none;
 export const onUpdate = none;
+export const onTouchId = (l: (summary: string | null) => void) => {
+  if (KEY_FIXTURE === "touch-id") setTimeout(() => l(TOUCH_ID_SUMMARY), 300);
+  return () => undefined;
+};
 
 // In the real window macOS draws the lights itself.
 const lights = document.createElement("div");

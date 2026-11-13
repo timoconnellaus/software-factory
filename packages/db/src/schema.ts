@@ -345,6 +345,8 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
+  /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
+  merge_sha: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -541,7 +543,12 @@ export type IncidentKind =
   | "run_stalled"
   | "manual"
   /** 0364: a run's archived log is lost; for a person, no agent fix. */
-  | "archive_missing";
+  | "archive_missing"
+  /**
+   * 0366: the audit archiver stopped three ticks in a row. The factory's, not an org's: its row has
+   * no org, project or work item (the archiver writes it in SQL; reads by org never see it).
+   */
+  | "audit_archive_stopped";
 
 export interface CoreIncidentsTable {
   id: string;
@@ -558,6 +565,53 @@ export interface CoreIncidentsTable {
   root_cause: string | null;
   /** 0040: the proposed `.factory/` fix, markdown. */
   proposed_fix: string | null;
+  /** 0365: when a person resolved it (incident.resolve); null while open. */
+  resolved_at: Iso | null;
+  resolved_by: string | null;
+  /** 0365: what the person did about it, in their words. */
+  resolution: string | null;
+}
+
+/** 0366: one row per archived UTC day of machine audit rows (ADR 0590, 0591). */
+export interface CoreAuditArchivesTable {
+  day: string;
+  chunks: number;
+  rows: number;
+  root: string;
+  prev_root: string;
+  archived_at: Iso;
+}
+
+/** 0366: one row per archived object (a chunk of a day). */
+export interface CoreAuditArchiveChunksTable {
+  day: string;
+  seq: number;
+  r2_key: string;
+  first_at: Iso;
+  first_id: string;
+  last_at: Iso;
+  last_id: string;
+  rows: number;
+  bytes: number;
+  sha256: string;
+  prev_hash: string;
+  last_hash: string;
+  archived_at: Iso;
+}
+
+/** 0366: which archived chunks hold a work item's rows. */
+export interface CoreAuditArchiveItemsTable {
+  work_item_id: string;
+  day: string;
+  seq: number;
+  rows: number;
+}
+
+/** 0366: the audit archiver's lease on a day. */
+export interface CoreAuditArchiveLeasesTable {
+  day: string;
+  holder: string;
+  expires_at: Iso;
 }
 
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
@@ -648,7 +702,7 @@ export interface CoreRunnerSharesTable {
   created_at: Iso;
 }
 
-export type JobStage = "triage" | "spec" | "planning" | "build" | "verify";
+export type JobStage = "triage" | "spec" | "planning" | "build" | "verify" | "babysit";
 export type JobStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
 
 export interface CoreJobsTable {
@@ -853,6 +907,11 @@ export interface CoreVerifyChecksTable {
   updated_at: Iso;
   /** 0260 (ADR 0490): the repository the head SHA is in. */
   repository_id: string | null;
+  /** 0391 (spec 53, decision 7): when it was set to held; null when it isn't held. */
+  held_at: string | null;
+  /** 0391: the release sweep's tries on a held row, and when it may try again. */
+  release_attempts: Generated<number>;
+  release_after: string | null;
 }
 
 // ---- 0060: onboarding (installations, connect state, runner device login) ----
@@ -978,6 +1037,48 @@ export interface CoreDeliveryStateTable {
   /** When the minute cron passes again without an event. */
   next_check_at: Iso | null;
   updated_at: Iso;
+  /** 0390 (ADR 0585): the repository's open `babysit` job, if any. */
+  babysit_job_id: string | null;
+  /** 0390: goes up once per `babysit` job; its result's writes carry it. */
+  babysit_fence: Generated<number>;
+  /** 0390: JSON `BabysitReason[]` the deliverer waits on the job for. */
+  babysit_reasons: Generated<JsonText>;
+}
+
+/** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
+export interface CoreCiRerunsTable {
+  repository_id: string;
+  head_sha: string;
+  check_name: string;
+  work_item_id: string;
+  test_name: string | null;
+  run_url: string | null;
+  /** 0391: the check run this rerun replaced (proof needs a newer one). */
+  check_run_id: string | null;
+  asked_at: Iso;
+  /** 1 when the rerun passed, 0 when it failed again, null until known. */
+  passed: number | null;
+}
+
+/** 0390 (spec 53, decision 3): the known-flake list. */
+export interface CoreFlakesTable {
+  id: string;
+  project_id: string;
+  repository_id: string;
+  check_name: string;
+  test_name: string | null;
+  head_sha: string;
+  run_url: string | null;
+  work_item_id: string | null;
+  seen_at: Iso;
+}
+
+/** 0390: the backlog item opened to fix a check that keeps flaking. */
+export interface CoreFlakeFixesTable {
+  repository_id: string;
+  check_name: string;
+  work_item_id: string;
+  created_at: Iso;
 }
 
 // ---- 0351: main health (spec 53, ADR 0581) ----
@@ -986,6 +1087,18 @@ export type MainHealthState = "green" | "red" | "pending";
 
 /** One row per repository: its default branch head's CI and the open red episode. */
 export interface CoreMainHealthTable {
+  /** 0391: when the default branch was last seen green; the suspects are the landings after it. */
+  green_at: string | null;
+  /** 0391: the open episode's suspects, JSON `[{workItemId, number, title, prNumber, mergeSha}]`. */
+  suspects: Generated<string>;
+  /** 0391: the culprit, when proven in code or named by a person (`mainRed.attribute`). */
+  culprit_work_item_id: string | null;
+  /** 0391: why it is the culprit. */
+  attribution: string | null;
+  /** 0391: who named it. A weaker one never overwrites a stronger one. */
+  attributed_by: "proven" | "person" | "agent" | null;
+  /** 0391: a single landing's candidate, proven only if its failing checks fail again on a rerun. */
+  candidate_work_item_id: string | null;
   repository_id: string;
   project_id: string;
   head_sha: string;
@@ -1120,6 +1233,8 @@ export interface CorePlanningArtifactRevisionsTable {
   size: number;
   controls: Generated<string>;
   created_at: Iso;
+  /** A design's preview from the runner's checks (spec 22 part B, migration 0400), JSON. */
+  preview: string | null;
 }
 
 /** A person's edit to the plan's source lines (spec 27, ADR 0471). */
@@ -1303,6 +1418,10 @@ export interface CoreDatabase {
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;
+  core_audit_archives: CoreAuditArchivesTable;
+  core_audit_archive_chunks: CoreAuditArchiveChunksTable;
+  core_audit_archive_items: CoreAuditArchiveItemsTable;
+  core_audit_archive_leases: CoreAuditArchiveLeasesTable;
   core_outbox: CoreOutboxTable;
   core_runners: CoreRunnersTable;
   core_runner_shares: CoreRunnerSharesTable;
@@ -1325,6 +1444,9 @@ export interface CoreDatabase {
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
   core_delivery_state: CoreDeliveryStateTable;
+  core_ci_reruns: CoreCiRerunsTable;
+  core_flakes: CoreFlakesTable;
+  core_flake_fixes: CoreFlakeFixesTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

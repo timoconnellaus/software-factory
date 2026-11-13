@@ -1,26 +1,36 @@
 // Factory: Workflows (spec 41, slice 5; design FactoryWorkflow). The project's named workflows
 // (ADR 0371) and the one it runs (ADR 0492), then that workflow's stages: the fixed skeleton with
-// the steps its three slots add. Read-only from `config.get`: workflows are changed on the website.
+// the steps its three slots add, from `config.get`. Edit workflows (`?edit=1`) edits them in the app
+// (ADR 0610): saved with the rest of the config, a loosening waits for an approver.
 // Stage types and shaping stages (spec 52) are design only, so the stages are the skeleton's.
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
+import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
   configProjectId,
+  EditToggle,
+  editSearch,
+  PendingChanges,
   ProjectPicker,
   projectSearch,
   useProjectConfig,
 } from "../components/config-parts.tsx";
 import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
+import { WorkflowsForm } from "../components/workflow-form.tsx";
 import { type StepView, skeleton, type WorkflowView, workflowList } from "../lib/config-view.ts";
-import { configQuery } from "../lib/factory-queries.ts";
+import { configQuery, orgWorkflowsQuery } from "../lib/factory-queries.ts";
+import { projectsQuery } from "../lib/queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
   project?: string;
+  edit?: boolean;
   workflow?: string;
 }
 
@@ -29,12 +39,26 @@ export const Route = createRoute({
   path: "/factory/workflows",
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...projectSearch(s),
+    ...editSearch(s),
     ...(typeof s.workflow === "string" ? { workflow: s.workflow } : {}),
   }),
-  loaderDeps: ({ search }) => ({ project: search.project }),
+  loaderDeps: ({ search }) => ({ project: search.project, edit: !!search.edit }),
   loader: async ({ context, deps }) => {
     const id = await configProjectId(context, deps.project);
-    if (id) await context.queryClient.ensureQueryData(configQuery(id)).catch(() => null);
+    if (!id) return;
+    const q = context.queryClient;
+    const orgId = context.session.orgs.length
+      ? (
+          await q
+            .ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id)))
+            .catch(() => [])
+        ).find((p) => p.id === id)?.orgId
+      : undefined;
+    await Promise.all([
+      q.ensureQueryData(configQuery(id)),
+      // The org's workflows the project may run, only when editing.
+      ...(deps.edit && orgId ? [q.ensureQueryData(orgWorkflowsQuery(orgId))] : []),
+    ]).catch(() => null);
   },
   component: WorkflowsPage,
 });
@@ -43,6 +67,7 @@ function WorkflowsPage() {
   const search = Route.useSearch();
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
+  const editing = !!search.edit && !!doc;
   const workflows = doc ? workflowList(doc) : [];
   const running = workflows.find((w) => w.current) ?? null;
   const shown =
@@ -53,10 +78,32 @@ function WorkflowsPage() {
         above={project?.name}
         title="Workflows"
         sub="A workflow fills the factory's fixed stages with steps of its own. Spec approval, verify and the merge gate always come from the factory. A project runs one workflow."
-        actions={<ProjectPicker projects={projects} project={project} from="/factory/workflows" />}
+        actions={
+          <>
+            <ProjectPicker projects={projects} project={project} from="/factory/workflows" />
+            {doc && (
+              <EditToggle
+                from="/factory/workflows"
+                projectId={project?.id}
+                editing={editing}
+                label="Edit workflows"
+              />
+            )}
+          </>
+        }
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
-      {doc && (
+      {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
+      {editing && project && (
+        // Keyed by the project: another project's page starts with no draft.
+        <WorkflowsEditing
+          key={project.id}
+          projectId={project.id}
+          orgId={project.orgId}
+          initial={shown?.name ?? null}
+        />
+      )}
+      {doc && !editing && (
         <>
           {workflows.length === 0 ? (
             <Empty>
@@ -111,7 +158,7 @@ function WorkflowsPage() {
         </>
       )}
       {project && config.data?.current && (
-        <ConfigFooter config={config.data} projectId={project.id} page="workflows" />
+        <ConfigFooter config={config.data} projectId={project.id} />
       )}
     </PageArea>
   );
@@ -166,5 +213,33 @@ function Slot({ label, steps }: { label: string; steps: StepView[] }) {
         ))
       )}
     </div>
+  );
+}
+
+function WorkflowsEditing({
+  projectId,
+  orgId,
+  initial,
+}: {
+  projectId: string;
+  orgId: string;
+  initial: string | null;
+}) {
+  const editor = useConfigDraft(projectId);
+  const [selected, setSelected] = useState(initial);
+  const org = useQuery(orgWorkflowsQuery(orgId));
+  // The org's own workflows a project may run (not the built-in ones for incidents and PRs).
+  const orgWorkflows = (org.data?.workflows ?? []).filter((w) => !w.builtIn);
+  return (
+    <>
+      <UnsavedGuard editor={editor} />
+      <WorkflowsForm
+        editor={editor}
+        selected={selected}
+        onSelect={setSelected}
+        orgWorkflows={orgWorkflows}
+      />
+      <SaveBar editor={editor} />
+    </>
   );
 }

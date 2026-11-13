@@ -8,7 +8,9 @@
     ".": "./src/index.ts",
     "./attachments": "./src/attachments.ts",
     "./attachment-rules": "./src/attachment-rules.ts",
+    "./audit-chain": "./src/audit-chain.ts",
     "./policy-gate": "./src/policy/gate.ts",
+    "./proof": "./src/verify/proof.ts",
     "./stages": "./src/stages/index.ts",
     "./testing": "./src/testing/index.ts"
   },

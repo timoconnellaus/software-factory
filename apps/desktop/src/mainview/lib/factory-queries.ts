@@ -25,6 +25,42 @@ export const configQuery = (projectId: string) =>
     staleTime: 30_000,
   });
 
+/** The factory's own practice changes on a project (ADR 0373), newest first. */
+export const trialsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "trials"],
+    queryFn: () => read("config.trials", { projectId, limit: 20 }),
+    staleTime: 30_000,
+  });
+
+/** The adjudicator's record against a project's people (spec gates and gate steps). */
+export const adjudicatorQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "adjudicator"],
+    queryFn: () => read("adjudicator.stats", { projectId }),
+    staleTime: 30_000,
+  });
+
+/** An org workflow with its stages' settings (a project on it overrides some of them). */
+export const orgWorkflowQuery = (orgId: string, workflowId: string) =>
+  queryOptions({
+    queryKey: ["workflow", orgId, workflowId],
+    queryFn: () => read("workflow.get", { orgId, workflowId }),
+    staleTime: 30_000,
+  });
+
+/** The org's workflows (spec 52), for a project to run one. */
+export const orgWorkflowsQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["workflows", orgId],
+    queryFn: () => read("workflow.list", { orgId }),
+    staleTime: 60_000,
+  });
+
+/** The org workflow a project's config runs on, if it names one (`wf_…`). */
+export const orgWorkflowOf = (doc: Record<string, unknown> | null | undefined): string | null =>
+  typeof doc?.workflow === "string" && doc.workflow.startsWith("wf_") ? doc.workflow : null;
+
 /** Every org's Setup status, for Settings' repositories (protection) and connections. */
 export const setupStatusesQuery = (orgIds: string[]) =>
   queryOptions({

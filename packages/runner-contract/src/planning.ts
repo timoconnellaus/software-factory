@@ -3,6 +3,7 @@
 // what news and waits answer. Shared by the cloud (operation inputs) and the harness (tool schemas),
 // so the two can't drift. Runtime-neutral.
 import { z } from "zod";
+import { designPreviewSchema } from "./planning-designs.ts";
 import { ARTIFACT_MAX_BYTES, controlSchema, UNIT_PATTERN } from "./planning-visuals.ts";
 
 /** Operations a planning job may run over `/runner/v1/jobs/:id/planning` (ADR 0350). */
@@ -19,6 +20,7 @@ export const PLANNING_OPS = [
   "artifact.show",
   "artifact.read",
   "design.pull",
+  "design.preview",
   "spec.revise",
   "chat.reply",
   "planning.news",
@@ -307,12 +309,32 @@ export const designPullInputSchema = z.object({
     }, "a design is .dbml, .d2, .mmd, .yaml or .yml; a mockup .html; a plan .md"),
 });
 
+/**
+ * What the harness adds to a design's save (spec 22 part B): the runner's checks passed, and this is
+ * the preview they drew. Never in the model's tool schema: the MCP server fills it.
+ */
+export const artifactAddCallSchema = artifactAddInputSchema.extend({
+  preview: designPreviewSchema.optional(),
+});
+export const artifactUpdateCallSchema = artifactUpdateInputSchema.extend({
+  preview: designPreviewSchema.optional(),
+});
+/**
+ * The preview of a revision the runner didn't write itself: a pulled file's base (revision 0) and
+ * its first revision (spec 22 part B). The harness calls it after `design.pull`; never a tool.
+ */
+export const designPreviewInputSchema = z.object({
+  artifactId: z.string().min(1),
+  revision: z.number().int().nonnegative(),
+  preview: designPreviewSchema,
+});
+
 export const artifactDeleteInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactShowInputSchema = z.object({ artifactId: z.string().min(1) });
 export const artifactReadInputSchema = z.object({
   artifactId: z.string().min(1),
-  /** A past revision; omitted, the latest. */
-  revision: z.number().int().positive().optional(),
+  /** A past revision; omitted, the latest. A pulled file's base is revision 0. */
+  revision: z.number().int().nonnegative().optional(),
 });
 
 export const coverageItemSchema = z.object({
@@ -374,6 +396,8 @@ export const planningNewsInputSchema = z.object({
 /** A hook's cheap look (a read): is there anything after `cursor` (default: the last delivered)? */
 export const planningPeekInputSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
+  /** The wait's quiet time after a person's last answer, so `dueAt` matches it (spec 44). */
+  idleMs: z.number().int().min(0).max(600_000).optional(),
 });
 export const planningWaitInputSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
@@ -407,6 +431,7 @@ export const PLANNING_TOOL_INPUTS = {
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
   "design.pull": designPullInputSchema,
+  "design.preview": designPreviewInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema.omit({ cursor: true, ack: true, hold: true }),
@@ -424,12 +449,13 @@ export const PLANNING_INPUTS = {
   "question.reorder": questionReorderInputSchema,
   "question.focus": questionFocusInputSchema,
   "question.answerFromEdit": questionAnswerFromEditInputSchema,
-  "artifact.add": artifactAddInputSchema,
-  "artifact.update": artifactUpdateInputSchema,
+  "artifact.add": artifactAddCallSchema,
+  "artifact.update": artifactUpdateCallSchema,
   "artifact.delete": artifactDeleteInputSchema,
   "artifact.show": artifactShowInputSchema,
   "artifact.read": artifactReadInputSchema,
   "design.pull": designPullInputSchema,
+  "design.preview": designPreviewInputSchema,
   "spec.revise": specReviseInputSchema,
   "chat.reply": chatReplyInputSchema,
   "planning.news": planningNewsInputSchema,
@@ -462,6 +488,8 @@ export const PLANNING_TOOL_DESCRIPTIONS: Record<PlanningOp, string> = {
     "A person's edit to the plan settled a question: record the answer it implies, as theirs (it shows as coming from their edit). Not for security, privacy or irreversible questions: ask the person instead.",
   "question.focus":
     "Bring a question to everyone's view (when you want an answer to it next). null clears.",
+  "design.preview":
+    "Not a tool: the planning MCP server stores the preview it drew of a pulled design's base.",
   "spec.revise":
     "Replace the living spec with a new revision: the whole spec every time (body, criteria, assumptions, coverage, clarifications). Tag every statement with its source: [Qn], [request], [repo], [parent] or [assumption]. Keep every line a person edited word for word (refused otherwise): if one must change, ask them in the chat.",
   "chat.reply": "Reply in the planning chat, optionally about a question or to a message.",

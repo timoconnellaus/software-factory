@@ -26,6 +26,16 @@ export interface Session {
   keyStorage: "secure-enclave" | "software" | null;
   signingIn: boolean;
   error: string | null;
+  /**
+   * While signing in: the new device key's fingerprint, which the website's approval page shows
+   * too. The person approves only when they match (spec 40 M4b).
+   */
+  keyFingerprint: string | null;
+  /**
+   * This Mac has a software key but its build has a working key helper: it can keep its key in the
+   * Secure Enclave by signing in again (spec 40 M4b, migration).
+   */
+  keyUpgrade: boolean;
 }
 
 /**
@@ -45,7 +55,29 @@ export interface UpdateStatus {
   jobs: number;
   waitingForRunner: number | null;
   downloadUrl: string;
+  /** Check for updates (Settings > This Mac, the menus): where the latest check is or what it found. */
+  phase: CheckPhase;
+  /** When a check last finished (epoch ms), or null. */
+  checkedAt: number | null;
+  /** This build's version and channel, once read. */
+  installed: string | null;
+  channel: string | null;
+  /** Why the last check failed, or why this build takes no updates, in plain words. */
+  reason: string | null;
 }
+
+/**
+ * idle: not checked yet. checking, downloading: a check is running. up-to-date, ready, failed:
+ * what the last one found. off: this build takes no updates (a dev or unsigned build).
+ */
+export type CheckPhase =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "up-to-date"
+  | "ready"
+  | "failed"
+  | "off";
 
 /**
  * An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. A call a
@@ -69,6 +101,10 @@ export type AppRPC = {
       session: { params: Record<string, never>; response: Session };
       signIn: { params: Record<string, never>; response: Session };
       signOut: { params: Record<string, never>; response: Session };
+      /** Sign out and straight back in, making a Secure Enclave key (spec 40 M4b, migration). */
+      signInAgain: { params: Record<string, never>; response: Session };
+      /** The person cancelled the decision waiting for Touch ID: the sheet goes away. */
+      cancelTouchId: { params: Record<string, never>; response: { cancelled: boolean } };
       /** One operation; a form submit passes an idempotency key so a retry runs once. */
       call: {
         params: { op: string; input: unknown; idempotencyKey?: string };
@@ -110,10 +146,17 @@ export type AppRPC = {
        * restart: only while the runner is idle. restart-when-idle: once its jobs end.
        * restart-anyway: cancels its jobs (the view named them). download: opens the download.
        * retry: forget update_required and try the door again (the floor may have been lowered).
+       * check: a person asked to check for updates now (not rate-limited; joins one running).
        */
       updateAction: {
         params: {
-          action: "restart" | "restart-when-idle" | "restart-anyway" | "download" | "retry";
+          action:
+            | "restart"
+            | "restart-when-idle"
+            | "restart-anyway"
+            | "download"
+            | "retry"
+            | "check";
         };
         response: UpdateStatus;
       };
@@ -124,6 +167,8 @@ export type AppRPC = {
     requests: Record<string, never>;
     messages: {
       sessionChanged: Session;
+      /** A decision is waiting for Touch ID (its summary, the sheet's words), or none is (null). */
+      touchIdChanged: { summary: string | null };
       runnerChanged: RunnerState;
       inboxChanged: { count: number };
       planningChanged: { workItemId: string };

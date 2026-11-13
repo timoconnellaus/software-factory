@@ -107,3 +107,35 @@ keep gate approvals on the desktop with Touch ID, so the helper has to be made t
   checks that keep the key to the helper can be bypassed by an admin.
 - `DESKTOP_ALLOW_SOFTWARE_KEYS` stays empty in production. This ADR doesn't change which keys may
   decide.
+
+## Amendment, 2026-11-13: where and when the helper is signed (the spike)
+Tried with the real Developer ID and the `SF Keys Developer ID` profile, on a signed `electrobun
+build` (Electrobun 2.0.6):
+- **Electrobun re-signs nested bundles wherever they are.** A helper placed in `postBuild` (the
+  only hook before Electrobun signs) at `Contents/Helpers/SF Keys.app` *and* at
+  `Contents/Resources/SF Keys.app` came out signed with the app's entitlements (JIT,
+  unsigned-executable-memory and `disable-library-validation`), without its access group. The
+  profile stayed but authorised nothing. Neither place survives, so `Resources` buys nothing.
+- **`postWrap` is too late**: by then the app is already in the update archive (`.app.tar.zst`),
+  and what it wraps is the self-extractor we don't ship.
+- **So the helper goes in at `postPackage`** (`apps/desktop/scripts/keys-helper.ts`), the spec's
+  third route: unpack Electrobun's archive, put the helper at `Contents/Helpers/SF Keys.app`, sign
+  it with its own entitlements, re-sign the app's outer seal (main executable and seal only, no
+  `--deep`, with the entitlements Electrobun used), run the helper once (the launch smoke test),
+  notarize and staple again ourselves, then tar and compress as Electrobun does and rewrite the
+  `-update-v2.json` manifest's `tarSha256`/`tarSize`. The first-install zip is made from that
+  archive, as before. **Delta patches are off** on releases with the helper
+  (`release.generatePatch`): Electrobun diffs against its own archive, which this replaces.
+- Locally (signed, not notarized) the rebuilt app and the zip both pass `codesign --verify --deep
+  --strict`; the helper keeps its identifier, Team ID, secure timestamp, hardened runtime, its three
+  entitlements and the byte-identical profile, and launches and reports the access group. The same
+  helper without its profile is killed at launch (exit 137), which is what the smoke test catches.
+  Notarization, `spctl --assess` and the stapled ticket are proved on the first release run with
+  `MACOS_KEYS_PROFILE` (the `release` environment only runs on main).
+- **Proved on a real release, 2026-11-13: canary 0.1.55** (the first run with the profile). The
+  hook's second notarization was accepted and stapled; `spctl` accepts the app as Notarized
+  Developer ID in the download zip and in the update archive; the helper keeps its identifier,
+  hardened runtime, secure timestamp, its three entitlements and the byte-identical profile; and
+  the published zip, downloaded to the M5, launches the helper with its access group (macOS
+  accepted the profile).
+

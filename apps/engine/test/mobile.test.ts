@@ -882,7 +882,12 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
     ).all();
     expect(tables.results).toEqual([]);
     const before = await rows();
-    const from = "203.0.113.200";
+    // The limiter's windows are aligned to the wall clock (a minute here, wrangler.jsonc), so 12
+    // calls that straddle a boundary start counting again: begin in a fresh window, with a caller
+    // no other test uses.
+    const left = 60_000 - (Date.now() % 60_000);
+    if (left < 5_000) await new Promise((r) => setTimeout(r, left + 50));
+    const from = "203.0.113.211";
     const answers = [];
     for (let i = 0; i < 12; i++) {
       answers.push((await post("mobile/nonce", {}, undefined, PROTOCOL, from)).status);
@@ -979,11 +984,27 @@ describe("the typed code's limits hold under parallel guessing (review of PR 1a)
 
   it("two offers never share a live tag, so wrong codes count against one offer only", async () => {
     const w = await world();
-    const offers = await Promise.all(
+    // Made at once, each picks a random tag among 1,024; two can pick the same one (about 1% for
+    // five). The insert's guard is what keeps live tags unique: the later one is refused, never
+    // stored with a shared tag. So every offer made has its own tag, and any refusal is the guard.
+    const made = await Promise.allSettled(
       Array.from({ length: 5 }, () => ok<{ code: string }>("mobile.pairOffer", {}, w.human)),
     );
+    const offers = made.flatMap((m) => (m.status === "fulfilled" ? [m.value] : []));
+    for (const m of made) {
+      if (m.status === "rejected") expect(m.reason).toMatchObject({ code: "conflict" });
+    }
+    expect(offers.length).toBeGreaterThan(0);
     const tags = offers.map((o) => o.code.slice(0, 2));
     expect(new Set(tags).size).toBe(tags.length);
+    // And in the table: no two live offers share a tag.
+    const dupes = await env.DB.prepare(
+      `SELECT code_tag FROM core_pair_offers WHERE consumed_at IS NULL AND closed_at IS NULL
+         AND expires_at > ? GROUP BY code_tag HAVING COUNT(*) > 1`,
+    )
+      .bind(new Date().toISOString())
+      .all();
+    expect(dupes.results).toEqual([]);
   });
 
   it("the caller hash is keyed by the engine's secret", async () => {
@@ -1405,7 +1426,7 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
     const fresh = { workItemId, openedFullDiff: true, headSha: head };
     const proof = await prove(token, p, "review.merge", fresh);
     expect(proof.summary).toMatch(
-      /^Merge 3f2a91c "Guard the tests in verify" into main of [^ ]+\/[^ ]+$/,
+      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Guard the tests in verify"$/,
     );
     // Merging without checks the runner couldn't run is refused on the phone, in the engine: no
     // challenge is issued for it, and a proof for the plain merge doesn't carry it (fifth review).

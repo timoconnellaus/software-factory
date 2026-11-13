@@ -7,6 +7,8 @@ import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as audit from "./operations/audit.ts";
+import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
@@ -46,6 +48,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   backlog.workItemRelease,
   backlog.workItemShape,
   backlog.workItemReleaseChoice,
+  backlog.workItemRepinWorkflow,
   backlog.workItemShaped,
   backlog.workItemParkForInfo,
   backlog.workItemMove,
@@ -63,6 +66,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   config.configSave,
   config.configRollback,
   config.configExport,
+  config.overrideApprove,
   improve.improveScan,
   improve.configTrialStart,
   improve.configTrialResolve,
@@ -128,6 +132,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   artifacts.artifactGet,
   artifacts.artifactRead,
   artifacts.designPull,
+  artifacts.designPreview,
   planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
@@ -191,11 +196,17 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.mainObserve,
   delivery.workItemMarkRepair,
   delivery.deliveryStatus,
+  delivery.mainRedAttribute,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
+  babysit.babysitWake,
+  babysit.babysitNext,
+  babysit.ciRerun,
+  babysit.flakeRecord,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,
+  verify.checksProvable,
   verify.verifyRefresh,
   verify.prAutoMerge,
   verify.projectCheckGitHub,
@@ -203,6 +214,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   connector.pushObserve,
   connector.githubInstallation,
   incidents.incidentOpen,
+  audit.auditVerify,
+  audit.auditArchiveHealth,
+  incidents.incidentListArchiveMissing,
+  incidents.incidentResolve,
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,
@@ -225,6 +240,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   terminal.runTerminalAttach,
   terminal.runTerminalDetach,
   terminal.runTerminalHost,
+  terminal.runTerminalCloseStale,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

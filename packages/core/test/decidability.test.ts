@@ -27,6 +27,7 @@ const INPUTS: Record<string, Record<string, unknown>[]> = {
   "approval.decide": [{ decision: "approved" }, { decision: "rejected" }],
   "chat.send": [{ interrupt: true }],
   "killSwitch.set": [{ on: false }],
+  "orgConfig.adoptProjectWorkflows": [{ dryRun: false }, { dryRun: true }],
   "review.merge": [{}, { mergeWithoutChecks: true }],
 };
 
@@ -64,7 +65,7 @@ describe("device decidability (ADR 0541 decision 5)", () => {
     expect(table()).toMatchInlineSnapshot(`
       {
         "agent.save": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "approval.decide {"decision":"approved"}": {
@@ -92,7 +93,7 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "mobile": "proof",
         },
         "killSwitch.set {"on":false}": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "mobile.approveDevice": {
@@ -111,12 +112,20 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "refused",
           "mobile": "proof",
         },
-        "orgConfig.adoptProjectWorkflows": {
-          "desktop": "refused",
+        "orgConfig.adoptProjectWorkflows {"dryRun":false}": {
+          "desktop": "proof",
+          "mobile": "refused",
+        },
+        "orgConfig.adoptProjectWorkflows {"dryRun":true}": {
+          "desktop": "one tap",
           "mobile": "refused",
         },
         "orgConfig.rollback": {
-          "desktop": "refused",
+          "desktop": "proof",
+          "mobile": "refused",
+        },
+        "override.approve": {
+          "desktop": "proof",
           "mobile": "refused",
         },
         "planning.acceptDefaults": {
@@ -200,15 +209,15 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "mobile": "one tap",
         },
         "workflow.archive": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "workflow.createFromTemplate": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
         "workflow.save": {
-          "desktop": "refused",
+          "desktop": "proof",
           "mobile": "refused",
         },
       }

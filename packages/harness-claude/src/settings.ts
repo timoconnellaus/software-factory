@@ -406,6 +406,8 @@ export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   planning: "dontAsk",
   build: "bypassPermissions",
   verify: "dontAsk",
+  // The babysitter resolves conflicts and reads CI logs (spec 53): a build's sandboxed mode.
+  babysit: "bypassPermissions",
 };
 
 /**
@@ -418,6 +420,7 @@ export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
   planning: "bypassPermissions",
   build: "bypassPermissions",
   verify: "bypassPermissions",
+  babysit: "bypassPermissions",
 };
 
 /** The permission mode a stage runs in: the project's choice, else the isolation's default. */
@@ -463,6 +466,7 @@ export function stageAllow(
     case "verify":
       return [...read, ...writeResult, ...bash(TOOLCHAIN)];
     case "build":
+    case "babysit":
       return [
         ...read,
         "Edit",
@@ -513,19 +517,17 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
     ...(options.denyReadFiles ?? []).map((p) => `Read(${abs(p)})`),
+    // Edit denies cover every file tool that writes (Write included); Claude Code warns that a
+    // Write(<path>) deny never matches.
     ...writeDeny.map((p) => `Edit(${p})`),
-    ...writeDeny.map((p) => `Write(${p})`),
     // The worktree's git internals are the host's (it pushes from them).
     "Edit(.git/**)",
-    "Write(.git/**)",
     // Bypass mode allows every tool: WebFetch isn't sandboxed, so it can't be held to the host
     // allowlist there. Builds fetch through sandboxed commands (to the allowlist) instead.
     ...(mode === "bypassPermissions" ? ["WebFetch"] : []),
     // The attachments are the requester's, read only (additionalDirectories would otherwise make
     // them writable for the file tools).
-    ...(options.attachmentsDir
-      ? [`Edit(${abs(options.attachmentsDir)}/**)`, `Write(${abs(options.attachmentsDir)}/**)`]
-      : []),
+    ...(options.attachmentsDir ? [`Edit(${abs(options.attachmentsDir)}/**)`] : []),
   ];
   const git = options.git;
   const gitWrite = git

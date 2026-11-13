@@ -70,6 +70,33 @@ jobs:
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build
 
+  # The key helper's Swift unit tests (spec 40 M4b): the presence-message parser, the tag
+  # allowlist, the exit codes. GitHub's macOS VMs have no Secure Enclave, so nothing here makes a key.
+  key-helper-macos:
+    name: key helper (macOS)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: swift test --package-path apps/desktop/native/sf-keys-app
+      # The release's profile check reads a profile and a signature with plutil and codesign on this
+      # same macOS image: run it on a synthetic profile and an ad-hoc signed binary, so a tool change
+      # here fails CI and not a release (it once did: on macOS 15, `plutil -extract … json` reading stdin
+      # exits 1 with no output).
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          # Only node runs here, no install: setup-node would look for pnpm to cache.
+          package-manager-cache: false
+      - name: Profile check self-test
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          cp /usr/bin/true "$work/signed"
+          sed 's/TEAM_ID/ABCDE12345/g' apps/desktop/native/sf-keys-app/sf-keys.entitlements > "$work/ents.plist"
+          codesign --force --sign - --entitlements "$work/ents.plist" "$work/signed"
+          node apps/desktop/scripts/check-profile.ts --self-test apps/desktop/test/fixtures/sf-keys-profile.plist "$work/signed"
+
   # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
   # toolchain under it (hostedtoolcache, setup-pnpm), required.
   check-sandbox-macos:

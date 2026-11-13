@@ -4,21 +4,24 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
   resolveScope,
+  SCHEDULER,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
+import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
-import worker, { pruneCheckResults } from "../src/index.ts";
+import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
-import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
-import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
+import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
+import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
 let w: World;
@@ -94,6 +97,30 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 part A: the held steer call waits in the Worker, reading every HELD_POLL_MS whether
+    // the run has a queued steer (core_run_steers_undelivered_idx). One poll at least.
+    name: "the held steer call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+      });
+    },
+  },
+  {
+    // Spec 44 part A: the held terminal call reads whether the run has an open attach
+    // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
+    name: "the held terminal call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).terminal?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+      });
+    },
+  },
+  {
     // Every planning call finds its session by the job. The test's job is dressed as a planning
     // run for the call, so the real lookup runs (and is refused: there is no session).
     name: "a planning call's session lookup",
@@ -117,7 +144,141 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       }
     },
   },
+  {
+    // Spec 44 part A3: the held planning wait polls planning.peek in the Worker (the session by its
+    // job, the events after the cursor on (work_item_id, id), the open questions), every 3 s.
+    name: "the held planning wait's poll (planning.peek, spec 44)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan the guard" },
+        w.human,
+      );
+      await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+      const c = await channel(env, w.runner.runnerId);
+      let planningJob: { jobId: string; fencingToken: number } | null = null;
+      for (let i = 0; i < 200 && !planningJob; i++) {
+        const { job: got } = await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 1, accepting: true, light: { max: 6, inUse: 0 } },
+        });
+        if (got?.stage === "planning") {
+          planningJob = { jobId: got.jobId, fencingToken: got.lease.fencingToken };
+        } else if (!got) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!planningJob) throw new Error("no planning job");
+      return (await channel(e, w.runner.runnerId)).planning?.(planningJob.jobId, {
+        fencingToken: planningJob.fencingToken,
+        op: "planning.wait",
+        input: { timeoutMs: 3_500 },
+      });
+    },
+  },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
+  {
+    // Polled by an open item; its runs query joins each run's archive incident
+    // (core_incidents_run_idx). The item has a running job, so it has a run.
+    name: "workItem.get (polled)",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      return as(e, "workItem.get", { workItemId: item }, w.human);
+    },
+  },
+  {
+    // Not polled, but per push: a person's push to a factory item's branch at its merge stage
+    // (ADR 0587) reads the item, its open gates and its queue entry, then moves its head.
+    name: "a person's push to a factory item's branch (push.observe)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Pushed to" },
+        w.human,
+      );
+      const row = await e.DB.prepare("SELECT branch, number FROM core_work_items WHERE id = ?")
+        .bind(item.workItemId)
+        .first<{ branch: string; number: number }>();
+      const branch = String(row?.branch);
+      // Its Workflow has entered triage (so it won't set the stage after the update below).
+      await waitFor("the triage job", () =>
+        e.DB.prepare("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'triage'")
+          .bind(item.workItemId)
+          .first(),
+      );
+      const before = await github.push(w.repo, branch, undefined, ["src/a.ts"]);
+      await e.DB.prepare(
+        "UPDATE core_work_items SET stage = 'merge', status = 'waiting', head_sha = ? WHERE id = ?",
+      )
+        .bind(before, item.workItemId)
+        .run();
+      const after = await github.push(w.repo, branch, undefined, ["docs/b.md"]);
+      const pushed = await invoke<{ outcome: string }>(
+        invokeDeps(e),
+        "push.observe",
+        {
+          repo: { owner: w.repo.owner, name: w.repo.repo },
+          ref: `refs/heads/${branch}`,
+          before,
+          after,
+          pusher: "octocat",
+          pusherIsApp: false,
+        },
+        { actor: { type: "intake", id: "github" }, origin: { surface: "test" } },
+      );
+      // The whole path ran: the gate and queue reads, and the head moved.
+      if (pushed.status !== "ok" || pushed.output.outcome !== "reverify") {
+        throw new Error(`push.observe: ${JSON.stringify(pushed)}`);
+      }
+    },
+  },
+  {
+    // Per check suite on the default branch (spec 53 part e, decision 7): main.observe opening a
+    // red episode reads the suspects and the heads to hold, asks for the rerun, and records them.
+    name: "main.observe opening a red episode (suspects, held heads)",
+    run: async (e) => {
+      const repo = { owner: w.repo.owner, name: w.repo.repo };
+      const github_ = {
+        actor: { type: "intake", id: "github" } as const,
+        origin: { surface: "test" as const },
+      };
+      const main = String(await github.getBranchSha(w.repo, "main"));
+      const ci = (conclusion: string) => [
+        {
+          name: "ci",
+          status: "completed" as const,
+          conclusion,
+          appSlug: "github-actions",
+          url: null,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+        },
+      ];
+      await github.setChecks(w.repo, main, ci("success"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+      await github.setChecks(w.repo, main, ci("failure"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+      // While red: verify.refresh's held check, and naming a culprit (refused: not a suspect).
+      await invoke(
+        invokeDeps(e),
+        "verify.refresh",
+        { repo, headSha: main, trigger: "rerequested" },
+        github_,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { projectId: w.projectId, title: "Not a suspect" },
+        w.human,
+      );
+      await as(e, "mainRed.attribute", { workItemId: item.workItemId, why: "x" }, w.human).catch(
+        () => null,
+      );
+      // Green again: the release.
+      await github.setChecks(w.repo, main, ci("success"));
+      await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+    },
+  },
   {
     name: "workItem.list by org (polled)",
     run: (e) => as(e, "workItem.list", { orgId: w.orgId }, w.human),
@@ -198,6 +359,11 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 53 §4: the babysitter's reruns and known flakes past their 30 days, oldest first.
+    name: "the babysitter's prune (reruns and known flakes)",
+    run: (e) => pruneBabysit(e.DB, new Date()),
+  },
+  {
     name: "the hourly prunes (retention)",
     run: (e) => pruneExpired(e.DB, new Date()),
   },
@@ -238,7 +404,7 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
-    // Last two: they end the test's run 31 days ago, archive it, and read it back.
+    // The last four: they end the test's run 31 days ago, archive it, read it back, and lose one of its objects.
     name: "archiving an ended run's events (retention)",
     run: async (e) => {
       if (!job) return null;
@@ -259,6 +425,105 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
     },
+  },
+  {
+    // Every five minutes: the audit archiver's tick (ADR 0591). With a day recorded 100 days ago,
+    // the days after it are due: each takes its lease, finds the rowid floor with probes, bounds
+    // the window, reads a page and records the (empty) day. Its chunk batches run over real old
+    // rows in audit-archive.test.ts, under the same check.
+    name: "the audit archive's tick",
+    run: async (e) => {
+      const day = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 0, 0, ?, ?, ?)",
+      )
+        .bind(day, "0".repeat(64), "0".repeat(64), new Date().toISOString())
+        .run();
+      return archiveAudit(e, new Date(), { rows: 1_000 });
+    },
+  },
+  {
+    // Polled by an open item's Activity tab: the D1 entries and the item's archived chunks, one
+    // request; then, on demand, the archived entries read back.
+    name: "workItem.timeline, with its archived entries",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      await as(e, "workItem.timeline", { workItemId: item }, w.human);
+      return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
+    },
+  },
+  {
+    // The archiver's health report (only after three stopped ticks, or the tick after): the open
+    // archiver incident on core_incidents_audit_archive_idx.
+    name: "audit.archiveHealth",
+    run: (e) =>
+      as(e, "audit.archiveHealth", { stopped: false }, SCHEDULER as unknown as World["human"]),
+  },
+  {
+    // An org admin's verify of the chain (on demand): the days and their chunks by primary key.
+    name: "audit.verify",
+    run: (e) => {
+      const to = new Date(Date.now() - 95 * 86_400_000).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
+    },
+  },
+  {
+    // The archive's daily sample, with one of the run's objects gone: it finds the gap (the top
+    // rowid, then the picks by rowid) and reports it through run.reportArchiveMissing as the
+    // scheduler, which opens the run's one incident record.
+    name: "the archive's daily sample, reporting a missing object",
+    run: async (e) => {
+      // The run's archive index names an object that isn't in the bucket (the run had no events of
+      // its own to archive, so the chunk is recorded here, as the archiver records one).
+      const run = await env.DB.prepare("SELECT id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("id");
+      const key = `runs/${run}/events/0-0.ndjson`;
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO core_run_archive_chunks
+           (run_id, first_seq, last_seq, r2_key, rows, bytes, sha256, archived_at)
+         VALUES (?, 0, 0, ?, 1, 1, 'x', ?)`,
+      )
+        .bind(run, key, new Date().toISOString())
+        .run();
+      await env.ARCHIVE.delete(key);
+      const top = await env.DB.prepare(
+        "SELECT max(rowid) AS top FROM core_run_archive_chunks",
+      ).first<number>("top");
+      const at = await env.DB.prepare("SELECT rowid FROM core_run_archive_chunks WHERE r2_key = ?")
+        .bind(key)
+        .first<number>("rowid");
+      const missing = await sampleArchive(e, new Date(), 1, () => ((at ?? 1) - 0.5) / (top ?? 1));
+      if (!missing.includes(key)) throw new Error(`the sample didn't find ${key} missing`);
+      return missing;
+    },
+  },
+  {
+    // A viewer meeting the same gap once the incident is recorded: the chunk and the run's incident.
+    name: "run.reportArchiveMissing (a viewer, incident already recorded)",
+    run: async (e) => {
+      const run = await env.DB.prepare(
+        "SELECT r.id, r.work_item_id, c.first_seq FROM core_runs r JOIN core_run_archive_chunks c ON c.run_id = r.id WHERE r.job_id = ? AND c.first_seq = 0",
+      )
+        .bind(job?.jobId)
+        .first<{ id: string; work_item_id: string; first_seq: number }>();
+      if (!run) throw new Error("the run wasn't archived");
+      return as(
+        e,
+        "run.reportArchiveMissing",
+        { workItemId: run.work_item_id, runId: run.id, firstSeq: run.first_seq },
+        w.human,
+      );
+    },
+  },
+  {
+    // Read when the desktop's Checks and incidents page opens (not polled): the open archive
+    // incidents on core_incidents_open_archive_idx, newest first, no sort.
+    name: "incident.listArchiveMissing",
+    run: (e) => as(e, "incident.listArchiveMissing", { orgId: w.orgId }, w.human),
   },
 ];
 

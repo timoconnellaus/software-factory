@@ -136,7 +136,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
           node scripts/publish-release.ts check \
             --channel "${{ steps.channel.outputs.channel }}" \
@@ -179,10 +179,41 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           printf %s "$ASC_KEY_P8" > "$RUNNER_TEMP/notary.p8"
 
+      # The key helper's provisioning profile (spec 40 M4b, ADR 0394). Without it the release ships
+      # without the helper, as before M4b, and says so; with it, every helper step below runs and
+      # must pass.
+      - name: Key helper profile
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          MACOS_KEYS_PROFILE: ${{ secrets.MACOS_KEYS_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_KEYS_PROFILE" ]; then
+            msg="No key helper: the release environment has no MACOS_KEYS_PROFILE, so this build ships without SF Keys.app (a software key, no gate decisions from the desktop; spec 40 M4b)."
+            echo "::notice title=Key helper skipped::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          profile="$RUNNER_TEMP/sf-keys.provisionprofile"
+          printf %s "$MACOS_KEYS_PROFILE" | base64 --decode > "$profile"
+          security cms -D -i "$profile" > /dev/null || { echo "::error::MACOS_KEYS_PROFILE is not a provisioning profile"; exit 1; }
+          echo "SF_KEYS_PROFILE=$profile" >> "$GITHUB_ENV"
+          # The hook rebuilds the update archive with zstd, as Electrobun compresses it.
+          command -v zstd > /dev/null || brew install zstd
+
+      # The helper's parser and allowlist (spec 40 M4b), before it is built into a release.
+      - name: Key helper unit tests
+        if: steps.secrets.outputs.ready == 'true' && env.SF_KEYS_PROFILE != ''
+        run: |
+          swift test --package-path apps/desktop/native/sf-keys-app
+          node apps/desktop/scripts/check-profile.ts --self-test apps/desktop/test/fixtures/sf-keys-profile.plist
+
       - name: Build, sign and notarize
         if: steps.secrets.outputs.ready == 'true'
         working-directory: apps/desktop
         # Electrobun signs and notarizes itself (after it writes the build hash into the bundle).
+        # With SF_KEYS_PROFILE, the postPackage hook then adds the key helper, re-signs the outer
+        # seal and notarizes again (scripts/keys-helper.ts).
         env:
           SF_DESKTOP_VERSION: ${{ steps.channel.outputs.version }}
           ELECTROBUN_DEVELOPER_ID: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -207,6 +238,49 @@ jobs:
           spctl --assess --type exec --verbose=2 "$app"
           xcrun stapler validate "$app"
 
+      # The helper as a downloaded and an updated Mac get it: signature, requirement, entitlements,
+      # embedded profile, Gatekeeper, and the launch smoke test (spec 40 M4b).
+      - name: Check the key helper
+        if: steps.secrets.outputs.ready == 'true' && env.SF_KEYS_PROFILE != ''
+        working-directory: apps/desktop
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          mkdir "$work/zip" "$work/tar"
+          ditto -x -k "artifacts/$CHANNEL-macos-arm64-Software-Factory.zip" "$work/zip"
+          installed=$(cd "$work/zip" && ls -d -- *.app)
+          # The update archive as the updater stages it (update-verify.ts, stagedBundle): unpacked
+          # into `<App>.app.prepared-<hash>/`, holding exactly one bundle under the installed app's
+          # name. The rebuilt archive must keep that layout.
+          tops=$(zstd -q -dc artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst | tar -tf - | cut -d/ -f1 | sort -u)
+          if [ "$tops" != "$installed" ]; then
+            echo "::error::the update archive holds [$tops], not one bundle named $installed"; exit 1
+          fi
+          staged="$work/tar/$installed.prepared-check"
+          mkdir -p "$staged"
+          tar -xf artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst -C "$staged"
+          sh scripts/check-keys-helper.sh "$work/zip/$installed" "$TEAM_ID" "$SF_KEYS_PROFILE"
+          sh scripts/check-keys-helper.sh "$staged/$installed" "$TEAM_ID" "$SF_KEYS_PROFILE"
+          # The rebuilt update archive is the one its manifest names: the updater checks both.
+          archive=$(ls artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst)
+          zstd -dc "$archive" > "$work/app.tar"
+          sha=$(shasum -a 256 "$work/app.tar" | cut -d' ' -f1)
+          size=$(stat -f %z "$work/app.tar")
+          manifests=$(ls artifacts/*-update-v2.json)
+          [ -n "$manifests" ] || { echo "::error::no -update-v2.json manifest"; exit 1; }
+          for manifest in $manifests; do
+            want_sha=$(node -p "require('./$manifest').artifact.tarSha256")
+            want_size=$(node -p "require('./$manifest').artifact.tarSize")
+            if [ "$sha" != "$want_sha" ] || [ "$size" != "$want_size" ]; then
+              echo "::error::the update archive ($sha, $size bytes) isn't the one $manifest names ($want_sha, $want_size)"; exit 1
+            fi
+          done
+          echo "update archive matches its manifest ($sha, $size bytes)"
+          rm -rf "$work"
+
       # Versioned object names, uploaded before the manifests, which go last: a client never sees a
       # manifest naming an archive that isn't there yet, nor an old archive under a new hash.
       # The upload uses an R2 token scoped to this one bucket, held only by this environment.
@@ -216,7 +290,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: https://${{ vars.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
           node scripts/publish-release.ts upload \
             --channel "${{ steps.channel.outputs.channel }}" \
@@ -228,3 +302,4 @@ jobs:
         run: |
           [ -n "${MACOS_KEYCHAIN:-}" ] && security delete-keychain "$MACOS_KEYCHAIN" || true
           rm -P -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/devid.p12" "$RUNNER_TEMP/devid.pem" "$RUNNER_TEMP/devid-once.p12" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/sf-keys.provisionprofile"

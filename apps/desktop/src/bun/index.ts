@@ -3,10 +3,19 @@
 // The desktop token and the device key stay here; the view only ever sees results.
 import { hostname } from "node:os";
 import { join } from "node:path";
-import Electrobun, { BrowserView, BrowserWindow, Tray, Updater, Utils } from "electrobun/main";
+import Electrobun, {
+  ApplicationMenu,
+  BrowserView,
+  BrowserWindow,
+  Tray,
+  Updater,
+  Utils,
+} from "electrobun/main";
 import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
+import { checkSummary } from "../shared/update-check.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
+import { helper } from "./device-key.ts";
 import { Door } from "./door.ts";
 import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
@@ -85,6 +94,9 @@ const ops = operationHandlers({
   },
 });
 const guarded = ops.guarded;
+// While a decision waits for Touch ID the view shows "Waiting for Touch ID: <summary>" (the sheet's
+// words) with Cancel (spec 40 M4b).
+helper.watch({ waiting: (summary) => toView("touchIdChanged", { summary }) });
 // Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
 const terminals = new Terminals(
   ENGINE_URL,
@@ -116,6 +128,20 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         setBadge(0);
         return auth.session();
       },
+      signInAgain: async () => {
+        try {
+          const url = await auth.signInAgain(() => {
+            live.stop();
+            terminals.closeAll();
+            setBadge(0);
+          });
+          Utils.openExternal(url);
+        } catch (error) {
+          auth.error = error instanceof Error ? error.message : "couldn't start the sign-in";
+        }
+        return auth.session();
+      },
+      cancelTouchId: () => ({ cancelled: helper.cancel() }),
       // Operations through the client door; gate decisions only through decide (operations.ts).
       call: ops.call,
       batch: ops.batch,
@@ -146,6 +172,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
           updateRequired = false;
           live.start();
         }
+        // Settings > This Mac: the view shows the check as it runs (updateChanged).
+        if (action === "check") void updates.checkByPerson();
         pushUpdate();
         return updateStatus();
       },
@@ -210,6 +238,7 @@ const RUNNER_LABEL: Record<RunnerState["status"], string> = {
   failed: "failed",
 };
 let told: string | null = null;
+let logged: string | null = null;
 const updates = new Updates(
   // Electrobun's Updater has more than this; these are the parts updates.ts uses.
   { updater: Updater as unknown as UpdaterLike, exec: bunExec, appPath: runningAppPath() },
@@ -224,7 +253,8 @@ const updates = new Updates(
       });
     }
     told = say ?? told;
-    if (u.error) console.log(`updates: ${u.error}`);
+    if (u.error && u.error !== logged) console.log(`updates: ${u.error}`);
+    logged = u.error;
     pushUpdate();
   },
 );
@@ -257,7 +287,26 @@ function updateStatus(): UpdateStatus {
     jobs: liveJobs().length,
     waitingForRunner,
     downloadUrl,
+    phase: u.phase,
+    checkedAt: u.checkedAt,
+    installed: u.installed,
+    channel: u.channel,
+    reason: u.reason,
   };
+}
+
+/**
+ * Check for Updates… (the app menu and the menu bar): a person asked, so no gap applies; a press
+ * while a check runs joins it. With the window open, Settings > This Mac shows the check as it
+ * runs; with it closed, the menu bar's status line does, and a notification says what it found.
+ */
+async function checkFromMenu() {
+  if (win) openWindow("/settings");
+  const wasReady = updates.state.ready;
+  await updates.checkByPerson();
+  // Becoming ready already notified (onChange); anything else, or ready again, is said here.
+  if (!win && (!updates.state.ready || wasReady))
+    Utils.showNotification({ title: "Software Factory", body: checkSummary(updateStatus()) });
 }
 function pushUpdate() {
   toView("updateChanged", updateStatus());
@@ -271,6 +320,16 @@ let restartWhenIdle = false;
 /** The update menu items: no job is cancelled for an update unless the person says so. */
 function updateItems() {
   const u = updates.state;
+  // A check running: its status line, so a person who asked from the menu sees it.
+  if (u.phase === "checking" || u.phase === "downloading")
+    return [
+      {
+        type: "normal" as const,
+        label: u.phase === "checking" ? "Checking for updates…" : `Downloading ${u.version}…`,
+        action: "noop",
+        enabled: false,
+      },
+    ];
   if (u.needsMove)
     return [
       {
@@ -419,6 +478,7 @@ function refreshTray() {
       : []),
     { type: "divider" },
     ...updateItems(),
+    { type: "normal", label: "Check for Updates…", action: "check-updates" },
     { type: "normal", label: "Open Software Factory", action: "open" },
     { type: "normal", label: "Launch at login", action: "login-item", checked: loginItemEnabled() },
     { type: "normal", label: "Quit", action: "quit" },
@@ -445,6 +505,56 @@ tray.on("tray-clicked", async (e: unknown) => {
   }
   // The person was told how many jobs this cancels.
   if (action === "update-anyway") await restartToUpdate(true);
+  if (action === "check-updates") await checkFromMenu();
+});
+
+/**
+ * The app menu (macOS): About, then Check for Updates…, always enabled. Setting a menu replaces the
+ * whole bar, so the standard Edit and Window menus are here too (copy and paste in the view need
+ * the Edit roles).
+ */
+ApplicationMenu.setApplicationMenu([
+  {
+    label: "Software Factory",
+    submenu: [
+      { role: "about" },
+      { label: "Check for Updates…", action: "check-updates" },
+      { type: "divider" },
+      { role: "hide" },
+      { role: "hideOthers" },
+      { role: "showAll" },
+      { type: "divider" },
+      { role: "quit" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "divider" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { role: "pasteAndMatchStyle" },
+      { role: "delete" },
+      { role: "selectAll" },
+    ],
+  },
+  {
+    label: "Window",
+    submenu: [
+      { role: "minimize" },
+      { role: "zoom" },
+      { role: "close" },
+      { type: "divider" },
+      { role: "bringAllToFront" },
+    ],
+  },
+]);
+ApplicationMenu.on("application-menu-clicked", (e: unknown) => {
+  const action = (e as { data?: { action?: string } }).data?.action;
+  if (action === "check-updates") void checkFromMenu();
 });
 
 function setBadge(count: number) {
@@ -520,12 +630,15 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 });
 
 async function quit() {
+  // A decision waiting for Touch ID: take the sheet down with the app (spec 40 M4b).
+  helper.cancel();
   live.stop();
   terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }
 Electrobun.events.on("before-quit", async () => {
+  helper.cancel();
   await runner.stop();
 });
 // If the launcher dies, don't linger as an orphan with a runner (ADR 0390).
