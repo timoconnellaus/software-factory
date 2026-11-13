@@ -213,6 +213,17 @@ export const SCREENS = [
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
   { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
+  // The device key (spec 40 M4b, fake-bridge.ts `?key=`): the fingerprint while signing in, the
+  // offer to sign in again with a Secure Enclave key, and a decision waiting for Touch ID.
+  { name: "key-signing-in", path: "/", query: "?key=signing-in", design: "SignIn.html" },
+  { name: "key-upgrade", path: "/", query: "?key=upgrade", design: "Main.html" },
+  {
+    name: "key-upgrade-this-mac",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+  },
+  { name: "key-touch-id", path: "/", query: "?key=touch-id", design: "InboxMerge.html" },
   // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
   {
     name: "this-mac-update-idle",

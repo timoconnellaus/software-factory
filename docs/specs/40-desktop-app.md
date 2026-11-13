@@ -389,7 +389,7 @@ the profile never ships a helper that failed a check.
   `MACOS_KEYS_PROFILE`. It goes where the spike says (`Contents/Helpers/SF Keys.app` unless the
   spike shows Electrobun re-signs it there); `device-key.ts` runs `…/SF Keys.app/Contents/MacOS/sf-keys`.
 - **The helper's signature.** The Developer ID, `--options runtime`, `--timestamp`, and exactly these
-  entitlements (`native/sf-keys.entitlements`, Team ID filled in at build time):
+  entitlements (`native/sf-keys-app/sf-keys.entitlements`, Team ID filled in at build time):
   `com.apple.application-identifier` and `keychain-access-groups` =
   `<TeamID>.com.software-factory.desktop.keys`, `com.apple.developer.team-identifier` = `<TeamID>`.
   No JIT, no `disable-library-validation`. The app's own entitlements stay JIT-only.
@@ -434,6 +434,10 @@ the profile never ships a helper that failed a check.
     profile's values, where `<TeamID>.*` allows the group), and the profile's certificate is the
     signing certificate;
   - the step prints the profile's `ExpirationDate`, and warns when it is under 60 days away.
+- **In the app (2026-11-13):** `device-key.ts` runs `Contents/Helpers/SF Keys.app/Contents/MacOS/sf-keys`
+  (the bare `sf-keys` in `Resources` is gone); "Waiting for Touch ID: \<summary\>" is a toast with
+  Cancel; the re-enrol offer is a toast on launch and a button on This Mac; the sign-in screen shows
+  the new key's fingerprint while it waits for the browser.
 - **Migration.** A Mac signed in with a software key on an earlier signed build: on launch, when the
   helper works and the stored key is `software`, the app says "This Mac can now keep its key in the
   Secure Enclave: sign in again". Choosing it signs out as today (`desktopDevice.revoke` on its own

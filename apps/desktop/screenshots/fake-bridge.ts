@@ -46,7 +46,25 @@ const session: Session = {
   keyStorage: "secure-enclave",
   signingIn: false,
   error: null,
+  keyFingerprint: null,
+  keyUpgrade: false,
 };
+/**
+ * The device key's screens (spec 40 M4b), from `?key=` before the hash: `signing-in` (signed out,
+ * waiting for the browser, the new key's fingerprint shown), `upgrade` (a software key on a build
+ * with the key helper: the offer to sign in again), `touch-id` (a decision waiting for Touch ID).
+ */
+const KEY_FIXTURE = new URLSearchParams(location.search).get("key");
+if (KEY_FIXTURE === "signing-in")
+  Object.assign(session, {
+    signedIn: false,
+    login: null,
+    deviceId: null,
+    signingIn: true,
+    keyFingerprint: "3f2a-91c0-77be-d41e",
+  });
+if (KEY_FIXTURE === "upgrade") Object.assign(session, { keyStorage: "software", keyUpgrade: true });
+const TOUCH_ID_SUMMARY = 'Merge 3f2a91c "Fix the inbox count" into main of acme/widgets';
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
 /**
@@ -149,6 +167,8 @@ export const bun = {
   session: async () => session,
   signIn: async () => session,
   signOut: async () => session,
+  signInAgain: async () => session,
+  cancelTouchId: async () => ({ cancelled: true }),
   call: (p: { op: string; input: unknown }) => write(p),
   batch: async (p: { calls: { op: string; input: unknown }[] }) =>
     p.calls.map((c) => answer(c.op, c.input)),
@@ -256,6 +276,10 @@ export const onInbox = none;
 export const onPlanningChanged = none;
 export const onNavigate = none;
 export const onUpdate = none;
+export const onTouchId = (l: (summary: string | null) => void) => {
+  if (KEY_FIXTURE === "touch-id") setTimeout(() => l(TOUCH_ID_SUMMARY), 300);
+  return () => undefined;
+};
 
 // In the real window macOS draws the lights itself.
 const lights = document.createElement("div");

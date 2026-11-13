@@ -95,8 +95,23 @@ export function SettingsPage() {
           <div className="text-muted-foreground text-sm">
             {session?.keyStorage === "secure-enclave"
               ? "Decisions are signed by a key in this Mac's Secure Enclave: approving asks for Touch ID."
-              : "This build has a software key (not signed for the Secure Enclave)."}
+              : session?.keyUpgrade
+                ? "This Mac signs with a software key, which can't approve gates."
+                : "This build has a software key (not signed for the Secure Enclave)."}
           </div>
+          {session?.keyUpgrade && (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span>This Mac can now keep its key in the Secure Enclave: sign in again.</span>
+              <Button
+                size="sm"
+                className="w-fit"
+                data-testid="sign-in-again"
+                onClick={async () => client.setQueryData(["session"], await bun.signInAgain({}))}
+              >
+                Sign in again
+              </Button>
+            </div>
+          )}
           <Label className="flex items-center gap-2 font-normal">
             <Checkbox
               checked={login.data?.enabled ?? false}
