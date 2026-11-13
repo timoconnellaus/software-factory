@@ -5,6 +5,7 @@
 // Stage types and shaping stages (spec 52) are design only, so the stages are the skeleton's.
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
@@ -23,7 +24,8 @@ import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
 import { WorkflowsForm } from "../components/workflow-form.tsx";
 import { type StepView, skeleton, type WorkflowView, workflowList } from "../lib/config-view.ts";
-import { configQuery } from "../lib/factory-queries.ts";
+import { configQuery, orgWorkflowsQuery } from "../lib/factory-queries.ts";
+import { projectsQuery } from "../lib/queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
@@ -40,10 +42,23 @@ export const Route = createRoute({
     ...editSearch(s),
     ...(typeof s.workflow === "string" ? { workflow: s.workflow } : {}),
   }),
-  loaderDeps: ({ search }) => ({ project: search.project }),
+  loaderDeps: ({ search }) => ({ project: search.project, edit: !!search.edit }),
   loader: async ({ context, deps }) => {
     const id = await configProjectId(context, deps.project);
-    if (id) await context.queryClient.ensureQueryData(configQuery(id)).catch(() => null);
+    if (!id) return;
+    const q = context.queryClient;
+    const orgId = context.session.orgs.length
+      ? (
+          await q
+            .ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id)))
+            .catch(() => [])
+        ).find((p) => p.id === id)?.orgId
+      : undefined;
+    await Promise.all([
+      q.ensureQueryData(configQuery(id)),
+      // The org's workflows the project may run, only when editing.
+      ...(deps.edit && orgId ? [q.ensureQueryData(orgWorkflowsQuery(orgId))] : []),
+    ]).catch(() => null);
   },
   component: WorkflowsPage,
 });
@@ -57,10 +72,6 @@ function WorkflowsPage() {
   const running = workflows.find((w) => w.current) ?? null;
   const shown =
     workflows.find((w) => w.name === search.workflow) ?? running ?? workflows[0] ?? null;
-  const selected = Math.max(
-    0,
-    workflows.findIndex((w) => w.name === shown?.name),
-  );
   return (
     <PageArea>
       <PageHeader
@@ -85,7 +96,12 @@ function WorkflowsPage() {
       {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
       {editing && project && (
         // Keyed by the project: another project's page starts with no draft.
-        <WorkflowsEditing key={project.id} projectId={project.id} initial={selected} />
+        <WorkflowsEditing
+          key={project.id}
+          projectId={project.id}
+          orgId={project.orgId}
+          initial={shown?.name ?? null}
+        />
       )}
       {doc && !editing && (
         <>
@@ -200,13 +216,29 @@ function Slot({ label, steps }: { label: string; steps: StepView[] }) {
   );
 }
 
-function WorkflowsEditing({ projectId, initial }: { projectId: string; initial: number }) {
+function WorkflowsEditing({
+  projectId,
+  orgId,
+  initial,
+}: {
+  projectId: string;
+  orgId: string;
+  initial: string | null;
+}) {
   const editor = useConfigDraft(projectId);
   const [selected, setSelected] = useState(initial);
+  const org = useQuery(orgWorkflowsQuery(orgId));
+  // The org's own workflows a project may run (not the built-in ones for incidents and PRs).
+  const orgWorkflows = (org.data?.workflows ?? []).filter((w) => !w.builtIn);
   return (
     <>
       <UnsavedGuard editor={editor} />
-      <WorkflowsForm editor={editor} selected={selected} onSelect={setSelected} />
+      <WorkflowsForm
+        editor={editor}
+        selected={selected}
+        onSelect={setSelected}
+        orgWorkflows={orgWorkflows}
+      />
       <SaveBar editor={editor} />
     </>
   );
