@@ -433,6 +433,8 @@ export const workItemGet = defineOperation({
     }),
     /** The workflows it could follow (of the version it started under), for "change workflow". */
     workflows: z.array(z.object({ name: z.string(), description: z.string() })),
+    /** Why the workflow version the item pinned can't be read; null when it can (review of #185). */
+    workflowError: z.string().optional(),
     /** ADR 0491: who released it, and its "waits for" links both ways. */
     releasedBy: z.string().nullable().optional(),
     /** ADR 0493: shaping before release: when it started and finished, and the base it planned on. */
@@ -743,8 +745,10 @@ export const workItemGet = defineOperation({
         workflow: w.workflow,
         workflowReason: w.workflow_reason,
       },
+      ...(ctx.scope.pinnedError ? { workflowError: ctx.scope.pinnedError } : {}),
       workflows:
-        (ctx.scope.pinnedPolicy ?? policy)?.workflows.map((x) => ({
+        // Never the current policy's for an item whose pinned workflow can't be read (#185).
+        (ctx.scope.pinnedError ? null : (ctx.scope.pinnedPolicy ?? policy))?.workflows.map((x) => ({
           name: x.name,
           description: x.description,
         })) ?? [],

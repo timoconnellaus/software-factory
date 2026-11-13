@@ -2,7 +2,7 @@
 // The Workflow's attached path is tested end to end in apps/engine/test/attach-flow.test.ts.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { type Actor, FOREMAN, invoke } from "../src/index.ts";
+import { type Actor, FOREMAN, invoke, type VerifiedHead } from "../src/index.ts";
 import {
   call,
   delivered,
@@ -122,7 +122,8 @@ describe("workItem.attachPr (spec 05, criterion 1)", () => {
     const merged = await github.openOutsidePull(w.repo, { branch: "tim/merged", title: "Merged" });
     await github.mergePullRequest(w.repo, {
       number: merged.number,
-      sha: merged.headSha,
+      // Merged on GitHub outside the factory: nothing verified it.
+      sha: merged.headSha as VerifiedHead,
       method: "merge",
     });
     expect((await refusal(attach(w, merged.number))).message).toMatch(/already merged/);
@@ -313,6 +314,17 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     await env.DB.prepare("UPDATE core_work_items SET stage = 'verify' WHERE id = ?")
       .bind(created.workItemId)
       .run();
+    // The factory verified this head (pr.merge requires it, #190 review): a pass packet and
+    // factory/verify a success for that SHA.
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES ('rp_race', ?, ?, 'pass', ?)",
+      ).bind(created.workItemId, pr.headSha, now),
+      env.DB.prepare(
+        "INSERT OR REPLACE INTO core_verify_checks (project_id, head_sha, work_item_id, pr_number, status, conclusion, title, review_packet_id, updated_at) SELECT project_id, ?, id, ?, 'completed', 'success', 'Verified by the factory', 'rp_race', ? FROM core_work_items WHERE id = ?",
+      ).bind(pr.headSha, pr.number, now, created.workItemId),
+    ]);
     const input = {
       workItemId: created.workItemId,
       headSha: pr.headSha,

@@ -1,12 +1,15 @@
 // "Restart to update", step by step (shared/update-apply.ts): what the window shows from the click.
+
+import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { stepMarks } from "../src/mainview/components/updating.tsx";
+import { stepMarks, Updating } from "../src/mainview/components/updating.tsx";
 import {
   type ApplyEvent,
   type ApplyState,
   applyStepText,
   applyTransition,
   IDLE,
+  STUCK_TEXT,
 } from "../src/shared/update-apply.ts";
 
 const run = (events: ApplyEvent[], from: ApplyState = IDLE) =>
@@ -79,6 +82,28 @@ describe("applyTransition", () => {
 });
 
 describe("what the window says", () => {
+  it("a restart stuck in the updater says to quit and reopen; nothing but quitting moves on", () => {
+    const restarting = run([{ type: "start", version: "0.1.70" }, { type: "restarting" }]);
+    const stuck = run([{ type: "stuck" }], restarting);
+    expect(stuck).toEqual({ step: "stuck", version: "0.1.70", reason: STUCK_TEXT });
+    expect(STUCK_TEXT).toBe("The update is taking too long. Quit and reopen the app.");
+    for (const e of [
+      { type: "start", version: "0.1.71" },
+      { type: "refused", reason: "late" },
+      { type: "back" },
+      { type: "deferred" },
+    ] as ApplyEvent[])
+      expect(applyTransition(stuck, e)).toBe(stuck);
+    // Only from restarting: before the handoff a hang is "stalled" (refused, everything back).
+    expect(applyTransition(IDLE, { type: "stuck" })).toBe(IDLE);
+    const html = renderToString(
+      <Updating applying={stuck} back={async () => null} quit={async () => null} />,
+    );
+    expect(html).toContain('data-testid="update-stuck"');
+    expect(html).toContain('data-testid="update-quit"');
+    expect(html).not.toContain("Back to Software Factory");
+  });
+
   it("names the step", () => {
     expect(applyStepText("verifying")).toBe("Checking the update's signature…");
     expect(applyStepText("restarting")).toBe("Restarting…");

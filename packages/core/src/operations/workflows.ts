@@ -444,6 +444,7 @@ export async function writeOrgVersion(
         });
     }
   }
+  await noticeOpenMergeGates(ctx, org, version, config, input.before, projects);
   ctx.guardExists(
     "org config base unchanged",
     ctx.db
@@ -1065,6 +1066,90 @@ export const stageTypeList = defineOperation({
     };
   },
 });
+
+/**
+ * A decision gate this version adds doesn't reach an item whose merge gate is already open (ADR
+ * 0510 as amended for #185): the gate's person is told, on the item, so it isn't bypassed silently.
+ * Org saves only (rare); one bounded read of the org's open merge gates, oldest first
+ * (core_pending_actions_org_idx: org_id, status, created_at), at most 50, and the org's admins told
+ * when there are more.
+ */
+async function noticeOpenMergeGates(
+  ctx: HandlerContext,
+  org: string,
+  version: number,
+  config: OrgConfig,
+  before: OrgConfig,
+  projects: { id: string; policy: ProjectPolicy | null }[],
+) {
+  const added = new Map<string, string[]>();
+  for (const wf of config.workflows) {
+    const was = before.workflows.find((x) => x.id === wf.id);
+    const gates = wf.stages
+      .filter((x) => x.type === "decision" && !was?.stages.some((y) => y.id === x.id))
+      .map((x) => x.name);
+    if (gates.length) added.set(wf.id, gates);
+  }
+  if (added.size === 0) return;
+  const open = await ctx.db
+    .selectFrom("core_pending_actions as pa")
+    .innerJoin("core_work_items as w", "w.id", "pa.work_item_id")
+    .select(["pa.assignee_user_id", "pa.project_id", "w.id", "w.number"])
+    .where("pa.org_id", "=", org)
+    .where("pa.status", "=", "pending")
+    .where("pa.kind", "=", "merge")
+    .where("w.org_config_version", "is not", null)
+    // Oldest first, so the gates waiting longest are told; past 50 the save says so (third review
+    // of #185).
+    .orderBy("pa.created_at")
+    .limit(51)
+    .execute();
+  if (open.length > 50) {
+    ctx.change({
+      entity: "org",
+      id: org,
+      after: {
+        notice: `v${version} adds ${[...added.values()].flat().join(", ")}; more than 50 open merge gates weren't told one by one: it isn't applied to items whose merge gate is open`,
+      },
+    });
+    const admins = await ctx.db
+      .selectFrom("core_member")
+      .select("user_id")
+      .where("organization_id", "=", org)
+      .where("role", "in", ["owner", "admin"])
+      .orderBy("created_at")
+      .limit(NOTIFY_ADMINS)
+      .execute();
+    for (const a of admins)
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "workflow.gateNotApplied",
+          userId: a.user_id,
+          title: `v${version} of the org's workflow adds ${[...added.values()].flat().join(", ")}; it isn't applied to the items whose merge gate is open (more than 50: their people were told for the first 50 only)`,
+          url: "/settings",
+        },
+      });
+  }
+  for (const g of open.slice(0, 50)) {
+    const wf = projects.find((p) => p.id === g.project_id)?.policy?.workflow;
+    const gates = wf ? added.get(wf) : undefined;
+    if (!gates) continue;
+    const notice = `v${version} of the org's workflow adds ${gates.join(", ")}; not applied to this item, whose merge gate is already open`;
+    ctx.change({ entity: "work_item", id: g.id, after: { notice } });
+    if (g.assignee_user_id)
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "workflow.gateNotApplied",
+          userId: g.assignee_user_id,
+          workItemId: g.id,
+          title: `Work item #${g.number}: ${notice}`,
+          url: `/?item=${g.id}`,
+        },
+      });
+  }
+}
 
 /**
  * A waiting org change as an approver sees it (ADR 0610, review of #159): what it would save, what

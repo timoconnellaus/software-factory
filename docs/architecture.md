@@ -112,8 +112,10 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
-  head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
-  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
+  head is updated with the default branch (the queue's own merge, `POST /merges`, accepted only as the SHA GitHub returned), CI runs once on that head,
+  and (Workflow v4, ADR 0330) the approval carried over the clean update; no review packet is carried
+  to another head since #190, so an item landing itself goes back to verify the updated head
+  (without a build), and two such trips in a row hold it and ask the owner. From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
   **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
   model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
   leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. A person's push to a factory-built item's branch from verify on (the `push` webhook's sender is not the App) withdraws the merge gate or the babysitter's approval for the old head and sends the item back to verify the new head, without a build; a verify run that finishes on a stale head opens no gate (Workflow v14, ADR 0587). What code can't decide (a conflict, a check that is red

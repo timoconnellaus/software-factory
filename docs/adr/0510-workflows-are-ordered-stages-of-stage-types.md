@@ -61,3 +61,63 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > - **Attached PRs and incidents** run built-in workflows people can see and tighten, not loosen (Q10).
 > - **Planning artifacts for a project with no repository** go to the factory's own storage (R2), attached to the item (Q15).
 > - Rule 4's "an irreversible outside action is preceded by a person's decision" now allows that decision to be made by `autoApprove` for **merge** and **deploy** stages only ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md), Q11 and Q20–Q23). The validator still requires the required gate; `autoApprove` is a typed setting of that gate, and the impact check treats it as a loosening.
+
+> Amended 2026-11-13 (review of #139): a version that both tightens and loosens reaches a running item
+> as its tightenings only, stage by stage; the loosenings never do. A tightening of a stage the item
+> has already passed sends it back to verify (Workflow v17) rather than skipping it.
+>
+> Amended 2026-11-13 (review of #185): what an item runs is its pinned version with each adopted
+> version folded in, in order (`org_config_adopted`); a later version is compared against that, so
+> it never takes away a tightening the item adopted, and a list that can't be resolved fails closed.
+> At the merge boundary only tightenings verify can act on (verify and the checks between the build
+> and it) send the item back; tightenings of triage, spec or the build are journaled as passed.
+> **Decided: no re-pin while the merge gate is open.** A tightening saved after the gate opened
+> reaches the item only if it goes round again (sent back, withdrawn, a new head); the gate is not
+> withdrawn for it. The person deciding the gate is the check at that point, re-verifying under them
+> would discard a decision in progress for a change they can see on the org's workflow, and every
+> boundary before the gate already applies tightenings. Dark factory mode (ADR 0515) re-checks its
+> own conditions at merge, against the settings then.
+>
+> Amended 2026-11-13 (second review of #185): **a pinned workflow that can't be read fails closed.**
+> An item whose pinned org version, or a version it adopted tightenings from, no longer resolves is
+> never run under today's workflow: from Workflow v17 it parks with a question for a person ("this
+> item's workflow version can't be read"), and agents and runners on it can't merge, deploy or
+> change the factory. An adopted stage is judged by the agent of the version it came from (bound
+> under a versioned name when the pinned version's agent of that name differs). Tightenings a
+> version makes inside a stage it also loosens (a required check swapped for another) aren't
+> applied: the project's approvers are told once per version, as they are when an item has taken
+> tightenings from the most versions it takes (8). Only the item's Workflow re-pins it, and the
+> boundary is the item's own stage. A decision gate a version adds while an item's merge gate is
+> open is told to that gate's person on the item, not applied.
+>
+> Amended 2026-11-13 (third review of #185): the stop is in core, so it holds on **every Workflow
+> row**, with no replay changed. While an item's pinned workflow (its org version, an adopted
+> version, or the config it started under) can't be read, agents and runners on it may only read,
+> ask, wait, end it, re-resolve its version and let a run already under way finish; anything else
+> is refused (`workflow_unreadable`) and the first refusal puts one blocking question to its owner.
+> A Workflow from v17 parks on that question (Check again / Stop) instead of ending, at its plan, at
+> each re-pin and on any such refusal; earlier rows end failed before work starts.
+>
+> Amended 2026-11-13 (fourth review of #185): `factory/verify` is never posted as success for an
+> item whose workflow can't be read, whoever finds it (a webhook, the cron, a release): `postVerify`
+> posts a failing check that says why. The babysitter takes such an item out of the merge queue
+> (sent back as withdrawn) and goes on with the items behind it. The owner's question is found
+> again by its asker, not its wording; it is worded by the item's Workflow row (Check again / Stop
+> where it parks, what happened and what to do where it ends), and the item's queued jobs are
+> cancelled. A registry test pins every non-read operation that finds its item some other way.
+>
+> Amended 2026-11-13 (fifth review of #185): when an item is first found unreadable it is marked
+> through an operation (`workItem.markUnreadable`, audited): its queued jobs are cancelled and a
+> `factory/verify` already green on its head is posted again as failing. `job.claim` never hands
+> out such an item's job. Clearing the repository's babysit state (`babysit.next`) is allowed for
+> it, and the deliverer only ever takes out the item a refusal names. **Outside the factory:** a
+> person who merges the PR on GitHub by hand is outside its control; what stops them is the failing
+> required `factory/verify` check, with no admin bypass (ADR 0020, 0021).
+>
+> Amended 2026-11-13 (sixth review of #185): a job of an unreadable item is cancelled in one way
+> (`cancelUnreadableJobs`): with its run event, so the Workflow wakes, its retry is refused and it
+> parks or ends with the owner's question; never silently. Only a definite result is "unreadable":
+> an error reading the item is a retryable refusal, and nothing is cancelled, posted or asked on
+> it. Reverting a merged culprit doesn't need its workflow (`mainRed.revert` is allowed), a parked
+> unreadable repair isn't a repair under way, and an item whose Workflow ends is told once, ever.
+

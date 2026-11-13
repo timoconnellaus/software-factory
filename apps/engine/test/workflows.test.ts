@@ -1,5 +1,6 @@
 // Spec 09 M2: workflows fill the skeleton's slots (Workflow v6, ADR 0371); agents are
 // harness-neutral and pick a model tier (ADR 0372).
+import { env } from "cloudflare:workers";
 import { resolveModel } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
@@ -17,10 +18,12 @@ import {
   gateHead,
   gateOpen,
   itemStatus,
+  MANIFEST,
   ok,
   runStage,
   triage,
   verifyPass,
+  waitFor,
   world,
 } from "./helpers.ts";
 
@@ -341,5 +344,220 @@ describe("the default builder", () => {
     );
     expect(journal).toHaveLength(1);
     expect(journal[0]?.diff).toMatch(/"workflow":"repinned"/);
+  });
+  const unreadable = async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: plain }, w.human);
+    const item = await create(w);
+    // During triage (after the pull pinned its version) the item's adopted list stops resolving.
+    await runStage(w, item.workItemId, "triage", async () => {
+      await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?")
+        .bind(item.workItemId)
+        .run();
+      return triage("small");
+    });
+    const asked = await waitFor("the question", () =>
+      first<{ id: string; prompt: string }>(
+        "SELECT id, prompt FROM core_questions WHERE work_item_id = ? AND instr(prompt, 'workflow version') > 0",
+        item.workItemId,
+      ),
+    );
+    expect(asked.prompt).toMatch(/can't be read/);
+    // Parked: no build was queued, and no stage past triage started.
+    const jobs = await all<{ stage: string }>(
+      "SELECT stage FROM core_jobs WHERE work_item_id = ? AND stage != 'triage'",
+      item.workItemId,
+    );
+    expect(jobs).toEqual([]);
+    const stages = await all<{ stage: string }>(
+      "SELECT stage FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge')",
+      item.workItemId,
+    );
+    expect(stages).toEqual([]);
+    return { w, item, questionId: asked.id };
+  };
+
+  it("an item whose pinned workflow version can't be read never reaches a stage; Check again carries on (v17, review of #185)", async () => {
+    const { w, item, questionId } = await unreadable();
+    // Only one question, whoever asked it first (core or the Workflow).
+    const questions = await all<{ id: string }>(
+      "SELECT id FROM core_questions WHERE work_item_id = ? AND instr(prompt, 'workflow version') > 0",
+      item.workItemId,
+    );
+    expect(questions).toHaveLength(1);
+    // The org fixes it; the owner checks again, and the item goes on to build.
+    await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = NULL WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    await ok("question.answer", { questionId, answer: "Check again" }, w.human);
+    await runStage(w, item.workItemId, "build", () => build());
+  });
+
+  it("a version that stops reading during the build parks the item before verify (v17, review of #185)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", async () => {
+      await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?")
+        .bind(item.workItemId)
+        .run();
+      return build();
+    });
+    const asked = await waitFor("the question", () =>
+      first<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND instr(prompt, 'workflow version') > 0",
+        item.workItemId,
+      ),
+    );
+    const verify = await all<{ stage: string }>(
+      "SELECT stage FROM core_jobs WHERE work_item_id = ? AND stage = 'verify'",
+      item.workItemId,
+    );
+    expect(verify).toEqual([]);
+    await ok("question.answer", { questionId: asked.id, answer: "Stop this work item" }, w.human);
+    await itemStatus(item.workItemId, "failed");
+  });
+
+  it("a job queued before the version broke is never claimed: the item parks and asks; fixed, Check again carries on (v17, review of #185)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    // The build job is queued; then the item's adopted list stops resolving.
+    await waitFor("the queued build", () =>
+      first(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build' AND status = 'queued'",
+        item.workItemId,
+      ),
+    );
+    await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    // A runner polls: nothing to claim, and the job is cancelled.
+    const polled = await ok<{ job: unknown }>(
+      "job.claim",
+      {
+        claimId: `claim-${crypto.randomUUID()}`,
+        manifest: MANIFEST,
+        capacity: { max: 4, inUse: 0, accepting: true },
+      },
+      w.runnerActor,
+    );
+    expect(polled.job).toBeNull();
+    // The Workflow wakes, its retry is refused, and it parks on the owner's question.
+    const asked = await waitFor("the question", () =>
+      first<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable' AND answered_at IS NULL",
+        item.workItemId,
+      ),
+    );
+    await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = NULL WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    await ok("question.answer", { questionId: asked.id, answer: "Check again" }, w.human);
+    await runStage(w, item.workItemId, "build", () => build());
+  });
+
+  it("Stop ends an item whose workflow version can't be read (v17, review of #185)", async () => {
+    const { w, item, questionId } = await unreadable();
+    await ok("question.answer", { questionId, answer: "Stop this work item" }, w.human);
+    await itemStatus(item.workItemId, "failed");
+  });
+
+  it("a tightening of a stage already passed sends the item back to verify at the merge boundary (v17)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    await ok(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 0,
+        agent: {
+          name: "Security",
+          role: "review",
+          tier: "light",
+          instructions: "Org: check auth.",
+        },
+      },
+      w.human,
+    );
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 1, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    // While it verifies, the org adds a check before verify: the item has already passed there.
+    await runStage(w, item.workItemId, "verify", async (job) => {
+      expect(job.context.step).toBeUndefined();
+      await ok(
+        "workflow.save",
+        {
+          orgId: w.orgId,
+          baseVersion: 2,
+          workflow: {
+            ...plain,
+            stages: [
+              ...SOFTWARE.stages.slice(0, 3),
+              {
+                id: "security",
+                type: "agent-check",
+                typeVersion: 1,
+                name: "Security review",
+                phase: "delivery",
+                settings: {},
+                agent: "Security",
+              },
+              ...SOFTWARE.stages.slice(3),
+            ],
+          },
+        },
+        w.human,
+      );
+      return verifyPass;
+    });
+    // At the merge boundary it moves onto v3 and, rather than skip the check, runs it on its head
+    // and verifies again before the gate opens.
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toMatchObject({ id: "security" });
+      return { result: { verdict: "pass", summary: "Fine" } };
+    });
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toBeUndefined();
+      return verifyPass;
+    });
+    await gateOpen(item.workItemId, "merge");
+    const row = await first<{ org_config_version: number; workflow_version: number }>(
+      "SELECT org_config_version, workflow_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row?.org_config_version).toBe(3);
+    const stages = await all<{ stage: string; status: string; reason: string | null }>(
+      "SELECT stage, status, reason FROM core_stages WHERE work_item_id = ? AND stage = 'verify' ORDER BY started_at, rowid",
+      item.workItemId,
+    );
+    expect(stages[0]?.reason ?? "").toMatch(/tightened a stage this item already passed/);
   });
 });

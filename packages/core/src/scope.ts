@@ -5,8 +5,16 @@ import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
 import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
-import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
-import { effectivePolicy, type OverrideApprovals } from "./stages/project-workflow.ts";
+import { EMPTY_ORG_CONFIG, type OrgConfig, parseOrgConfig } from "./stages/org-config.ts";
+import {
+  effectivePolicy,
+  type OverrideApprovals,
+  policyFromDefinition,
+  resolveProjectWorkflow,
+  runsOnToday,
+  stricterDefinition,
+} from "./stages/project-workflow.ts";
+import type { WorkflowDefinition } from "./stages/workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -151,11 +159,26 @@ export async function resolveScope(
     .execute();
   const repository = pickRepository(repositories, workItem, repositoryId);
   const raw = await loadPolicy(db, project);
-  const pinnedRaw =
+  const pinnedLoad =
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
-      ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
+      ? await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })
       : null;
-  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
+  const pinnedRaw = pinnedLoad?.policy ?? null;
+  // The config the item pinned doesn't parse (third review of #185): it fails closed, as an org
+  // version that doesn't read does.
+  const pinnedRawError =
+    pinnedLoad && !pinnedLoad.policy
+      ? `the config the item started under can't be read (${pinnedLoad.policyError ?? "missing"})`
+      : null;
+  const resolved = await withOrgWorkflow(
+    db,
+    project.org_id,
+    raw,
+    pinnedRaw,
+    workItem,
+    project.id,
+    pinnedRawError,
+  );
   return {
     orgId,
     projectId,
@@ -301,19 +324,36 @@ async function resolveBatched(
   const repository = pickRepository(repositories, workItem, ids.repositoryId);
   const raw = interpretPolicy(project, first<PolicyRow>(at.policy));
   const pinnedRow = first<PolicyRow>(at.pinned);
-  const pinnedRaw = pinnedRow
-    ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
+  const pinnedInterpreted = pinnedRow
+    ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow)
     : null;
+  const pinnedRaw = pinnedInterpreted?.policy ?? null;
+  const pinnedRawError =
+    at.pinned !== undefined &&
+    workItem?.policy_sha &&
+    workItem.policy_sha !== project.policy_sha &&
+    !pinnedRaw
+      ? `the config the item started under can't be read (${pinnedInterpreted?.policyError ?? "missing"})`
+      : null;
   // A read that uses none of what an org workflow decides (polled timelines, planning, the queue)
   // doesn't resolve it: the project's config as saved, and no org config read or parsed.
-  const { policy, rawPolicy, policyError, pinnedPolicy } = skipOrgWorkflow
+  const { policy, rawPolicy, policyError, pinnedPolicy, pinnedError } = skipOrgWorkflow
     ? {
         policy: raw.policy,
         rawPolicy: raw.policy,
         policyError: raw.policyError,
         pinnedPolicy: pinnedRaw,
+        pinnedError: null,
       }
-    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
+    : await withOrgWorkflow(
+        db,
+        project.org_id,
+        raw,
+        pinnedRaw,
+        workItem,
+        project.id,
+        pinnedRawError,
+      );
   return {
     orgId,
     projectId,
@@ -327,6 +367,7 @@ async function resolveBatched(
     policySha: project.policy_sha,
     policyError,
     pinnedPolicy,
+    pinnedError,
     role,
   };
 }
@@ -342,26 +383,42 @@ export async function withOrgWorkflow(
   orgId: string,
   raw: { policy: ProjectPolicy | null; policyError: string | null },
   pinnedRaw: ProjectPolicy | null,
-  workItem: Pick<WorkItemRow, "org_config_version"> | null,
+  workItem: Pick<WorkItemRow, "org_config_version" | "org_config_adopted"> | null,
   projectId: string | null = null,
+  /** The config the item pinned (`policy_sha`) doesn't parse: fails closed (#185). */
+  pinnedRawError: string | null = null,
 ): Promise<{
   policy: ProjectPolicy | null;
   rawPolicy: ProjectPolicy | null;
   policyError: string | null;
   pinnedPolicy: ProjectPolicy | null;
+  pinnedError: string | null;
 }> {
   const current = await resolveOrgWorkflow(db, orgId, raw.policy, null, projectId);
   const pinnedVersion = workItem?.org_config_version ?? null;
   const pinnedBase = pinnedRaw ?? (pinnedVersion !== null ? raw.policy : null);
   const pinned =
     pinnedBase && (pinnedRaw || onOrgWorkflow(pinnedBase))
-      ? await resolveOrgWorkflow(db, orgId, pinnedBase, pinnedVersion, projectId)
+      ? await resolveOrgWorkflow(
+          db,
+          orgId,
+          pinnedBase,
+          pinnedVersion,
+          projectId,
+          workItem?.org_config_adopted ?? null,
+        )
       : null;
   return {
     policy: current.policy,
     rawPolicy: raw.policy,
     policyError: raw.policyError ?? current.error,
     pinnedPolicy: pinned?.policy ?? null,
+    // An item pinned to an org version that no longer resolves: fail closed (review of #185).
+    pinnedError:
+      pinnedRawError ??
+      (pinnedVersion !== null && pinned && !pinned.policy
+        ? (pinned.error ?? `the org config v${pinnedVersion} can't be resolved`)
+        : null),
   };
 }
 
@@ -380,7 +437,7 @@ export function clearOrgConfigCache() {
 }
 
 /** The org's config at `version`, parsed once per isolate (the document is up to 256 KiB). */
-async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
+export async function orgConfigAt(db: Db, orgId: string, version: number): Promise<OrgConfigParse> {
   const key = `${orgId}:${version}`;
   const hit = ORG_CONFIGS.get(key);
   if (hit) {
@@ -443,6 +500,8 @@ export async function resolveOrgWorkflow(
   version: number | null,
   /** Whose override approvals apply; null: none (every looser override takes the stricter value). */
   projectId: string | null = null,
+  /** The newer org versions whose tightenings the item adopted (Q3, `org_config_adopted`). */
+  adopted: string | null = null,
 ): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
   if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
   // The org's current version is one point read of its row; the document is read and parsed only
@@ -466,6 +525,14 @@ export async function resolveOrgWorkflow(
     projectId && at !== null && Object.keys(policy.workflowOverrides).length
       ? await overrideApprovals(db, projectId, at)
       : {};
+  if (adopted !== null && at !== null) {
+    // The pinned workflow with each adopted version's tightenings folded in (review of #139, #185).
+    // Anything unreadable fails closed: never the pinned workflow alone (review of #185).
+    const folded = await adoptedDefinition(db, orgId, policy, at, adopted, projectId);
+    if (!folded.ok)
+      return { policy: null, error: `the item's adopted tightenings: ${folded.error}` };
+    return { policy: policyFromDefinition(policy, folded.def, folded.agents), error: null };
+  }
   const effective = effectivePolicy(policy, org.config, approvals);
   return effective.ok
     ? { policy: effective.value, error: null }
@@ -633,4 +700,107 @@ export async function checkPermission(
   if (!approvers.includes(actor.id)) {
     throw new OperationError("forbidden", "not an approver on this project");
   }
+}
+
+/** Most newer versions a running item takes tightenings from before it waits for a person (Q3). */
+export const MAX_ADOPTED = 8;
+
+/** The adopted versions in `org_config_adopted`, or null when the column isn't a valid list. */
+export function parseAdopted(raw: string | null): number[] | null {
+  if (raw === null) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (
+      Array.isArray(v) &&
+      v.length <= MAX_ADOPTED &&
+      v.every((x) => Number.isInteger(x) && (x as number) > 0)
+    )
+      return v as number[];
+  } catch {
+    // not JSON: invalid
+  }
+  return null;
+}
+
+/**
+ * The definition a running item runs on an org workflow (Q3): its pinned version's, with each
+ * adopted version's tightenings folded in, in order (`stricterDefinition`), and the org agents it
+ * names (the earliest version's first). Fails closed: an unreadable version or list, or a result the
+ * factory can't run, is an error, never the pinned workflow alone.
+ */
+export async function adoptedDefinition(
+  db: Db,
+  orgId: string,
+  policy: ProjectPolicy,
+  pinned: number,
+  adoptedRaw: string | null,
+  projectId: string | null,
+): Promise<
+  | { ok: true; def: WorkflowDefinition; agents: OrgConfig["agents"]; versions: number[] }
+  | { ok: false; error: string }
+> {
+  const versions = parseAdopted(adoptedRaw);
+  if (!versions) return { ok: false, error: "the list of adopted versions isn't valid" };
+  const resolveAt = async (v: number) => {
+    const org = await orgConfigAt(db, orgId, v);
+    if (!org.ok) return null;
+    const approvals =
+      projectId && Object.keys(policy.workflowOverrides).length
+        ? await overrideApprovals(db, projectId, v)
+        : {};
+    const def = resolveProjectWorkflow(policy, org.config, { kind: "effective", approvals });
+    return def?.ok ? { def: def.value, config: org.config } : null;
+  };
+  const base = await resolveAt(pinned);
+  if (!base) return { ok: false, error: `the pinned org version v${pinned} can't be resolved` };
+  let def = base.def;
+  // Each stage judged by the agent of the version it came from (review of #185): a stage adopted
+  // from a later version brings that version's agent; when the name is already bound to another
+  // definition (the pinned one's), the adopted stage's agent is bound under a versioned name.
+  const bound = new Map<string, OrgConfig["agents"][number]>();
+  for (const a of agentsFrom(def, [base.config])) bound.set(a.name.toLowerCase(), a);
+  for (const v of versions) {
+    const next = await resolveAt(v);
+    if (!next) return { ok: false, error: `the adopted org version v${v} can't be resolved` };
+    const taken = stricterDefinition(def, next.def, {
+      before: [...bound.values()],
+      after: agentsFrom(next.def, [next.config]),
+    }).def;
+    def = {
+      ...taken,
+      stages: taken.stages.map((s) => {
+        if (!s.agent || !next.def.stages.includes(s)) return s;
+        const a = next.config.agents.find((x) => x.name.toLowerCase() === s.agent?.toLowerCase());
+        if (!a) return s;
+        const was = bound.get(a.name.toLowerCase());
+        if (!was) {
+          bound.set(a.name.toLowerCase(), a);
+          return s;
+        }
+        if (JSON.stringify(was) === JSON.stringify(a)) return s;
+        const name = `${a.name} (v${v})`;
+        bound.set(name.toLowerCase(), { ...a, name });
+        return { ...s, agent: name };
+      }),
+    };
+  }
+  const cant = versions.length ? runsOnToday(def) : null;
+  if (cant) return { ok: false, error: cant };
+  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
+  const agents = [...bound.entries()].filter(([k]) => named.has(k)).map(([, a]) => a);
+  return { ok: true, def, agents, versions };
+}
+
+/** The org agents a definition names, from several org versions (the earliest's first, by name). */
+export function agentsFrom(
+  def: WorkflowDefinition,
+  configs: readonly OrgConfig[],
+): OrgConfig["agents"] {
+  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
+  const out = new Map<string, OrgConfig["agents"][number]>();
+  for (const c of configs)
+    for (const a of c.agents)
+      if (named.has(a.name.toLowerCase()) && !out.has(a.name.toLowerCase()))
+        out.set(a.name.toLowerCase(), a);
+  return [...out.values()];
 }

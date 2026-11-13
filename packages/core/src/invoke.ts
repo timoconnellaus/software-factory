@@ -43,6 +43,8 @@ import {
   resumeEventType,
 } from "./scope.ts";
 import type { FactoryServices } from "./services.ts";
+import { UNREADABLE_ASKER, UNREADABLE_WORKFLOW_PROMPT, unreadablePlain } from "./unreadable.ts";
+import { has } from "./workflow-features.ts";
 
 export interface InvokeDeps {
   d1: D1Database;
@@ -368,6 +370,31 @@ export async function runOperation<O = unknown>(
           }
         : null,
   });
+
+  // An item whose pinned workflow can't be read does no work on any Workflow row (review of #185):
+  // agents and runners on it get only reads and what asks a person, waits or ends it; anything else
+  // is refused, and the first refusal puts a blocking question to the owner (once).
+  if (
+    scoped &&
+    scope.pinnedError &&
+    scope.workItemId &&
+    actor.type !== "human" &&
+    risk !== "read" &&
+    !(PINNED_ERROR_ALLOWED as readonly string[]).includes(op.name)
+  ) {
+    await askWorkflowUnreadable(deps, scope.workItemId, scope.pinnedError);
+    return refuse(
+      {
+        decision: "deny",
+        outcome: "denied",
+        reason: `the item's workflow version can't be read: ${scope.pinnedError}`,
+      },
+      new OperationError(
+        "workflow_unreadable",
+        `${op.name} denied: the item's workflow version can't be read (${scope.pinnedError})`,
+      ),
+    );
+  }
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -1024,4 +1051,129 @@ export async function auditDigest(input: unknown): Promise<Record<string, unknow
     bytes: new TextEncoder().encode(canonicalJson(input ?? {})).length,
     ...kept,
   };
+}
+
+/**
+ * What agents and runners may still do on an item whose pinned workflow can't be read (review of
+ * #185): ask and wait for a person, end it, re-resolve its version, and let a run already under way
+ * finish. Reads are allowed too.
+ */
+export const PINNED_ERROR_ALLOWED = [
+  "question.ask",
+  "question.escalate",
+  "workItem.awaitQuestions",
+  "workItem.finish",
+  "workItem.cancel",
+  "incident.open",
+  "workItem.repinWorkflow",
+  // A run already under way may finish or be let go (its result changes nothing on its own: the
+  // Workflow's next step is refused); it gets no new token or artifact.
+  "run.handBack",
+  "run.release",
+  "run.expire",
+  "run.reportEvents",
+  "run.takeSteers",
+  "lease.heartbeat",
+  "lease.release",
+  // What only takes the item out of delivery, or clears the repository's babysit state for it
+  // (fourth and fifth reviews of #185).
+  "mergeQueue.leave",
+  "babysit.next",
+  // Stops it: cancels its queued jobs and fails a passing check (audited).
+  "workItem.markUnreadable",
+  // Reverting a merged culprit doesn't need its workflow: main must be able to go green.
+  "mainRed.revert",
+  // Closing or recording what a revert did: they only close or record (seventh review of #185).
+  "mainRed.closeRevert",
+  "mainRed.reland",
+] as const;
+
+/**
+ * Puts one question about an item whose workflow can't be read to its owner (reviews of #185),
+ * unless one this asker put is still open: core asks on the first refusal, a v17 Workflow asks (or
+ * finds this one) when it parks. A Workflow row that parks (v17) is asked "Check again / Stop"; an
+ * earlier row ends the item, so its owner is told what happened and what to do. Jobs it had queued
+ * are cancelled, so a runner can't claim them. A failure to ask is logged and opens an incident.
+ */
+export async function askWorkflowUnreadable(
+  deps: InvokeDeps,
+  workItemId: string,
+  why: string,
+): Promise<string | null> {
+  const db = createDb(deps.d1);
+  const item = await db
+    .selectFrom("core_work_items")
+    .select(["workflow_version", "number", "status"])
+    .where("id", "=", workItemId)
+    .executeTakeFirst();
+  // Never asked again once it has ended: its owner already stopped it (seventh review).
+  if (!item || ["done", "failed", "rejected", "cancelled"].includes(item.status)) return null;
+  const parks = has(item?.workflow_version, "repin-reverify");
+  // A row that parks asks again only after its last question was answered (Check again, and it
+  // still doesn't read); a row that ends is told once, ever (sixth review of #185).
+  const asked = await db
+    .selectFrom("core_questions")
+    .select(["id", "answered_at"])
+    .where("work_item_id", "=", workItemId)
+    .where("asked_by", "=", UNREADABLE_ASKER)
+    .orderBy("created_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  if (asked && (!parks || asked.answered_at === null)) return asked.id;
+  try {
+    // Its queued jobs cancelled and a passing check failed, through an operation (audited).
+    await runOperation(
+      deps,
+      getOperation("workItem.markUnreadable") as AnyOperation,
+      { workItemId },
+      { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
+    );
+    const plain = unreadablePlain(why);
+    const asked = await runOperation<{ questionIds: string[] }>(
+      deps,
+      getOperation("question.ask") as AnyOperation,
+      {
+        workItemId,
+        questions: [
+          parks
+            ? {
+                domain: "operations",
+                prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${plain}. Work item #${item?.number ?? "?"} has stopped rather than run without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
+                context: `Detail: ${why}`,
+                options: ["Check again", "Stop this work item"],
+                defaultAnswer: "Check again",
+                recommendation: "Check again",
+                recommendationReason:
+                  "Once the version reads again, the item carries on where it stopped.",
+                blocking: true,
+              }
+            : {
+                domain: "operations",
+                prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${plain}. The factory stopped work item #${item?.number ?? "?"} before doing any more work on it. Fix the org's workflow config, then start a new item for this work, or reopen this one.`,
+                context: `Detail: ${why}`,
+                options: ["Understood"],
+                defaultAnswer: "Understood",
+                blocking: false,
+              },
+        ],
+      },
+      { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
+    );
+    if (asked.status !== "ok" || !asked.output.questionIds[0])
+      throw new Error(`question.ask came back ${asked.status}`);
+    return asked.output.questionIds[0];
+  } catch (error) {
+    console.error(`couldn't ask about item ${workItemId}'s unreadable workflow`, error);
+    await runOperation(
+      deps,
+      getOperation("incident.open") as AnyOperation,
+      {
+        workItemId,
+        kind: "manual",
+        reason: `The factory couldn't ask the owner about this item's unreadable workflow version (${why}): ${error instanceof Error ? error.message : String(error)}`,
+      },
+      { actor: { type: "agent", id: "foreman" }, origin: { surface: "workflow" } },
+    ).catch((e) => console.error("couldn't open the incident either", e));
+    return null;
+  }
 }
