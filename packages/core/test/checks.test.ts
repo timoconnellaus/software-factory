@@ -468,8 +468,11 @@ describe("this repository's own checks", () => {
     const policy = parsed(ownPolicy);
     expect(declaredChecks(policy, null).map((c) => c.name)).toEqual(["install", "lint", "test"]);
     // Inside the container vitest sees every host core and would start a worker per core.
+    // Loose env mode: turbo's strict mode would drop HTTPS_PROXY, and a test that reaches an
+    // allowlisted host through the check's egress proxy could not. --continue: every failing
+    // package is reported, not just the first.
     expect(policy.checks.find((c) => c.name === "test")?.run).toBe(
-      "VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1",
+      "TURBO_TELEMETRY_DISABLED=1 VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1 --continue --env-mode=loose",
     );
     // Turbo's strict env mode drops what a task doesn't declare: the cap must reach vitest.
     expect(turbo.tasks.test.passThroughEnv).toContain("VITEST_MAX_WORKERS");
