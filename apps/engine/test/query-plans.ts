@@ -71,6 +71,10 @@ function tableAliases(sql: string): Map<string, string> {
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
+    match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
+    why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
+  },
+  {
     match:
       /from "core_work_items" where "repository_id" = \? and "head_sha" = \? order by "updated_at"/,
     why: "the items with one head SHA in one repository (core_work_items_repository_head_idx): one or two",
