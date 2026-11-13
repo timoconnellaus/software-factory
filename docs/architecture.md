@@ -188,10 +188,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   off the app, so no token (the CLI's, MCP's) can approve anything.
 - **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
-  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
-  only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
-  one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
-  trampoline. A `ClientHub` Durable Object per person holds the app's live socket
+  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates,
+  and (ADR 0610) policy decisions (org workflows and agents, org config approvals and rollbacks,
+  adopting projects' workflows, a looser override, a kill switch off), only with a per-call presence
+  proof (Touch ID) the door verifies. The website (`sf-app`) shrinks to sign-in, device approval,
+  Connect GitHub and the `/open/*` trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
 - **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door

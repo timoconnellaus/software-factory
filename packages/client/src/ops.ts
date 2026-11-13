@@ -16,6 +16,7 @@ export interface OpMap {
   "workItem.get": Def<typeof operations.workItemGet>;
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
+  "audit.verify": Def<typeof operations.auditVerify>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
   "workItem.setWorkflow": Def<typeof operations.workItemSetWorkflow>;
   "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
@@ -50,6 +51,8 @@ export interface OpMap {
   "run.steer": Def<typeof operations.runSteer>;
   "run.takeover": Def<typeof operations.runTakeover>;
   "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
+  "incident.listArchiveMissing": Def<typeof operations.incidentListArchiveMissing>;
+  "incident.resolve": Def<typeof operations.incidentResolve>;
   "project.create": Def<typeof operations.projectCreate>;
   "project.list": Def<typeof operations.projectList>;
   "project.update": Def<typeof operations.projectUpdate>;
@@ -101,6 +104,9 @@ export interface OpMap {
   "agent.save": Def<typeof operations.agentSave>;
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "orgConfig.adoptProjectWorkflows": Def<typeof operations.orgConfigAdoptProjectWorkflows>;
+  "override.approve": Def<typeof operations.overrideApprove>;
+  "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;
   "stageType.list": Def<typeof operations.stageTypeList>;
   // The reconciler in shadow (spec 52 PR (c)).
   "reconcile.report": Def<typeof operations.reconcileReport>;

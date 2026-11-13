@@ -1025,8 +1025,38 @@ function run(
       : null,
     startedAt: ago(startedMin),
     endedAt: endedMin === null ? null : ago(endedMin),
+    log: "kept",
+    archiveIncident: null,
   };
 }
+
+/** #13's activity: routine entries older than 90 days are in the audit archive (ADR 0591). */
+const timeline = (archived: boolean): OpOutput<"workItem.timeline"> => ({
+  ...TIMELINE,
+  entries: archived
+    ? [
+        ...[
+          ["lease.claim", "agent", "foreman", 60 * 25],
+          ["job.claim", "runner", RUNNER, 60 * 25 - 1],
+          ["run.handBack", "runner", RUNNER, 60 * 24],
+        ].map(([operation, actorType, actorId, min], i) => ({
+          id: `aud_old_${i}`,
+          at: ago(min as number),
+          operation: operation as string,
+          actorType: actorType as string,
+          actorId: actorId as string,
+          decision: "allow",
+          outcome: "ok",
+          reason: null,
+          pendingActionId: null,
+          result: null,
+          archived: true,
+        })),
+        ...TIMELINE.entries,
+      ].sort((a, b) => (a.at < b.at ? -1 : 1))
+    : TIMELINE.entries,
+  archive: { rows: 3, chunks: 1, state: archived ? "read" : "available", more: false, next: null },
+});
 
 const TIMELINE: OpOutput<"workItem.timeline"> = {
   entries: [
@@ -1047,6 +1077,7 @@ const TIMELINE: OpOutput<"workItem.timeline"> = {
     pendingActionId: null,
     result: null,
   })),
+  archive: { rows: 0, chunks: 0, state: "none", more: false, next: null },
 };
 
 const SETUP: OpOutput<"setup.status"> = {
@@ -1676,7 +1707,59 @@ const released = (input: { workItemId: string }) => {
   return { status: "queued", blockedBy: [] };
 };
 
+/**
+ * #9's first two runs show where an old run's log is (AGENTS.md "Cloudflare cost"): the triage
+ * run's archived to R2, the spec run's lost from the archive with its incident open. (Real runs are
+ * archived 30 days after they end; the fixture's are recent, for the shot.)
+ */
+function withArchivedLogs(d: OpOutput<"workItem.get">): OpOutput<"workItem.get"> {
+  if (d.item.id !== "wi_9") return d;
+  return {
+    ...d,
+    runs: d.runs.map((r) =>
+      r.runNo === 1
+        ? { ...r, log: "archived" as const }
+        : r.runNo === 2
+          ? {
+              ...r,
+              log: "missing" as const,
+              archiveIncident: { id: "incident_lost", resolvedAt: null },
+            }
+          : r,
+    ),
+  };
+}
+
+/** One open archive incident: #4's run 2 lost an object from sf-archive. */
+const ARCHIVE_INCIDENTS = () => {
+  const four = ITEMS.find((i) => i.number === 4);
+  return four
+    ? [
+        {
+          id: "incident_lost",
+          projectId: four.projectId,
+          workItemId: four.id,
+          workItemNumber: four.number,
+          workItemTitle: four.title,
+          runId: "run_2",
+          reason: `run 2's archived log: runs/run_2/events/0-199.ndjson is missing from sf-archive`,
+          createdAt: ago(60 * 5),
+        },
+      ]
+    : [];
+};
+
 export const ANSWERS: Answers = {
+  "incident.listArchiveMissing": (input) => ({
+    incidents: input.orgId === PERSONAL ? ARCHIVE_INCIDENTS() : [],
+    more: false,
+    auditArchiveStopped: {
+      id: "incident_audit",
+      reason: `The audit archive has stopped 3 ticks in a row since ${ago(16)}: audit/2026/08/14/00001_…: the existing object differs`,
+      createdAt: ago(6),
+    },
+  }),
+  "incident.resolve": () => ({ resolved: true }),
   "org.list": () => ({
     userId: ME,
     orgs: [
@@ -1689,10 +1772,11 @@ export const ANSWERS: Answers = {
   "workItem.list": (input) => ({
     items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
-  "workItem.get": (input) => detail(input.workItemId),
+  "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
-  "workItem.timeline": () => TIMELINE,
+  "workItem.timeline": (input) =>
+    input.workItemId === "wi_13" ? timeline(!!input.archived) : TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
   // Review of #130: what approving the plan writes, listed at the gate.
@@ -1855,6 +1939,26 @@ export const ANSWERS: Answers = {
         candidateVersion: 11,
       },
     ],
+  }),
+  "workflow.list": () => ({
+    version: 4,
+    workflows: [
+      {
+        id: "wf_software",
+        name: "Software",
+        description: "Code changes, from the org",
+        builtIn: null,
+        stages: [],
+      },
+      {
+        id: "wf_incident",
+        name: "Incident",
+        description: "",
+        builtIn: "incident" as const,
+        stages: [],
+      },
+    ],
+    templates: [],
   }),
   "workflow.get": (input) => ({
     version: 4,
