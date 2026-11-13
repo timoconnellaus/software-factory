@@ -345,6 +345,10 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
+  /** A split parent waiting for its children: holds no active slot (migration 0402). */
+  awaiting_children: Generated<number>;
+  /** A plan's child: its approved slice {key, size, sha256} as JSON (migration 0402). */
+  split_slice: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -474,6 +478,8 @@ export interface CoreSpecsTable {
   kim_files: string | null;
   /** The children this version splits into (spec 24, migration 0401), JSON; null: no split. */
   children: string | null;
+  /** What spec.commit wrote, JSON [{path, sha256}] (migration 0402). */
+  committed_files: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";

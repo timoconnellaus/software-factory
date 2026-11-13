@@ -26,6 +26,12 @@ async function planning(w: W, parentId: string | null = null) {
   const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);
   const m5 = RUNNER_ACTOR(r.runnerId);
   const item = await newItem(w, "Add CSV export");
+  // The Workflow version that splits (its number moves at merge time; the feature doesn't).
+  await rows(
+    "UPDATE core_work_items SET workflow_version = ? WHERE id = ?",
+    SPLITS_VERSION,
+    item.workItemId,
+  );
   if (parentId) {
     await rows(
       "UPDATE core_work_items SET parent_work_item_id = ? WHERE id = ?",
@@ -50,8 +56,12 @@ async function planning(w: W, parentId: string | null = null) {
   return { item, agent };
 }
 
-import { splitProblem } from "@software-factory/runner-contract";
-import { assemblePacket, summarizeCi } from "../src/index.ts";
+import { splitDigest, splitProblem } from "@software-factory/runner-contract";
+import { assemblePacket, summarizeCi, WORKFLOW_VERSION_FEATURES } from "../src/index.ts";
+
+const SPLITS_VERSION = Number(
+  Object.entries(WORKFLOW_VERSION_FEATURES).find(([, f]) => f.has("splits"))?.[0],
+);
 
 const child = (key: string, after?: string) => ({
   key,
@@ -67,6 +77,12 @@ const SPLIT = {
   children: [child("api"), child("ui", "api")],
 };
 
+/** What the plan's screen sends with an approval: the version and the split's digest. */
+const shown = async (version = 1, children = SPLIT.children) => ({
+  specVersion: version,
+  splitDigest: await splitDigest(children as never),
+});
+
 /** A parent planned with SPLIT, at the gate, approved by a person. */
 async function approvedSplit(w: W) {
   const { item, agent } = await planning(w);
@@ -75,7 +91,7 @@ async function approvedSplit(w: W) {
   await agent("planning.ready");
   const gate = await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN);
   expect(gate.status).toBe("pending");
-  await ok("spec.approve", { workItemId: item.workItemId }, w.human);
+  await ok("spec.approve", { workItemId: item.workItemId, ...(await shown()) }, w.human);
   return { item, agent, specId };
 }
 const childrenOf = (parent: string) =>
@@ -120,7 +136,11 @@ describe("splits (spec 24)", () => {
       ),
     ).toEqual([{ waits_for_id: kids[0]?.id }]);
     // A repeated approval creates none.
-    const again = await call("spec.approve", { workItemId: item.workItemId }, w.human);
+    const again = await call(
+      "spec.approve",
+      { workItemId: item.workItemId, ...(await shown()) },
+      w.human,
+    );
     expect(again.status).not.toBe("error");
     expect(await childrenOf(item.workItemId)).toHaveLength(2);
   });
@@ -202,7 +222,7 @@ describe("splits (spec 24)", () => {
     ]);
   });
 
-  it("passes the parent's PR only when it carries exactly the approved plan's files (spec-only path)", () => {
+  it("passes the parent's PR only on exactly the files its commit wrote, with that content (review of #171)", () => {
     const ci = summarizeCi(
       [
         {
@@ -216,34 +236,131 @@ describe("splits (spec 24)", () => {
       ],
       "me",
     );
-    const allowed = ["docs/specs/wi-1-x.md", ".kim/plans/wi-1-x.md", ".kim/designs/a.d2"];
-    const packet = (files: { path: string; status: string; previousPath?: string }[]) =>
+    const committed = [
+      { path: "docs/specs/wi-1-x.md", sha256: "a" },
+      { path: ".kim/plans/wi-1-x.md", sha256: "a" },
+      { path: ".kim/designs/a.d2", sha256: "b" },
+    ];
+    const atHead = {
+      "docs/specs/wi-1-x.md": "a",
+      ".kim/plans/wi-1-x.md": "a",
+      ".kim/designs/a.d2": "b",
+    };
+    const all = committed.map((c) => ({ path: c.path, status: "added" }));
+    const packet = (
+      files: { path: string; status: string; previousPath?: string }[],
+      head: Record<string, string | null> = atHead,
+    ) =>
       assemblePacket({
         headSha: "a".repeat(40),
         evidence: { summary: "", criteria: [], checks: [], reviewer: null, riskFlags: [] },
         ci,
         files: files as never,
         sameModelAsImplementer: false,
-        splitFiles: allowed,
+        splitFiles: committed,
+        splitAtHead: head,
       });
+    expect(packet(all).verdict).toBe("pass");
+    // An extra file.
+    const extra = packet([...all, { path: "src/app.ts", status: "added" }]);
+    expect(extra.verdict).toBe("fail");
+    expect(extra.reasons.join(" ")).toContain("not one of the approved plan's files: src/app.ts");
+    // A missing file.
+    const missing = packet(all.slice(1));
+    expect(missing.verdict).toBe("fail");
+    expect(missing.reasons.join(" ")).toContain("isn't in the pull request: docs/specs/wi-1-x.md");
+    // A changed byte in an approved file.
+    const changed = packet(all, { ...atHead, ".kim/designs/a.d2": "c" });
+    expect(changed.verdict).toBe("fail");
+    expect(changed.reasons.join(" ")).toContain("changed after approval: .kim/designs/a.d2");
+    // A removal.
     expect(
-      packet([
-        { path: "docs/specs/wi-1-x.md", status: "added" },
-        { path: ".kim/designs/a.d2", status: "modified" },
-      ]).verdict,
-    ).toBe("pass");
-    const code = packet([
-      { path: "docs/specs/wi-1-x.md", status: "added" },
-      { path: "src/app.ts", status: "added" },
-    ]);
-    expect(code.verdict).toBe("fail");
-    expect(code.reasons.join(" ")).toContain("not one of the approved plan's files: src/app.ts");
-    expect(packet([{ path: ".kim/plans/wi-1-x.md", status: "added" }]).verdict).toBe("fail");
-    expect(
-      packet([
-        { path: "docs/specs/wi-1-x.md", status: "added" },
-        { path: ".kim/designs/a.d2", status: "removed" },
-      ]).verdict,
+      packet([...all.slice(0, 2), { path: ".kim/designs/a.d2", status: "removed" }]).verdict,
     ).toBe("fail");
+    // Nothing recorded: nothing can match.
+    expect(
+      assemblePacket({
+        headSha: "a".repeat(40),
+        evidence: { summary: "", criteria: [], checks: [], reviewer: null, riskFlags: [] },
+        ci,
+        files: [] as never,
+        sameModelAsImplementer: false,
+        splitFiles: [],
+        splitAtHead: {},
+      }).verdict,
+    ).toBe("fail");
+  });
+
+  it("approves a split only as it was shown, and never through the generic gate card (review of #171)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const { specId } = await agent<{ specId: string }>("spec.revise", SPLIT);
+    await agent("planning.news");
+    await agent("planning.ready");
+    await call("spec.accept", { workItemId: item.workItemId, specId }, FOREMAN);
+    // No digest, another version, or other children: refused, and nothing is created.
+    for (const bound of [{}, await shown(2), await shown(1, [child("api")])]) {
+      const refused = await refusal(
+        ok("spec.approve", { workItemId: item.workItemId, ...bound }, w.human),
+      );
+      expect(refused.message).toMatch(/approve it on the plan's screen/);
+    }
+    const pa = await first<{ id: string }>(
+      "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'spec' AND status = 'pending'",
+      item.workItemId,
+    );
+    await refusal(ok("approval.decide", { pendingActionId: pa.id, decision: "approved" }, w.human));
+    expect(await childrenOf(item.workItemId)).toEqual([]);
+    await ok("spec.approve", { workItemId: item.workItemId, ...(await shown()) }, w.human);
+    expect(await childrenOf(item.workItemId)).toHaveLength(2);
+  });
+
+  it("holds the children until the parent's plan merged, whoever releases them (review of #171)", async () => {
+    const w = await world();
+    const { item } = await approvedSplit(w);
+    const [api] = await childrenOf(item.workItemId);
+    const refused = await refusal(ok("workItem.release", { workItemId: api?.id }, w.human));
+    expect(refused.message).toMatch(/hasn't merged yet/);
+  });
+
+  it("lets a child skip planning only while its body and criteria are the approved slice (review of #171)", async () => {
+    const w = await world();
+    const { item } = await approvedSplit(w);
+    const [api, ui] = await childrenOf(item.workItemId);
+    if (!api || !ui) throw new Error("expected two children");
+    await rows(
+      "UPDATE core_work_items SET status = 'running', stage = 'triage' WHERE id IN (?, ?)",
+      api.id,
+      ui.id,
+    );
+    // Someone edited ui's body while it waited.
+    await rows("UPDATE core_work_items SET body = body || ' and email it' WHERE id = ?", ui.id);
+    const triaged = (id: string) =>
+      ok<{ specRequired: boolean; reason: string }>(
+        "workItem.triage",
+        {
+          workItemId: id,
+          result: {
+            size: "medium",
+            domains: [],
+            acceptanceCriteria: ["Something triage made up"],
+            specRequested: "skip",
+            reason: "the slice is complete",
+          },
+        },
+        FOREMAN,
+      );
+    const a = await triaged(api.id);
+    expect(a.specRequired).toBe(false);
+    expect(a.reason).toMatch(/approved it with the parent's spec/);
+    // The approved criteria stand, not triage's.
+    const spec = await first<{ acceptance_criteria: string }>(
+      "SELECT acceptance_criteria FROM core_specs WHERE work_item_id = ? ORDER BY version DESC",
+      api.id,
+    );
+    expect(spec.acceptance_criteria).toContain("The api works [parent]");
+    expect(spec.acceptance_criteria).not.toContain("made up");
+    // ui changed: it plans under the policy like any item.
+    expect((await triaged(ui.id)).specRequired).toBe(true);
   });
 });

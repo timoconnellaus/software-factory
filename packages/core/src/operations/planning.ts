@@ -52,6 +52,7 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { has } from "../workflow-features.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -463,6 +464,13 @@ export const specRevise = defineOperation({
       throw new OperationError(
         "conflict",
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
+      );
+    }
+    // An item on a Workflow without `splits` can't build a split (review of #171).
+    if (input.children?.length && !has(w.workflow_version, "splits")) {
+      throw new OperationError(
+        "invalid_input",
+        "this item's Workflow can't split work: plan it as one piece of work",
       );
     }
     // Depth 1 (spec 24, ADR 0303): a child's plan can't split again.

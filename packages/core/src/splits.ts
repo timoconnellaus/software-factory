@@ -6,12 +6,15 @@
 // its last child ends (done if any merged, cancelled if all were cancelled).
 import { parseJson } from "@software-factory/db";
 import { type SpecChild, specChildSchema } from "@software-factory/runner-contract";
+import { sql } from "kysely";
 import { z } from "zod";
+import { sha256Hex } from "./attachments.ts";
 import { OperationError } from "./errors.ts";
 import type { HandlerContext, WorkItemRow } from "./operation.ts";
 import { requestPull } from "./operations/backlog.ts";
 import { createWorkItem } from "./operations/shared.ts";
 import { park } from "./readiness.ts";
+import { has } from "./workflow-features.ts";
 
 /** The most children one plan may split into (the schema's limit; bounds every read here). */
 export const SPLIT_MAX = 8;
@@ -19,12 +22,25 @@ export const SPLIT_MAX = 8;
 /** Statuses a work item doesn't leave. */
 const ENDED = ["done", "failed", "rejected", "cancelled"] as const;
 
-/** A spec version's children, or [] (none, or unreadable). */
+/**
+ * A spec version's children: [] when it splits nothing. An unreadable split fails closed (review of
+ * #171): it would otherwise read as "no split" and the parent would build.
+ */
 export function childrenOf(json: string | null | undefined): SpecChild[] {
   if (!json) return [];
   const parsed = z.array(specChildSchema).max(SPLIT_MAX).safeParse(parseJson<unknown>(json, null));
-  return parsed.success ? parsed.data : [];
+  if (!parsed.success) {
+    throw new OperationError(
+      "conflict",
+      "this plan's split can't be read: ask the planner to revise it",
+    );
+  }
+  return parsed.data;
 }
+
+/** The hash a child's approved slice is bound by: its body and its criteria. */
+export const sliceHash = (body: string, criteria: readonly string[]) =>
+  sha256Hex(new TextEncoder().encode(JSON.stringify([body, criteria])));
 
 /** A Workflow event: the last of a parent's children ended. Payload `{ done, cancelled }`. */
 export const splitSettledEvent = (parentId: string) => `split-${parentId}`;
@@ -59,17 +75,20 @@ export function sliceBody(
 export async function createSplitChildren(
   ctx: HandlerContext,
   workItemId: string,
+  specId: string,
 ): Promise<string[]> {
   const w = await ctx.db
     .selectFrom("core_work_items")
     .selectAll()
     .where("id", "=", workItemId)
     .executeTakeFirst();
-  if (!w?.current_spec_id) return [];
+  if (!w) return [];
+  // The spec the gate was opened for (review of #171), not whatever is current at decision time.
   const spec = await ctx.db
     .selectFrom("core_specs")
     .select("children")
-    .where("id", "=", w.current_spec_id)
+    .where("id", "=", specId)
+    .where("work_item_id", "=", w.id)
     .executeTakeFirst();
   const children = childrenOf(spec?.children);
   if (!children.length) return [];
@@ -81,6 +100,7 @@ export async function createSplitChildren(
     .selectFrom("core_work_items")
     .select("id")
     .where("parent_work_item_id", "=", w.id)
+    .where("source", "=", "planning")
     .limit(1)
     .executeTakeFirst();
   if (existing) return [];
@@ -92,11 +112,12 @@ export async function createSplitChildren(
   const numbers = new Map(children.map((c, i) => [c.key, project.next_number + i]));
   const ids = new Map<string, string>();
   for (const [i, c] of children.entries()) {
+    const body = sliceBody(w, c, numbers);
     const created = createWorkItem(ctx, {
       project,
       repositoryId: w.repository_id,
       title: c.title,
-      body: sliceBody(w, c, numbers),
+      body,
       source: "planning",
       requesterUserId: w.requester_user_id,
       parentWorkItemId: w.id,
@@ -106,6 +127,15 @@ export async function createSplitChildren(
       acceptanceCriteria: c.acceptanceCriteria,
     });
     ids.set(c.key, created.id);
+    // Bound to what was approved (review of #171): triage lets it skip planning only while its
+    // body and criteria still hash to this, at the approved size.
+    const slice = { key: c.key, size: c.size, sha256: await sliceHash(body, c.acceptanceCriteria) };
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ split_slice: JSON.stringify(slice) })
+        .where("id", "=", created.id),
+    );
   }
   for (const c of children) {
     const from = ids.get(c.key);
@@ -134,6 +164,23 @@ export async function createSplitChildren(
  * approved them with the parent's spec, so this release needs no other decision.
  */
 export async function releaseSplitChildren(ctx: HandlerContext, parent: WorkItemRow) {
+  // The parent waits for its children from here and holds no active slot (review of #171).
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ awaiting_children: 1, updated_at: ctx.now })
+      .where("id", "=", parent.id),
+  );
+  // A held child parked meanwhile (its sibling ended) goes to the queue, not back to Ready, when
+  // its owner answers.
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({ needs_info: sql`json_set(needs_info, '$.heading', 'queued')` })
+      .where("parent_work_item_id", "=", parent.id)
+      .where("source", "=", "planning")
+      .where("needs_info", "is not", null),
+  );
   const held = await ctx.db
     .selectFrom("core_work_items")
     .select(["id", "status"])
@@ -257,23 +304,26 @@ export async function childEnded(
 }
 
 /**
- * The files a split parent's PR may change (spec 24, the coordinator's decision): the spec, the
- * plan's copy and the `.kim/` files a person approved, and nothing else. Null: not a split parent.
+ * What a split parent's PR must hold (spec 24, review of #171): exactly the files spec.commit
+ * wrote, each with the content hash it wrote. Null: not a split parent on Workflow `splits`.
  */
 export async function splitFiles(
   ctx: Pick<HandlerContext, "db">,
-  w: Pick<WorkItemRow, "id">,
-): Promise<string[] | null> {
+  w: Pick<WorkItemRow, "id" | "workflow_version">,
+): Promise<{ path: string; sha256: string }[] | null> {
+  if (!has(w.workflow_version, "splits")) return null;
   const spec = await ctx.db
     .selectFrom("core_specs")
-    .select(["children", "path", "kim_files"])
+    .select(["children", "committed_files"])
     .where("work_item_id", "=", w.id)
     .where("status", "=", "approved")
     .orderBy("version", "desc")
     .limit(1)
     .executeTakeFirst();
   if (!spec || !childrenOf(spec.children).length) return null;
-  const kim = parseJson<{ path?: unknown }[]>(spec.kim_files ?? "[]", []);
-  const plan = spec.path ? [spec.path, spec.path.replace(/^docs\/specs\//, ".kim/plans/")] : [];
-  return [...plan, ...kim.flatMap((k) => (typeof k.path === "string" ? [k.path] : []))];
+  const files = z
+    .array(z.object({ path: z.string(), sha256: z.string() }))
+    .safeParse(parseJson<unknown>(spec.committed_files ?? "null", null));
+  // Nothing recorded: nothing can match, so verify fails closed.
+  return files.success ? files.data : [];
 }

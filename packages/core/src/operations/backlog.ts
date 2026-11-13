@@ -198,7 +198,7 @@ export function startPipeline(
       .$if(!!conditions, (q) =>
         q
           .where(
-            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused'))`,
+            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused') AND a.awaiting_children = 0)`,
             "<",
             conditions?.activeLimit ?? 0,
           )
@@ -381,6 +381,8 @@ export async function pullQueued(
         .select(sql<number>`count(*)`.as("n"))
         .where("project_id", "=", project.id)
         .where("status", "in", [...ACTIVE_STATUSES])
+        // A split's parent waiting for its children holds no slot (review of #171).
+        .where("awaiting_children", "=", 0)
         .executeTakeFirst()
     )?.n ?? 0,
   );
@@ -803,7 +805,26 @@ function parkedOutput(m: NeedsInfo) {
 }
 
 /** Releases an item (ADR 0491): queued, and the pull runs after this commits. */
+/** Whether a split's parent has merged its plan and released its children (spec 24). */
+async function parentReleased(ctx: HandlerContext, parentId: string): Promise<boolean> {
+  const parent = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["awaiting_children", "status"])
+    .where("id", "=", parentId)
+    .executeTakeFirst();
+  return parent?.awaiting_children === 1 || parent?.status === "done";
+}
+
 export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
+  // A plan's child is held until its parent's plan has merged (review of #171), by anyone.
+  if (w.source === "planning" && w.parent_work_item_id) {
+    if (!(await parentReleased(ctx, w.parent_work_item_id))) {
+      throw new OperationError(
+        "conflict",
+        `#${w.number} was split off a plan that hasn't merged yet: it starts with its siblings when that plan merges`,
+      );
+    }
+  }
   {
     const project = requireProject(ctx);
     // A shaped item whose workflow's shaping changed isn't released: it is flagged for a person,
@@ -1828,7 +1849,13 @@ export async function resumeParked(
     after: { needsInfo: null },
   });
   const next = { ...w, body, needs_info: null };
-  if (marker.heading === "ready") {
+  // A plan's child parked while held, answered after its parent released the others (review of
+  // #171): it goes to the queue with them, not back to Ready.
+  const released =
+    marker.heading === "ready" && w.source === "planning" && w.parent_work_item_id
+      ? await parentReleased(ctx, w.parent_work_item_id)
+      : false;
+  if (marker.heading === "ready" && !released) {
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
@@ -1836,7 +1863,7 @@ export async function resumeParked(
         .where("id", "=", w.id)
         .where("status", "=", "backlog"),
     );
-  } else if (marker.heading === "queued") {
+  } else if (marker.heading === "queued" || released) {
     await releaseNow(ctx, next);
   } else {
     await shapeNow(ctx, next);
