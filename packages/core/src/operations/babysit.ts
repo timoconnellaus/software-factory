@@ -162,7 +162,8 @@ export const babysitWake = defineOperation({
         stage: "babysit",
         // Resolving a conflict is writing code; the spec's `babysit` role is this one for now.
         role: "implement",
-        requires: JSON.stringify(policy?.requires.babysit ?? []),
+        // Only a runner whose host runs the stage (ADR 0620): an older one would read it as unknown.
+        requires: JSON.stringify([...new Set([...(policy?.requires.babysit ?? []), "babysit"])]),
         prompt: babysitPrompt({
           kind: reason.kind,
           item: { number: w.number, title: w.title, branch: w.branch },
@@ -206,12 +207,17 @@ export const babysitWake = defineOperation({
 export const babysitNext = defineOperation({
   name: "babysit.next",
   description:
-    "The repository's `babysit` job is over and its result was acted on: closes it, so the next reason starts a new job with a new delivery fence. Refused with a stale fence. The babysitter only.",
+    "The repository's `babysit` job is over and its result was acted on: closes it, so the next reason starts a new job with a new delivery fence. With `cancel`, a job no runner has claimed is cancelled too (no runner that can babysit is online). Refused with a stale fence. The babysitter only.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
   audit: { changesOnly: true },
-  input: z.object({ workItemId, deliveryFence }),
+  input: z.object({
+    workItemId,
+    deliveryFence,
+    /** Also cancel the job if no runner has claimed it (none online can babysit). */
+    cancel: z.boolean().default(false),
+  }),
   output: z.object({ left: z.array(babysitReasonSchema) }),
   async handler(input, ctx) {
     onlyBabysitter(ctx);
@@ -221,6 +227,15 @@ export const babysitNext = defineOperation({
     const left = reasons.filter((r) => r.workItemId !== w.id);
     if (state.babysit_job_id === null && left.length === reasons.length) return { left };
     ctx.changed();
+    if (input.cancel && state.babysit_job_id) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_jobs")
+          .set({ status: "cancelled", finished_at: ctx.now })
+          .where("id", "=", state.babysit_job_id)
+          .where("status", "=", "queued"),
+      );
+    }
     ctx.write(
       ctx.db
         .updateTable("core_delivery_state")

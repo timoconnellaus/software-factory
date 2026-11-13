@@ -99,6 +99,12 @@ export const CAPABILITIES = [
    */
   "checks",
   "cloud-sandbox",
+  /**
+   * The runner host runs a `babysit` job (spec 53 §4, ADR 0620): it prepares, merges the default
+   * branch into and pushes a conflict job's run branch (`pushesRunBranch`). A babysit job is placed
+   * only on a runner that declares it: an older host would read the stage as unknown.
+   */
+  "babysit",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

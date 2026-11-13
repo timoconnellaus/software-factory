@@ -20,6 +20,7 @@ import {
   has,
   invoke,
   isOperationError,
+  NO_BABYSIT_RUNNER,
 } from "@software-factory/core";
 import { parseJson } from "@software-factory/db";
 import { invokeDeps } from "../deps.ts";
@@ -618,31 +619,53 @@ async function settleBabysit(
 ): Promise<Settled> {
   // core_jobs' and core_runs' primary keys.
   const job = await env.DB.prepare(
-    `SELECT j.status, j.context, j.work_item_id, r.id AS run_id, r.result, r.head_sha
+    `SELECT j.status, j.context, j.work_item_id, j.wait_reason, j.created_at, r.id AS run_id,
+            r.result, r.head_sha
      FROM core_jobs j LEFT JOIN core_runs r ON r.id = j.run_id WHERE j.id = ?`,
   )
     .bind(sitter.babysit_job_id)
     .first<{
       status: string;
+      wait_reason: string | null;
+      created_at: string;
       context: string;
       work_item_id: string;
       run_id: string | null;
       result: string | null;
       head_sha: string | null;
     }>();
-  if (job && (job.status === "queued" || job.status === "claimed")) {
-    return { kind: "wait", ms: BABYSIT_RECHECK_MS };
-  }
   const context = parseJson<{ reason?: BabysitReason; deliveryFence?: number }>(job?.context, {});
   const fence = context.deliveryFence ?? sitter.babysit_fence;
   const itemId = job?.work_item_id ?? head.work_item_id;
-  const next = async () => {
+  const next = async (cancel = false) => {
     const closed = await call(env, lease, "babysit.next", {
       workItemId: itemId,
       deliveryFence: fence,
+      cancel,
     });
     if (closed.status === "refused") throw new Error(`babysit.next refused: ${closed.message}`);
   };
+  // Still to be claimed or at work. With no runner online that can babysit (an older runner can't:
+  // ADR 0620), it doesn't wait for ever: past BABYSIT_RECHECK_MS the job is cancelled and the
+  // delivery ends saying so, as it did before the babysitter (a person sees why on the item).
+  if (job && (job.status === "queued" || job.status === "claimed")) {
+    const waited = Date.now() - Date.parse(job.created_at);
+    const reason = context.reason;
+    if (
+      job.status === "queued" &&
+      job.wait_reason === NO_BABYSIT_RUNNER &&
+      waited >= BABYSIT_RECHECK_MS &&
+      reason
+    ) {
+      await next(true);
+      return {
+        kind: "end",
+        delivery: reason.kind === "conflict" ? "conflict" : "failed",
+        reason: `${NO_BABYSIT_RUNNER}: the ${reason.kind === "conflict" ? "conflict" : `failing check (${reason.checks.join(", ") || "CI"})`} on ${reason.headSha.slice(0, 7)} needs a person`,
+      };
+    }
+    return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+  }
   const reason = context.reason;
   // A job for an item no longer at the head (it left meanwhile): closed, nothing acted on.
   if (!job || !reason || job.work_item_id !== head.work_item_id || fence !== sitter.babysit_fence) {

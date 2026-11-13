@@ -388,10 +388,11 @@ export function hostManifest(
   declare = true,
   note?: string,
 ): CapabilityManifest {
-  const without = manifest.capabilities.filter((c) => c !== "checks");
+  const without = manifest.capabilities.filter((c) => c !== "checks" && c !== "babysit");
+  // `babysit` (spec 53, ADR 0620): this host's job runner handles the stage, whatever the adapter.
   return {
     ...manifest,
-    capabilities: declare ? [...without, "checks"] : without,
+    capabilities: declare ? [...without, "checks", "babysit"] : [...without, "babysit"],
     ...(note ? { checksNote: note.slice(0, 300) } : {}),
   };
 }

@@ -36,8 +36,9 @@ export const MANIFEST: CapabilityManifest = {
   contractVersion: CONTRACT_VERSION,
   runnerKind: "test",
   harnesses: ["claude-code"],
-  // `checks`: the test runner plays a host that runs the project's checks (ADR 0501).
-  capabilities: ["hooks", "headless", "checks"],
+  // `checks`: the test runner plays a host that runs the project's checks (ADR 0501), and
+  // `babysit`: one that runs the babysitter's jobs (ADR 0620).
+  capabilities: ["hooks", "headless", "checks", "babysit"],
 };
 
 export const sha40 = (seed: string) =>
