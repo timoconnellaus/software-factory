@@ -203,7 +203,11 @@ let lifeline = pipePair()
 
 var actions: posix_spawn_file_actions_t?
 posix_spawn_file_actions_init(&actions)
-for keep in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] + (choice.entry.fd3 ? [3] : []) {
+// fd 3 only when the caller opened it: inheriting a closed descriptor fails the spawn (EBADF on
+// macOS 15). Before the pipes were moved above 10, one of the launcher's own pipes could sit there
+// and be handed to the check child as its report pipe.
+let fd3Open = fcntl(3, F_GETFD) != -1
+for keep in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] + (choice.entry.fd3 && fd3Open ? [3] : []) {
   posix_spawn_file_actions_addinherit_np(&actions, keep)
 }
 posix_spawn_file_actions_adddup2(&actions, scriptPipe.r, scriptFd)
