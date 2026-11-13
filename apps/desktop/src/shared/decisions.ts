@@ -10,6 +10,15 @@ export const DECISION_OPS: ReadonlySet<string> = new Set([
   "approval.decide",
   "question.answer",
   "question.acceptDefaults",
+  // Policy decisions on the desktop (ADR 0610): org config writes, an org admin's approval of a
+  // looser override, and marking a repair of a red main.
+  "workflow.save",
+  "workflow.createFromTemplate",
+  "workflow.archive",
+  "agent.save",
+  "orgConfig.rollback",
+  "override.approve",
+  "workItem.markRepair",
 ]);
 
 /**
@@ -17,7 +26,14 @@ export const DECISION_OPS: ReadonlySet<string> = new Set([
  * for every input: `planning.answer` answers an ordinary planning question with `call`, and a
  * security, privacy or irreversible one with Touch ID (spec 26, ADR 0042 as amended).
  */
-export const DECIDE_OPS: ReadonlySet<string> = new Set([...DECISION_OPS, "planning.answer"]);
+export const DECIDE_OPS: ReadonlySet<string> = new Set([
+  ...DECISION_OPS,
+  "planning.answer",
+  // A proof for some inputs only (ADR 0610): turning a kill switch off (on is a plain call), and
+  // adopting projects' workflows for real (its dry run is a plain call).
+  "killSwitch.set",
+  "orgConfig.adoptProjectWorkflows",
+]);
 
 /** What `call` answers for a gate decision: it must go through `decide`. */
 export const refuseDecisionCall = (op: string) => ({

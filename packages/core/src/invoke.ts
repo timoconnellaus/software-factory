@@ -165,6 +165,7 @@ export function deviceDecidable(
 ): boolean {
   if (surface === "mobile" && phoneRefuses(op, input)) return false;
   if (op.desktopDecidable) return true;
+  if (surface === "desktop" && op.desktopOneTap) return op.desktopOneTap(input as never);
   if (surface !== "mobile" || !op.mobileDecidable) return false;
   return op.mobileDecidable === true || op.mobileDecidable(input);
 }

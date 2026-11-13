@@ -39,7 +39,14 @@ export type DecisionOp =
   | "review.sendBack"
   | "approval.decide"
   | "question.answer"
-  | "question.acceptDefaults";
+  | "question.acceptDefaults"
+  | "workflow.save"
+  | "workflow.createFromTemplate"
+  | "workflow.archive"
+  | "agent.save"
+  | "orgConfig.rollback"
+  | "override.approve"
+  | "workItem.markRepair";
 
 /** Reads: operations the door's `batch` runs (risk `read`). */
 export type ReadOpName =
@@ -85,11 +92,9 @@ export async function op<N extends Exclude<OpName, DecisionOp>>(
 }
 
 /** A gate decision: Touch ID shows the engine's summary of exactly this call (ADR 0381). */
-export async function decide<N extends DecisionOp | "planning.answer">(
-  name: N,
-  input: OpInput<N>,
-  options: { idempotencyKey?: string } = {},
-): Promise<OpOutput<N>> {
+export async function decide<
+  N extends DecisionOp | "planning.answer" | "killSwitch.set" | "orgConfig.adoptProjectWorkflows",
+>(name: N, input: OpInput<N>, options: { idempotencyKey?: string } = {}): Promise<OpOutput<N>> {
   return unwrap<N>(await bun().decide({ op: name, input, ...options }));
 }
 
