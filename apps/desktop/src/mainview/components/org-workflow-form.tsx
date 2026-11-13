@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@software-factory/ui/components/select";
 import { Textarea } from "@software-factory/ui/components/textarea";
+import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { useState } from "react";
@@ -26,6 +27,7 @@ import {
   EditField,
   EditSection,
   ImpactList,
+  LeaveGuard,
   PREVIEW_DEBOUNCE_MS,
   saveLabel,
   useDebounced,
@@ -104,11 +106,29 @@ export function OrgWorkflowForm({
   onDone: () => void;
 }) {
   const [draft, setDraft] = useState<OrgWorkflow>(() => structuredClone(saved));
+  // The version the draft was made from. When the saved workflow moves underneath it, the draft is
+  // kept and the person reviews the difference against the new version before saving.
+  const [draftBase, setDraftBase] = useState(baseVersion);
+  const [savedBase, setSavedBase] = useState<OrgWorkflow>(() => structuredClone(saved));
   const [note, setNote] = useState("");
+  const [open, setOpen] = useState(false);
   const types = useQuery(stageTypesQuery());
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const edited = JSON.stringify(draft) !== JSON.stringify(savedBase);
+  const moved = draftBase !== baseVersion;
+  // Nothing edited yet: just follow the saved version.
+  if (moved && !edited) {
+    setDraft(structuredClone(saved));
+    setSavedBase(structuredClone(saved));
+    setDraftBase(baseVersion);
+  }
+  const dirty = edited || JSON.stringify(draft) !== JSON.stringify(saved);
+  const discard = () => {
+    setDraft(structuredClone(saved));
+    setSavedBase(structuredClone(saved));
+    setDraftBase(baseVersion);
+  };
   // Checked once typing stops (Cloudflare cost: a preview is a Worker request and D1 reads).
   const settled = useDebounced(draft, PREVIEW_DEBOUNCE_MS);
   const typing = JSON.stringify(settled) !== JSON.stringify(draft);
@@ -143,10 +163,11 @@ export function OrgWorkflowForm({
 
   return (
     <div className="flex flex-col gap-4" data-testid="org-workflow-form">
+      <LeaveGuard dirty={dirty} />
       <EditSection title="Workflow">
         <EditField label="Name">
           <Input
-            className="h-8 w-56"
+            className="h-8 w-full max-w-56"
             aria-label="Workflow name"
             value={draft.name}
             onChange={(e) =>
@@ -158,7 +179,7 @@ export function OrgWorkflowForm({
         </EditField>
         <EditField label="What it is for" help="Shown when a project picks a workflow.">
           <Input
-            className="h-8 w-72"
+            className="h-8 w-full max-w-72"
             aria-label="Workflow description"
             value={draft.description ?? ""}
             onChange={(e) =>
@@ -322,48 +343,90 @@ export function OrgWorkflowForm({
           className="sticky bottom-3 z-10 gap-2.5 shadow-lg"
           data-testid="org-save-bar"
         >
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 min-[900px]:gap-2">
             <span className="font-semibold text-[13px] max-[899px]:hidden">Unsaved changes</span>
-            {loosens && <Chip tone="amber">Loosens: an org admin approves</Chip>}
+            {loosens && (
+              <Chip tone="amber">
+                Loosens<span className="max-[899px]:hidden">: an org admin approves</span>
+              </Chip>
+            )}
             {fresh && !fresh.valid && <Chip tone="amber">Not valid</Chip>}
             {!fresh && <span className="text-ink-3 text-xs">Checking…</span>}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 underline min-[900px]:hidden"
+              aria-expanded={open}
+              onClick={() => setOpen((o) => !o)}
+            >
+              {open ? "Hide" : "Details"}
+            </Button>
             <span className="grow" />
-            <Button size="sm" variant="ghost" onClick={() => setDraft(structuredClone(saved))}>
+            <Button size="sm" variant="ghost" className="px-2 max-[899px]:hidden" onClick={discard}>
               Discard
             </Button>
             <Button
               size="sm"
-              disabled={!fresh?.valid || pending !== null || !canDecide}
+              disabled={!fresh?.valid || pending !== null || !canDecide || moved}
               data-testid="org-save"
               onClick={async () => {
                 const out = await run(
                   "workflow.save",
-                  { orgId, baseVersion, workflow: draft, ...(note ? { note } : {}) },
+                  { orgId, baseVersion: draftBase, workflow: draft, ...(note ? { note } : {}) },
                   "Saved",
                 );
                 if (out) onDone();
               }}
             >
-              {saveLabel(loosens, baseVersion).full}
+              {saveLabel(loosens, baseVersion).short}
+              {loosens && <span className="max-[899px]:hidden"> for approval</span>}
             </Button>
           </div>
-          {fresh && !fresh.valid && (
-            <ul className="m-0 list-none p-0 text-[13px]">
-              {fresh.errors.map((e) => (
-                <li key={`${e.rule}-${e.stageId}-${e.message}`}>
-                  {e.rule}
-                  {e.stageId ? ` (${e.stageId})` : ""}: {e.message}
-                </li>
-              ))}
-            </ul>
+          {moved && (
+            <div className="flex flex-wrap items-center gap-2 text-[13px]" data-testid="org-moved">
+              <span className="min-w-[min(100%,280px)] flex-1">
+                The workflow changed while you were editing (v{draftBase} → v{baseVersion}): review
+                the difference below, then keep your changes on v{baseVersion}.
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setSavedBase(structuredClone(saved));
+                  setDraftBase(baseVersion);
+                }}
+              >
+                Keep my changes on v{baseVersion}
+              </Button>
+            </div>
           )}
-          {fresh?.impact && <ImpactList changes={fresh.impact.changes} testId="org-impact" />}
-          <Input
-            placeholder="Why (optional, shows in History)"
-            aria-label="Why"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
+          <div className={cn("flex flex-col gap-2", !open && !moved && "max-[899px]:hidden")}>
+            {fresh && !fresh.valid && (
+              <ul className="m-0 list-none p-0 text-[13px]">
+                {fresh.errors.map((e) => (
+                  <li key={`${e.rule}-${e.stageId}-${e.message}`}>
+                    {e.rule}
+                    {e.stageId ? ` (${e.stageId})` : ""}: {e.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {fresh?.impact && <ImpactList changes={fresh.impact.changes} testId="org-impact" />}
+            <Input
+              placeholder="Why (optional, shows in History)"
+              aria-label="Why"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit min-[900px]:hidden"
+              onClick={discard}
+            >
+              Discard changes
+            </Button>
+          </div>
         </Panel>
       )}
     </div>
