@@ -14,6 +14,7 @@ import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { childrenOf, createSplitChildren } from "../splits.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
+import { resolutionAtGate } from "./babysit.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { startTrial } from "./improve.ts";
 import { openIncident } from "./incidents.ts";
@@ -398,7 +399,7 @@ export const reviewMerge = defineOperation({
   name: "review.merge",
   decidesPending: true,
   description:
-    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. `headSha` (required on every surface) is the commit the person reviewed: the approval is for that commit only, and a gate whose head has moved refuses it with `conflict`. When declared checks could not be run on the commit (ADR 0501, fourth review), it is refused with `conflict` unless `mergeWithoutChecks` is true: that decision is recorded with the packet and `factory/verify` is then posted as success, saying so. Approvers only.",
+    "Merge a work item from its review packet (the merge gate, ADR 0041). The factory merges through the GitHub App. Records whether the full diff was opened first. `headSha` (required on every surface) is the commit the person reviewed: the approval is for that commit only, and a gate whose head has moved refuses it with `conflict`. When the gate reopened after a babysitter resolution that isn't clean, or can't be shown, it is refused with `conflict` unless `openedFullDiff` is true (spec 53 decision 1). When declared checks could not be run on the commit (ADR 0501, fourth review), it is refused with `conflict` unless `mergeWithoutChecks` is true: that decision is recorded with the packet and `factory/verify` is then posted as success, saying so. Approvers only.",
   risk: "write",
   actors: ["human"],
   permission: "approver",
@@ -455,6 +456,22 @@ export const reviewMerge = defineOperation({
     let note = input.note ?? null;
     if (pa.status === "pending") {
       const item = requireWorkItem(ctx);
+      // The babysitter's resolution (spec 53 decision 1, #201 review): when it isn't a clean one
+      // read in full, or was expected and can't be shown, the person reviews the whole diff, and
+      // the engine holds them to it: refused unless they opened the full diff in this decision.
+      const at = await resolutionAtGate(ctx, item);
+      if (
+        !input.openedFullDiff &&
+        (at.resolution ? at.resolution.status !== "clean" : at.expected)
+      ) {
+        throw new OperationError(
+          "conflict",
+          at.resolution
+            ? `The babysitter's resolution of this conflict couldn't be shown on its own (${at.resolution.reason ?? at.resolution.status}). Open the full diff before you merge.`
+            : "The babysitter resolved a conflict on this commit, but its resolution couldn't be shown. Open the full diff before you merge.",
+          { fullDiffRequired: true },
+        );
+      }
       const head = mergeGateHead(pa) ?? item.head_sha;
       const without = await decideNotRun(ctx, item, head ?? null, input.mergeWithoutChecks);
       if (without.length > 0) {

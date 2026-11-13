@@ -199,6 +199,41 @@ describe("the babysit job (spec 53 §4)", () => {
         a.id,
       ),
     ).toBeNull();
+    // #201 review: the engine marked the gate as reopened for this resolution, and holds a person
+    // to the whole diff when the resolution isn't clean, or can't be shown at all.
+    const marked = await ok<{ resolutionExpected?: boolean }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(marked.resolutionExpected).toBe(true);
+    const mergeWithout = async () =>
+      call(
+        "review.merge",
+        { workItemId: a.id, openedFullDiff: false, headSha: await gateHead(a.id) },
+        w.human,
+      ).catch((e: unknown) => e);
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = json_set(summary, '$.status', 'incomplete', '$.reason', 'too large to read in full') WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    expect(await mergeWithout()).toMatchObject({
+      code: "conflict",
+      details: { fullDiffRequired: true },
+    });
+    // No record at all (a refused babysit.resolution, or one that doesn't parse): still held to it.
+    await env.DB.prepare("DELETE FROM core_babysit_resolutions WHERE work_item_id = ?")
+      .bind(a.id)
+      .run();
+    const gone = await ok<{ babysitResolution: unknown; resolutionExpected?: boolean }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(gone).toMatchObject({ babysitResolution: null, resolutionExpected: true });
+    expect(await mergeWithout()).toMatchObject({ details: { fullDiffRequired: true } });
+    // Having opened the full diff, the person merges.
     await approve(w, a.id);
     await itemStatus(a.id, "done");
   });
@@ -731,7 +766,7 @@ describe("the resolution at the reopened gate (decision 1)", () => {
       });
     });
     expect(view).toMatchObject({ status: "unclean", files: [], outside: [] });
-    expect(view?.reason).toMatch(/not a merge of the approved head.*review the whole diff/);
+    expect(view?.reason).toMatch(/not a merge of the approved head/);
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 

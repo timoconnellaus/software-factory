@@ -184,6 +184,9 @@ export const SCREENS = [
     name: "item-review-resolution-unreadable",
     path: "/work/wi_13?tab=review&fixture=resolution-unclean",
   },
+  // #201 review: the Inbox merge card after a resolution (no Merge unless it is clean).
+  { name: "inbox-merge-resolution", path: "/?item=wi_13&fixture=resolution" },
+  { name: "inbox-merge-resolution-unreadable", path: "/?item=wi_13&fixture=resolution-unclean" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
   {
     name: "item-review-criteria",

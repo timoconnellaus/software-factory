@@ -860,6 +860,7 @@ function resolutionFixture(head: string | null): OpOutput<"workItem.get">["babys
       reason: "too many merges between the item and the default branch to find the merge base",
       files: [],
       outside: [],
+      outsideNotShown: 0,
     };
   }
   return {
@@ -887,6 +888,7 @@ function resolutionFixture(head: string | null): OpOutput<"workItem.get">["babys
       },
     ],
     outside: ["apps/engine/src/deliver/deliverer.ts"],
+    outsideNotShown: 0,
   };
 }
 
@@ -2063,8 +2065,9 @@ export const ANSWERS: Answers = {
     ),
   }),
   "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
-  "babysit.resolutionPatches": () => ({
-    headSha: "9c41e07d2b",
+  "babysit.resolutionPatches": (input) => ({
+    // The patches of the head the item is at, as the engine returns them.
+    headSha: detail(input.workItemId).item.headSha,
     patches: {
       "packages/core/src/verify/tests-intact.ts":
         "@@ -41,7 +41,9 @@ export function testsIntact(files: ChangedFile[]) {\n   const findings: Finding[] = [];\n-  for (const f of files) {\n+  // Both sides: main's skip-list and the item's suppression check.\n+  for (const f of files.filter((x) => !SKIP.has(x.path))) {\n     findings.push(...suppressions(f));\n+    findings.push(...thresholds(f));\n   }",

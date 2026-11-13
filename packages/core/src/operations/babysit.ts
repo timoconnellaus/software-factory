@@ -434,6 +434,8 @@ export const flakeRecord = defineOperation({
 const RESOLUTION_PATCH_MAX = 4_000;
 /** Most files a resolution lists. */
 const RESOLUTION_FILES_MAX = 50;
+/** Most files outside the conflict named (#201 review): past it, counted (`outsideNotShown`). */
+const RESOLUTION_OUTSIDE_MAX = 500;
 /** Most paths read: past it, or past GitHub's own caps, the resolution isn't read (fail closed). */
 const RESOLUTION_PATHS_MAX = 250;
 
@@ -469,6 +471,8 @@ export const resolutionSchema = z.object({
    * isn't that side's (main's fix undone, the item's change dropped), or one neither side changed.
    */
   outside: z.array(z.string()),
+  /** Files outside the conflict past RESOLUTION_OUTSIDE_MAX, counted, not named. */
+  outsideNotShown: z.number().default(0),
   /** Resolution files not listed (past RESOLUTION_FILES_MAX), conflicted or not. */
   notShown: z.number(),
   /** What each patch is against: the item's head, so it includes the default branch's changes. */
@@ -485,11 +489,13 @@ const unreadable = (
 ): Resolution => ({
   sha: headSha,
   status,
-  reason: `${reason}: review the whole diff`,
+  // The gate says "review the whole diff" itself: the reason says only why.
+  reason,
   itemHead,
   main,
   files: [],
   outside: [],
+  outsideNotShown: 0,
   notShown: 0,
   patchBase: "itemHead",
 });
@@ -606,11 +612,13 @@ async function readResolution(
     ...judged.filter((j) => j.kind === "deviation"),
   ];
   const listed = ordered.slice(0, RESOLUTION_FILES_MAX);
+  const deviations = ordered.filter((j) => j.kind === "deviation").map((j) => j.path);
   const patches: Record<string, string> = {};
   const files = listed.map((j) => {
     const f = byPath.get(j.path);
     const patch = f?.patch ?? null;
-    if (patch) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
+    // An empty patch is kept: a rename or a mode change with no text change, not a missing one.
+    if (patch !== null) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
     return {
       path: j.path,
       previousPath: f?.previousPath ?? null,
@@ -640,7 +648,9 @@ async function readResolution(
       itemHead,
       main,
       files,
-      outside: ordered.filter((j) => j.kind === "deviation").map((j) => j.path),
+      // Every one of them named, up to RESOLUTION_OUTSIDE_MAX (they matter most), then counted.
+      outside: deviations.slice(0, RESOLUTION_OUTSIDE_MAX),
+      outsideNotShown: Math.max(0, deviations.length - RESOLUTION_OUTSIDE_MAX),
       notShown: ordered.length - listed.length,
       patchBase: "itemHead",
     },
@@ -715,6 +725,59 @@ export const babysitResolution = defineOperation({
     };
   },
 });
+
+/**
+ * How the deliverer ends a delivery when the babysitter's resolution became the item's head
+ * (spec 53 decision 1): the engine's own marker that the merge gate reopens for a resolution,
+ * followed by the head's short SHA. It is set even when no resolution could be recorded.
+ */
+export const RESOLVED_CONFLICT = "the babysitter resolved a conflict with the default branch in ";
+
+/**
+ * Whether the item's merge gate reopened after a babysitter resolution of this head (#201 review):
+ * its latest ended delivery was withdrawn with RESOLVED_CONFLICT for the head. Then a missing or
+ * unreadable resolution is a reason to review the whole diff, never an ordinary gate.
+ */
+export function resolutionExpected(
+  lastEnded: { outcome: string | null; end_reason: string | null } | undefined,
+  headSha: string | null,
+): boolean {
+  return (
+    !!headSha &&
+    lastEnded?.outcome === "withdrawn" &&
+    (lastEnded.end_reason ?? "").startsWith(`${RESOLVED_CONFLICT}${headSha.slice(0, 7)}`)
+  );
+}
+
+/** The item's resolution on its head and whether one was expected (review.merge's rule). */
+export async function resolutionAtGate(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+): Promise<{ resolution: Resolution | null; expected: boolean }> {
+  const [row, lastEnded] = await Promise.all([
+    ctx.db
+      .selectFrom("core_babysit_resolutions")
+      .select(["head_sha", "summary"])
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst(),
+    lastEndedDelivery(ctx, w.id).executeTakeFirst(),
+  ]);
+  return {
+    resolution: resolutionFor(row, w.head_sha),
+    expected: resolutionExpected(lastEnded, w.head_sha),
+  };
+}
+
+/** The item's latest ended delivery (core_merge_queue_item_idx: its few entries, newest first). */
+export function lastEndedDelivery(ctx: Pick<HandlerContext, "db">, workItemId: string) {
+  return ctx.db
+    .selectFrom("core_merge_queue")
+    .select(["outcome", "end_reason"])
+    .where("work_item_id", "=", workItemId)
+    .where("status", "!=", "queued")
+    .orderBy("enqueued_at", "desc")
+    .limit(1);
+}
 
 /** A stored resolution's summary, when it is for `headSha` (none, or the head moved: null). */
 export function resolutionFor(

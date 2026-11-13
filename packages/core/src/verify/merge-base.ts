@@ -18,7 +18,10 @@ export interface SinceBase {
 
 /**
  * Most boundary parents checked (one compare each, `BOUNDARY_BATCH` at a time); past it, it can't
- * tell. A Worker may make 1,000 subrequests per request: this keeps one judgement well inside that.
+ * tell. One judgement is at most 62 GitHub calls (two listings and 60 compares). The engine runs on
+ * Workers Paid (its wrangler config sets `limits.cpu_ms: 10000`, which only Paid accepts), whose
+ * subrequest limit per invocation is 1,000 at the least (Free's is 50): the cap keeps one judgement
+ * well inside it, with the rest of a pass. Raise it only with that budget in view.
  */
 export const MAX_BOUNDARY_CHECKS = 60;
 /** Boundary parents checked at once. */

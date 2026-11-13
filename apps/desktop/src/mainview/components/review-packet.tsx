@@ -54,7 +54,7 @@ export function ReviewPacket({ detail }: { detail: WorkItemDetail }) {
     <div className="flex flex-wrap items-start gap-[18px]" data-testid="review-packet">
       <div className="flex min-w-0 flex-[999_1_400px] flex-col gap-[18px]">
         {/* A babysitter's resolution at the reopened gate: what to review first (spec 53). */}
-        <ResolutionPanel detail={detail} />
+        <ResolutionPanel detail={detail} onOpenDiff={markOpened} />
         {/* Always shown, whatever sections the project picks: it's for a person (ADR 0500). */}
         <TestsIntact packet={packet} currentHead={item.headSha} />
         {configured.includes("verdict") && (
