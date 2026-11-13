@@ -13,7 +13,16 @@
 // row per repository, claimed by a compare-and-set. Its `rev` is the pass's fencing token: every
 // operation the pass calls carries it (`lease`), so a pass that outlived its lease changes nothing,
 // GitHub included. Every change to factory state goes through operations as the BABYSITTER actor.
-import { BABYSITTER, invoke, isOperationError } from "@software-factory/core";
+import {
+  BABYSITTER,
+  type BabysitReason,
+  babysitResult,
+  has,
+  invoke,
+  isOperationError,
+  NO_BABYSIT_RUNNER,
+} from "@software-factory/core";
+import { parseJson } from "@software-factory/db";
 import { invokeDeps } from "../deps.ts";
 
 /** How long one pass may hold its queue before another may take over (a pass that died). */
@@ -29,6 +38,11 @@ export const CI_MISSING_GIVE_UP_MS = 3 * CI_RECHECK_MS;
 const HELD_RECHECK_MS = 30 * 60_000;
 /** A queue whose head is someone else's (a v4–v7 Workflow) or empty: a slow safety look. */
 const IDLE_RECHECK_MS = 60 * 60_000;
+/**
+ * A `babysit` job at work on the head (spec 53 §4): its hand-back wakes the queue, so this is only
+ * the safety look.
+ */
+export const BABYSIT_RECHECK_MS = 10 * 60_000;
 /** Rounds of one wake: a pass, then again while something changed meanwhile. */
 const ROUNDS = 5;
 /**
@@ -72,6 +86,8 @@ interface HeadRow {
   repairs_main: number;
   project_id: string;
   repository_id: string;
+  kind: string;
+  workflow_version: number | null;
 }
 
 type Called =
@@ -209,7 +225,8 @@ async function readHead(
   return env.DB.prepare(
     `SELECT q.id, q.work_item_id, q.pending_action_id, q.approved_sha, q.head_sha, q.driver,
             q.update_asked_at, q.merging_at, q.held_until, q.updated_at,
-            w.status AS item_status, w.number, w.repairs_main, q.project_id, w.repository_id
+            w.status AS item_status, w.number, w.repairs_main, q.project_id, w.repository_id,
+            w.kind, w.workflow_version
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
      WHERE q.project_id = ?1 AND q.status = 'queued'
        AND w.status IN ('running', 'waiting', 'paused')
@@ -284,6 +301,40 @@ async function deliverHead(
   if (head.pending_action_id && (await approvalUsed(env, head.pending_action_id))) {
     return end("merged", "merged", "merged");
   }
+
+  // Something code can't decide (spec 53 §4): the repository's `babysit` job judges it. Only for a
+  // factory item whose Workflow re-verifies a withdrawn approval (v12's `reverify-on-withdrawal`):
+  // a resolution is a new head a person approves again. An attached PR's conflict goes back to its
+  // author (decision 8); older items, as before, back to build.
+  const judge = async (
+    kind: BabysitReason["kind"],
+    at: string,
+    checks: string[],
+    fallback: string,
+  ): Promise<number | null> => {
+    const babysits =
+      has(head.workflow_version, "reverify-on-withdrawal") &&
+      !(kind === "conflict" && head.kind === "attached");
+    const ending = kind === "conflict" ? "conflict" : "failed";
+    const why =
+      kind === "conflict"
+        ? fallback
+        : `Merging the default branch into your branch broke CI (${fallback}, the branch with the default branch merged in). Fix the branch against the latest default branch.`;
+    if (!babysits) return end("left", ending, why);
+    const woke = await call(env, lease, "babysit.wake", {
+      workItemId: id,
+      reason: { kind, headSha: at, checks },
+    });
+    if (woke.status !== "ok") return end("left", ending, `${why} (${refusal(woke)})`);
+    return BABYSIT_RECHECK_MS;
+  };
+
+  const sitter = await babysitState(env, lease.key);
+  if (sitter?.babysit_job_id) {
+    const settled = await settleBabysit(env, lease, head, sitter);
+    if (settled.kind === "wait") return settled.ms;
+    if (settled.kind === "end") return end("left", settled.delivery, settled.reason);
+  }
   // Stop the line (ADR 0581): while main is red only a repair lands. Held before the update too,
   // or merging a red main in would fail its CI and send good work back to build. A green
   // `main.observe` wakes the queue. A head already marked merging finishes first (GitHub may have
@@ -319,7 +370,10 @@ async function deliverHead(
       };
     }
     if (state === "conflict") {
-      return { wait: await end("left", "conflict", String(u.output.reason ?? "conflict")) };
+      const reason = String(u.output.reason ?? "conflict");
+      return {
+        wait: await judge("conflict", String(u.output.headSha ?? head.head_sha), [], reason),
+      };
     }
     // A merge of main the factory can't prove left the approved change alone: the approval no
     // longer holds, and the item goes back to its merge gate on the new head (ADR 0582).
@@ -374,10 +428,35 @@ async function deliverHead(
     const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
     const ciState = ci.status === "ok" ? String(ci.output.state) : "unreadable";
     if (ci.status === "ok" && ci.output.mergeable === false) {
-      return end("left", "conflict", "the default branch moved again and now conflicts");
+      return judge("conflict", at, [], "the default branch moved again and now conflicts");
     }
     if (ciState === "pending" && waited < CI_GIVE_UP_MS) return CI_RECHECK_MS;
     if (ciState === "missing" && waited < CI_MISSING_GIVE_UP_MS) return CI_RECHECK_MS;
+    const reruns = await rerunsOn(env, head.repository_id, at);
+    if (ciState === "failure" && ci.status === "ok") {
+      const failing = (ci.output.failing as string[] | undefined) ?? [];
+      // A check the babysitter already reran as a flake failed again: a regression, not a flake.
+      const again = failing.find((f) => reruns.some((r) => r.check_name === f));
+      if (again) {
+        return end(
+          "left",
+          "failed",
+          `${again} failed again on ${at.slice(0, 7)} after the babysitter reran it once: not a flake. Fix the branch against the latest default branch.`,
+        );
+      }
+      return judge("check-failed", at, failing, `CI is failure on ${at.slice(0, 7)}`);
+    }
+    if (ciState === "success") {
+      // Every rerun on this head passed: each is a known flake now (decision 3).
+      for (const r of reruns.filter((x) => x.passed === null)) {
+        await call(env, lease, "flake.record", {
+          workItemId: id,
+          headSha: at,
+          check: r.check_name,
+          deliveryFence: await currentFence(env, lease.key),
+        });
+      }
+    }
     if (ciState !== "success") {
       return end(
         "left",
@@ -485,4 +564,187 @@ async function approvedFlag(env: Env, pendingActionId: string): Promise<boolean>
   } catch {
     return false;
   }
+}
+
+interface BabysitStateRow {
+  babysit_job_id: string | null;
+  babysit_fence: number;
+  babysit_reasons: string;
+}
+
+async function babysitState(env: Env, key: string): Promise<BabysitStateRow | null> {
+  // core_delivery_state's primary key.
+  return env.DB.prepare(
+    "SELECT babysit_job_id, babysit_fence, babysit_reasons FROM core_delivery_state WHERE key = ?",
+  )
+    .bind(key)
+    .first<BabysitStateRow>();
+}
+
+async function currentFence(env: Env, key: string): Promise<number> {
+  return (await babysitState(env, key))?.babysit_fence ?? 0;
+}
+
+/** Reruns the babysitter asked for on a head (core_ci_reruns' primary key prefix). */
+async function rerunsOn(
+  env: Env,
+  repositoryId: string,
+  headSha: string,
+): Promise<{ check_name: string; passed: number | null }[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT check_name, passed FROM core_ci_reruns WHERE repository_id = ? AND head_sha = ? LIMIT 20",
+  )
+    .bind(repositoryId, headSha)
+    .all<{ check_name: string; passed: number | null }>();
+  return results;
+}
+
+type Settled =
+  | { kind: "wait"; ms: number }
+  | { kind: "end"; delivery: "conflict" | "failed" | "withdrawn"; reason: string }
+  | { kind: "go" };
+
+/**
+ * Acts on the repository's `babysit` job once it is over (spec 53 §4, ADR 0585). Its verdict
+ * leads to code, never to anything the agent does itself: a flake is rerun once (`ci.rerun`), a
+ * resolution moves the item's branch (`branch.advance`) and withdraws the approval, anything else
+ * ends the delivery with the job's note. A job that died is replaced once by a fresh job with a
+ * higher fence (whose late writes the old one can't make), then the delivery ends.
+ */
+async function settleBabysit(
+  env: Env,
+  lease: Lease,
+  head: HeadRow,
+  sitter: BabysitStateRow,
+): Promise<Settled> {
+  // core_jobs' and core_runs' primary keys.
+  const job = await env.DB.prepare(
+    `SELECT j.status, j.context, j.work_item_id, j.wait_reason, j.created_at, r.id AS run_id,
+            r.result, r.head_sha
+     FROM core_jobs j LEFT JOIN core_runs r ON r.id = j.run_id WHERE j.id = ?`,
+  )
+    .bind(sitter.babysit_job_id)
+    .first<{
+      status: string;
+      wait_reason: string | null;
+      created_at: string;
+      context: string;
+      work_item_id: string;
+      run_id: string | null;
+      result: string | null;
+      head_sha: string | null;
+    }>();
+  const context = parseJson<{ reason?: BabysitReason; deliveryFence?: number }>(job?.context, {});
+  const fence = context.deliveryFence ?? sitter.babysit_fence;
+  const itemId = job?.work_item_id ?? head.work_item_id;
+  const next = async (cancel = false) => {
+    const closed = await call(env, lease, "babysit.next", {
+      workItemId: itemId,
+      deliveryFence: fence,
+      cancel,
+    });
+    if (closed.status === "refused") throw new Error(`babysit.next refused: ${closed.message}`);
+  };
+  // Still to be claimed or at work. With no runner online that can babysit (an older runner can't:
+  // ADR 0620), it doesn't wait for ever: past BABYSIT_RECHECK_MS the job is cancelled and the
+  // delivery ends saying so, as it did before the babysitter (a person sees why on the item).
+  if (job && (job.status === "queued" || job.status === "claimed")) {
+    const waited = Date.now() - Date.parse(job.created_at);
+    const reason = context.reason;
+    if (
+      job.status === "queued" &&
+      job.wait_reason === NO_BABYSIT_RUNNER &&
+      waited >= BABYSIT_RECHECK_MS &&
+      reason
+    ) {
+      await next(true);
+      return {
+        kind: "end",
+        delivery: reason.kind === "conflict" ? "conflict" : "failed",
+        reason: `${NO_BABYSIT_RUNNER}: the ${reason.kind === "conflict" ? "conflict" : `failing check (${reason.checks.join(", ") || "CI"})`} on ${reason.headSha.slice(0, 7)} needs a person`,
+      };
+    }
+    return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+  }
+  const reason = context.reason;
+  // A job for an item no longer at the head (it left meanwhile): closed, nothing acted on.
+  if (!job || !reason || job.work_item_id !== head.work_item_id || fence !== sitter.babysit_fence) {
+    await next();
+    return { kind: "go" };
+  }
+  const result = job.status === "done" ? babysitResult(job.result) : null;
+  const ending = reason.kind === "conflict" ? "conflict" : "failed";
+  if (!result) {
+    await next();
+    // Died (lease expired, runner gone) or handed back nothing usable: one fresh job, then stop.
+    if (reason.attempt < 2) {
+      const again = await call(env, lease, "babysit.wake", {
+        workItemId: head.work_item_id,
+        reason: { kind: reason.kind, headSha: reason.headSha, checks: reason.checks, attempt: 2 },
+      });
+      if (again.status === "ok") return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+    }
+    return {
+      kind: "end",
+      delivery: ending,
+      reason: `the babysitter couldn't decide the ${reason.kind} on ${reason.headSha.slice(0, 7)} (its job ${job.status})`,
+    };
+  }
+  if (reason.kind === "conflict") {
+    if (result.verdict === "resolved" && job.run_id && job.head_sha) {
+      const moved = await call(env, lease, "branch.advance", {
+        workItemId: head.work_item_id,
+        runId: job.run_id,
+      });
+      await next();
+      if (moved.status === "ok" && moved.output.ok === true) {
+        // A new head: the approval no longer holds. The item verifies it, and a person approves
+        // the resolution (decision 1).
+        return {
+          kind: "end",
+          delivery: "withdrawn",
+          reason: `the babysitter resolved a conflict with the default branch in ${job.head_sha.slice(0, 7)}: review the resolution. ${result.note}`,
+        };
+      }
+      const why = moved.status === "ok" ? String(moved.output.reason ?? "") : refusal(moved);
+      return {
+        kind: "end",
+        delivery: "conflict",
+        reason: `the babysitter's resolution couldn't be moved onto the branch (${why})`,
+      };
+    }
+    await next();
+    return {
+      kind: "end",
+      delivery: "conflict",
+      reason: `the babysitter left the conflict for a person: ${result.note}`,
+    };
+  }
+  // check-failed
+  const check = result.check ?? reason.checks[0];
+  if (result.verdict === "flake" && check) {
+    const rerun = await call(env, lease, "ci.rerun", {
+      workItemId: head.work_item_id,
+      headSha: reason.headSha,
+      check,
+      ...(result.test ? { test: result.test } : {}),
+      deliveryFence: fence,
+    });
+    await next();
+    if (rerun.status === "ok") return { kind: "wait", ms: CI_RECHECK_MS };
+    return {
+      kind: "end",
+      delivery: "failed",
+      reason: `${check} failed on ${reason.headSha.slice(0, 7)} and couldn't be rerun (${refusal(rerun)})`,
+    };
+  }
+  await next();
+  return {
+    kind: "end",
+    delivery: "failed",
+    reason:
+      result.verdict === "regression"
+        ? `${check ?? "a required check"} failed on ${reason.headSha.slice(0, 7)} after the update, and the babysitter judged it a regression: ${result.note}`
+        : `${check ?? "a required check"} failed on ${reason.headSha.slice(0, 7)} after the update; the babysitter asks a person: ${result.note}`,
+  };
 }
