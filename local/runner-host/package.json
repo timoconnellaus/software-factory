@@ -8,7 +8,8 @@
     "sf-runner": "./bin/sf-runner"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bundle-verify": "./src/bundle-verify.ts"
   },
   "scripts": {
     "runner": "node --experimental-transform-types --no-warnings src/cli.ts",

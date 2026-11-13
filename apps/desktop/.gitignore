@@ -4,3 +4,4 @@ artifacts/
 vendor/
 .cottontail-tmp/
 native/sf-keys-app/.build/
+native/sf-runner-launcher/.build/

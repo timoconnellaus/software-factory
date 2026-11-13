@@ -313,6 +313,73 @@ jobs:
             --version "${{ steps.channel.outputs.version }}"
           echo "::notice title=Desktop ${{ steps.channel.outputs.channel }} ${{ steps.channel.outputs.version }}::https://downloads.zerobsai.com/desktop/${{ steps.channel.outputs.channel }}-macos-arm64-Software-Factory.zip"
 
+      # Spec 45 PR 2's prototype: SF Runner.app signed with the Developer ID (its launcher with the
+      # Team ID compiled in, Node with its parent launch constraint), notarized, stapled, zipped and
+      # unpacked with ditto and made read-only, as an installed version would be; then checked
+      # strict, nested, all architectures, and run with the network denied (so nothing the checks do
+      # can reach Apple), with the launcher's cost per start in the summary. It isn't nested in the
+      # app or published yet. It runs after the upload, so nothing here can hold up or fail a release:
+      # its own time limit is well inside the job's, and a failure only marks the step.
+      - name: SF Runner.app prototype (signed, offline)
+        if: steps.secrets.outputs.ready == 'true'
+        continue-on-error: true
+        timeout-minutes: 20
+        working-directory: apps/desktop
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          node scripts/bundle-runner.mjs --sealed
+          SF_RUNNER_SIGN_IDENTITY="$IDENTITY" SF_RUNNER_TEAM="$TEAM_ID" node scripts/runner-app.mjs \
+            --out "$work/build" --version "${{ steps.channel.outputs.version }}" \
+            --channel "${{ steps.channel.outputs.channel }}" --sha "$GITHUB_SHA"
+          ditto -c -k --keepParent "$work/build/SF Runner.app" "$work/notarize.zip"
+          xcrun notarytool submit "$work/notarize.zip" --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --timeout 15m
+          xcrun stapler staple "$work/build/SF Runner.app"
+          ditto -c -k --keepParent "$work/build/SF Runner.app" "$work/SF-Runner.zip"
+          mkdir "$work/installed"
+          ditto -x -k "$work/SF-Runner.zip" "$work/installed"
+          app="$work/installed/SF Runner.app"
+          chmod -R a-w "$app"
+          offline() { sandbox-exec -p '(version 1)(allow default)(deny network*)' "$@"; }
+          req="anchor apple generic and identifier \"com.software-factory.runner\" and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"$TEAM_ID\""
+          offline codesign --verify --deep --strict --check-notarization --verbose=2 -R="$req" "$app" || echo "::warning::codesign --check-notarization offline failed"
+          offline codesign --verify --deep --strict --verbose=2 -R="$req" "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          codesign -d -vvv "$app/Contents/Helpers/node" 2>&1 | grep -E "Identifier|Launch Constraints|flags"
+          offline "$app/Contents/MacOS/sf-runner" selftest
+          echo "login-item-status: $(offline "$app/Contents/MacOS/sf-runner" login-item-status)"
+          if offline "$app/Contents/Helpers/node" -e 'console.log("ran")'; then
+            echo "::warning::Helpers/node ran outside the launcher: the launch constraint didn't hold"
+          else
+            echo "Helpers/node refused outside the launcher (exit $?)"
+          fi
+          times=$(for i in $(seq 10); do SF_RUNNER_LAUNCHER_TIMING=1 offline "$app/Contents/MacOS/sf-runner" selftest 2>&1 >/dev/null | sed -n 's/.*checked the bundle in \([0-9.]*\) ms/\1/p'; done | sort -n | tr '\n' ' ')
+          size=$(du -sk "$app" | cut -f1)
+          {
+            echo "### SF Runner.app prototype (spec 45 PR 2)"
+            echo "Developer ID, notarized, stapled, ditto, read-only, network denied: $(sw_vers -productVersion), $(sysctl -n machdep.cpu.brand_string)"
+            echo "Bundle: ${size} KiB. Launcher check, 10 starts (ms, sorted): $times"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The other-team case on a real chain: the same identity signs a bundle whose launcher has
+          # another Team ID compiled in, which must refuse it (78). Not notarized: it never ships.
+          other_team=ABCDE12345
+          [ "$TEAM_ID" != "$other_team" ] || other_team=ZYXWV98765
+          SF_RUNNER_SIGN_IDENTITY="$IDENTITY" SF_RUNNER_TEAM="$TEAM_ID" node scripts/runner-app.mjs \
+            --out "$work/other" --launcher-team "$other_team"
+          # The test file also re-signs a tampered copy ad hoc as a whole and needs it refused, and
+          # fails if this release launcher logs `unsigned build`.
+          SF_RUNNER_APP="$app" SF_RUNNER_APP_OTHER_TEAM="$work/other/SF Runner.app" \
+            node --test --test-reporter=spec native/sf-runner-launcher/test/launcher.test.mjs
+          chmod -R u+w "$work"
+          rm -rf "$work"
+
       - name: Clean up the keychain
         if: always()
         run: |

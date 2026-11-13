@@ -41,6 +41,7 @@ import {
 import type { ExecResult, Job } from "@software-factory/runner-contract";
 import type { Exec } from "./checks.ts";
 import { paths } from "./config.ts";
+import { SRT_VENDOR } from "./srt-vendor.ts";
 
 /** The sandbox runtime's config: handed to the sandbox child on stdin, never written to disk. */
 export interface SrtSettings {
@@ -93,18 +94,7 @@ export interface CheckDirs {
   sockets?: string;
 }
 
-/**
- * The sandbox runtime's own helpers (Linux runs `vendor/seccomp/<arch>/apply-seccomp` inside the
- * sandbox): read-only for the check, wherever the runner's checkout keeps them (under the home).
- */
-export const SRT_VENDOR = (() => {
-  try {
-    const entry = realpathSync(fileURLToPath(import.meta.resolve("@anthropic-ai/sandbox-runtime")));
-    return join(dirname(dirname(entry)), "vendor");
-  } catch {
-    return null;
-  }
-})();
+export { SRT_VENDOR };
 
 /** The longest unix socket path the platform takes (`sun_path`, with its NUL). */
 const SOCKET_PATH_MAX: Partial<Record<NodeJS.Platform, number>> = { darwin: 104, linux: 108 };

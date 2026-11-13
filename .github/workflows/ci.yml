@@ -97,6 +97,43 @@ jobs:
           codesign --force --sign - --entitlements "$work/ents.plist" "$work/signed"
           node apps/desktop/scripts/check-profile.ts --self-test apps/desktop/test/fixtures/sf-keys-profile.plist "$work/signed"
 
+  # SF Runner.app's launcher (spec 45 §1, ADR 0643): its Swift unit tests, then a real ad-hoc
+  # bundle (the pinned Node, the sealed scripts, the launcher built with no Team ID) against the
+  # tamper, environment, argument, planted-module, inspector and launch-constraint tests, with the
+  # check's cost per start in the job summary. The Developer ID half runs in the release.
+  runner-launcher-macos:
+    name: runner launcher (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      NODE_DIST_VERSION: "24.21.0"
+    steps:
+      # Pinned to commits, as in the release: this job builds and runs what the release signs.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: swift test --package-path apps/desktop/native/sf-runner-launcher
+      - name: Build an ad-hoc SF Runner.app
+        working-directory: apps/desktop
+        run: |
+          node scripts/vendor-node.mjs
+          node scripts/bundle-runner.mjs --sealed
+          node scripts/runner-app.mjs --out "$RUNNER_TEMP/runner-app"
+          # The same bundle with a launcher that has a Team ID compiled in: an ad-hoc signature (a
+          # team-signed bundle tampered with and re-signed as a whole) must be refused.
+          node scripts/runner-app.mjs --out "$RUNNER_TEMP/runner-app-other" --launcher-team ABCDE12345
+      - name: Launcher against the bundle
+        run: |
+          sw_vers
+          node --test --test-reporter=spec apps/desktop/native/sf-runner-launcher/test/launcher.test.mjs
+        env:
+          SF_RUNNER_APP: ${{ runner.temp }}/runner-app/SF Runner.app
+          SF_RUNNER_APP_OTHER_TEAM: ${{ runner.temp }}/runner-app-other/SF Runner.app
+
   # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
   # toolchain under it (hostedtoolcache, setup-pnpm), required.
   check-sandbox-macos:

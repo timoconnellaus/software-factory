@@ -125,9 +125,9 @@ Choices this spec makes that change how the factory behaves on a Mac. Each is ea
 | --- | --- | --- |
 | `Contents/MacOS/sf-runner` | **the launcher**, Swift, `apps/desktop/native/sf-runner-launcher` | the bundle's main executable: hardened runtime, **no entitlements** |
 | `Contents/Helpers/node` | the pinned Node 24 (`vendor-node.mjs`, checked against its committed sha256) | nested code, identifier `com.software-factory.runner.node`, hardened runtime, `allow-jit` and `allow-unsigned-executable-memory` only (V8) |
-| `Contents/Resources/runner/service.mjs` | **the guard** | sealed resource |
-| `Contents/Resources/runner/sf-runner.mjs`, `check-sandbox-child.mjs`, `hooks.mjs` | the runner, the check child (the sandbox runtime bundled in), the harness hooks | sealed resources |
-| `Contents/Resources/launcher-entries.json` | the entry table (*Entry points*) | sealed resource, also compiled into the launcher |
+| `Contents/Resources/runner/service.cjs` | **the guard** | sealed resource |
+| `Contents/Resources/runner/sf-runner.cjs`, `check-sandbox-child.cjs`, `hooks.cjs` | the runner, the check child (the sandbox runtime bundled in), the harness hooks | sealed resources |
+| `Contents/Resources/launcher-entries.json` | the entry table (*Entry points*; its source is `local/runner-host/src/launcher-entries.json`) | sealed resource, also compiled into the launcher |
 | `Contents/Resources/version.json` | `{ version, channel, sha, runnerSha, runnerSeq, compat, contract }` | sealed resource |
 
 **Every sealed script is one self-contained file that imports nothing but `node:` built-ins.**
@@ -136,7 +136,7 @@ in a dependency) by walking up from the script's directory through every `node_m
 `…/Runner/node_modules`, `~/Library/Application Support/node_modules`, `~/node_modules`, all
 writable by the user and none covered by the seal. A package planted there would load as SF
 Runner's code with no race at all. So `bundle-runner.mjs` builds each script with esbuild,
-dependencies included (the sandbox runtime goes into `check-sandbox-child.mjs`, which today imports
+dependencies included (the sandbox runtime goes into `check-sandbox-child.cjs`, which today imports
 it bare and isn't bundled); rewrites built-ins to their `node:` form; drops today's `createRequire`
 banner; and **fails the build** if the metafile shows any external that isn't `node:`, or the output
 contains `createRequire`, `import.meta.resolve`, a `require(` or `import(` whose argument isn't a
@@ -145,6 +145,13 @@ contains `createRequire`, `import.meta.resolve`, a `require(` or `import(` whose
 sandbox runtime needs no vendored helper. Reading each script from a file descriptor (below) makes
 this a hard rule anyway: its URL is `file:///dev/fd/N`, so a relative or bare import couldn't find
 anything inside the bundle either.
+
+**The scripts are CommonJS (`.cjs`), found by PR 2's prototype.** Node 24 given an ES module on
+`/dev/fd/N` (no extension) reads the source once to detect its syntax and again to load it; the two
+reads share the descriptor's offset, so the second gets nothing and Node runs an empty module and
+exits 0, silently. A CommonJS script is read once. The build defines `import.meta.url` and
+`import.meta.filename` as the script's path inside the bundle (from `SF_RUNNER_BUNDLE`), so code
+that looks beside itself keeps working, and fails on any other `import.meta`.
 
 `version` is the app release's version, `sha` the commit built, `runnerSha` and `runnerSeq` the
 deploy's (§5), `compat` the code's `RUNNER_COMPAT`. Signed with the app's Developer ID, notarized
@@ -155,7 +162,7 @@ and stapled. It sits in the app at `Contents/Helpers/SF Runner.app`, put there b
 ### The launcher (ADR 0643)
 Plain Node as the main executable would mean nothing checks the scripts at launch: the kernel
 checks a Mach-O's pages, never a bundle's resource seal. Anyone running as this user could edit
-`sf-runner.mjs` in `versions/`, or write a plist pointing the genuine executable at their own
+`sf-runner.cjs` in `versions/`, or write a plist pointing the genuine executable at their own
 script, and that code would run as SF Runner with every TCC grant made to it. So the main
 executable is a launcher whose whole job is to refuse that. On **every** start, before anything
 else:
@@ -188,49 +195,63 @@ else:
    rest must match that entry's grammar exactly. Anything else (an unknown entry, an extra or
    repeated flag, a value outside its pattern, an argument over 2 KiB) exits 64. No argument ever
    names a script.
-5. **Open the script and hash it on the descriptor.** The launcher opens the entry's script with
-   `O_RDONLY | O_NOFOLLOW`, checks with `fstat` that it is a regular file inside the bundle it just
-   validated, reads it through that descriptor and compares its SHA-256 with the file's hash in the
-   sealed `CodeResources` it just checked, then `lseek`s back to 0. A mismatch is a refusal (step 7).
-6. **Spawn** (not exec) `Contents/Helpers/node --disable-sigusr1 --no-addons /dev/fd/<N> <fixed
-   arguments> <validated arguments>`, with the script's descriptor inherited at `N` and nothing
+5. **Read the script and check those bytes.** The launcher opens the entry's script with
+   `O_RDONLY | O_NOFOLLOW`, checks with `fstat` that it is a regular file, reads it into memory and
+   compares the SHA-256 of those bytes with the file's hash in the resource directory of the
+   `SecStaticCode` it just validated (its signing information's `ResourceDirectory`; never
+   `_CodeSignature/CodeResources` read again, which a pair swapped after the check would match).
+   A mismatch is a refusal (step 7).
+6. **Spawn** (not exec) `Contents/Helpers/node --disable-sigusr1 --no-addons /dev/fd/4 <fixed
+   arguments> <validated arguments>`, where fd 4 is a **pipe** the launcher writes exactly the
+   checked bytes into (from a thread, then closes), so what Node runs is what was hashed, and nothing
    else open beyond what the entry passes: stdin, stdout and stderr for every entry, and fd 3 for
    `check-child` (its report pipe, as today). A **lifeline** pipe sits at the next descriptor, named
    in `SF_RUNNER_LIFELINE_FD`, and closes when the launcher dies (Node exits as on SIGTERM when it
-   reads EOF). Arguments go after the script, so Node never reads them as its own options, and the
+   reads EOF). The launcher makes both pipes' ends at descriptor 10 or above before mapping them, so
+   descriptors the caller left open can't put an end on 3, 4 or 5 (a `dup2` onto itself keeps
+   close-on-exec). Node's working directory is **`/`**, set by the spawn, never the caller's (launchd's,
+   a shell's or the app's would each differ), so a relative path in the runner resolves the same way
+   on every start.
+   The launcher ignores SIGPIPE, so Node exiting before it has read the whole script leaves the
+   launcher to report Node's status rather than die writing the pipe. Arguments go after the script, so Node never reads them as its own options, and the
    CLI parses them again with the same grammar. It forwards SIGTERM, SIGINT, SIGUSR2 and SIGHUP to
-   the child and exits with the child's code (a signal becomes 128 + n). Spawning keeps the
+   the child and exits with the child's code (a signal becomes 128 + n). Those four are blocked from
+   the launcher's first instruction, so one that arrives during the checks or the spawn stays
+   pending and is forwarded as soon as Node runs (a stop during startup is never dropped); Node gets
+   an empty mask and default dispositions. Spawning keeps the
    launcher the responsible process, so TCC and Login Items name SF Runner; exec would turn the
-   process into Node. Right after the spawn it checks the child's running code (by its audit token,
+   process into Node. Right after the spawn it checks the child's running code (by pid,
    `SecCodeCopyGuestWithAttributes`) against Node's requirement and kills it if it doesn't match.
-7. A failed check writes one line to the log (`refused: <reason>`) and to
+7. A failed check, or a Node that can't be started, writes one line to the log (`refused: <reason>`) and to
    `<stateDir>/service/launch-refused.json`, and exits 78 (`EX_CONFIG`). The guard and the app treat
    78 as "this version is untrustworthy" (§5).
 
 ### Entry points
 Every command the service, the app or a person runs is an entry of the launcher. The table is
-`launcher-entries.json`, compiled into the launcher at build and imported by the CLI, so the two
+`local/runner-host/src/launcher-entries.json`, compiled into the launcher at build
+(`apps/desktop/scripts/launcher-entries.mjs` writes it into the Swift package; its tests fail when
+they differ) and imported by the CLI, so the two
 can't disagree (a test runs every entry and every refusal through both). Values: *name* is
 `^[A-Za-z0-9._-]{1,64}$`; *url* parses as `https:` with no user info, at most 2 KiB; *run dir* is a
 path whose `realpath` is a direct child of `<stateDir>/runs` (data, never a script).
 
 | Entry | Runs | Arguments allowed | Who runs it |
 | --- | --- | --- | --- |
-| (none) | `service.mjs` (the guard) | none | launchd |
-| `runner` | `sf-runner.mjs run` | none | the guard |
-| `check-child` | `check-sandbox-child.mjs` | none (inputs on stdin, report on fd 3) | the runner, per check |
-| `hook-status`, `hook-planning` | `hooks.mjs status` / `planning` | one *run dir* | Claude Code, per hook (§1, *Node outside the launcher*) |
-| `selftest` | `service.mjs --selftest` | none | the service, the app (§5) |
+| (none) | `service.cjs` (the guard) | none | launchd |
+| `runner` | `sf-runner.cjs run` | none | the guard |
+| `check-child` | `check-sandbox-child.cjs` | none (inputs on stdin, report on fd 3) | the runner, per check |
+| `hook-status`, `hook-planning` | `hooks.cjs status` / `planning` | one *run dir* | Claude Code, per hook (§1, *Node outside the launcher*); added to the table with `hooks.cjs` in PR 4 |
+| `selftest` | `service.cjs --selftest` | none | the service, the app (§5) |
 | `login-item-status` | the launcher itself, no Node | none | `service start`, `service status`, doctor |
-| `service-install`, `service-start` | `sf-runner.mjs service install` / `start` | none | the app |
-| `service-stop`, `service-restart` | `sf-runner.mjs service stop` / `restart` | `--when idle\|now` | the app, a person |
-| `service-uninstall` | `sf-runner.mjs service uninstall` | `--when idle\|now`, `--forget-identity` | the app, a person |
-| `service-status` | `sf-runner.mjs service status` | `--json` | the app, a person |
-| `login` | `sf-runner.mjs login --no-install` | `--name` *name*, `--url` *url*, `--app` *url* | the app |
-| `status` | `sf-runner.mjs status` | `--json` | a person |
-| `doctor` | `sf-runner.mjs doctor` | `--fix`, `--json` | the app, a person |
-| `account` | `sf-runner.mjs account` | `list`; `add` *name* `--token-stdin` [`--oauth`\|`--api-key`] [`--no-login`]; `use` *name*; `remove` *name* | a person |
-| `sprites` | `sf-runner.mjs sprites` | `login` [`--no-check`]; `status`; `logout` | a person |
+| `service-install`, `service-start` | `sf-runner.cjs service install` / `start` | none | the app |
+| `service-stop`, `service-restart` | `sf-runner.cjs service stop` / `restart` | `--when idle\|now` | the app, a person |
+| `service-uninstall` | `sf-runner.cjs service uninstall` | `--when idle\|now`, `--forget-identity` | the app, a person |
+| `service-status` | `sf-runner.cjs service status` | `--json` | the app, a person |
+| `login` | `sf-runner.cjs login --no-install` | `--name` *name*, `--url` *url*, `--app` *url* | the app |
+| `status` | `sf-runner.cjs status` | `--json` | a person |
+| `doctor` | `sf-runner.cjs doctor` | `--fix`, `--json` | the app, a person |
+| `account` | `sf-runner.cjs account` | `list`; `add` *name* `--token-stdin` [`--oauth`\|`--api-key`] [`--no-login`]; `use` *name*; `remove` *name* | a person |
+| `sprites` | `sf-runner.cjs sprites` | `login` [`--no-check`]; `status`; `logout` | a person |
 
 Not entries: `run` (only the guard starts the runner), `pair` (pairing is the app's `login`), and
 the checkout flavor's `install` and `uninstall`; the bundled CLI refuses them under
@@ -253,7 +274,7 @@ that run `process.execPath <runDir>/status-hook…` and the planning hooks, and 
 script runs `process.execPath` for its TTY bridge. Under the service `process.execPath` is
 `Contents/Helpers/node`, so those would run unsealed scripts as SF Runner's grandchildren. The
 bundle flavor replaces each with a launcher entry: the hooks become `"<launcher>" hook-status
-<runDir>` (the scripts are sealed in `hooks.mjs`; the run dir carries only data), and the sprite
+<runDir>` (the scripts are sealed in `hooks.cjs`; the run dir carries only data), and the sprite
 bridge becomes an entry of its own when sprites are built for the service (until then sprites are
 refused under `SF_RUNNER_SERVICE`). The host passes a `nodeCommand` (`[launcher, entry]`) instead of
 `process.execPath`, and a test fails if any code path under `SF_RUNNER_SERVICE` spawns
@@ -262,33 +283,39 @@ refused under `SF_RUNNER_SERVICE`). The host passes a `nodeCommand` (`[launcher,
 `Contents/Helpers/node` is also a Team-signed binary anyone as this user can run directly with a
 script of their choosing, under the identifier `com.software-factory.runner.node`. That identity has
 no TCC grants and no Login Items entry, and nothing in the factory asks for one, but a prompt naming
-it would look like ours. PR 2 prototypes a **launch constraint** on it (`codesign
---launch-constraint-parent` with a plist requiring the parent to be `com.software-factory.runner` of
-`<TEAM>`), so the kernel refuses to start it from anything but the launcher. If the prototype shows
-it works on macOS 14 and later, the release signs Node with it and the launcher test checks it; if
-not, this paragraph stays as the honest limit.
+it would look like ours. So Node is signed with a **launch constraint** (`codesign
+--launch-constraint-parent` with a plist requiring the parent to be `com.software-factory.runner`,
+and of `<TEAM>` in a release), and the kernel refuses to start it from anything but the launcher.
+PR 2's prototype: on macOS 26.5, even ad hoc, `Helpers/node` run from a shell is killed (SIGKILL,
+137) and the launcher starts it; on macOS 15.8 (CI) an ad-hoc build's constraint is **not**
+enforced. Ad hoc, the constraint names only the identifier, which anyone can sign ad hoc, so it is
+a wall only with the Team ID: the release's prototype step checks the team-signed bundle and the
+launcher test fails a team-signed bundle that doesn't hold it. The same CI run found that macOS 15
+lets dyld honour `DYLD_INSERT_LIBRARIES` for an **ad-hoc** hardened launcher; the hardened
+runtime's protection is a release (team-signed) property, which dev builds don't have.
 
-**Cost.** The check costs about one hash of the bundle (about 120 MB unpacked, mostly Node); PR 2
-measures it on an M1 and records it here. A check child or a hook runs per check or per hook, not
-per command, so the cost is acceptable up to 1 s.
+**Cost.** The check costs about one hash of the bundle (116 MB unpacked, mostly Node). Measured in
+PR 2 on an Apple silicon Mac, macOS 26.5, ad-hoc signed, warm cache: a median of about 51 ms per
+start over 10 starts (max 56 ms), the whole launcher before Node; on CI's macOS 15 VM, a median
+of 171 ms (max 229 ms). The Developer ID, notarized,
+read-only figure with the network denied comes from the release's prototype step and is recorded
+in PR 2's description; a cold cache isn't measured (purging it needs root). A check child or a hook
+runs per check or per hook, not per command, so the cost is acceptable up to 1 s.
 
 ### What remains possible for a same-user process
 Honestly, after the launcher:
 - **It can stop, remove or replace the service.** The plist and the runner root are the user's. A
   plist pointing at its own program runs that program, but not as SF Runner: TCC and Login Items
   attribute by the responsible binary's designated requirement, which it can't produce.
-- **It can race the check, in a narrower place.** It can copy the genuine bundle anywhere, start it
-  from a plist of its own as often as it likes, and change files while the ~1 s seal check runs.
-  Hashing the script on the descriptor Node then reads closes the gap between *checked* and
-  *opened*: a file swapped by rename after the check isn't the one Node reads, and one edited
-  before the hash fails it. What remains: the file is the user's, so a process can `chmod` it
-  writable and write into **the same inode** after the hash and before Node finishes reading it
-  (`chmod -R a-w` on version directories is a speed bump, not a wall). And it can swap
-  `Contents/Helpers/node` between the check and the spawn for another validly signed binary; the
-  launcher's check of the child's running code kills it, but not before its first instructions
-  run (a launch constraint, above, would stop it at exec). PR 2 tries passing the verified bytes
-  through a pipe instead of the file (Node reading `/dev/fd/N` on a pipe), which would close the
-  inode race; the result is recorded here.
+- **It can race the check, but not the script.** It can copy the genuine bundle anywhere, start it
+  from a plist of its own as often as it likes, and change files while the seal check runs (about
+  50 ms). The script can't be raced: the launcher hashes the bytes it read and gives Node those
+  same bytes on a pipe, so a file swapped or rewritten in place after the read changes nothing for
+  this start, and one changed before it fails the hash. What remains: it can swap
+  `Contents/Helpers/node` between the check and the spawn. In a release its launch constraint
+  makes the kernel refuse any binary that doesn't carry it, and a binary carrying it must be signed
+  by our team; the launcher's check of the child's running code is a second line, which acts only
+  after the child has started. `chmod -R a-w` on version directories is a speed bump, not a wall.
 - **It reaches whatever SF Runner runs.** The runner and its jobs run `git`, `tmux`, `claude`,
   `docker` from PATH, and the repository's own build scripts. Those are user-writable or come from
   the repository, and they run as SF Runner's children, with its TCC grants. So **a TCC grant to SF
@@ -380,8 +407,10 @@ inside the app at `Contents/Library/LaunchAgents` and a `BundleProgram` relative
 the program runs from inside the app bundle (reason 1 above), stops when the app is moved or
 deleted, and is registered only by the app's own native code, which Electrobun's Bun process
 can't call. A legacy plist with `AssociatedBundleIdentifiers` still shows under Software Factory
-in Login Items, and `SMAppService.statusForLegacy(plistURL:)` (macOS 13+) reads its switch, which
-the launcher's `login-item-status` entry reports. So the plist is ours and only the switch's state
+in Login Items, and `SMAppService.statusForLegacy(plistURL:)` (macOS 13+; in Swift
+`statusForLegacyPlist(at:)`) reads its switch, which the launcher's `login-item-status` entry
+reports (PR 2's prototype: it works from the launcher, not only from an app, and reads
+`enabled`, `notRegistered` or `notFound` for a plist in or outside `~/Library/LaunchAgents`). So the plist is ours and only the switch's state
 comes from ServiceManagement.
 
 ### Lifecycle commands
@@ -869,10 +898,9 @@ the PR that turns the service on.
 **Trust**
 1. **Launcher refuses a tampered bundle.** On macOS, a real bundle signed ad hoc with the launcher
    built for ad hoc: it starts the guard. Then each of these makes it exit 78 with the reason, and
-   Node never starts: a changed byte in `sf-runner.mjs`, an added `.mjs` in `Resources/runner`, a
+   Node never starts: a changed byte in `sf-runner.cjs`, an added script in `Resources/runner`, a
    changed `version.json`, a replaced `Contents/Helpers/node`, a script whose bytes differ from the
-   seal when read on the descriptor (the test swaps it between the seal check and the open, through
-   a hook built only into the test launcher), and (for the Team ID path, with fake signing
+   seal (the pipe makes a swap after the read irrelevant, so the test edits it before), and (for the Team ID path, with fake signing
    information) a bundle signed by another team. The requirement string is the Developer ID form in
    §1 and a bundle whose designated requirement has more clauses is accepted. *Test.*
 2. **Launcher ignores its environment and arguments.** Started with `NODE_OPTIONS=--require
@@ -991,7 +1019,7 @@ the PR that turns the service on.
     start stops after five tries and the app shows *Crashed*. A canary runner release is picked up
     while idle with no action from the person. A release made to fail its heartbeat is rolled back
     by the deadline. A release whose launcher crashes at once is rolled back by the app (*Repair*).
-    A `sf-runner.mjs` edited in `versions/` makes the next start `refused`, and the app repairs it.
+    A `sf-runner.cjs` edited in `versions/` makes the next start `refused`, and the app repairs it.
 
 **Lifecycle**
 24. **Login:** **manual check B:** on, log out and in, and it starts. Stop, log out and in, and it
@@ -1058,6 +1086,10 @@ runtime switch on a released app.
    loop), `children.json` and cleanup, the hardware binding, log rotation, the sleep assertion,
    release-first on SIGTERM, niced jobs, `last-exit`, the hooks through launcher entries
    (`nodeCommand`), and the checkout plist's new keys. Criteria 2a (the runner half), 5–12.
+   *Build note (from PR 2's review):* `check-sandbox.ts` still starts the check child as
+   `[options.node ?? process.execPath, SANDBOX_CHILD]`. Under the service `process.execPath` is
+   `Contents/Helpers/node`, which the launch constraint kills when anything but the launcher starts
+   it: the service must start the check child through the launcher's `check-child` entry.
 5. **runner-host, control:** the socket and protocol, `runnerControl`, status snapshots, the log deny
    and the sandbox behaviour test. Criteria 4, 13, 14.
 6. **Self-update:** selection, download, verification, self-test, swap, the confirm deadline,
