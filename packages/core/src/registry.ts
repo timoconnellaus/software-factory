@@ -63,6 +63,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   backlog.queuePull,
   projects.policySync,
   projects.killSwitchSet,
+  projects.killSwitchList,
   config.configGet,
   config.configPreview,
   config.configSave,

@@ -25,10 +25,10 @@ import { Kbd } from "@software-factory/ui/components/kbd";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
@@ -41,6 +41,7 @@ import {
 } from "../components/item-backlog.tsx";
 import { OpenTerminal } from "../components/open-terminal.tsx";
 import { Planning } from "../components/planning.tsx";
+import { RepairToggle } from "../components/repair-toggle.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
 import { CriteriaList } from "../components/review-parts.tsx";
 import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.tsx";
@@ -59,6 +60,7 @@ import {
 import {
   attachmentsQuery,
   boardsQuery,
+  inboxQuery,
   planningQuery,
   runnersQuery,
   timelineQuery,
@@ -68,6 +70,7 @@ import {
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { isTypingTarget } from "../lib/shortcuts.ts";
+import { readFailedStore, stageWait } from "../lib/stage-wait.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -451,6 +454,8 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
   const project = projects.data?.find((p) => p.id === item.projectId);
   const pinned = useViewState((s) => s.pins.includes(item.id));
   const [cancel, setCancel] = useState(false);
+  // A red default branch (spec 53): the item may be marked as its repair.
+  const inbox = useQuery(inboxQuery());
   const active = ["running", "waiting", "paused"].includes(item.status);
   const pre = isPreRelease(item.status);
   return (
@@ -494,6 +499,16 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
           {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
         </Button>
         <OpenTerminal detail={detail} />
+        {active && (
+          <RepairToggle
+            workItemId={item.id}
+            number={item.number}
+            approver={detail.viewer.isApprover}
+            repairs={item.repairsMain}
+            // The engine stops the line per repository, not per project.
+            red={!!inbox.data?.mainRed.some((r) => r.repositoryId === item.repositoryId)}
+          />
+        )}
         {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (
           <Button
             variant="outline"
@@ -574,9 +589,20 @@ function CancelDialog({
 
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
+  // A read that failed keeps its last data: what it waited on then may no longer be true.
+  // Subscribed: the refetch that fails is the one that must clear the line.
+  const client = useQueryClient();
+  const store = useMemo(
+    () => readFailedStore(client, workItemQuery(detail.item.id).queryKey),
+    [client, detail.item.id],
+  );
+  const failed = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
-  const waiting = detail.item.status === "waiting";
+  // No agent working on the stage: what it waits on (the server's waitingOn, stage-wait.ts), and
+  // its dot says waiting.
+  const wait = failed ? null : stageWait({ ...detail.item, waitingOn: detail.waitingOn });
+  const waiting = detail.item.status === "waiting" || wait !== null;
   return (
     <div
       className="flex flex-wrap items-center gap-x-[18px] gap-y-1 rounded-[10px] bg-panel px-3.5 py-2.5 shadow-panel"
@@ -610,6 +636,11 @@ export function StageStrip({ detail }: { detail: WorkItemDetail }) {
           {STAGE_LABEL[s.stage]}
         </span>
       ))}
+      {wait && (
+        <span className="text-ink-3 text-xs" data-testid="stage-wait">
+          {wait}
+        </span>
+      )}
       {steps
         .filter((s) => s.state === "skipped")
         .map((s) => (

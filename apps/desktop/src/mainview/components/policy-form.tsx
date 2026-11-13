@@ -37,6 +37,8 @@ import {
   trialsQuery,
 } from "../lib/factory-queries.ts";
 import { OpError, op, read, submitKey } from "../lib/op.ts";
+import { usePolicyDecide } from "../lib/policy-decide.ts";
+import { useCanDecide } from "./cannot-approve.tsx";
 import {
   ChangeDiff,
   type ConfigEditor,
@@ -55,6 +57,9 @@ import {
   strs,
 } from "./config-editor.tsx";
 import { Chip } from "./shell-list.tsx";
+
+/** Deep equality for setting values (JSON). */
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 type Overrides = Record<string, Record<string, string>>;
 
@@ -669,33 +674,35 @@ function PacketEditor({
         return (
           <li
             key={key}
-            className="flex items-center gap-2 border-line-soft border-b py-2 last:border-b-0"
+            className="flex flex-wrap items-center gap-2 border-line-soft border-b py-2 last:border-b-0"
           >
-            <div className="flex flex-col">
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-5"
-                aria-label={`Move ${meta?.[1]} up`}
-                disabled={!on}
-                onClick={() => move(key, -1)}
-              >
-                <ChevronUpIcon />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-5"
-                aria-label={`Move ${meta?.[1]} down`}
-                disabled={!on}
-                onClick={() => move(key, 1)}
-              >
-                <ChevronDownIcon />
-              </Button>
-            </div>
-            <div className={cn("min-w-0 grow", !on && "opacity-50")}>
-              <div className="font-medium text-[13px]">{meta?.[1]}</div>
-              <div className="text-ink-3 text-xs">{meta?.[2]}</div>
+            <div className="flex min-w-[min(100%,220px)] flex-1 items-center gap-2">
+              <div className="flex flex-col">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  aria-label={`Move ${meta?.[1]} up`}
+                  disabled={!on}
+                  onClick={() => move(key, -1)}
+                >
+                  <ChevronUpIcon />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  aria-label={`Move ${meta?.[1]} down`}
+                  disabled={!on}
+                  onClick={() => move(key, 1)}
+                >
+                  <ChevronDownIcon />
+                </Button>
+              </div>
+              <div className={cn("min-w-0 flex-1", !on && "opacity-50")}>
+                <div className="font-medium text-[13px]">{meta?.[1]}</div>
+                <div className="text-ink-3 text-xs">{meta?.[2]}</div>
+              </div>
             </div>
             <Segmented
               label={`Show ${meta?.[1]}`}
@@ -1027,6 +1034,12 @@ function OverrideField({
   const overrides = obj(editor.doc?.workflowOverrides);
   const mine = stageId ? obj(overrides[stageId]) : {};
   const overridden = Object.hasOwn(mine, setting.key);
+  // The saved override, as the engine sees it: looser than the org's, approved or not.
+  const stored = editor.config.data?.orgOverrides.find(
+    (o) => o.stageId === stageId && o.key === setting.key,
+  );
+  const { run, pending } = usePolicyDecide();
+  const canDecide = useCanDecide();
   const put = (v: unknown) =>
     editor.set((d) => {
       if (!stageId) return;
@@ -1052,9 +1065,40 @@ function OverrideField({
         )}
       </span>
       {overridden && (
-        <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
-          Use the org's value
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
+            Use the org's value
+          </Button>
+          {stored?.looser &&
+            (stored.approved ? (
+              <Chip tone="green">An org admin approved this value</Chip>
+            ) : (
+              same(stored.value, mine[setting.key]) && (
+                <Button
+                  size="sm"
+                  className="h-7"
+                  disabled={pending !== null || !canDecide}
+                  data-testid={`approve-override-${setting.key}`}
+                  onClick={() =>
+                    void run(
+                      "override.approve",
+                      {
+                        projectId: editor.projectId,
+                        stageId,
+                        setting: setting.key,
+                        orgVersion: stored.orgVersion,
+                        value: stored.value,
+                        configVersion: editor.currentVersion,
+                      },
+                      "Approved",
+                    )
+                  }
+                >
+                  Approve this value (org admin)
+                </Button>
+              )
+            ))}
+        </div>
       )}
     </div>
   );

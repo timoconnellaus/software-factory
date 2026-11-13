@@ -10,8 +10,15 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Runs a command; `code` is its exit status, `out` its stdout and stderr together. */
-export type Exec = (cmd: string, args: string[]) => Promise<{ code: number; out: string }>;
+/**
+ * Runs a command; `code` is its exit status, `out` its stdout and stderr together. `timeoutMs` is
+ * the app updater's bound on one command (apps/desktop/src/bun/update-verify.ts, withTimeout).
+ */
+export type Exec = (
+  cmd: string,
+  args: string[],
+  opts?: { timeoutMs?: number },
+) => Promise<{ code: number; out: string }>;
 
 export const RUNNER_IDENTIFIER = "com.software-factory.runner";
 

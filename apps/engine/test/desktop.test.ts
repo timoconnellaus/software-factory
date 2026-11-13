@@ -499,7 +499,8 @@ describe("the desktop app's client door (/client/v1)", () => {
       expect([op, res.status]).toEqual([op, 403]);
     }
     // Turning a kill switch off: refused without a proof, decided with one (ADR 0610).
-    const input = { scope: "project", id: w.projectId, on: false };
+    // The epoch the person saw (killSwitch.list): the desktop must name it (review of #165).
+    const input = { scope: "project", id: w.projectId, on: false, epoch: 0 };
     expect((await callOp(token, "killSwitch.set", input)).status).toBe(403);
     const proof = await prove(token, device, "killSwitch.set", input);
     expect(proof.summary).toMatch(/^Turn a project's kill switch off: its work resumes "[^"]+"$/);
