@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@software-factory/ui/components/dialog";
+import { Label } from "@software-factory/ui/components/label";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -76,14 +77,25 @@ function IncidentsPage() {
           )
         }
       </Reads>
-      {lost.length > 0 && (
-        <>
-          <SectionTitle note="A record for a person: no agent can bring a lost object back.">
-            Archived logs missing
-          </SectionTitle>
-          <ArchiveIncidents rows={lost} projectName={projectName} more={!!archive.data?.more} />
-        </>
-      )}
+      <SectionTitle note="A record for a person: no agent can bring a lost object back.">
+        Archived logs missing
+      </SectionTitle>
+      <Reads queries={[archive]} what="the archive incidents">
+        {() =>
+          lost.length === 0 ? (
+            <Empty>No archived logs are missing.</Empty>
+          ) : (
+            <ArchiveIncidents
+              rows={lost}
+              projectName={projectName}
+              more={!!archive.data?.more}
+              isAdmin={(orgId) =>
+                ["owner", "admin"].includes(session.orgs.find((o) => o.id === orgId)?.role ?? "")
+              }
+            />
+          )
+        }
+      </Reads>
       <SectionTitle note="The most recent, newest first.">Closed</SectionTitle>
       <Reads queries={[all]} what="the incidents">
         {() =>
@@ -159,10 +171,13 @@ function ArchiveIncidents({
   rows,
   projectName,
   more,
+  isAdmin,
 }: {
   rows: ArchiveIncident[];
   projectName: (id: string) => string;
   more: boolean;
+  /** incident.resolve is for the org's admins. */
+  isAdmin: (orgId: string) => boolean;
 }) {
   const [resolving, setResolving] = useState<ArchiveIncident | null>(null);
   return (
@@ -201,14 +216,18 @@ function ArchiveIncidents({
               <When iso={r.createdAt} />
             </Cell>
             <Cell className="text-right">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setResolving(r)}
-                data-testid="resolve-incident"
-              >
-                Resolve
-              </Button>
+              {isAdmin(r.orgId) ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setResolving(r)}
+                  data-testid="resolve-incident"
+                >
+                  Resolve
+                </Button>
+              ) : (
+                <span className="text-ink-muted text-xs">An admin resolves it</span>
+              )}
             </Cell>
           </Row>
         ))}
@@ -259,7 +278,9 @@ function ResolveDialog({
             part of the log is lost. Say what you did; it goes in the item's activity.
           </DialogDescription>
         </DialogHeader>
+        <Label htmlFor="incident-resolution">What you did</Label>
         <Textarea
+          id="incident-resolution"
           value={resolution}
           onChange={(e) => setResolution(e.target.value)}
           placeholder="Restored from the backup, or: lost, accepted"

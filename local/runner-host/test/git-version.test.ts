@@ -6,6 +6,9 @@ describe("gitAtLeast (sf-runner doctor: the check export needs git 2.40's --attr
     expect(gitAtLeast("git version 2.40.0")).toBe(true);
     expect(gitAtLeast("git version 2.50.1 (Apple Git-155)")).toBe(true);
     expect(gitAtLeast("git version 3.0.0")).toBe(true);
+    expect(gitAtLeast("git version 2.43.0.windows.1")).toBe(true);
+    expect(gitAtLeast("git version 2.47.0-rc1")).toBe(true);
+    expect(gitAtLeast("git version 2.47.GIT")).toBe(true);
   });
   it("refuses older gits and output it can't read", () => {
     expect(gitAtLeast("git version 2.39.5 (Apple Git-154)")).toBe(false);

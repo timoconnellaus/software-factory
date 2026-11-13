@@ -216,10 +216,10 @@ export const incidentListArchiveMissing = defineOperation({
 export const incidentResolve = defineOperation({
   name: "incident.resolve",
   description:
-    "Close an archive incident (a run's archived log lost an object) once a person has dealt with it: restored the object, or accepted the loss. Says what was done. Only for incidents recorded without a work item; an incident with a fix item closes with its item.",
+    "Close an archive incident (a run's archived log lost an object) once an org admin has dealt with it: restored the object, or accepted the loss. Says what was done. Only for archive incidents (one recorded before migration 0365 also has a backlog work item: cancel that by hand); other incidents close with their fix item.",
   risk: "write",
   actors: ["human"],
-  permission: "member",
+  permission: "admin",
   input: z.object({
     workItemId,
     incidentId: z.string().min(1),
@@ -230,15 +230,15 @@ export const incidentResolve = defineOperation({
     const w = requireWorkItem(ctx);
     const row = await ctx.db
       .selectFrom("core_incidents")
-      .select(["id", "kind", "resolved_at", "fix_work_item_id"])
+      .select(["id", "kind", "resolved_at"])
       .where("id", "=", input.incidentId)
       .where("source_work_item_id", "=", w.id)
       .executeTakeFirst();
     if (!row) throw new OperationError("not_found", "no such incident on this work item");
-    if (row.kind !== "archive_missing" || row.fix_work_item_id !== null) {
+    if (row.kind !== "archive_missing") {
       throw new OperationError(
         "conflict",
-        "this incident closes with its fix work item, not by itself",
+        "only an archive incident is resolved by itself; this one closes with its fix work item",
       );
     }
     if (row.resolved_at !== null) return { resolved: false };

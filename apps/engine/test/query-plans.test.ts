@@ -119,6 +119,17 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
   {
+    // Polled by an open item; its runs query joins each run's archive incident
+    // (core_incidents_run_idx). The item has a running job, so it has a run.
+    name: "workItem.get (polled)",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      return as(e, "workItem.get", { workItemId: item }, w.human);
+    },
+  },
+  {
     // Not polled, but per push: a person's push to a factory item's branch at its merge stage
     // (ADR 0587) reads the item, its open gates and its queue entry, then moves its head.
     name: "a person's push to a factory item's branch (push.observe)",
