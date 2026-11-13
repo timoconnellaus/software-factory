@@ -44,12 +44,13 @@ export const workItemQuery = (workItemId: string) =>
     refetchInterval: 10_000,
   });
 
-export const timelineQuery = (workItemId: string) =>
+export const timelineQuery = (workItemId: string, archived = false) =>
   queryOptions({
-    queryKey: ["workItem", workItemId, "timeline"],
-    queryFn: () => read("workItem.timeline", { workItemId }),
+    queryKey: ["workItem", workItemId, "timeline", ...(archived ? ["archived"] : [])],
+    queryFn: () => read("workItem.timeline", { workItemId, archived }),
     staleTime: 5_000,
-    refetchInterval: 10_000,
+    // The archived entries are read from R2 on demand (ADR 0591): the poll reads D1 only.
+    refetchInterval: archived ? false : 10_000,
   });
 
 /** How often the Planning tab re-reads while it is open. */
@@ -141,7 +142,7 @@ export const archiveIncidentsQuery = (orgIds: string[]) =>
         orgIds.map(async (orgId) => {
           const r = await read("incident.listArchiveMissing", { orgId });
           const incidents: ArchiveIncident[] = r.incidents.map((i) => ({ ...i, orgId }));
-          return { more: r.more, incidents };
+          return { more: r.more, incidents, auditArchiveStopped: r.auditArchiveStopped };
         }),
       );
       return {
@@ -149,6 +150,7 @@ export const archiveIncidentsQuery = (orgIds: string[]) =>
           .flatMap((l) => l.incidents)
           .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
         more: lists.some((l) => l.more),
+        auditArchiveStopped: lists.find((l) => l.auditArchiveStopped)?.auditArchiveStopped ?? null,
       };
     },
     staleTime: 60_000,
