@@ -804,10 +804,14 @@ export const deliveryStatus = defineOperation({
             enqueuedAt: z.string(),
             /**
              * The head's step (null for the rest, and for a held head): `updating` (GitHub is
-             * merging the default branch in), `ci` (waiting on CI on its head before it merges) or
-             * `merging` (GitHub was asked to merge it).
+             * merging the default branch in), `ci` (waiting on CI on its head before it merges),
+             * `merging` (GitHub was asked to merge it), `asking` (a person is asked "update once
+             * more, or wait?") or `holding` (the person said wait: until `heldUntil`).
              */
-            step: z.enum(["merging", "updating", "ci"]).nullable(),
+            // HEAD_STEPS, spelled out: merge-queue.ts imports this module, so its const is undefined here.
+            step: z.enum(["merging", "asking", "holding", "updating", "ci"]).nullable(),
+            /** `holding`: when the head updates again. */
+            heldUntil: z.string().nullable(),
           }),
         ),
       }),
@@ -841,7 +845,10 @@ export const deliveryStatus = defineOperation({
           branch: r.default_branch,
           main: h ? mainHealthOf(h) : null,
           deliveries: mine.map((e, i) => {
-            const held = stopped && e.repairs_main !== 1 && e.driver === "babysitter";
+            // A head GitHub was already asked to merge is merging, red default branch or not.
+            const held =
+              stopped && !e.merging_at && e.repairs_main !== 1 && e.driver === "babysitter";
+            const step = i === 0 && !held ? headStep(e, ctx.now) : null;
             return {
               workItemId: e.work_item_id,
               number: e.number,
@@ -856,7 +863,8 @@ export const deliveryStatus = defineOperation({
               driver: e.driver,
               headSha: e.head_sha,
               enqueuedAt: e.enqueued_at,
-              step: i === 0 && !held ? headStep(e) : null,
+              step,
+              heldUntil: step === "holding" ? e.held_until : null,
             };
           }),
         };

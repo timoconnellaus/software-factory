@@ -126,7 +126,8 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
     match:
       /^select \*, CASE WHEN NOT \(core_work_items\.source = 'planning'.* from "core_work_items" where "org_id" = \? and "status" in \([?, ]+\)(?: and "project_id" = \?)? order by "priority", "rank", "released_at", "created_at" limit \?$/s,
-    why: "workItem.board: an org's items in the states asked for (core_work_items_org_idx on org and status), by default the backlog, ready, queued and active ones, never done; capped at 500",
+    // Not capped at 500 in what it reads: the LIMIT applies after the sort.
+    why: "workItem.board: every item of the org in the states asked for (core_work_items_org_idx on org and status; by default backlog, ready, queued and active, never done or cancelled) is read and sorted, then 500 are returned. So a poll reads the org's whole open backlog, which grows with it; no index can give this order across an IN list of states. The waitingOn subqueries (waiting-on.ts) run only for running and waiting rows, which the WIP limits keep few",
   },
   {
     match:
