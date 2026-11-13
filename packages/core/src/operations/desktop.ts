@@ -23,9 +23,8 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
-import { CONFIG_WRITES, describeConfigDecision, overrideOrgValue } from "./config.ts";
 import { childrenOf } from "../splits.ts";
-import { describeConfigDecision } from "./config.ts";
+import { CONFIG_WRITES, describeConfigDecision, overrideOrgValue } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
 import {
