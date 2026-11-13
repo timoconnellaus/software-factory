@@ -19,7 +19,7 @@ let prompts: string[];
 let touchId: "approve" | "cancel";
 let held: boolean;
 
-const SUMMARY = 'Merge 3f2a91c "Fix the inbox count" into main of acme/widgets';
+const SUMMARY = 'Merge 3f2a91c into main of acme/widgets: "Fix the inbox count"';
 const HEAD = "3f2a91c".padEnd(40, "0");
 const PUSHED_OVER = "1".repeat(40);
 const STALE =

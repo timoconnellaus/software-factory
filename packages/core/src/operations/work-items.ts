@@ -9,11 +9,13 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
-import { specRequired } from "../policy/project-policy.ts";
+import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
+import { has } from "../workflow-features.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -474,6 +476,13 @@ export const workItemGet = defineOperation({
         takeover: z.object({ label: z.string(), hint: z.string() }).nullable(),
         startedAt: z.string(),
         endedAt: z.string().nullable(),
+        /**
+         * Where the run's log is (AGENTS.md "Cloudflare cost"): `kept` in D1; `archived` to R2 (30
+         * days after the run ended; read back from there); `missing`, an archived object is lost
+         * and recorded as an incident for a person (`archiveIncident`).
+         */
+        log: z.enum(["kept", "archived", "missing"]),
+        archiveIncident: z.object({ id: z.string(), resolvedAt: z.string().nullable() }).nullable(),
       }),
     ),
     reviewPacket: z
@@ -558,11 +567,22 @@ export const workItemGet = defineOperation({
           .selectAll()
           .where("work_item_id", "=", w.id)
           .orderBy("created_at"),
+        // Each run's archive incident, if its archived log lost an object (one per run, on
+        // core_incidents_run_idx): a point lookup per run, in the same query.
         ctx.db
           .selectFrom("core_runs")
-          .selectAll()
-          .where("work_item_id", "=", w.id)
-          .orderBy("run_no"),
+          .leftJoin("core_incidents", (j) =>
+            j
+              .onRef("core_incidents.run_id", "=", "core_runs.id")
+              .on("core_incidents.kind", "=", "archive_missing"),
+          )
+          .selectAll("core_runs")
+          .select([
+            "core_incidents.id as archive_incident_id",
+            "core_incidents.resolved_at as archive_incident_resolved_at",
+          ])
+          .where("core_runs.work_item_id", "=", w.id)
+          .orderBy("core_runs.run_no"),
         ctx.db
           .selectFrom("core_review_packets")
           .selectAll()
@@ -682,6 +702,14 @@ export const workItemGet = defineOperation({
         takeover: parseJson<{ label: string; hint: string } | null>(r.takeover, null),
         startedAt: r.started_at,
         endedAt: r.ended_at,
+        log: r.archive_incident_id
+          ? ("missing" as const)
+          : r.events_archived_at
+            ? ("archived" as const)
+            : ("kept" as const),
+        archiveIncident: r.archive_incident_id
+          ? { id: r.archive_incident_id, resolvedAt: r.archive_incident_resolved_at }
+          : null,
       })),
       reviewPacket: packet
         ? {
@@ -867,6 +895,15 @@ export const workItemTriage = defineOperation({
     const w = requireWorkItem(ctx);
     const policy = ctx.scope.policy;
     if (!policy) throw new OperationError("denied", "no valid policy");
+    // Triage's criteria and their ties to checks are written only before the item leaves triage:
+    // never once it reached spec, build or verify (checks may have run), so no later stage can add
+    // or change a tie.
+    if (w.stage !== "intake" && w.stage !== "triage") {
+      throw new OperationError(
+        "conflict",
+        `triage is recorded only in the triage stage; this item is in ${w.stage}`,
+      );
+    }
     // An item follows its project's workflow, pinned when it was pulled (ADR 0492): triage no
     // longer picks, and a pick it still sends is ignored. An item started before 0261 (no
     // `pulled_at`) was promised triage's pick (ADR 0371): it keeps that rule, so the deploy never
@@ -896,7 +933,17 @@ export const workItemTriage = defineOperation({
         : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;
     const specId = newId("spec");
-    const criteria = input.result.acceptanceCriteria;
+    // `triage-ties`: the check that proves each criterion, as data the code validates. Only
+    // the project's declared checks and required CI checks may be named; any other name is dropped,
+    // so that criterion is untied and Not proven. Older instances keep the criteria as given.
+    const tied = has(w.workflow_version, "triage-ties")
+      ? tieCriteria(
+          input.result.acceptanceCriteria,
+          input.result.criterionChecks,
+          provableChecks(policy, workflow),
+        )
+      : { criteria: input.result.acceptanceCriteria, dropped: [] as string[] };
+    const criteria = tied.criteria;
     const body = [
       `# ${w.title}`,
       "",
@@ -953,6 +1000,7 @@ export const workItemTriage = defineOperation({
         workflowReason,
         // Spec 23 (ADR 0304): binding and logged with its reason; it never touches the gate above.
         readiness: input.result.readiness,
+        ...(tied.dropped.length ? { droppedCheckNames: tied.dropped } : {}),
         readinessReason: input.result.readinessReason ?? null,
       },
     });

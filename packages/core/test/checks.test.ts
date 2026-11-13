@@ -1,10 +1,14 @@
 // Spec 51 PR B (ADR 0501): checks the factory runs itself, and criteria proven only by them.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import ownPolicy from "../../../.factory/policy.json";
+import turbo from "../../../turbo.json";
 import {
   assemblePacket,
   type CiSummary,
+  checkProves,
   declaredChecks,
+  everyCriterionProven,
   executedChecks,
   FOREMAN,
   isStaticCheck,
@@ -12,10 +16,13 @@ import {
   parseFloor,
   parseProjectPolicy,
   policyImpact,
+  proofCounts,
+  provableChecks,
   proveCriteria,
   specCheckLinks,
   storedProof,
   summarizeCi,
+  tieCriteria,
   verifyCheckOutput,
   whyNotProven,
 } from "../src/index.ts";
@@ -436,6 +443,180 @@ describe("executed checks and proof (pure)", () => {
     expect(declared.sections.proven).toMatchObject({ checksSetUp: true });
   });
 
+  it("keeps only declared or required check names in triage's ties; none is an honest answer", () => {
+    const tied = tieCriteria(
+      ["A.", "B", "C", "D", "E [checks: tests]", "F"],
+      [
+        { criterion: "a", checks: ["TESTS", "tests"] },
+        { criterion: "B", checks: ["made-up"] },
+        { criterion: "C", checks: [] },
+        { criterion: "D", checks: ["ci", "factory/verify", "none"] },
+        // A tag in the text is not a tie: only the field ties, and E has no entry.
+      ],
+      ["lint", "tests", "ci"],
+    );
+    expect(tied.criteria).toEqual([
+      "A. [checks: tests]",
+      "B",
+      "C [checks: none]",
+      "D [checks: ci]",
+      "E",
+      "F",
+    ]);
+    expect(tied.dropped).toEqual(["made-up", "factory/verify", "none"]);
+    expect(specCheckLinks("C [checks: none]")).toEqual({ text: "C", checks: [], uncovered: true });
+  });
+
+  it("never calls a triage tie Proven: it says the check triage named passed, and counts it apart", () => {
+    const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
+    const proof = proveCriteria(
+      [
+        { criterion: "A", met: true, evidence: "x" },
+        { criterion: "B [checks: tests]", met: true, evidence: "x" },
+        { criterion: "C", met: true, evidence: "x", checks: ["tests"] },
+      ],
+      executed,
+      { checks: [] },
+      { specCriteria: ["A [checks: tests]", "B [checks: none]", "C"], linksFrom: "triage" },
+    );
+    expect(proof.map((p) => [p.proven, p.linkedBy, whyNotProven(p)])).toEqual([
+      [false, "triage", "passed tests, the check triage named (not checked by a person)"],
+      [false, "triage", "not covered by a check"],
+      [false, "reviewer", "only the reviewer named tests, and a reviewer's link proves nothing"],
+    ]);
+    expect(proof[0]).toMatchObject({
+      provenBy: [],
+      passedTriageCheck: ["tests"],
+      fromTriage: true,
+    });
+    expect(proofCounts(proof)).toEqual({ proven: 0, total: 0, triage: { passed: 1, total: 3 } });
+    // Auto-approval (ADR 0515) counts only a person's ties: never these.
+    expect(everyCriterionProven(proof)).toBe(false);
+    // The same ties in a person-approved spec do prove.
+    const spec = proveCriteria(
+      [{ criterion: "A", met: true, evidence: "x" }],
+      executed,
+      { checks: [] },
+      { specCriteria: ["A [checks: tests]"] },
+    );
+    expect(spec[0]).toMatchObject({ proven: true, provenBy: ["tests"], linkedBy: "spec" });
+    expect(proofCounts(spec)).toEqual({ proven: 1, total: 1 });
+    expect(everyCriterionProven(spec)).toBe(true);
+  });
+
+  it("writes factory/verify's count of person-proven criteria apart from triage's", () => {
+    const packet = assemblePacket({
+      headSha: SHA,
+      evidence: {
+        ...reviewerFailing,
+        checks: [],
+        criteria: [
+          { criterion: "A", met: true, evidence: "x" },
+          { criterion: "B", met: true, evidence: "x" },
+        ],
+      },
+      ci: green,
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: true,
+      declaredChecks: ["tests"],
+      checksRun: [ran("tests", 0)],
+      specCriteria: ["A [checks: tests]", "B"],
+      linksFrom: "triage",
+    });
+    expect(packet.sections.proven).toMatchObject({
+      proven: 0,
+      total: 0,
+      triage: { passed: 1, total: 2 },
+    });
+    const out = verifyCheckOutput({
+      evidencePass: packet.evidencePass,
+      evidenceReasons: packet.evidenceReasons,
+      warnings: packet.warnings,
+      riskFlags: [],
+      ci: green,
+      workItem: { number: 7, title: "x" },
+      ...storedProof(packet.sections),
+    }).summary;
+    expect(out).not.toContain("Criteria proven by an executed check");
+    expect(out).toContain(
+      "Criteria that passed the check triage named (not checked by a person, not proven): 1/2",
+    );
+    expect(out).toContain(
+      "- Not proven: A (passed tests, the check triage named (not checked by a person))",
+    );
+  });
+
+  it("never proves a criterion by a setup check: install and build by name, or proves: false", () => {
+    // The probe: "Admin can revoke tokens [checks: install]" with install passing.
+    const executed = executedChecks(
+      SHA,
+      ["install", "build", "e2e", "tests"],
+      [
+        { ...ran("install", 0), command: "pnpm install --frozen-lockfile" },
+        ran("build", 0),
+        ran("e2e", 0),
+        ran("tests", 0),
+      ],
+    );
+    const proof = proveCriteria(
+      [
+        { criterion: "Admin can revoke tokens", met: true, evidence: "x" },
+        { criterion: "B", met: true, evidence: "x" },
+        { criterion: "C", met: true, evidence: "x" },
+        { criterion: "D", met: true, evidence: "x" },
+      ],
+      executed,
+      { checks: [] },
+      {
+        specCriteria: [
+          "Admin can revoke tokens [checks: install]",
+          "B [checks: build]",
+          "C [checks: e2e]",
+          "D [checks: tests]",
+        ],
+        declared: [{ name: "e2e", run: "pnpm e2e", proves: false }, "tests"],
+      },
+    );
+    expect(proof.map((p) => [p.proven, p.notCounted])).toEqual([
+      [false, ["install"]],
+      [false, ["build"]],
+      [false, ["e2e"]],
+      [true, []],
+    ]);
+    expect(whyNotProven(proof[0] as (typeof proof)[number])).toMatch(
+      /^install can't prove a criterion \(a setup or static check/,
+    );
+    expect(checkProves("tests", "pnpm test")).toBe(true);
+    expect(checkProves("deps", "npm ci")).toBe(false);
+    expect(checkProves("verify", "./run.sh")).toBe(false); // not known to run tests
+    expect(checkProves("verify", "./run.sh", true)).toBe(true); // the config says so
+    expect(checkProves("lint", "pnpm lint", true)).toBe(false); // static, whatever it says
+  });
+
+  it("lists what triage may name: declared checks, then required CI, never factory/verify; no check is called none", () => {
+    const policy = parsed({
+      ...WITH_CHECKS,
+      protection: { requiredChecks: ["ci", "factory/verify", "TESTS"] },
+    });
+    // Only checks that can prove are offered: not lint (static), not install or build (setup).
+    expect(provableChecks(policy, null)).toEqual(["tests", "ci"]);
+    const setup = parsed({
+      ...POLICY,
+      checks: [
+        { name: "install", run: "pnpm install --frozen-lockfile" },
+        { name: "build", run: "pnpm build" },
+        { name: "smoke", run: "./smoke.sh", proves: true },
+        { name: "unit", run: "pnpm vitest run", proves: false },
+      ],
+      protection: { requiredChecks: ["ci", "build"] },
+    });
+    expect(provableChecks(setup, null)).toEqual(["smoke", "ci"]);
+    expect(
+      parseProjectPolicy(JSON.stringify({ ...POLICY, checks: [{ name: "None", run: "x" }] })).ok,
+    ).toBe(false);
+  });
+
   it("says why a criterion is not proven", () => {
     const p = {
       proven: false,
@@ -489,6 +670,15 @@ describe("executed checks and proof (pure)", () => {
     expect(policyImpact(before, changed, floor).changes[0]?.summary).toMatch(/pnpm test.*true/);
     expect(policyImpact(before, changed, floor).class).toBe("loosens");
     expect(policyImpact(before, added, floor).class).toBe("tightens");
+    // Letting a check prove criteria it didn't (proves: true) loosens; the reverse tightens.
+    const setup = { name: "ui-check", run: "./run.sh" };
+    const off = parsed({ ...WITH_CHECKS, checks: [...WITH_CHECKS.checks, setup] });
+    const on = parsed({
+      ...WITH_CHECKS,
+      checks: [...WITH_CHECKS.checks, { ...setup, proves: true }],
+    });
+    expect(policyImpact(off, on, floor).class).toBe("loosens");
+    expect(policyImpact(on, off, floor).class).toBe("tightens");
   });
 });
 
@@ -527,5 +717,21 @@ describe("checks.forHead before v8 (ADR 0501)", () => {
       FOREMAN,
     );
     expect(out).toMatchObject({ declared: [], passed: true });
+  });
+});
+
+describe("this repository's own checks", () => {
+  it("declares its test check within the check container's 4 GB: one package at a time, two workers", () => {
+    const policy = parsed(ownPolicy);
+    expect(declaredChecks(policy, null).map((c) => c.name)).toEqual(["install", "lint", "test"]);
+    // Inside the container vitest sees every host core and would start a worker per core.
+    // Loose env mode: turbo's strict mode would drop HTTPS_PROXY, and a test that reaches an
+    // allowlisted host through the check's egress proxy could not. --continue: every failing
+    // package is reported, not just the first.
+    expect(policy.checks.find((c) => c.name === "test")?.run).toBe(
+      "TURBO_TELEMETRY_DISABLED=1 VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1 --continue --env-mode=loose",
+    );
+    // Turbo's strict env mode drops what a task doesn't declare: the cap must reach vitest.
+    expect(turbo.tasks.test.passThroughEnv).toContain("VITEST_MAX_WORKERS");
   });
 });

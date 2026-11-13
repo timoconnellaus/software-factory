@@ -26,6 +26,16 @@ import {
 } from "./shared.ts";
 
 /** Runs whose session may still be steered (core_runs.status). */
+/**
+ * A run's archive incident: a record for a person, no work item (it is resolved with
+ * incident.resolve on the desktop's Checks and incidents page).
+ */
+const archiveIncidentView = z.object({
+  id: z.string(),
+  openedAt: z.string(),
+  resolvedAt: z.string().nullable(),
+});
+
 export const ACTIVE = ["claimed", "preparing", "running", "collecting"];
 /** Most events one `run.live` answer carries. */
 export const LIVE_EVENTS_MAX = 300;
@@ -484,7 +494,8 @@ export const runLive = defineOperation({
     archiveMissing: z
       .object({
         firstSeq: z.number(),
-        incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+        /** The run's incident record (no work item; the desktop's Checks and incidents page). */
+        incident: archiveIncidentView.nullable(),
       })
       .nullable()
       .optional(),
@@ -728,7 +739,7 @@ export const runSteer = defineOperation({
 export const runTakeSteers = defineOperation({
   name: "run.takeSteers",
   description:
-    "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued. Fenced: a stale token is refused.",
+    "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued, polling for one in the Worker (spec 44). Fenced: a stale token is refused.",
   risk: "write",
   // Re-taken every 25 s per running job: audited only when it hands steers over (ADR 0590).
   audit: { changesOnly: true, changed: (out) => out.steers.length > 0 },
@@ -738,6 +749,8 @@ export const runTakeSteers = defineOperation({
   input: z.object({ jobId, fencingToken }),
   output: z.object({
     workItemId: z.string(),
+    /** The job's run: what the channel's held call polls for queued steers (spec 44). */
+    runId: z.string(),
     steers: z.array(
       z.object({
         id: z.string(),
@@ -795,6 +808,7 @@ export const runTakeSteers = defineOperation({
     }
     return {
       workItemId: run.work_item_id,
+      runId: run.id,
       steers: queued.map((s) => ({
         id: s.id,
         text: s.text,
@@ -848,33 +862,32 @@ export const runTakeover = defineOperation({
   },
 });
 
-/** The run's archive incident (one per run), with its work item's number. */
+/** The run's archive incident (one per run), on core_incidents_run_idx. */
 async function archiveIncident(
   ctx: HandlerContext,
   runIdValue: string,
-): Promise<{ workItemId: string; number: number } | null> {
+): Promise<z.infer<typeof archiveIncidentView> | null> {
   const row = await ctx.db
     .selectFrom("core_incidents")
-    .innerJoin("core_work_items", "core_work_items.id", "core_incidents.fix_work_item_id")
-    .select(["core_work_items.id", "core_work_items.number"])
-    .where("core_incidents.run_id", "=", runIdValue)
-    .where("core_incidents.kind", "=", "archive_missing")
+    .select(["id", "created_at", "resolved_at"])
+    .where("run_id", "=", runIdValue)
+    .where("kind", "=", "archive_missing")
     .limit(1)
     .executeTakeFirst();
-  return row ? { workItemId: row.id, number: row.number } : null;
+  return row ? { id: row.id, openedAt: row.created_at, resolvedAt: row.resolved_at } : null;
 }
 
 export const runReportArchiveMissing = defineOperation({
   name: "run.reportArchiveMissing",
   description:
-    "Report that part of an archived run's log is missing from the archive (AGENTS.md \"Cloudflare cost\"): run.live answered `archive: missing` for this chunk. Trusts nothing it is told: it finds the chunk in the run's chunk index and checks with R2 (a HEAD) that the object isn't there, and does nothing otherwise. Opens one incident per run, for a person (a work item left in the backlog; no agent runs, since none could bring the object back). The website calls it when a viewer meets the gap; the archive's daily sample calls it as the scheduler.",
+    "Report that part of an archived run's log is missing from the archive (AGENTS.md \"Cloudflare cost\"): run.live answered `archive: missing` for this chunk. Trusts nothing it is told: it finds the chunk in the run's chunk index and checks with R2 (a HEAD) that the object isn't there, and does nothing otherwise. Records one incident per run, for a person: a record only, with no work item and no agent (none could bring the object back), listed on the desktop's Checks and incidents page until a person resolves it. The website calls it when a viewer meets the gap; the archive's daily sample calls it as the scheduler.",
   risk: "write",
   actors: ["human", "scheduler"],
   permission: "member",
   input: z.object({ workItemId, runId, firstSeq: z.number().int().min(-1) }),
   output: z.object({
     reported: z.boolean(),
-    incident: z.object({ workItemId: z.string(), number: z.number() }).nullable(),
+    incident: archiveIncidentView.nullable(),
   }),
   async handler(input, ctx) {
     const item = requireWorkItem(ctx);
@@ -899,6 +912,9 @@ export const runReportArchiveMissing = defineOperation({
       runNo: run.run_no,
       key: chunk.r2_key,
     });
-    return { reported: true, incident: { workItemId: opened.workItemId, number: opened.number } };
+    return {
+      reported: true,
+      incident: { id: opened.incidentId, openedAt: ctx.now, resolvedAt: null },
+    };
   },
 });

@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { declaredChecks } from "../policy/project-policy.ts";
+import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
@@ -33,6 +33,14 @@ import {
 } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
+import { has } from "../workflow-features.ts";
+import {
+  ATTACHED_HELD_TITLE,
+  HELD_TITLE,
+  HELD_TITLES,
+  HOLD_ATTACHED,
+  lineStopped,
+} from "./delivery.ts";
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
@@ -122,6 +130,16 @@ export async function postVerify(
     review_packet_id: args.packetId ?? existing?.review_packet_id ?? null,
     updated_at: ctx.now,
     repository_id: repositoryId ?? existing?.repository_id ?? null,
+    // Decision 7: when it was set to held, so the release sweep finds it; null otherwise.
+    // A post GitHub refused leaves what GitHub shows unchanged: a held check stays held here too, so
+    // the release sweep tries again (it reads only held rows).
+    held_at: HELD_TITLES.has(args.output.title)
+      ? (existing?.held_at ?? ctx.now)
+      : error
+        ? (existing?.held_at ?? null)
+        : null,
+    // Held anew, or released: the sweep's backoff starts over.
+    ...(error ? {} : { release_attempts: 0, release_after: null }),
   };
   ctx.write(
     ctx.db
@@ -219,12 +237,8 @@ export const reviewPacketRecord = defineOperation({
       .limit(CHECK_ROWS_MAX)
       .execute();
     const hostChecks = hostChecksOn(w);
-    const declared = hostChecks
-      ? declaredChecks(ctx.scope.policy ?? null, w.workflow).map((c) => ({
-          name: c.name,
-          run: c.run,
-        }))
-      : [];
+    // With whether each may prove a criterion (setup and static checks never do).
+    const declared = hostChecks ? declaredProof(ctx.scope.policy ?? null, w.workflow) : [];
     // The approved spec's criteria: the links to checks a person approved (ADR 0501).
     const spec = await ctx.db
       .selectFrom("core_specs")
@@ -233,7 +247,26 @@ export const reviewPacketRecord = defineOperation({
       .where("status", "=", "approved")
       .orderBy("version", "desc")
       .executeTakeFirst();
-    const specCriteria = spec ? strings(parseJson(spec.acceptance_criteria)) : null;
+    // An item without a spec on Workflow feature `triage-ties`: triage's criteria, whose ties to
+    // checks `workItem.triage` validated in the triage stage, before any check ran. The reviewer
+    // can't add or change them: its own links never prove (ADR 0501, amended 2026-11-13).
+    const triaged =
+      !spec && w.spec_required === 0 && w.current_spec_id && has(w.workflow_version, "triage-ties")
+        ? await ctx.db
+            .selectFrom("core_specs")
+            .select("acceptance_criteria")
+            // The primary key: one row.
+            .where("id", "=", w.current_spec_id)
+            .where("work_item_id", "=", w.id)
+            .where("status", "=", "draft")
+            .executeTakeFirst()
+        : undefined;
+    const linksFrom = spec ? ("spec" as const) : triaged ? ("triage" as const) : undefined;
+    const specCriteria = spec
+      ? strings(parseJson(spec.acceptance_criteria))
+      : triaged
+        ? strings(parseJson(triaged.acceptance_criteria))
+        : null;
     const sameModel =
       (input.reviewer?.sameModelAsImplementer ?? false) ||
       reviewerMatchesImplementer(ctx.scope.policy?.modelRoles ?? {});
@@ -252,6 +285,7 @@ export const reviewPacketRecord = defineOperation({
       runnerVerdict: input.verdict,
       hostChecks,
       specCriteria,
+      linksFrom,
       declaredChecks: declared,
       requiredCi: ctx.scope.policy?.protection.requiredChecks ?? [],
       checksRun: ran.map(checkRunOf),
@@ -469,6 +503,29 @@ function checkRunOf(r: {
   };
 }
 
+/**
+ * The check names triage may tie a criterion to (Workflow feature `triage-ties`): the item's declared
+ * checks and the CI checks its config requires. Read once by the Workflow before triage.
+ */
+export const checksProvable = defineOperation({
+  name: "checks.provable",
+  description:
+    "The names of the checks that can prove a work item's acceptance criteria: the project's declared checks for the item's workflow (run by the runner host), then the CI checks its config requires (never factory/verify). Triage names one of these for each criterion it writes, or none when no declared check can prove it; workItem.triage drops any other name. Checks that can't prove a criterion are left out: setup checks (install, build), static checks (lint, typecheck, format) and any the config marks `proves: false`.",
+  risk: "read",
+  actors: ["agent", "human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({
+    checks: z.array(z.object({ name: z.string() })),
+  }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    return {
+      checks: provableChecks(ctx.scope.policy ?? null, w.workflow).map((name) => ({ name })),
+    };
+  },
+});
+
 export const checksForHead = defineOperation({
   name: "checks.forHead",
   description:
@@ -629,7 +686,7 @@ export const verifyRefresh = defineOperation({
 
     const existing = await ctx.db
       .selectFrom("core_verify_checks")
-      .select(["status", "work_item_id"])
+      .select(["status", "work_item_id", "held_at"])
       .where("project_id", "=", project.id)
       .where((eb) =>
         eb.or([eb("repository_id", "=", repository.id), eb("repository_id", "is", null)]),
@@ -655,6 +712,31 @@ export const verifyRefresh = defineOperation({
           .executeTakeFirst()) ?? null;
     }
 
+    // A held check (decision 7) on an item that has ended: it says so, never stays pending.
+    if (item && existing?.held_at && !["running", "waiting", "paused"].includes(item.status)) {
+      const output = {
+        status: "completed" as const,
+        conclusion: "failure" as const,
+        title: `Work item #${item.number} ended (${item.status})`,
+        summary: `Work item #${item.number}: ${item.title}\n\nIt ended while the default branch was red, so nothing merges from this commit.`,
+      };
+      await postVerify(ctx, {
+        project,
+        repo,
+        headSha: input.headSha,
+        item,
+        prNumber: input.prNumber,
+        packetId: null,
+        output,
+      });
+      return {
+        outcome: "posted" as const,
+        workItemId: item.id,
+        status: output.status,
+        conclusion: output.conclusion,
+        ciState: null,
+      };
+    }
     // An attached item that ended without merging (its PR closed, or it was cancelled) no longer
     // owns the PR: reopened, it reads as unattached again and can be attached anew.
     if (item?.kind === "attached" && ["cancelled", "failed", "rejected"].includes(item.status)) {
@@ -766,6 +848,27 @@ export const verifyRefresh = defineOperation({
         ...storedTestFindings(sections),
         ...storedProof(sections),
       });
+      // Decision 7 (spec 53): while the repository's line is stopped, an open head that isn't a
+      // repair reads pending, so GitHub refuses a person's merge too. It comes back when main is
+      // green (main.observe re-evaluates the heads; the cron's release sweep heals a lost event).
+      // An attached PR is held too, saying the owner decides (HOLD_ATTACHED, one switch).
+      const open = ["running", "waiting", "paused"].includes(item.status);
+      if (
+        output.conclusion === "success" &&
+        open &&
+        (item.kind !== "attached" || HOLD_ATTACHED) &&
+        item.repairs_main !== 1 &&
+        (await lineStopped(ctx, item))
+      ) {
+        output = {
+          status: "in_progress",
+          title: item.kind === "attached" ? ATTACHED_HELD_TITLE : HELD_TITLE,
+          summary:
+            item.kind === "attached"
+              ? `Work item #${item.number}: ${item.title}\n\nThe default branch is red. This pull request was opened outside the factory: the owner decides whether it merges before main is green (spec 53, decision 7). The babysitter doesn't merge it.`
+              : `Work item #${item.number}: ${item.title}\n\nThe default branch is red, so only repairs merge until it is green again. Verify passed on this commit; it can merge once main is green (spec 53, decision 7).`,
+        };
+      }
     } else if (input.trigger === "ci" && existing) {
       // CI moved, but verify hasn't run on this SHA yet: the check already says so.
       return {

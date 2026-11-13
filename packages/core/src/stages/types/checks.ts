@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { same } from "../../policy/impact.ts";
+import { assemblePacket, type PacketInput } from "../../verify/packet.ts";
 import { DEFAULT_REQUIRED_CHECKS } from "../../verify/protection.ts";
 import type { EvidenceKind, StageType } from "../contract.ts";
 import { jobStep, latest } from "../reconcile.ts";
@@ -184,4 +185,28 @@ function setImpact(
   if (!out.length && !same(before, after))
     out.push({ path, class: "neutral", summary: `The required ${noun}s reordered.` });
   return out;
+}
+
+/**
+ * What the checks stage reads from a review packet's verdict: CI on the head and the verify run's
+ * failures (spec 52: the switch-over's checks stage, and the shadow replay, read only this).
+ */
+export function checksObservation(verdict: "pass" | "fail"): {
+  ci: "pass" | "fail";
+  failures: string[];
+} {
+  return verdict === "pass"
+    ? { ci: "pass", failures: [] }
+    : { ci: "fail", failures: ["the review packet didn't pass"] };
+}
+
+/**
+ * The checks stage's verdict: the review packet's, computed by `assemblePacket` and nothing else
+ * (second review of #148). The stored packet the shadow replay reads is this function's output.
+ */
+export function checksVerdict(input: PacketInput): ReturnType<typeof checksObservation> & {
+  verdict: "pass" | "fail";
+} {
+  const verdict = assemblePacket(input).verdict;
+  return { verdict, ...checksObservation(verdict) };
 }

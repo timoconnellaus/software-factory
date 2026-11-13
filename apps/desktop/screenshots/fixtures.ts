@@ -49,11 +49,12 @@ const NOT_RUN_EXECUTED = {
  * be proven (the gate says so, no count). `?fixture=allproven`: every criterion tied to a check
  * that passed. Neither: checks set up, some criteria tied to none.
  */
-let seenProof: "nochecks" | "allproven" | null = null;
+let seenProof: "nochecks" | "allproven" | "triage" | null = null;
 const proofFixture = () => {
   const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
   if (where.includes("fixture=nochecks")) seenProof = "nochecks";
   else if (where.includes("fixture=allproven")) seenProof = "allproven";
+  else if (where.includes("fixture=triage")) seenProof = "triage";
   return seenProof;
 };
 type ProofRow = {
@@ -62,7 +63,10 @@ type ProofRow = {
   provenBy: string[];
   unproven: string[];
   notCounted: string[];
-  linkedBy: "spec" | "reviewer";
+  linkedBy: "spec" | "triage" | "reviewer";
+  uncovered?: boolean;
+  passedTriageCheck?: string[];
+  fromTriage?: boolean;
   weakened: boolean;
   reviewerMet: boolean;
   opinion: string;
@@ -72,7 +76,14 @@ function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<stri
   const which = proofFixture();
   const proof =
     which === "nochecks"
-      ? rows.map((r) => ({ ...r, proven: false, provenBy: [], unproven: [], notCounted: [] }))
+      ? rows.map((r) => ({
+          ...r,
+          proven: false,
+          provenBy: [],
+          unproven: [],
+          notCounted: [],
+          uncovered: false,
+        }))
       : which === "allproven"
         ? rows.map((r) => ({
             ...r,
@@ -81,15 +92,55 @@ function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<stri
             unproven: [],
             notCounted: [],
             linkedBy: "spec" as const,
+            uncovered: false,
           }))
-        : notRunFixture()
-          ? notProven(rows)
-          : rows;
+        : which === "triage"
+          ? // Both kinds of tie: the first criterion in a person-approved spec, the rest from
+            // triage's list (an agent's ties: passed, never Proven).
+            rows.map((r, i) =>
+              i === 0
+                ? { ...r, proven: true, provenBy: ["tests"], linkedBy: "spec" as const }
+                : i === 3
+                  ? {
+                      ...r,
+                      proven: false,
+                      provenBy: [],
+                      unproven: [],
+                      notCounted: [],
+                      linkedBy: "triage" as const,
+                      uncovered: true,
+                      fromTriage: true,
+                    }
+                  : {
+                      ...r,
+                      proven: false,
+                      provenBy: [],
+                      unproven: [],
+                      notCounted: [],
+                      linkedBy: "triage" as const,
+                      uncovered: false,
+                      passedTriageCheck: ["tests"],
+                      fromTriage: true,
+                    },
+            )
+          : notRunFixture()
+            ? notProven(rows)
+            : rows;
+  const person = proof.filter((r) => !r.fromTriage);
+  const triage = proof.filter((r) => r.fromTriage);
   return {
     proof,
     proven: {
-      proven: proof.filter((r) => r.proven).length,
-      total: proof.length,
+      proven: person.filter((r) => r.proven).length,
+      total: person.length,
+      ...(triage.length
+        ? {
+            triage: {
+              passed: triage.filter((r) => r.passedTriageCheck?.length).length,
+              total: triage.length,
+            },
+          }
+        : {}),
       weakened: false,
       checksSetUp: which !== "nochecks",
     },
@@ -922,7 +973,9 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
                 provenBy: [],
                 unproven: [],
                 notCounted: [],
-                linkedBy: "reviewer",
+                // The spec says no declared check can prove it: honest, "not covered by a check".
+                linkedBy: "spec",
+                uncovered: true,
                 weakened: false,
                 reviewerMet: true,
                 opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
@@ -972,6 +1025,8 @@ function run(
       : null,
     startedAt: ago(startedMin),
     endedAt: endedMin === null ? null : ago(endedMin),
+    log: "kept",
+    archiveIncident: null,
   };
 }
 
@@ -1623,7 +1678,54 @@ const released = (input: { workItemId: string }) => {
   return { status: "queued", blockedBy: [] };
 };
 
+/**
+ * #9's first two runs show where an old run's log is (AGENTS.md "Cloudflare cost"): the triage
+ * run's archived to R2, the spec run's lost from the archive with its incident open. (Real runs are
+ * archived 30 days after they end; the fixture's are recent, for the shot.)
+ */
+function withArchivedLogs(d: OpOutput<"workItem.get">): OpOutput<"workItem.get"> {
+  if (d.item.id !== "wi_9") return d;
+  return {
+    ...d,
+    runs: d.runs.map((r) =>
+      r.runNo === 1
+        ? { ...r, log: "archived" as const }
+        : r.runNo === 2
+          ? {
+              ...r,
+              log: "missing" as const,
+              archiveIncident: { id: "incident_lost", resolvedAt: null },
+            }
+          : r,
+    ),
+  };
+}
+
+/** One open archive incident: #4's run 2 lost an object from sf-archive. */
+const ARCHIVE_INCIDENTS = () => {
+  const four = ITEMS.find((i) => i.number === 4);
+  return four
+    ? [
+        {
+          id: "incident_lost",
+          projectId: four.projectId,
+          workItemId: four.id,
+          workItemNumber: four.number,
+          workItemTitle: four.title,
+          runId: "run_2",
+          reason: `run 2's archived log: runs/run_2/events/0-199.ndjson is missing from sf-archive`,
+          createdAt: ago(60 * 5),
+        },
+      ]
+    : [];
+};
+
 export const ANSWERS: Answers = {
+  "incident.listArchiveMissing": (input) => ({
+    incidents: input.orgId === PERSONAL ? ARCHIVE_INCIDENTS() : [],
+    more: false,
+  }),
+  "incident.resolve": () => ({ resolved: true }),
   "org.list": () => ({
     userId: ME,
     orgs: [
@@ -1636,7 +1738,7 @@ export const ANSWERS: Answers = {
   "workItem.list": (input) => ({
     items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
-  "workItem.get": (input) => detail(input.workItemId),
+  "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
   "workItem.timeline": () => TIMELINE,

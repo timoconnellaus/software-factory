@@ -1,8 +1,10 @@
 // The impact summary of a config change (ADR 0370): what a new version loosens, tightens or leaves
 // alone, computed on the server so a person (and the gate) can trust it. Anything more permissive,
 // and any change this file can't classify, is `loosens`: unknown fails closed.
+
 import { HARNESS_PERMISSION_MODES, JOB_STAGES } from "@software-factory/runner-contract";
 import { ACTOR_TYPES } from "../actors.ts";
+import { checkProves } from "../verify/proof.ts";
 import { decide, type FloorParse, RISK_CLASSES } from "./gate.ts";
 import {
   onOrgWorkflow,
@@ -423,6 +425,14 @@ function checkChanges(
     if (!a) add(path, "loosens", `No longer runs the check ${b.name}.`);
     else if (a.run !== b.run)
       add(path, "loosens", `Changes what the check ${b.name} runs: \`${b.run}\` → \`${a.run}\`.`);
+    else if (checkProves(a.name, a.run, a.proves) !== checkProves(b.name, b.run, b.proves))
+      add(
+        path,
+        checkProves(a.name, a.run, a.proves) ? "loosens" : "tightens",
+        checkProves(a.name, a.run, a.proves)
+          ? `A pass of the check ${b.name} now proves acceptance criteria.`
+          : `A pass of the check ${b.name} no longer proves acceptance criteria.`,
+      );
     else if (a.timeoutMinutes !== b.timeoutMinutes)
       add(path, "neutral", `The check ${b.name} may run ${a.timeoutMinutes} min.`);
   }
@@ -487,6 +497,48 @@ function slotSteps(
         for (const step of w.slots[slot])
           out.set(`${w.name.toLowerCase()}/${step.id}`, { workflow: w.name, slot, step });
   return out;
+}
+
+/**
+ * The order of judging steps within a slot is policy (review of #156; org workflows already have the
+ * rule, stages/impact.ts): an agent check moved after the gate it ran before reaches the person
+ * unchecked, and a gate moved ahead of a check decides before it. So within each slot of a workflow
+ * both versions have, any change in the relative order of two steps where one is a gate loosens,
+ * whichever way it moved, and each reversed pair is reported. Fail-closed: two work steps swapping
+ * loosens too, since a work step can ask a person or send back to build, so the order of two checks
+ * isn't provably inert (review of #161).
+ */
+function orderChanges(
+  before: ProjectPolicy,
+  after: ProjectPolicy,
+  add: (path: string, cls: ImpactClass, summary: string) => void,
+) {
+  const skip = handedToOrg(before, after);
+  for (const wb of before.workflows) {
+    const key = wb.name.toLowerCase();
+    if (key === skip) continue;
+    const wa = after.workflows.find((w) => w.name.toLowerCase() === key);
+    if (!wa) continue;
+    for (const slot of SLOTS) {
+      const was = wb.slots[slot];
+      const nowIds = wa.slots[slot].map((s) => s.id);
+      // The steps in both, in their old order, with their new places.
+      const kept = was
+        .map((step) => ({ step, at: nowIds.indexOf(step.id) }))
+        .filter((x) => x.at >= 0);
+      for (let i = 0; i < kept.length; i++)
+        for (let j = i + 1; j < kept.length; j++) {
+          const first = kept[i];
+          const second = kept[j];
+          if (!first || !second || first.at < second.at) continue;
+          add(
+            `workflows.${key}/${first.step.id}`,
+            "loosens",
+            `${wb.name} → ${first.step.name} now runs after ${second.step.name} (${slot}).`,
+          );
+        }
+    }
+  }
 }
 
 /** The agents (lower-cased names) a `work` step hands to: each judges the work it reads. */
@@ -592,6 +644,7 @@ function workflowChanges(
     );
   }
   judgeChanges(before, after, add);
+  orderChanges(before, after, add);
   if (!same(before.workflows, after.workflows)) {
     const skip = handedToOrg(before, after);
     const was = gateSteps(before, skip);

@@ -35,6 +35,14 @@ interface RepoState {
   checkOutputs?: Record<string, { title: string; summary: string }>;
   /** What a SHA with no check runs of its own reports (default: one green `ci`). */
   ciDefault?: Omit<CheckRunInfo, "id">[];
+  /** How many of the minted job tokens were read-only. */
+  readOnlyTokens?: number;
+  /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
+  reruns?: string[];
+  /** How many of the next `postCheckRun` calls fail (an outage, a rate limit). */
+  failPosts?: number;
+  /** What `checkRunDetail` says, by check run id. */
+  checkDetails?: Record<string, string>;
   /** Files by ref or SHA, for `readFile`. */
   blobs?: Record<string, Record<string, string>>;
   guards?: RepoGuards;
@@ -105,6 +113,10 @@ export interface FakeGitHub extends GitHubService {
   state(repo: RepoRef): Promise<RepoState>;
   /** Sets the CI check runs GitHub reports for a SHA (replacing the default green `ci`). */
   setChecks(repo: RepoRef, sha: string, checks: Omit<CheckRunInfo, "id">[]): Promise<void>;
+  /** Makes the next `n` check-run posts fail, as GitHub's 5xx or rate limit does. */
+  failNextPosts(repo: RepoRef, n: number): Promise<void>;
+  /** Sets what `checkRunDetail` says for a check run. */
+  setCheckDetail(repo: RepoRef, checkRunId: string, text: string): Promise<void>;
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
@@ -399,9 +411,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
 
   const github: FakeGitHub = {
     app: FAKE_APP,
-    async mintRepoToken(r) {
+    async mintRepoToken(r, opts) {
       const state = await load(r);
       state.tokens++;
+      if (opts?.readOnly) state.readOnlyTokens = (state.readOnlyTokens ?? 0) + 1;
       await save(r, state);
       return {
         token: `ghs_fake_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -666,7 +679,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       if (pull.state !== "open") return { merged: false, reason: "Pull Request is not mergeable" };
       if (state.refs[pull.head] !== expected)
         return { merged: false, reason: "head moved", headMoved: true };
-      const merge = await commit(state, expected, `merge-${number}`);
+      // As GitHub makes it: the base branch's head first, the PR's head second.
+      const base = state.refs[pull.base];
+      const merge = await commit(state, base ?? expected, `merge-${number}`);
+      if (base) state.merged = { ...(state.merged ?? {}), [merge]: expected };
       state.refs[pull.base] = merge;
       pull.state = "merged";
       pull.mergeSha = merge;
@@ -698,8 +714,29 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         id: `ci-${at.slice(0, 8)}-${i}`,
       }));
     },
+    async rerequestCheckRun(r, checkRunId) {
+      const state = await load(r);
+      state.reruns = [...(state.reruns ?? []), checkRunId];
+      // The rerun starts: the check is queued again until a test sets its result.
+      for (const runs of Object.values(state.checks ?? {})) {
+        for (const c of runs) {
+          if (c.id === checkRunId) Object.assign(c, { status: "queued", conclusion: null });
+        }
+      }
+      await save(r, state);
+      return { ok: true, reason: "" };
+    },
+    async checkRunDetail(r, checkRunId) {
+      const state = await load(r);
+      return state.checkDetails?.[checkRunId] ?? "";
+    },
     async postCheckRun(r, check) {
       const state = await load(r);
+      if ((state.failPosts ?? 0) > 0) {
+        state.failPosts = (state.failPosts ?? 0) - 1;
+        await save(r, state);
+        throw new Error("GitHub answered 502 to the check run");
+      }
       const runs = [
         ...(state.checks?.[check.headSha] ??
           (state.ciDefault ?? [GREEN_CI]).map((c, i) => ({
@@ -806,12 +843,30 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.permissions = { ...(state.permissions ?? {}), [login.toLowerCase()]: permission };
       await save(r, state);
     },
+    async failNextPosts(r, n) {
+      const state = await load(r);
+      state.failPosts = n;
+      await save(r, state);
+    },
+    async setCheckDetail(r, checkRunId, text) {
+      const state = await load(r);
+      state.checkDetails = { ...(state.checkDetails ?? {}), [checkRunId]: text };
+      await save(r, state);
+    },
     async setChecks(r, at, checks) {
       const state = await load(r);
       const own = (state.checks?.[at] ?? []).filter((c) => c.appSlug === FAKE_APP.slug);
       state.checks = {
         ...(state.checks ?? {}),
-        [at]: [...checks.map((c, i) => ({ ...c, id: `ci-${at.slice(0, 6)}-${i}` })), ...own],
+        [at]: [
+          ...checks.map((c, i) => {
+            // A check GitHub ran again is a new run with a new id, as on GitHub.
+            const id = `ci-${at.slice(0, 6)}-${i}`;
+            const again = (state.reruns ?? []).filter((x) => x.startsWith(id)).length;
+            return { ...c, id: again ? `${id}-r${again}` : id };
+          }),
+          ...own,
+        ],
       };
       await save(r, state);
     },

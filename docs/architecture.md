@@ -116,9 +116,12 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
   **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
   model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
-  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. A person's push to a factory-built item's branch from verify on (the `push` webhook's sender is not the App) withdraws the merge gate or the babysitter's approval for the old head and sends the item back to verify the new head, without a build; a verify run that finishes on a stale head opens no gate (Workflow v14, ADR 0587). Designed, not yet built:
-  holding while `main` is red, the approval across a merge of `main` checked by change digest, and a
-  `babysit` job on a runner for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. A person's push to a factory-built item's branch from verify on (the `push` webhook's sender is not the App) withdraws the merge gate or the babysitter's approval for the old head and sends the item back to verify the new head, without a build; a verify run that finishes on a stale head opens no gate (Workflow v14, ADR 0587). What code can't decide (a conflict, a check that is red
+  before the merge) goes to the repository's one **`babysit` job** on a runner (light pool, per-job
+  token, no standing credentials): it hands back a verdict, and the deliverer acts on it through
+  fenced operations (`ci.rerun` once per SHA, `flake.record` into `core_flakes`, `branch.advance` of a
+  resolution, which withdraws the approval; ADR 0620). Designed, not yet built: a red `main`'s
+  attribution and repair (ADR 0584). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
   superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the
@@ -185,10 +188,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   off the app, so no token (the CLI's, MCP's) can approve anything.
 - **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
-  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
-  only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
-  one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
-  trampoline. A `ClientHub` Durable Object per person holds the app's live socket
+  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates,
+  and (ADR 0610) policy decisions (org workflows and agents, org config approvals and rollbacks,
+  adopting projects' workflows, a looser override, a kill switch off), only with a per-call presence
+  proof (Touch ID) the door verifies. The website (`sf-app`) shrinks to sign-in, device approval,
+  Connect GitHub and the `/open/*` trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
 - **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door

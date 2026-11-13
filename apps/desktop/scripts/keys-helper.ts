@@ -11,8 +11,8 @@
 //   3. sign the helper with its own entitlements, then re-sign the app's outer seal (the main
 //      executable and the seal over everything, with the entitlements Electrobun used; nothing
 //      else in the bundle is touched);
-//   4. run the helper once (the launch smoke test: macOS kills a helper whose profile doesn't
-//      authorise its entitlements);
+//   4. run the helper once (the launch smoke test, `public` on the test tag, exit 3: macOS kills a
+//      helper whose profile doesn't authorise its entitlements);
 //   5. notarize and staple again, since the new seal isn't the one Apple saw;
 //   6. tar and compress it as Electrobun does, and rewrite the manifest's `tarSha256` / `tarSize`.
 //
@@ -72,13 +72,14 @@ export function helperPlan(env: Env, files: string[], hasHelper: boolean): Helpe
   const manifests = files.filter((n) => n.startsWith(head) && /-update(-v2)?\.json$/.test(n));
   const { ELECTROBUN_APPLEAPIKEYPATH: key, ELECTROBUN_APPLEAPIKEY: keyId } = env;
   const issuer = env.ELECTROBUN_APPLEAPIISSUER;
-  return {
-    archive,
-    manifests,
-    teamId,
-    identity,
-    notarize: key && keyId && issuer ? { key, keyId, issuer } : null,
-  };
+  const notarize = key && keyId && issuer ? { key, keyId, issuer } : null;
+  // A release that ships the helper re-signs the app, so it must notarize again: never ship the
+  // new seal un-notarized. Only a local test build may say so explicitly.
+  if (!notarize && env.SF_KEYS_LOCAL_UNNOTARIZED !== "1")
+    throw new Error(
+      "key helper: no notarization key (ELECTROBUN_APPLEAPIKEY*), and the re-signed app must be notarized",
+    );
+  return { archive, manifests, teamId, identity, notarize };
 }
 
 /** The helper's entitlements file with the Team ID filled in. */
@@ -97,29 +98,24 @@ export function rewriteManifest(body: string, tarSha256: string, tarSize: number
   return JSON.stringify(doc);
 }
 
+/** The launch smoke test's tag: never has a key in CI, and is on the helper's allowlist. */
+export const SMOKE_ARGS = ["public", "com.software-factory.desktop.m4b-test"];
+
 /**
- * The launch smoke test's verdict on one run of the spike's helper: it must exit 0 (not be killed
- * by AMFI) and report the access group in its own entitlements.
+ * The launch smoke test's verdict (spec 40 M4b): `public` on the test tag must exit 3, "no key".
+ * That proves macOS (AMFI) accepted the profile and entitlements (it kills a helper it refuses,
+ * SIGKILL), and that the keychain let the helper ask in its access group (-34018, a missing
+ * entitlement, would be exit 1).
  */
-export function smokeVerdict(
-  r: { status: number | null; signal: string | null; stdout: string },
-  teamId: string,
-): string | null {
+export function smokeVerdict(r: {
+  status: number | null;
+  signal: string | null;
+  stderr: string;
+}): string | null {
   if (r.signal)
     return `the helper was killed (${r.signal}): macOS refused its signature or profile`;
-  if (r.status !== 0) return `the helper exited ${r.status}`;
-  let ents: Record<string, unknown>;
-  try {
-    ents = JSON.parse(r.stdout);
-  } catch {
-    return `the helper printed no entitlements: ${r.stdout.slice(0, 200)}`;
-  }
-  const group = `${teamId}.${HELPER_ID}`;
-  const groups = ents["keychain-access-groups"];
-  if (!Array.isArray(groups) || groups.length !== 1 || groups[0] !== group)
-    return `the helper's access groups are ${JSON.stringify(groups)}, not [${group}]`;
-  if (ents["com.apple.application-identifier"] !== group)
-    return `the helper's application identifier is ${ents["com.apple.application-identifier"]}`;
+  if (r.status !== 3)
+    return `the helper exited ${r.status}, not 3 (no key): ${r.stderr.trim().slice(0, 300)}`;
   return null;
 }
 
@@ -168,13 +164,14 @@ export async function installHelper(
     run("codesign", [...sign, "--entitlements", appEnts, appPath]);
     run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath]);
 
-    const smoke = spawnSync(join(appPath, HELPER_EXECUTABLE), [], { timeout: 30_000 });
-    const verdict = smokeVerdict(
-      { status: smoke.status, signal: smoke.signal, stdout: smoke.stdout?.toString() ?? "" },
-      plan.teamId,
-    );
+    const smoke = spawnSync(join(appPath, HELPER_EXECUTABLE), SMOKE_ARGS, { timeout: 30_000 });
+    const verdict = smokeVerdict({
+      status: smoke.status,
+      signal: smoke.signal,
+      stderr: smoke.stderr?.toString() ?? "",
+    });
     if (verdict) throw new Error(`key helper launch smoke test: ${verdict}`);
-    console.log(`key helper: launches with its access group (${smoke.stdout.toString().trim()})`);
+    console.log("key helper: launches, and finds no key under the test tag (exit 3)");
 
     if (plan.notarize) {
       const zip = join(work, "notarize.zip");
@@ -190,6 +187,8 @@ export async function installHelper(
         "--issuer",
         plan.notarize.issuer,
         "--wait",
+        "--timeout",
+        "30m",
         "--output-format",
         "json",
       ]);
