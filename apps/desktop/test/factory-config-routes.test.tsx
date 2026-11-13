@@ -254,6 +254,34 @@ describe("Org workflows (spec 52, ADR 0610)", () => {
   });
 });
 
+describe("2c: the last website-only decisions, in the app (ADR 0610)", () => {
+  it("lists the kill switches on the Overview, with Turn off for one that is on", async () => {
+    const html = await renderPage("/factory");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="kill-switches"');
+    expect(text).toContain("Website On Deploys are failing on the host Turn off");
+  });
+
+  it("offers an org admin's Approve on a looser override that isn't approved", async () => {
+    const html = await renderPage("/factory/policy?project=prj_site&edit=1");
+    expect(html).toContain('data-testid="approve-override-retryLimit"');
+  });
+
+  it("offers Mark as a repair while the project's main is red, and Not a repair once marked", async () => {
+    const { repairShown } = await import("../src/mainview/components/repair-toggle.tsx");
+    expect(repairShown(true, false)).toBe(true);
+    expect(repairShown(false, true)).toBe(true);
+    expect(repairShown(false, false)).toBe(false);
+    // Only approvers decide repairs.
+    expect(repairShown(true, false, false)).toBe(false);
+  });
+
+  it("switches a runner's Claude account from the Runners page", async () => {
+    const html = await renderPage("/factory/runners");
+    expect(textOf(html)).toContain("Use personal");
+  });
+});
+
 describe("Org workflows: deciding a waiting change (review of #159)", () => {
   it("shows the engine's classification and the difference before Approve", async () => {
     const html = await renderPage("/factory/org-workflows");
@@ -286,5 +314,51 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     // Fail closed: no base version, or nothing shown, is nothing to approve.
     expect(cannotApproveOrg({ ...base, baseVersion: null }, 4)).toMatch(/unknown version/);
     expect(cannotApproveOrg({ ...base, proposal: { id: "wf_x" } }, 4)).toMatch(/changes nothing/);
+  });
+});
+
+describe("2c fixes (review of #165)", () => {
+  it("says the kill switches couldn't be read, never 'all off'", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { error: "the factory isn't reachable" } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Couldn't load the kill switches.");
+    expect(text).not.toContain("Turn on");
+  });
+
+  it("turns a switch on with a call, and off only through a decision", async () => {
+    const { killSwitchPath } = await import("../src/mainview/components/kill-switches.tsx");
+    expect(killSwitchPath(true)).toBe("call");
+    expect(killSwitchPath(false)).toBe("decide");
+    const { DECISION_OPS, DECIDE_OPS } = await import("../src/shared/decisions.ts");
+    // Off goes through decide (Touch ID); on stays a plain call.
+    expect(DECIDE_OPS.has("killSwitch.set")).toBe(true);
+    expect(DECISION_OPS.has("killSwitch.set")).toBe(false);
+  });
+
+  it("offers a runner's accounts only to its owner", async () => {
+    const { ANSWERS } = await import("../screenshots/fixtures.ts");
+    const runners = (
+      ANSWERS["runner.list"] as (i: unknown) => { runners: Record<string, unknown>[] }
+    )({});
+    const theirs = {
+      runners: runners.runners.map((r) => ({ ...r, ownerUserId: "usr_someone_else" })),
+    };
+    const html = await renderPage("/factory/runners", {
+      answers: { "runner.list": { result: theirs } },
+    });
+    expect(textOf(html)).not.toContain("Use personal");
+  });
+});
+
+describe("2c round two (review of #165)", () => {
+  it("shows a project past the list's cap as not loaded, with no Turn on", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { result: { org: null, projects: [], more: true } } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Website Not loaded");
+    expect(text).toContain("More projects have switches than are shown here");
   });
 });

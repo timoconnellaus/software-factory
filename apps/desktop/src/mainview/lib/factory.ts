@@ -57,6 +57,8 @@ export interface RunnerRow {
   rateLimitedUntil: string | null;
   lastSeenAt: string | null;
   accounts: ListedRunner["accounts"];
+  /** Whose runner it is: only its owner switches its accounts. */
+  ownerUserId: string;
 }
 
 const HARNESS_LABEL: Record<string, string> = { "claude-code": "Claude Code" };
@@ -121,6 +123,7 @@ export function runnerRows(
       rateLimitedUntil: r.rateLimitedUntil,
       lastSeenAt: h?.lastSeenAt ?? r.lastSeenAt,
       accounts: r.accounts,
+      ownerUserId: r.ownerUserId,
     };
   });
 }

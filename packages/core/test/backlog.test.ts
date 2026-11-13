@@ -447,7 +447,7 @@ describe("the pull under races and policy (review of #69)", () => {
     await ok("killSwitch.set", { scope: "project", id: w.projectId, on: true }, w.human);
     const held = await create(w, "Held", { state: "queued" });
     expect(await statusOf(held.workItemId)).toBe("queued");
-    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false }, w.human);
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false, epoch: 1 }, w.human);
     await ok("queue.pull", { projectId: w.projectId }, SCHEDULER);
     expect(await statusOf(held.workItemId)).toBe("running");
   });
