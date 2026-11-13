@@ -9,6 +9,7 @@ import {
   isOperationError,
   PROTECTION_RECHECK_MS,
   parseProjectPolicy,
+  REVERT_AFTER_MS,
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
@@ -91,6 +92,9 @@ export default {
     // Every minute: `factory/verify` held while main was red, on a head whose repository is green
     // again or whose item ended, is evaluated again (decision 7; heals a lost verify.recheck).
     await releaseHeldChecks(env);
+    // And a red main's repair: the engine's revert of a proven or person-named culprit once the
+    // episode is 30 minutes old, then the reland item once a revert has merged (spec 53 §5).
+    await repairRedMain(env, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
@@ -153,6 +157,51 @@ export async function releaseHeldChecks(env: Env, limit = 20, now = new Date()):
       .run();
   }
   return results.length;
+}
+
+/**
+ * Spec 53 §5, decisions 2 and 5, from the minute cron. Reads core_main_health (one row per
+ * repository) for episodes 30 minutes old whose culprit is proven or named by a person and not yet
+ * reverted, and core_reverts_reland_idx (partial: reverts with no reland) for merged reverts; each
+ * at most 10, each acted on through its operation as the babysitter (which re-checks everything).
+ */
+export async function repairRedMain(env: Env, now = new Date(), limit = 10): Promise<number> {
+  const due = new Date(now.getTime() - REVERT_AFTER_MS).toISOString();
+  const [culprits, merged] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT h.culprit_work_item_id AS id FROM core_main_health h
+       WHERE h.red_since IS NOT NULL AND h.red_since <= ?1
+         AND h.culprit_work_item_id IS NOT NULL AND h.attributed_by IN ('proven', 'person')
+         AND NOT EXISTS (SELECT 1 FROM core_reverts r WHERE r.original_work_item_id = h.culprit_work_item_id)
+       LIMIT ?2`,
+    ).bind(due, limit),
+    env.DB.prepare(
+      `SELECT r.revert_work_item_id AS id FROM core_reverts r
+       CROSS JOIN core_work_items w ON w.id = r.revert_work_item_id
+       WHERE r.reland_work_item_id IS NULL AND w.status = 'done'
+       ORDER BY r.created_at LIMIT ?1`,
+    ).bind(limit),
+  ]);
+  const act = async (op: string, id: string) => {
+    try {
+      await invoke(
+        invokeDeps(env),
+        op,
+        { workItemId: id },
+        {
+          actor: BABYSITTER,
+          origin: { surface: "cron", step: op },
+        },
+      );
+    } catch (error) {
+      if (!isOperationError(error)) console.error(`${op} ${id} failed`, error);
+    }
+  };
+  const c = (culprits?.results ?? []) as { id: string }[];
+  const m = (merged?.results ?? []) as { id: string }[];
+  for (const r of c) await act("mainRed.revert", r.id);
+  for (const r of m) await act("mainRed.reland", r.id);
+  return c.length + m.length;
 }
 
 /** How long the babysitter keeps its reruns and known flakes (spec 53, decision 3's 14 days, with room). */

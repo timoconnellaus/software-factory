@@ -998,6 +998,17 @@ export interface CoreDeliveryStateTable {
   babysit_reasons: Generated<JsonText>;
 }
 
+/** 0393 (spec 53 §5): the engine's revert of a red main's culprit, and its reland item. */
+export interface CoreRevertsTable {
+  revert_work_item_id: string;
+  original_work_item_id: string;
+  repository_id: string;
+  project_id: string;
+  red_since: string;
+  reland_work_item_id: string | null;
+  created_at: Iso;
+}
+
 /** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
 export interface CoreCiRerunsTable {
   repository_id: string;
@@ -1394,6 +1405,7 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_reverts: CoreRevertsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

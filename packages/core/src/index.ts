@@ -6,6 +6,7 @@ export * from "./attestation/android.ts";
 export { DerError, readDer } from "./attestation/der.ts";
 export { GOOGLE_ATTESTATION_ROOTS, type PinnedRoot } from "./attestation/roots.ts";
 export { type Certificate, parseCertificate } from "./attestation/x509.ts";
+export * from "./babysit/revert.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
 export * from "./improve.ts";
