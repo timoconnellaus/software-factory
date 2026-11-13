@@ -65,22 +65,98 @@ export type DesignFinding = z.output<typeof designFindingSchema>;
 /** The most a preview's SVG may hold; with the source it must fit one revision row. */
 export const DESIGN_PREVIEW_MAX_BYTES = 500_000;
 
+/** The one mark on the root of every preview the factory draws (an attribute the allow-list keeps). */
+export const DRAWN_BY = 'data-drawn-by="software-factory"';
+
 /**
- * Why an SVG can't be shown, or null (defence in depth: the app shows it as an image, where none
- * of these would run or load, but the cloud keeps them out of the record too).
+ * The elements and attributes a preview may hold: exactly what `packages/planning-designs` draws.
+ * Anything else, any prefixed (namespaced) name, comments, CDATA, processing instructions and
+ * doctypes are refused (review of #163: a regex over the whole text both let `<s:script>` through
+ * and refused escaped labels that mention `onload=` or `url(`).
  */
+const SVG_ELEMENTS = new Set([
+  "svg",
+  "defs",
+  "marker",
+  "path",
+  "rect",
+  "text",
+  "ellipse",
+  "circle",
+]);
+const SVG_ATTRIBUTES = new Set([
+  "xmlns",
+  "data-drawn-by",
+  "width",
+  "height",
+  "viewBox",
+  "id",
+  "refX",
+  "refY",
+  "markerWidth",
+  "markerHeight",
+  "orient",
+  "d",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "stroke-dasharray",
+  "marker-end",
+  "x",
+  "y",
+  "rx",
+  "ry",
+  "cx",
+  "cy",
+  "r",
+  "font-size",
+  "font-family",
+  "font-weight",
+  "text-anchor",
+]);
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Why an SVG can't be stored and shown, or null: a tokeniser over an allow-list. */
 export function unsafeSvg(svg: string): string | null {
-  if (!/^<svg[\s>]/.test(svg.trimStart())) return "it doesn't start with <svg";
-  if (/<!DOCTYPE|<!ENTITY|<\?xml-stylesheet/i.test(svg)) return "it declares a doctype or entity";
-  if (
-    /<\s*(script|foreignObject|iframe|object|embed|image|use|a|style|animate\w*|set)\b/i.test(svg)
-  )
-    return "it holds a script, foreign content, an image, a link or a style element";
-  if (/\son\w+\s*=/i.test(svg)) return "it has an event attribute";
-  if (/(?:xlink:)?href\s*=\s*["'](?!#)/i.test(svg)) return "it links outside itself";
-  if (/url\(\s*["']?(?!#)/i.test(svg)) return "it refers to something outside itself";
-  if (/@import|javascript:/i.test(svg)) return "it imports or runs something";
-  return null;
+  const text = svg.trim();
+  if (!text.startsWith("<svg")) return "it doesn't start with <svg";
+  const tag = /<(\/?)([^\s/>]+)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
+  const attr = /\s+([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  let i = 0;
+  let depth = 0;
+  let roots = 0;
+  while (i < text.length) {
+    const lt = text.indexOf("<", i);
+    const chunk = text.slice(i, lt === -1 ? text.length : lt);
+    // Text holds only escaped characters: entities are the five named ones and numeric ones.
+    if (/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/i.test(chunk)) return "its text has a bare &";
+    if (lt === -1) break;
+    tag.lastIndex = lt;
+    const m = tag.exec(text);
+    if (!m) return "it holds markup that isn't a plain element (a comment, CDATA, a doctype…)";
+    const [whole, close, name = "", attrs = "", self] = m;
+    if (name.includes(":")) return `it has a prefixed element <${name}>`;
+    if (!SVG_ELEMENTS.has(name)) return `it has a <${name}> element`;
+    if (close) {
+      depth--;
+    } else {
+      if (depth === 0 && ++roots > 1) return "it has more than one root";
+      for (const a of attrs.matchAll(attr)) {
+        const key = a[1] ?? "";
+        const value = a[2] ?? a[3] ?? "";
+        if (key.includes(":")) return `it has a prefixed attribute ${key}`;
+        if (!SVG_ATTRIBUTES.has(key)) return `it has a ${key} attribute`;
+        if (key === "xmlns" && value !== SVG_NS) return "it declares another namespace";
+        if (/url\(/i.test(value) && !/^url\(#[\w-]+\)$/.test(value))
+          return "it refers to something outside itself";
+        if (value.includes("<")) return "an attribute holds markup";
+      }
+      if (!self) depth++;
+    }
+    if (depth < 0) return "its elements don't nest";
+    i = lt + whole.length;
+  }
+  return depth === 0 ? null : "its elements don't close";
 }
 
 export const designPreviewSchema = z.object({
@@ -122,5 +198,8 @@ export function compareParts(
   return { changes, removed };
 }
 
-/** A design's `.svg` beside it in `.kim/designs/` (kim's naming: the extension replaced). */
-export const designSvgPath = (path: string) => `${path.replace(/\.[^./]+$/, "")}.svg`;
+/**
+ * A design's `.svg` beside it in `.kim/designs/`: its own path plus `.svg` (`system.d2.svg`), so two
+ * designs never share one and the name doesn't depend on order (review of #163).
+ */
+export const designSvgPath = (path: string) => `${path}.svg`;

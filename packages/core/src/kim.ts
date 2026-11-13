@@ -248,7 +248,7 @@ export async function bindKimApproval(
 export async function approvedKimFiles(
   ctx: Pick<HandlerContext, "db">,
   kimFiles: string | null,
-): Promise<{ path: string; content: string }[]> {
+): Promise<{ path: string; content: string; preview: boolean }[]> {
   const manifest = kimManifestSchema.parse(parseJson<unknown>(kimFiles ?? "[]", []));
   if (!manifest.length) return [];
   const found = await ctx.db
@@ -263,7 +263,7 @@ export async function approvedKimFiles(
     )
     .limit(manifest.length)
     .execute();
-  const out: { path: string; content: string }[] = [];
+  const out: { path: string; content: string; preview: boolean }[] = [];
   for (const m of manifest) {
     const r = found.find((x) => x.artifact_id === m.artifactId && x.revision === m.revision);
     const content = r ? (m.preview ? previewSvg(r.preview) : r.content) : null;
@@ -274,7 +274,7 @@ export async function approvedKimFiles(
         { path: m.path },
       );
     }
-    out.push({ path: m.path, content });
+    out.push({ path: m.path, content, preview: m.preview === true });
   }
   return out;
 }

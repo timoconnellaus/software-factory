@@ -1,6 +1,7 @@
 // Drawing helpers: every design is drawn to a static SVG by this package's own code (ADR 0472's
 // thinking for designs: no design text is executed). Text is escaped, nothing links outside the
 // file, and no script or event attribute is ever written, so the app can show it as an image.
+import { DRAWN_BY } from "@software-factory/runner-contract";
 
 /** Escapes text for an SVG text node or attribute. */
 export const esc = (text: string) =>
@@ -72,5 +73,5 @@ export function lineLabel(x: number, y: number, value: string, size = 12): strin
 export function svgDocument(width: number, height: number, body: string): string {
   const w = Math.ceil(width);
   const h = Math.ceil(height);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${INK.muted}"/></marker></defs><rect width="${w}" height="${h}" fill="${INK.panel}"/>${body}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" ${DRAWN_BY} width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${INK.muted}"/></marker></defs><rect width="${w}" height="${h}" fill="${INK.panel}"/>${body}</svg>`;
 }
