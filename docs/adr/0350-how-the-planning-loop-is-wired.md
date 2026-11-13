@@ -101,3 +101,10 @@ session must yield or has ended, the wait's `recheckAt` passes, or the hold ends
 - `PlanningHub.waitForChange` and `wake()` are deleted.
 - The hub keeps `notify()` and the website's SSE stream until spec 44 PR 3.
 - `run.steered` no longer wakes the hub.
+
+## Amended, 2026-11-13 (spec 44, PR 3)
+The PlanningHub is deleted, along with its class (`deleted_classes`, tag `v4-delete-planning-hub`).
+- The website's Planning tab no longer has a Server-Sent-Events stream. It re-reads every 15 s while
+  visible, until ADR 0610 removes the website's work pages.
+- The desktop app hears `planning.changed` on its ClientHub socket (spec 26).
+- `EngineApi.planningStream` and sf-app's `/api/work/<id>/planning/live` are gone.

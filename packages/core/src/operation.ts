@@ -40,8 +40,8 @@ export type OutboxMessage =
   | { kind: "workflow.resume"; payload: { instanceId: string; events: string[] } }
   | { kind: "workflow.terminate"; payload: { instanceId: string } }
   /**
-   * A work item's planning changed (spec 20, ADR 0350): sf-engine tells its PlanningHub, which
-   * pushes to open Planning tabs and wakes the agent's wait.
+   * A work item's planning changed (spec 20, ADR 0350): sf-engine tells the ClientHub of everyone
+   * with its Planning view open (spec 26, 44).
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
   /**
@@ -57,13 +57,29 @@ export type OutboxMessage =
       kind: "verify.recheck";
       payload: { repo: { owner: string; name: string }; headSha: string; prNumber: number | null };
     }
+  /**
+   * Comment on a PR as the App after this call commits (spec 53: a reverted change's PR is told
+   * once, never from a call whose batch then failed).
+   */
+  | {
+      kind: "github.comment";
+      payload: {
+        repo: { installationId: string; owner: string; repo: string };
+        number: number;
+        body: string;
+      };
+    }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
    * A person steered a run (spec 31, ADR 0400): sf-engine wakes the work item's hub, so the runner
    * host's held steer call answers at once.
    */
-  | { kind: "run.steered"; payload: { workItemId: string } }
+  /**
+   * A steer or takeover is queued for a running job (ADR 0400): pushed down the job's line (spec 44
+   * part B). `jobId` is optional: a message queued before it was added is routed by the work item.
+   */
+  | { kind: "run.steered"; payload: { workItemId: string; jobId?: string } }
   /** A device was revoked (ADR 0541): sf-engine closes its live socket in the person's ClientHub. */
   | { kind: "device.revoked"; payload: { userId: string; deviceId: string } }
   /** A notification for a person (web push in spec 15). `url` is the deep link. */

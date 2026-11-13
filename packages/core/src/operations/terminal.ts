@@ -3,6 +3,7 @@
 // with steering: it runs on their machine with their model credential, ADR 0023, 0038) or only
 // watch, and records the attach. `run.terminal.detach` stamps its close. `run.terminal.host` is the
 // runner host's fenced check before sf-engine holds its `terminal` call on the job's relay.
+import { TERMINAL_TICKET_TTL_MS } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { idPattern, newId } from "../ids.ts";
@@ -136,13 +137,18 @@ export const runTerminalCloseStale = defineOperation({
     if (run.runner_id !== ctx.actor.id) {
       throw new OperationError("forbidden", "this job belongs to another runner");
     }
+    // Clamped here, whatever the caller says: only attaches older than twice a viewer ticket's
+    // life, which an admitted viewer always connects within (review of #172).
+    const cutoff = new Date(Date.parse(ctx.now) - 2 * TERMINAL_TICKET_TTL_MS).toISOString();
+    // biome-ignore lint/complexity/useMathMinMax: the earlier of two ISO timestamps (strings)
+    const before = input.before < cutoff ? input.before : cutoff;
     // core_run_terminal_attaches_open_idx: the run's open attaches only.
     const stale = await ctx.db
       .selectFrom("core_run_terminal_attaches")
       .select("id")
       .where("run_id", "=", run.id)
       .where("closed_at", "is", null)
-      .where("opened_at", "<", input.before)
+      .where("opened_at", "<", before)
       .limit(50)
       .execute();
     for (const row of stale) {

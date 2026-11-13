@@ -37,6 +37,10 @@ interface RepoState {
   ciDefault?: Omit<CheckRunInfo, "id">[];
   /** How many of the minted job tokens were read-only. */
   readOnlyTokens?: number;
+  /** Revert PRs GitHub opened: revert PR number → the PR it reverts. */
+  reverts?: Record<number, number>;
+  /** Comments the App made on PRs. */
+  comments?: { number: number; body: string }[];
   /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
   reruns?: string[];
   /** How many of the next `postCheckRun` calls fail (an outage, a rate limit). */
@@ -717,6 +721,57 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         ...c,
         id: `ci-${at.slice(0, 8)}-${i}`,
       }));
+    },
+    async revertPullRequest(r, input) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === input.number);
+      if (pull?.state !== "merged" || !pull.mergeSha) throw new Error("only a merged PR reverts");
+      const branch = `revert-${input.number}-${pull.head.replace(/\//g, "-")}`;
+      const base = state.refs[pull.base] ?? null;
+      if ((state.failPosts ?? 0) > 0) {
+        state.failPosts = (state.failPosts ?? 0) - 1;
+        await save(r, state);
+        throw new Error("GitHub couldn't revert: a merge conflict");
+      }
+      const headSha = await commit(state, base, branch);
+      state.touched = { ...(state.touched ?? {}), [headSha]: state.touched?.[pull.mergeSha] ?? [] };
+      // The exact inverse: every path the merge changed goes back to its first parent's content.
+      const before = state.parents[pull.mergeSha];
+      if (before) {
+        const tree = { ...treeAt(state, base ?? before) };
+        const was = treeAt(state, before);
+        for (const p of touchesBetween(state, before, pull.mergeSha).keys()) {
+          if (was[p]) tree[p] = was[p];
+          else delete tree[p];
+        }
+        state.trees = { ...(state.trees ?? {}), [headSha]: tree };
+      }
+      state.refs[branch] = headSha;
+      const number = state.pulls.length + 1;
+      state.pulls.push({
+        number,
+        head: branch,
+        base: pull.base,
+        title: input.title,
+        state: "open",
+        body: input.body,
+        author: `${FAKE_APP.slug}[bot]`,
+        draft: false,
+      });
+      state.reverts = { ...(state.reverts ?? {}), [number]: input.number };
+      await save(r, state);
+      return { number, branch, headSha, url: pullUrl(r, number) };
+    },
+    async closePullRequest(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (pull && pull.state === "open") pull.state = "closed";
+      await save(r, state);
+    },
+    async commentOnPullRequest(r, number, body) {
+      const state = await load(r);
+      state.comments = [...(state.comments ?? []), { number, body }];
+      await save(r, state);
     },
     async rerequestCheckRun(r, checkRunId) {
       const state = await load(r);

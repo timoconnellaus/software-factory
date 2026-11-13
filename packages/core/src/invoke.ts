@@ -726,16 +726,22 @@ export async function runOperation<O = unknown>(
         { recorded: true },
       );
     }
-    await audit(
-      {
-        decision: gate.decision,
-        outcome: fenced ? "fenced" : "failed",
-        reason: guard
-          ? `conflict: a guarded write found the state changed (${String(error)})`
-          : String(error),
-      },
-      subject,
-    ).run();
+    // A machine-frequency call (`changesOnly`, ADR 0590) that lost a race to another is retried
+    // and wrote nothing: no failed row for it (a steer take racing another, spec 44). A refusal
+    // of the state as it is, and every race of any other operation, is still journaled.
+    const racedMachineCall = (guard || unique) && !fenced && op.audit?.changesOnly === true;
+    if (!racedMachineCall) {
+      await audit(
+        {
+          decision: gate.decision,
+          outcome: fenced ? "fenced" : "failed",
+          reason: guard
+            ? `conflict: a guarded write found the state changed (${String(error)})`
+            : String(error),
+        },
+        subject,
+      ).run();
+    }
     if (guard && deviceGuard) {
       const device = await db
         .selectFrom("core_desktop_devices")
@@ -749,7 +755,11 @@ export async function runOperation<O = unknown>(
       }
     }
     if (guard || unique) {
-      throw new OperationError("conflict", `${op.name}: the state changed underneath this call`);
+      // `raced`: another call changed the state between this one's reads and its batch (a guard or
+      // a unique key), so trying again may succeed; not a refusal of the state as it is.
+      throw new OperationError("conflict", `${op.name}: the state changed underneath this call`, {
+        raced: true,
+      });
     }
     throw error;
   }
