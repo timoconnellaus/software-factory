@@ -505,6 +505,13 @@ the profile never ships a helper that failed a check.
   unsigned dev build still signs in with a declared software key.
 - `DESKTOP_ALLOW_SOFTWARE_KEYS` is empty in every deployed config (the existing test still passes).
 
+**Note, 2026-11-13 (ADR 0610): a new decision needs a new helper build.** The key helper signs
+only the operations in its generated list (`PresenceOps.swift`, from the registry's desktop
+presence-decidable operations; `test/keys-helper.test.ts` fails until it is regenerated). So every
+operation newly made decidable on the desktop needs that list regenerated **and a new canary** of
+the app before any Mac can approve it; until a person has installed that build, the helper refuses
+the prompt and the decision can only be made where else it is allowed.
+
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and
 `/open/*`. Everything else is removed. The `factory/verify` check and notifications link through

@@ -1,8 +1,7 @@
 // The engine's port of the key helper's summary rules (packages/core/src/testing/key-helper.ts),
 // which the engine tests run every policy summary through, stays in step with the helper itself
 // (Core.swift's `parsePresenceMessage`): a summary the helper refuses can't be decided (review of
-// #156, item 4). The helper's sources arrive with spec 40 M4b (#147); until then this checks the
-// port alone.
+// #156, item 4).
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,7 +16,8 @@ const CORE_SWIFT = resolve(
 );
 
 describe("the key helper's summary rules", () => {
-  it.skipIf(!existsSync(CORE_SWIFT))("match Core.swift", () => {
+  it("match Core.swift", () => {
+    expect(existsSync(CORE_SWIFT), CORE_SWIFT).toBe(true);
     const swift = readFileSync(CORE_SWIFT, "utf8");
     expect(swift).toMatch(new RegExp(`maxSummaryCharacters = ${HELPER_MAX_SUMMARY}\\b`));
     expect(swift).toContain("CharacterSet.controlCharacters");
