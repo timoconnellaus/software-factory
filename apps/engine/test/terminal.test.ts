@@ -821,6 +821,29 @@ describe("the job line (spec 44 part B, ADR 0592)", () => {
     expect(t?.connect?.url).toMatch(/ticket=/);
     viewer.end.ws.close();
 
+    // A host ticket isn't a line ticket, and a line ticket isn't a host one.
+    const hostTicket = await env.TERMINAL_RELAY.get(
+      env.TERMINAL_RELAY.idFromName(job.jobId),
+    ).lineTicket();
+    const swapped = await worker.fetch(
+      new Request(`${base}/terminal/v1/jobs/${job.jobId}/host?ticket=${hostTicket}`, {
+        headers: { upgrade: "websocket" },
+      }),
+      env,
+    );
+    expect(swapped.status).toBe(401);
+    // Another runner can't open this job's line.
+    const other = await world();
+    const stranger = httpControlPlane({
+      baseUrl: base,
+      runnerId: other.runner.runnerId,
+      key: await runnerChannelKey("test-channel-secret", other.runner.runnerId, 1),
+      fetch: engineFetch,
+    });
+    await expect(
+      stranger.line?.(job.jobId, { fencingToken: job.lease.fencingToken }),
+    ).rejects.toMatchObject({ status: 403 });
+
     // A second line replaces the first.
     const second = await line(
       (await c.line?.(job.jobId, { fencingToken: job.lease.fencingToken }))?.connect.url ?? "",
