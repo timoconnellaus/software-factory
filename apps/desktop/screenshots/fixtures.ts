@@ -44,6 +44,109 @@ const NOT_RUN_EXECUTED = {
   ],
 };
 
+/**
+ * `?fixture=nochecks`: the project declares no checks and no required CI reported, so nothing can
+ * be proven (the gate says so, no count). `?fixture=allproven`: every criterion tied to a check
+ * that passed. Neither: checks set up, some criteria tied to none.
+ */
+let seenProof: "nochecks" | "allproven" | "triage" | null = null;
+const proofFixture = () => {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  if (where.includes("fixture=nochecks")) seenProof = "nochecks";
+  else if (where.includes("fixture=allproven")) seenProof = "allproven";
+  else if (where.includes("fixture=triage")) seenProof = "triage";
+  return seenProof;
+};
+type ProofRow = {
+  criterion: string | undefined;
+  proven: boolean;
+  provenBy: string[];
+  unproven: string[];
+  notCounted: string[];
+  linkedBy: "spec" | "triage" | "reviewer";
+  uncovered?: boolean;
+  passedTriageCheck?: string[];
+  fromTriage?: boolean;
+  weakened: boolean;
+  reviewerMet: boolean;
+  opinion: string;
+};
+/** The proof as each fixture has it, and the count the packet stores beside it. */
+function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<string, unknown> } {
+  const which = proofFixture();
+  const proof =
+    which === "nochecks"
+      ? rows.map((r) => ({
+          ...r,
+          proven: false,
+          provenBy: [],
+          unproven: [],
+          notCounted: [],
+          uncovered: false,
+        }))
+      : which === "allproven"
+        ? rows.map((r) => ({
+            ...r,
+            proven: true,
+            provenBy: ["tests"],
+            unproven: [],
+            notCounted: [],
+            linkedBy: "spec" as const,
+            uncovered: false,
+          }))
+        : which === "triage"
+          ? // Both kinds of tie: the first criterion in a person-approved spec, the rest from
+            // triage's list (an agent's ties: passed, never Proven).
+            rows.map((r, i) =>
+              i === 0
+                ? { ...r, proven: true, provenBy: ["tests"], linkedBy: "spec" as const }
+                : i === 3
+                  ? {
+                      ...r,
+                      proven: false,
+                      provenBy: [],
+                      unproven: [],
+                      notCounted: [],
+                      linkedBy: "triage" as const,
+                      uncovered: true,
+                      fromTriage: true,
+                    }
+                  : {
+                      ...r,
+                      proven: false,
+                      provenBy: [],
+                      unproven: [],
+                      notCounted: [],
+                      linkedBy: "triage" as const,
+                      uncovered: false,
+                      passedTriageCheck: ["tests"],
+                      fromTriage: true,
+                    },
+            )
+          : notRunFixture()
+            ? notProven(rows)
+            : rows;
+  const person = proof.filter((r) => !r.fromTriage);
+  const triage = proof.filter((r) => r.fromTriage);
+  return {
+    proof,
+    proven: {
+      proven: person.filter((r) => r.proven).length,
+      total: person.length,
+      ...(triage.length
+        ? {
+            triage: {
+              passed: triage.filter((r) => r.passedTriageCheck?.length).length,
+              total: triage.length,
+            },
+          }
+        : {}),
+      weakened: false,
+      checksSetUp: which !== "nochecks",
+    },
+  };
+}
+
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 
@@ -247,6 +350,7 @@ export const FACTORY_ITEMS: Summary[] = [
 ];
 
 /** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+// (CONFIG_HISTORY, below the document, is its versions newest first.)
 export const POLICY_DOC = {
   version: 1,
   autonomyPolicy: "balanced",
@@ -298,6 +402,50 @@ export const POLICY_DOC = {
   ],
   workflow: "Software",
 };
+
+/** A project on the org's Software workflow, with one override of the org's value (spec 52). */
+export const ON_ORG_WORKFLOW = {
+  ...POLICY_DOC,
+  workflow: "wf_software",
+  workflowOverrides: { build: { retryLimit: 3 } },
+};
+
+/** The Factory project's config versions, newest first, as `config.get` lists them. */
+export const CONFIG_HISTORY = [
+  {
+    version: 12,
+    sha: "5da8988",
+    source: "app",
+    note: "Two agents and the Software workflow",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 3),
+    valid: true,
+    impact: "neutral" as const,
+    policy: POLICY_DOC,
+  },
+  {
+    version: 11,
+    sha: "a41c9e2",
+    source: "improve",
+    note: "The builder writes the failing test first",
+    createdBy: null,
+    createdAt: ago(60 * 24 * 4),
+    valid: true,
+    impact: "neutral" as const,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
+  },
+  {
+    version: 10,
+    sha: "77b0c1d",
+    source: "app",
+    note: "Waiting on you: 5 to 3",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 9),
+    valid: true,
+    impact: "tightens" as const,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
+  },
+];
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
@@ -757,33 +905,35 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
             // head, and each criterion's proof. Only the approved spec's links prove a criterion.
             executed: notRunFixture()
               ? NOT_RUN_EXECUTED
-              : {
-                  declared: ["lint", "tests"],
-                  results: [
-                    {
-                      name: "lint",
-                      command: "pnpm lint",
-                      exitCode: 0,
-                      timedOut: false,
-                      durationMs: 14_000,
-                      logTail: "",
-                      round: 0,
-                      passed: true,
-                    },
-                    {
-                      name: "tests",
-                      command: "pnpm test",
-                      exitCode: 0,
-                      timedOut: false,
-                      durationMs: 52_000,
-                      logTail: "",
-                      round: 1,
-                      passed: true,
-                    },
-                  ],
-                  extra: [],
-                },
-            proof: (notRunFixture() ? notProven : <T>(p: T) => p)([
+              : proofFixture() === "nochecks"
+                ? { declared: [], results: [], extra: [] }
+                : {
+                    declared: ["lint", "tests"],
+                    results: [
+                      {
+                        name: "lint",
+                        command: "pnpm lint",
+                        exitCode: 0,
+                        timedOut: false,
+                        durationMs: 14_000,
+                        logTail: "",
+                        round: 0,
+                        passed: true,
+                      },
+                      {
+                        name: "tests",
+                        command: "pnpm test",
+                        exitCode: 0,
+                        timedOut: false,
+                        durationMs: 52_000,
+                        logTail: "",
+                        round: 1,
+                        passed: true,
+                      },
+                    ],
+                    extra: [],
+                  },
+            ...shapedProof([
               {
                 criterion: CRITERIA[0],
                 proven: true,
@@ -823,7 +973,9 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
                 provenBy: [],
                 unproven: [],
                 notCounted: [],
-                linkedBy: "reviewer",
+                // The spec says no declared check can prove it: honest, "not covered by a check".
+                linkedBy: "spec",
+                uncovered: true,
                 weakened: false,
                 reviewerMet: true,
                 opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",
@@ -1623,32 +1775,142 @@ export const ANSWERS: Answers = {
   }),
   "config.get": (input) => ({
     projectId: input.projectId,
-    current: {
-      version: 12,
-      sha: "5da8988",
-      source: "app",
-      note: "Two agents and the Software workflow",
-      createdBy: "owner",
-      createdAt: ago(60 * 24 * 3),
-      valid: true,
-      impact: "neutral",
-      policy: POLICY_DOC,
-    },
+    // The Website runs the org's Software workflow, overriding its retry limit (PR #121).
+    current:
+      input.projectId === SITE
+        ? { ...(CONFIG_HISTORY[0] as (typeof CONFIG_HISTORY)[0]), policy: ON_ORG_WORKFLOW }
+        : (CONFIG_HISTORY[0] ?? null),
     error: null,
-    history: [],
+    pendingMore: false,
+    history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
         ? [
             {
               pendingActionId: "pa_cfg_1",
               operation: "config.save",
-              note: "Retries per item, 2 to 3",
+              note: "Let agents spend and reach outside",
               by: "owner",
               createdAt: ago(30),
               baseVersion: 12,
+              policy: { ...POLICY_DOC, autonomyPolicy: "autonomous" },
+              toVersion: null,
             },
           ]
         : [],
+  }),
+  // The engine's classification of a draft against the current version (ADR 0370): here, from the
+  // fields the fixtures change, worded as `policyImpact` words them.
+  "config.preview": (input) => {
+    const draft = input.policy as Record<string, unknown>;
+    const changes: { path: string; class: "loosens" | "tightens" | "neutral"; summary: string }[] =
+      [];
+    for (const [key, label] of [
+      ["retryLimit", "Retry limit"],
+      ["wipLimit", "WIP limit"],
+    ] as const) {
+      const before = POLICY_DOC[key];
+      const after = draft[key];
+      if (typeof after === "number" && after !== before)
+        changes.push({
+          path: key,
+          // As policyImpact: a retry limit is neutral; a lower WIP limit tightens, a higher is neutral.
+          class: key === "wipLimit" && after < before ? "tightens" : "neutral",
+          summary: `${label} ${before} → ${after}`,
+        });
+    }
+    if (draft.autonomyPolicy !== POLICY_DOC.autonomyPolicy)
+      changes.push({
+        path: "autonomyPolicy",
+        class: draft.autonomyPolicy === "cautious" ? "tightens" : "loosens",
+        summary: `Autonomy policy ${POLICY_DOC.autonomyPolicy} → ${String(draft.autonomyPolicy)}`,
+      });
+    const cls = changes.some((c) => c.class === "loosens")
+      ? "loosens"
+      : changes.some((c) => c.class === "tightens")
+        ? "tightens"
+        : "neutral";
+    return {
+      valid: true,
+      error: null,
+      impact: { class: cls, changes },
+      currentVersion: 12,
+    };
+  },
+  "config.trials": () => ({
+    trials: [
+      {
+        id: "trial_1",
+        kind: "instructions",
+        status: "promoted" as const,
+        evidence: {},
+        outcome: null,
+        createdAt: ago(60 * 24 * 6),
+        decidedAt: ago(60 * 24 * 4),
+        summary: "The builder writes the failing test first",
+        reason: "5 items did at least as well",
+        itemsSoFar: 5,
+        targetItems: 5,
+        baseVersion: 10,
+        candidateVersion: 11,
+      },
+    ],
+  }),
+  "workflow.get": (input) => ({
+    version: 4,
+    workflow: {
+      schema: 1,
+      id: input.workflowId,
+      name: "Software",
+      description: "",
+      stages: [
+        {
+          id: "plan",
+          type: "interview-planning",
+          typeVersion: 1,
+          name: "Planning",
+          phase: "shaping",
+          settings: { requiredFrom: "medium" },
+        },
+        {
+          id: "build",
+          type: "build",
+          typeVersion: 1,
+          name: "Build",
+          phase: "delivery",
+          settings: { retryLimit: 2 },
+        },
+        {
+          id: "verify",
+          type: "checks",
+          typeVersion: 1,
+          name: "Verify",
+          phase: "delivery",
+          settings: { requiredChecks: ["ci", "typecheck"] },
+        },
+      ],
+    },
+    builtIn: null,
+    shipped: null,
+  }),
+  "adjudicator.stats": () => ({
+    spec: {
+      mode: "shadow" as const,
+      decisions: 14,
+      approvals: 12,
+      agreed: 11,
+      precision: 0.92,
+      eligible: false,
+    },
+    step: {
+      mode: "off" as const,
+      decisions: 3,
+      approvals: 0,
+      agreed: 0,
+      precision: 0,
+      eligible: false,
+    },
+    configVersion: 12,
   }),
   "desktopDevice.list": () => ({
     devices: [

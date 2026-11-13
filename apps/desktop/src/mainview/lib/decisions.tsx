@@ -151,6 +151,26 @@ export async function run(d: Decision): Promise<string> {
   }
 }
 
+/**
+ * Every released build before the key helper has a software key, and the engine refuses its proofs
+ * (ADR 0391 decision 4): the person is told plainly what to do, never shown the raw refusal.
+ */
+export const SOFTWARE_KEY_TEXT =
+  "This Mac can't approve yet: its key isn't in the Secure Enclave. Update the app, then sign in again.";
+
+/** The engine's refusal of a proof from a software key (desktop.ts, `presence.redeem`). */
+export function isSoftwareKeyRefusal(error: unknown): boolean {
+  return (
+    error instanceof OpError &&
+    error.code === "forbidden" &&
+    /isn't in the Secure Enclave/.test(error.message)
+  );
+}
+
+/** Asks the main process to check for updates (loaded on use: tests import this file in Node). */
+export const checkForUpdates = () =>
+  import("../bridge.ts").then(({ bun }) => bun.updateAction({ action: "check" }));
+
 /** Runs decisions with a pending state, a toast and a refresh of the inbox and the item. */
 export function useDecide() {
   const refresh = useRefreshAfterDecision();
@@ -163,6 +183,11 @@ export function useDecide() {
     } catch (error) {
       if (error instanceof OpError && error.code === "cancelled") {
         toast("Cancelled: nothing was decided");
+      } else if (isSoftwareKeyRefusal(error)) {
+        toast.error(SOFTWARE_KEY_TEXT, {
+          duration: 15_000,
+          action: { label: "Check for updates", onClick: () => void checkForUpdates() },
+        });
       } else {
         toast.error(error instanceof OpError ? error.message : "Something went wrong");
       }

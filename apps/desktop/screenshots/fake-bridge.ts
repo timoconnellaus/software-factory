@@ -43,7 +43,9 @@ const session: Session = {
   signedIn: true,
   login: "owner",
   deviceId: "dev_m5",
-  keyStorage: "secure-enclave",
+  // `?key=software` (before the hash): a released build before the key helper (ADR 0610).
+  keyStorage:
+    new URLSearchParams(location.search).get("key") === "software" ? "software" : "secure-enclave",
   signingIn: false,
   error: null,
 };

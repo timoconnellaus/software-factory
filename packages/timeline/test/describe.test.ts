@@ -23,6 +23,10 @@ const DETAILS: Record<string, [unknown, string]> = {
   "pr.open": [{ prNumber: 42 }, "PR #42"],
   "question.ask": [{ questionIds: ["q_1", "q_2"] }, "2 questions"],
   "spec.commit": [{ path: "docs/specs/wi-1.md" }, "docs/specs/wi-1.md"],
+  "push.observe": [
+    { outcome: "reverify", detail: "octocat pushed 8015041: verifying again" },
+    "octocat pushed 8015041: verifying again",
+  ],
 };
 
 describe("describeEntry", () => {
@@ -142,6 +146,7 @@ describe("the fallback", () => {
       "pr.open": { prNumber: "42" },
       "question.ask": { questionIds: "q_1" },
       "spec.commit": { path: null },
+      "push.observe": { outcome: "ignored", detail: "pushed by octocat" },
     };
     for (const [op, result] of Object.entries(wrong)) {
       expect(describeEntry(entry(op, { result })).detail).toBeNull();

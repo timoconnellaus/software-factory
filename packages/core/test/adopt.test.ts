@@ -129,7 +129,27 @@ const adopt = (w: W, dryRun: boolean, baseVersion = 0) =>
 describe("orgConfig.adoptProjectWorkflows", () => {
   it("a dry run reports what it would write and writes nothing", async () => {
     const w = await world(TODAY);
+    // Every row the run would write, counted before and after (review of #128).
+    const written = async () => ({
+      orgConfigs: (await rows("SELECT org_id FROM core_org_configs WHERE org_id = ?", w.orgId))
+        .length,
+      projectConfigs: (
+        await rows("SELECT version FROM core_project_policies WHERE project_id = ?", w.projectId)
+      ).length,
+      approvals: (
+        await rows("SELECT org_version FROM core_override_approvals WHERE org_id = ?", w.orgId)
+      ).length,
+      pointer: await rows("SELECT policy_sha FROM core_projects WHERE id = ?", w.projectId),
+      notices: (
+        await rows(
+          "SELECT id FROM core_outbox WHERE kind = 'notify' AND instr(payload, ?) > 0",
+          w.userId,
+        )
+      ).length,
+    });
+    const beforeRun = await written();
     const plan = await adopt(w, true);
+    expect(await written()).toEqual(beforeRun);
     expect(plan).toMatchObject({
       dryRun: true,
       orgVersion: 1,
