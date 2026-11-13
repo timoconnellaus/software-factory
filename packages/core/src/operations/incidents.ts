@@ -8,6 +8,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { isOrgAdmin } from "../scope.ts";
 import { startPipeline } from "./backlog.ts";
 import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -180,7 +181,7 @@ export const incidentListArchiveMissing = defineOperation({
      * org's, resolved by the archiver itself once it archives again. Null while it runs.
      */
     auditArchiveStopped: z
-      .object({ id: z.string(), reason: z.string(), createdAt: z.string() })
+      .object({ id: z.string(), reason: z.string().nullable(), createdAt: z.string() })
       .nullable(),
   }),
   async handler(input, ctx) {
@@ -225,8 +226,15 @@ export const incidentListArchiveMissing = defineOperation({
         createdAt: r.created_at,
       })),
       more: rows.length > ARCHIVE_INCIDENTS_MAX,
-      auditArchiveStopped: await stoppedRead.then((r) =>
-        r ? { id: r.id, reason: r.reason, createdAt: r.created_at } : null,
+      auditArchiveStopped: await stoppedRead.then(async (r) =>
+        r
+          ? {
+              id: r.id,
+              // Why it stopped names the archive's objects: for the org's admins only.
+              reason: (await isOrgAdmin(ctx.db, input.orgId, ctx.actor.id)) ? r.reason : null,
+              createdAt: r.created_at,
+            }
+          : null,
       ),
     };
   },

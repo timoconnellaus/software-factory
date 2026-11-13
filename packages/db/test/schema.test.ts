@@ -90,6 +90,80 @@ describe("core schema", () => {
     expect(row).toEqual({ actor_type: "human" });
   });
 
+  it("refuses every way of replacing an audit or archive row, recursive triggers on or off (0366)", async () => {
+    const audit = (verb: string, id: string, rowid: number | null, actor: string) =>
+      env.DB.prepare(
+        `${verb} INTO core_audit (${rowid === null ? "" : "rowid, "}id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input)
+         VALUES (${rowid === null ? "" : `${rowid}, `}?, '2026-01-02T00:00:00Z', 'spec.approve', 'approve', ?, 'x', '{}', 'allow', 'ok', '{}')`,
+      )
+        .bind(id, actor)
+        .run();
+    await audit("INSERT", "au_keep", null, "human");
+    const rowid = (await env.DB.prepare(
+      "SELECT rowid AS r FROM core_audit WHERE id = 'au_keep'",
+    ).first<number>("r")) as number;
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-02-01', 0, 0, 'r', 'p', 'x')",
+      ),
+      env.DB.prepare(
+        `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
+         VALUES ('2025-02-01', 1, 'k', 'a', 'a', 'b', 'b', 1, 1, 's', 'p', 'h', 'x')`,
+      ),
+      env.DB.prepare(
+        "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-02-01', 1, 1)",
+      ),
+    ]);
+    const rid = async (table: string) =>
+      (await env.DB.prepare(`SELECT max(rowid) AS r FROM ${table}`).first<number>("r")) as number;
+    for (const recursive of ["OFF", "ON"]) {
+      await env.DB.prepare(`PRAGMA recursive_triggers = ${recursive}`).run();
+      for (const verb of ["INSERT OR REPLACE", "REPLACE"]) {
+        // By key, and by an explicit rowid with a new key.
+        await expect(audit(verb, "au_keep", null, "runner"), verb).rejects.toThrow(
+          /UNIQUE constraint failed/,
+        );
+        await expect(audit(verb, "au_new1", rowid, "runner"), verb).rejects.toThrow(
+          /UNIQUE constraint failed/,
+        );
+        const forged = [
+          [
+            `${verb} INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-02-01', 0, 0, 'forged', 'p', 'x')`,
+          ],
+          [
+            `${verb} INTO core_audit_archives (rowid, day, chunks, rows, root, prev_root, archived_at) VALUES (${await rid("core_audit_archives")}, '2025-02-09', 0, 0, 'forged', 'p', 'x')`,
+          ],
+          [
+            `${verb} INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at) VALUES ('2025-02-01', 1, 'forged', 'a', 'a', 'z', 'z', 1, 1, 's', 'p', 'h', 'x')`,
+          ],
+          [
+            `${verb} INTO core_audit_archive_chunks (rowid, day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at) VALUES (${await rid("core_audit_archive_chunks")}, '2025-02-09', 9, 'forged', 'a', 'a', 'z', 'z', 1, 1, 's', 'p', 'h', 'x')`,
+          ],
+          [
+            `${verb} INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-02-01', 1, 9)`,
+          ],
+          [
+            `${verb} INTO core_audit_archive_items (rowid, work_item_id, day, seq, rows) VALUES (${await rid("core_audit_archive_items")}, 'wi2', '2025-02-09', 9, 9)`,
+          ],
+        ];
+        for (const [sql] of forged) {
+          await expect(env.DB.prepare(sql as string).run(), sql).rejects.toThrow(/append-only/);
+        }
+      }
+    }
+    await env.DB.prepare("PRAGMA recursive_triggers = OFF").run();
+    expect(
+      await env.DB.prepare("SELECT actor_type FROM core_audit WHERE id = 'au_keep'").first(),
+    ).toEqual({
+      actor_type: "human",
+    });
+    expect(
+      await env.DB.prepare("SELECT root FROM core_audit_archives WHERE day = '2025-02-01'").first(),
+    ).toEqual({
+      root: "r",
+    });
+  });
+
   it("keeps the archive's records append-only (migration 0366)", async () => {
     await env.DB.prepare(
       `INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-01-01', 0, 0, 'r', 'p', 'x')`,

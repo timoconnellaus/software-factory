@@ -25,8 +25,8 @@ export const AUDIT_ARCHIVE_AFTER_DAYS = 90;
 /**
  * The routine operations whose machine rows are archived: the list in migration 0366's delete
  * trigger, which a test keeps equal to this one. Leases, heartbeats, claims, steers, run events,
- * artifacts, hand-backs, stage moves, merge-queue moves short of merging, the first push of a branch,
- * deliveries of news, and the intake's observations. Never anything that issues a credential (a
+ * artifacts, hand-backs, stage moves, entering, leaving and holding the merge queue, the first push
+ * of a branch, deliveries of news, and the intake's routine observations. Never anything that issues a credential (a
  * job token, a runner key or CLI token from a device login, a sign-in), records what reached main
  * (`mergeQueue.merging`, `branch.advance`, a merge), a PR, a spec, a triage, a question, planning
  * content, a gate, an incident, a config or policy change, or an item created or released:
@@ -55,13 +55,10 @@ export const AUDIT_ARCHIVE_OPERATIONS = [
   "workItem.awaitQuestions",
   "mergeQueue.enter",
   "mergeQueue.leave",
-  "mergeQueue.update",
   "mergeQueue.hold",
   "queue.pull",
   "connector.receive",
-  "push.observe",
   "main.observe",
-  "verify.refresh",
 ] as const;
 
 /**
@@ -81,6 +78,12 @@ export const NEVER_ARCHIVED = [
   "pr.autoMerge",
   "desktop.authExchange",
   "mobile.authExchange",
+  // Security events (review of #170, round 2): a PR merged outside the factory and by whom, a
+  // withdrawn merge gate; a push to a factory branch (confinement, a withdrawn approval); an
+  // approval and review packet carried to a new head.
+  "verify.refresh",
+  "push.observe",
+  "mergeQueue.update",
 ] as const;
 
 const ARCHIVED_OPS: ReadonlySet<string> = new Set(AUDIT_ARCHIVE_OPERATIONS);
@@ -228,7 +231,7 @@ export async function checkChunk(
     return { ok: false, why: "the object isn't an audit archive" };
   }
   if (lines.length !== record.rows) {
-    return { ok: false, why: `${lines.length} rows in the object, ${record.rows} recorded` };
+    return { ok: false, why: "the object doesn't hold the rows its record names" };
   }
   let hash = prev;
   let before: { at: string; id: string } | null = null;

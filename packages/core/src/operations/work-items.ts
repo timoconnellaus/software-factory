@@ -794,7 +794,7 @@ export const workItemTimeline = defineOperation({
   output: z.object({
     entries: z.array(timelineEntry),
     /**
-     * The item's entries in the audit archive. `available`: there are some, not read this time;
+     * The item's entries in the audit archive: `rows` and `chunks` count all of them, every page. `available`: there are some, not read this time;
      * `read`; `failed`, R2 couldn't be read (try again); `missing`, an object the archive's records
      * name isn't in the bucket. `none` when nothing of the item is archived.
      */
@@ -809,7 +809,7 @@ export const workItemTimeline = defineOperation({
     }),
   }),
   async handler(input, ctx) {
-    const [rows, archivedChunks] = await readBatch(ctx.d1, [
+    const [rows, archivedChunks, archivedTotals] = await readBatch(ctx.d1, [
       ctx.db
         .selectFrom("core_audit")
         .select([
@@ -849,6 +849,14 @@ export const workItemTimeline = defineOperation({
         .orderBy("i.day")
         .orderBy("i.seq")
         .limit(TIMELINE_ARCHIVE_CHUNKS + 1),
+      // The item's totals across every page (its few index rows, by the primary key prefix).
+      ctx.db
+        .selectFrom("core_audit_archive_items")
+        .select([
+          sql<number>`count(*)`.as("chunks"),
+          sql<number>`coalesce(sum(rows), 0)`.as("rows"),
+        ])
+        .where("work_item_id", "=", input.workItemId),
     ]);
     const entries: z.infer<typeof timelineEntry>[] = rows.map((r) => ({
       id: r.id,
@@ -864,8 +872,8 @@ export const workItemTimeline = defineOperation({
     }));
     const chunks = archivedChunks.slice(0, TIMELINE_ARCHIVE_CHUNKS);
     const archive = {
-      rows: chunks.reduce((n, c) => n + c.rows, 0),
-      chunks: chunks.length,
+      rows: Number(archivedTotals[0]?.rows ?? 0),
+      chunks: Number(archivedTotals[0]?.chunks ?? 0),
       state: (chunks.length === 0 ? "none" : "available") as
         | "none"
         | "available"
@@ -934,7 +942,8 @@ export const workItemTimeline = defineOperation({
     }
     // Merged by time; within the same instant, D1's own order and then the archive's.
     const merged = [...old, ...entries].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-    return { entries: merged.slice(0, input.limit), archive: { ...archive, state } };
+    // Every D1 entry the limit read stays: the archived ones are added, never in their place.
+    return { entries: merged, archive: { ...archive, state } };
   },
 });
 

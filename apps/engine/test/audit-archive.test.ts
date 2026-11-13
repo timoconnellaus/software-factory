@@ -205,7 +205,8 @@ describe("the audit archive", () => {
     // Day 100's four went in the test before.
     expect(ticks.reduce((s, t) => s + t.archived, 0)).toBe(machine.length - 4);
     // Only kept rows are left.
-    expect(await ids()).toEqual([...kept].sort());
+    // (Besides the archiver's own audited reports, audit.archiveHealth, from the test before.)
+    expect(await ids("operation != 'audit.archiveHealth'")).toEqual([...kept].sort());
     // Every day from the first up to the cutoff is recorded, chained root to root.
     const days = (
       await env.DB.prepare("SELECT * FROM core_audit_archives ORDER BY day").all<{
@@ -492,8 +493,9 @@ describe("the audit archive", () => {
       archive: { chunks: number; more: boolean; next: { day: string; seq: number } | null };
     };
     const page1 = await ok<Paged>("workItem.timeline", { workItemId: item.workItemId }, w.human);
+    // Totals count every page; the page reads 20 objects and says where the next starts.
     expect(page1.archive).toMatchObject({
-      chunks: 20,
+      chunks: 22,
       more: true,
       next: { day: dayAgo(140), seq: 19 },
     });
@@ -502,6 +504,96 @@ describe("the audit archive", () => {
       { workItemId: item.workItemId, archiveAfter: page1.archive.next },
       w.human,
     );
-    expect(page2.archive).toMatchObject({ chunks: 2, more: false, next: null });
+    expect(page2.archive).toMatchObject({ chunks: 22, more: false, next: null });
+  });
+
+  it("audit.verify carries on within a day past its object cap, with a cursor", async () => {
+    const last = (await env.DB.prepare(
+      "SELECT day, root FROM core_audit_archives WHERE day = (SELECT max(day) FROM core_audit_archives)",
+    ).first<{ day: string; root: string }>()) as { day: string; root: string };
+    const day = new Date(Date.parse(`${last.day}T00:00:00.000Z`) + DAY).toISOString().slice(0, 10);
+    const sha = async (text: string) =>
+      [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)))]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    let prev = last.root;
+    const records: D1PreparedStatement[] = [];
+    for (let i = 1; i <= 101; i++) {
+      const at = new Date(Date.parse(`${day}T00:00:00.000Z`) + i * 1000).toISOString();
+      const row: AuditRow = {
+        id: `au_v${String(i).padStart(4, "0")}`,
+        at,
+        operation: "job.claim",
+        risk: "write",
+        actor_type: "runner",
+        actor_id: "rnr_1",
+        origin: "{}",
+        decision: "allow",
+        outcome: "ok",
+        reason: null,
+        org_id: null,
+        project_id: null,
+        work_item_id: null,
+        policy_sha: null,
+        input: "{}",
+        result: null,
+        diff: "[]",
+        pending_action_id: null,
+        approval_id: null,
+        idempotency_key: null,
+      };
+      const { lines, last: hash } = await chainLines(prev, [row]);
+      const text = `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
+      const key = `audit/test/cursor/${i}`;
+      await env.ARCHIVE.put(key, text);
+      records.push(
+        env.DB.prepare(
+          `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+        ).bind(
+          day,
+          i,
+          key,
+          at,
+          row.id,
+          at,
+          row.id,
+          text.length,
+          await sha(text),
+          prev,
+          hash,
+          ago(0),
+        ),
+      );
+      prev = hash;
+    }
+    records.push(
+      env.DB.prepare(
+        "INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 101, 101, ?, ?, ?)",
+      ).bind(day, prev, last.root, ago(0)),
+    );
+    await env.DB.batch(records);
+    type Verdict = {
+      ok: boolean;
+      days: { day: string; ok: boolean; status: string; why: string | null }[];
+      next: { day: string; seq: number } | null;
+    };
+    const firstCall = await ok<Verdict>(
+      "audit.verify",
+      { orgId: w.orgId, from: day, to: day },
+      w.human,
+    );
+    expect(firstCall.days).toEqual([{ day, ok: true, status: "partial", why: null }]);
+    expect(firstCall.next).toEqual({ day, seq: 100 });
+    const rest = await ok<Verdict>(
+      "audit.verify",
+      { orgId: w.orgId, from: day, to: day, after: firstCall.next },
+      w.human,
+    );
+    expect(rest).toEqual({
+      ok: true,
+      days: [{ day, ok: true, status: "archived", why: null }],
+      next: null,
+    });
   });
 });

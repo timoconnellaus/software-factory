@@ -13,8 +13,12 @@
 -- - not tied to a gate or an approval (`pending_action_id` and `approval_id` both NULL);
 -- - one of the routine operations listed in the trigger below (and in AUDIT_ARCHIVE_OPERATIONS in
 --   packages/core/src/audit-chain.ts, which a test keeps equal to this list): leases, heartbeats,
---   claims, steers, run events, artifacts, hand-backs, stage moves, merge-queue moves short of
---   merging, a branch's first push, deliveries of news and the intake's observations. Never what
+--   claims, steers, run events, artifacts, hand-backs, stage moves, entering, leaving and holding
+--   the merge queue, a branch's first push, deliveries of news, and the intake's routine
+--   observations (connector events, main's health). Never a security event: what verifies a head
+--   or sees a PR merged outside the factory (`verify.refresh`), a push to a factory branch
+--   (`push.observe`: confinement, withdrawn approvals), carrying an approval to a new head
+--   (`mergeQueue.update`). Never what
 --   issues a credential (a job token, a device login's runner key or CLI token, a sign-in), never
 --   the record of what reached main (`mergeQueue.merging`, `branch.advance`, a merge), no PR, no
 --   spec, no triage, no question, no planning content, no gate, no incident, no config or policy
@@ -99,8 +103,8 @@ WHEN NOT (
     'planning.wait', 'planning.news', 'planning.yield', 'planning.requestYield',
     'branch.ensure',
     'workItem.enterStage', 'workItem.awaitHead', 'workItem.awaitQuestions',
-    'mergeQueue.enter', 'mergeQueue.leave', 'mergeQueue.update', 'mergeQueue.hold', 'queue.pull',
-    'connector.receive', 'push.observe', 'main.observe', 'verify.refresh'
+    'mergeQueue.enter', 'mergeQueue.leave', 'mergeQueue.hold', 'queue.pull',
+    'connector.receive', 'main.observe'
   )
   AND OLD.at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 days')
   AND EXISTS (
@@ -120,12 +124,27 @@ DROP TRIGGER IF EXISTS core_audit_no_delete;
 -- insert, no write.
 CREATE TRIGGER core_audit_no_replace BEFORE INSERT ON core_audit
 WHEN EXISTS (SELECT 1 FROM core_audit WHERE id = NEW.id)
+  OR EXISTS (SELECT 1 FROM core_audit WHERE rowid = NEW.rowid)
   OR (NEW.idempotency_key IS NOT NULL
       AND EXISTS (SELECT 1 FROM core_audit WHERE idempotency_key = NEW.idempotency_key))
 BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: core_audit (append-only: no replace)'); END;
 
 -- The archive's records are written once: a day, a chunk and its work-item index rows are never
--- changed or deleted, so the chain's head can only advance by a new day.
+-- changed, deleted or replaced, so the chain's head can only advance by a new day. INSERT OR
+-- REPLACE (by key or by an explicit rowid) is refused like UPDATE and DELETE.
+CREATE TRIGGER core_audit_archives_no_replace BEFORE INSERT ON core_audit_archives
+WHEN EXISTS (SELECT 1 FROM core_audit_archives WHERE day = NEW.day)
+  OR EXISTS (SELECT 1 FROM core_audit_archives WHERE rowid = NEW.rowid)
+BEGIN SELECT RAISE(ABORT, 'core_audit_archives is append-only'); END;
+CREATE TRIGGER core_audit_archive_chunks_no_replace BEFORE INSERT ON core_audit_archive_chunks
+WHEN EXISTS (SELECT 1 FROM core_audit_archive_chunks WHERE day = NEW.day AND seq = NEW.seq)
+  OR EXISTS (SELECT 1 FROM core_audit_archive_chunks WHERE rowid = NEW.rowid)
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_chunks is append-only'); END;
+CREATE TRIGGER core_audit_archive_items_no_replace BEFORE INSERT ON core_audit_archive_items
+WHEN EXISTS (SELECT 1 FROM core_audit_archive_items
+             WHERE work_item_id = NEW.work_item_id AND day = NEW.day AND seq = NEW.seq)
+  OR EXISTS (SELECT 1 FROM core_audit_archive_items WHERE rowid = NEW.rowid)
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_items is append-only'); END;
 CREATE TRIGGER core_audit_archives_no_update BEFORE UPDATE ON core_audit_archives
 BEGIN SELECT RAISE(ABORT, 'core_audit_archives is append-only'); END;
 CREATE TRIGGER core_audit_archives_no_delete BEFORE DELETE ON core_audit_archives

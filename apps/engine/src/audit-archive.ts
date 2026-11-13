@@ -18,6 +18,8 @@
 // and idempotent (a tick that dies leaves an object at most; the next one reads it back and uses it
 // only if it is byte-for-byte what it would write), and a backlog drain under a monthly write
 // budget that yields to live traffic.
+
+import { invoke, SCHEDULER } from "@software-factory/core";
 import {
   ARCHIVE_CHUNK_BYTES,
   ARCHIVE_CHUNK_ROWS,
@@ -32,6 +34,7 @@ import {
   nextDay,
   prevDay,
 } from "@software-factory/core/audit-chain";
+import { invokeDeps } from "./deps.ts";
 import { ARCHIVE, archiveBudget } from "./retention.ts";
 
 const DAY = 86_400_000;
@@ -117,7 +120,7 @@ type ScannedRow = AuditRow & { rid: number };
  * until the row budget or the query budget is spent. Returns what it did and what it cost.
  */
 export async function archiveAudit(
-  env: Pick<Env, "DB" | "ARCHIVE">,
+  env: Env,
   now = new Date(),
   opts: { rows?: number; scanRows?: number } = {},
 ): Promise<AuditArchiveTick> {
@@ -253,7 +256,7 @@ export async function archiveAudit(
       count(m, r);
     }
   }
-  await recordHealth(env.DB, m, tick, stopped, outran.n);
+  await recordHealth(env.DB, env, m, tick, stopped, outran.n);
   tick.queries = m.queries;
   tick.rowsRead = m.rowsRead;
   tick.rowsWritten = m.rowsWritten;
@@ -280,6 +283,7 @@ type Health = { stops: number; since: string | null; why: string | null; outran:
  */
 async function recordHealth(
   db: D1Database,
+  env: Env,
   m: Meter,
   tick: AuditArchiveTick,
   stopped: string | null,
@@ -315,39 +319,28 @@ async function recordHealth(
         .bind(HEALTH_KEY, JSON.stringify(next)),
     );
   }
-  if (stopped && next.stops >= STOPS_BEFORE_INCIDENT) {
-    // One open at a time (core_incidents_audit_archive_idx).
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO core_incidents (id, kind, reason, created_by, created_at)
-           SELECT ?, 'audit_archive_stopped', ?, 'scheduler', ?
-           WHERE NOT EXISTS (SELECT 1 FROM core_incidents
-             WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL)`,
-        )
-        .bind(
-          `inc_${crypto.randomUUID().replace(/-/g, "")}`,
-          `The audit archive has stopped ${next.stops} ticks in a row since ${next.since}: ${stopped}`,
-          now,
-        ),
-    );
-  }
-  if (progressed && h.stops >= STOPS_BEFORE_INCIDENT) {
-    statements.push(
-      db
-        .prepare(
-          `UPDATE core_incidents SET resolved_at = ?, resolved_by = 'scheduler',
-             resolution = 'The audit archive archived again.'
-           WHERE kind = 'audit_archive_stopped' AND resolved_at IS NULL`,
-        )
-        .bind(now),
-    );
-  }
   if (statements.length > 0) {
     const results = await db.batch(statements);
     for (const r of results) count(m, r);
-    m.queries -= results.length - 1;
   }
+  // The incident goes through its operation, as the scheduler, so it is audited like any other.
+  const report =
+    stopped && next.stops >= STOPS_BEFORE_INCIDENT
+      ? {
+          stopped: true,
+          reason: `The audit archive has stopped ${next.stops} ticks in a row since ${next.since}: ${stopped}`,
+        }
+      : progressed && h.stops >= STOPS_BEFORE_INCIDENT
+        ? { stopped: false, reason: "" }
+        : null;
+  if (report) {
+    await invoke(invokeDeps(env), "audit.archiveHealth", report, {
+      actor: SCHEDULER,
+      origin: { surface: "cron" },
+    });
+    m.queries += 4;
+  }
+  return;
 }
 
 /**
@@ -452,8 +445,10 @@ async function archiveDay(env: Pick<Env, "DB" | "ARCHIVE">, m: Meter, d: DayRun)
       d.widen();
       continue;
     }
-    const want = Math.min(ARCHIVE_CHUNK_ROWS, d.budget());
-    if (want <= 0) return false;
+    // Always a whole chunk's worth: objects are full (1,000 rows or 1 MB) or a day's last, so a
+    // backlog day isn't cut into hundreds of small objects (review of #170).
+    const want = ARCHIVE_CHUNK_ROWS;
+    if (d.budget() <= 0) return false;
     const page = await env.DB.prepare(
       `SELECT rowid AS rid, ${COLUMNS} FROM core_audit
        WHERE rowid > ? AND rowid <= ? AND at < ?
@@ -465,6 +460,15 @@ async function archiveDay(env: Pick<Env, "DB" | "ARCHIVE">, m: Meter, d: DayRun)
       .all<ScannedRow>();
     count(m, page);
     const rows = cut(page.results);
+    const full = rows.length === ARCHIVE_CHUNK_ROWS || rows.length < page.results.length;
+    if (rows.length > 0 && !full && until < d.dayEnd && d.scan() < AUDIT_ARCHIVE.maxScanRows) {
+      // Not a whole chunk yet and not the day's end: look at a wider window instead of cutting
+      // a small object.
+      d.widen();
+      continue;
+    }
+    // The drain waits until its credit covers the chunk (its credit carries between ticks).
+    if (rows.length > d.budget()) return false;
     if (rows.length > 0) {
       stalled = 0;
       seq += 1;

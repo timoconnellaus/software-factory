@@ -17,7 +17,7 @@ the proposal left open.
    - written by a runner, the scheduler, an intake connector, or the foreman (`agent`/`foreman`).
      Never a person's row, another agent's or `self-improve`'s;
    - `decision = 'allow'` and `outcome = 'ok'`, with no `pending_action_id` and no `approval_id`;
-   - one of 29 routine operations: leases, heartbeats, claims, steers, run events, artifacts,
+   - one of 26 routine operations: leases, heartbeats, claims, steers, run events, artifacts,
      hand-backs, stage moves, merge-queue moves short of merging, a branch's first push, news
      deliveries and the intake's observations.
 
@@ -139,3 +139,26 @@ the proposal left open.
   Health is kept in `core_meta` (`audit-archive:health`). It also counts machine rows of archived
   days still in D1, which are calls that outran the commit skew, and logs them.
 - **The drain's credit** carries over on every drain tick, archived or not.
+
+## Changed in review, round 2, 2026-11-13 (#170)
+- **Three security events stay in D1.** They are on `NEVER_ARCHIVED` and off both lists, which now
+  name 26 operations:
+  - `verify.refresh`: with `closed` or `merged`, it is the only record of a PR merged outside the
+    factory and by whom, and it withdraws merge gates;
+  - `push.observe`: a branch-confinement violation is stored as `ok`, and a person's push withdraws
+    an approval;
+  - `mergeQueue.update`: carries the review packet and approval to a new head.
+- **No replace anywhere.**
+  - `core_audit_no_replace` also refuses an insert whose explicit rowid exists.
+  - The three archive tables get the same BEFORE INSERT trigger, by key or by rowid. INSERT OR
+    REPLACE and REPLACE are refused on all four tables, with recursive triggers on or off (tested).
+- **`audit.verify` carries on within a day.** `after: { day, seq }` resumes from the record of the
+  object before, and a day cut by the 100-object cap answers `partial` with `next`. Failures name no
+  counts.
+- **The drain writes whole objects.** It waits until its carried credit covers a chunk. A page short
+  of 1,000 rows (or 1 MB) that isn't the day's end widens its window instead of cutting a small
+  object.
+- **The archiver's incident goes through an operation.** It is `audit.archiveHealth`, run as the
+  scheduler and audited. Only an org admin sees why the archiver stopped.
+- **The timeline's totals** count every page, and the D1 entries a call read are never dropped to
+  make room for archived ones.

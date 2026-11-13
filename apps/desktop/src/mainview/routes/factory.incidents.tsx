@@ -88,7 +88,7 @@ function IncidentsPage() {
             <span className="min-w-0">
               <span className="block font-medium">The audit archive has stopped</span>
               <span className="block text-ink-3 text-xs">
-                {archive.data.auditArchiveStopped.reason}
+                {archive.data.auditArchiveStopped.reason ?? "An org admin can see why it stopped."}
               </span>
               <span className="block text-ink-muted text-xs">
                 Nothing is deleted while it is stopped; it clears itself once the archiver runs

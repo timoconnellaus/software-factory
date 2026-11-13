@@ -8,6 +8,7 @@ import {
   r2AttachmentBlobs,
   recentOutcomes,
   resolveScope,
+  SCHEDULER,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
@@ -350,6 +351,13 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       await as(e, "workItem.timeline", { workItemId: item }, w.human);
       return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
     },
+  },
+  {
+    // The archiver's health report (only after three stopped ticks, or the tick after): the open
+    // archiver incident on core_incidents_audit_archive_idx.
+    name: "audit.archiveHealth",
+    run: (e) =>
+      as(e, "audit.archiveHealth", { stopped: false }, SCHEDULER as unknown as World["human"]),
   },
   {
     // An org admin's verify of the chain (on demand): the days and their chunks by primary key.

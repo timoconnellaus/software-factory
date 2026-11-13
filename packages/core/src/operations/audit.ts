@@ -4,6 +4,7 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { checkChunk, GENESIS, nextDay, prevDay } from "../audit-chain.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation } from "../operation.ts";
 
 /** Days one call verifies at most. */
@@ -20,9 +21,10 @@ const dayVerdict = z.object({
   ok: z.boolean(),
   /**
    * `archived`; `before the archive` (earlier than its first day: nothing to archive); `not yet`
-   * (after its last day: not due or not reached yet); `missing` (between archived days: a gap).
+   * (after its last day: not due or not reached yet); `missing` (between archived days: a gap);
+   * `partial`, verified so far and the call stopped at its object cap: call again with `next`.
    */
-  status: z.enum(["archived", "before the archive", "not yet", "missing"]),
+  status: z.enum(["archived", "partial", "before the archive", "not yet", "missing"]),
   why: z.string().nullable(),
 });
 
@@ -35,12 +37,18 @@ export const auditVerify = defineOperation({
   risk: "read",
   actors: ["human"],
   permission: "admin",
-  input: z.object({ orgId: z.string().min(1), from: day, to: day }),
+  input: z.object({
+    orgId: z.string().min(1),
+    from: day,
+    to: day,
+    /** Carry on after this object (the `next` an earlier call answered), within or after its day. */
+    after: z.object({ day, seq: z.number().int().min(1) }).optional(),
+  }),
   output: z.object({
     ok: z.boolean(),
     days: z.array(dayVerdict),
-    /** The call stopped at its object cap: verify again from this day. */
-    nextDay: z.string().nullable(),
+    /** The call stopped at its object cap: call again with `after: next` (the same range). */
+    next: z.object({ day: z.string(), seq: z.number() }).nullable(),
   }),
   async handler(input, ctx) {
     if (input.to < input.from) throw new OperationError("invalid_input", "`to` is before `from`");
@@ -50,20 +58,34 @@ export const auditVerify = defineOperation({
     }
     const store = ctx.services.runArchive;
     if (!store) throw new OperationError("unavailable", "the archive isn't bound here");
-    // The days (and the one before, for its root) and their chunks, by primary key ranges.
-    const [days, chunks, bounds] = await Promise.all([
+    const after = input.after ?? null;
+    if (after && (after.day < input.from || after.day > input.to)) {
+      throw new OperationError("invalid_input", "`after` is outside the range");
+    }
+    const start = after?.day ?? input.from;
+    // The days (and the one before, for its root), the objects from where this call starts, and
+    // the object it carries on from, by primary key ranges.
+    const [days, chunks, bounds, resumed] = await Promise.all([
       ctx.db
         .selectFrom("core_audit_archives")
         .selectAll()
-        .where("day", ">=", prevDay(input.from))
+        .where("day", ">=", prevDay(start))
         .where("day", "<=", input.to)
         .orderBy("day")
         .execute(),
       ctx.db
         .selectFrom("core_audit_archive_chunks")
         .selectAll()
-        .where("day", ">=", input.from)
+        .where("day", ">=", start)
         .where("day", "<=", input.to)
+        .$if(after !== null, (q) =>
+          q.where((eb) =>
+            eb.or([
+              eb("day", ">", start),
+              eb.and([eb("day", "=", start), eb("seq", ">", (after as { seq: number }).seq)]),
+            ]),
+          ),
+        )
         .orderBy("day")
         .orderBy("seq")
         .limit(VERIFY_MAX_CHUNKS + 1)
@@ -75,17 +97,24 @@ export const auditVerify = defineOperation({
           sql<string | null>`(SELECT max(day) FROM core_audit_archives)`.as("last"),
         ])
         .executeTakeFirst(),
+      after
+        ? ctx.db
+            .selectFrom("core_audit_archive_chunks")
+            .select("last_hash")
+            .where("day", "=", after.day)
+            .where("seq", "=", after.seq)
+            .executeTakeFirst()
+        : Promise.resolve(undefined),
     ]);
+    if (after && !resumed) throw new OperationError("not_found", "no such archived object");
     const byDay = new Map(days.map((d) => [d.day, d]));
     const first = bounds?.first ?? null;
     const last = bounds?.last ?? null;
-    // The chunk read stopped at its cap: from the first day it cut into, the records are partial.
-    const cutDay =
-      chunks.length > VERIFY_MAX_CHUNKS ? (chunks[VERIFY_MAX_CHUNKS]?.day ?? null) : null;
+    const capped = chunks.length > VERIFY_MAX_CHUNKS;
     const listed = chunks.slice(0, VERIFY_MAX_CHUNKS);
     const out: z.infer<typeof dayVerdict>[] = [];
-    let stoppedAt: string | null = null;
-    for (let d = input.from; d <= input.to; d = nextDay(d)) {
+    let next: { day: string; seq: number } | null = null;
+    for (let d = start; d <= input.to; d = nextDay(d)) {
       const rec = byDay.get(d);
       if (!rec) {
         if (first === null || d > (last as string)) {
@@ -102,47 +131,53 @@ export const auditVerify = defineOperation({
         }
         continue;
       }
-      if (cutDay !== null && d >= cutDay) {
-        if (out.length === 0) {
-          throw new OperationError(
-            "invalid_input",
-            `${d} alone has more objects than one call reads`,
-          );
-        }
-        stoppedAt = d;
-        break;
-      }
+      const theirs = listed.filter((c) => c.day === d);
+      const resume = after !== null && d === after.day;
+      // The cap cut into this day: verify what was read, then stop here with a cursor.
+      const cut = capped && (listed.at(-1)?.day ?? "") === d;
       const result = await verifyDay(
         rec,
         byDay.get(prevDay(d)) ?? null,
         first === d,
-        listed.filter((c) => c.day === d),
+        theirs,
+        resume ? { seq: (after as { seq: number }).seq, hash: resumed?.last_hash ?? "" } : null,
+        !cut,
       );
+      if (cut && result.ok) {
+        const end = theirs.at(-1);
+        out.push({ day: d, ok: true, status: "partial", why: null });
+        if (end) next = { day: d, seq: end.seq };
+        break;
+      }
       out.push({ day: d, status: "archived", ...result });
+      if (cut) break;
     }
-    return { ok: out.every((x) => x.ok), days: out, nextDay: stoppedAt };
+    return { ok: out.every((x) => x.ok), days: out, next };
 
     async function verifyDay(
       rec: (typeof days)[number],
       before: (typeof days)[number] | null,
       first: boolean,
       theirs: typeof chunks,
+      from: { seq: number; hash: string } | null,
+      whole: boolean,
     ): Promise<{ ok: boolean; why: string | null }> {
       const fail = (why: string) => ({ ok: false, why });
-      if (first ? rec.prev_root !== GENESIS : before === null) {
-        return fail(
-          first ? "the first day doesn't chain from genesis" : "the day before isn't archived",
-        );
+      if (!from) {
+        if (first ? rec.prev_root !== GENESIS : before === null) {
+          return fail(
+            first ? "the first day doesn't chain from genesis" : "the day before isn't archived",
+          );
+        }
+        if (before && rec.prev_root !== before.root) {
+          return fail("doesn't chain from the day before's root");
+        }
       }
-      if (before && rec.prev_root !== before.root)
-        return fail("doesn't chain from the day before's root");
-      if (theirs.length !== rec.chunks) {
-        return fail(`${rec.chunks} objects counted for the day, ${theirs.length} recorded`);
-      }
-      let prev = rec.prev_root;
-      let rows = 0;
-      for (const [i, c] of theirs.entries()) {
-        if (c.seq !== i + 1) return fail(`object ${i + 1} is missing from the records`);
+      let prev = from ? from.hash : rec.prev_root;
+      let seq = from ? from.seq : 0;
+      for (const c of theirs) {
+        seq += 1;
+        if (c.seq !== seq) return fail(`object ${seq} is missing from the records`);
         let body: string | null;
         try {
           body = (await store?.get(c.r2_key, { fresh: true })) ?? null;
@@ -153,11 +188,90 @@ export const auditVerify = defineOperation({
         const check = await checkChunk(c, prev, body);
         if (!check.ok) return fail(`object ${c.seq}: ${check.why}`);
         prev = check.last;
-        rows += check.rows;
       }
-      if (rows !== rec.rows) return fail(`${rows} rows in the objects, ${rec.rows} recorded`);
+      if (!whole) return { ok: true, why: null };
+      // The day is done: its records add up to what the day says (one read of its chunk records).
+      const totals = await ctx.db
+        .selectFrom("core_audit_archive_chunks")
+        .select([
+          sql<number>`count(*)`.as("n"),
+          sql<number>`coalesce(sum(rows), 0)`.as("rows"),
+          sql<number>`coalesce(max(seq), 0)`.as("top"),
+        ])
+        .where("day", "=", rec.day)
+        .executeTakeFirst();
+      if (seq !== rec.chunks || totals?.n !== rec.chunks || totals?.top !== rec.chunks) {
+        return fail("the day's objects don't match what the day records");
+      }
+      if (totals?.rows !== rec.rows) return fail("the objects don't hold the rows the day records");
       if (prev !== rec.root) return fail("the root doesn't match the last row's hash");
       return { ok: true, why: null };
     }
+  },
+});
+
+/** Stopped archiver ticks in a row that open its incident (sf-engine counts them). */
+export const AUDIT_ARCHIVE_STOPS_FOR_INCIDENT = 3;
+
+export const auditArchiveHealth = defineOperation({
+  name: "audit.archiveHealth",
+  description:
+    "The audit archiver reports that it has stopped (three ticks in a row) or archives again (ADR 0591). Stopped: records one incident for a person, the factory's own (no org, project or work item), shown on the desktop's Checks and incidents page, unless one is open. Archiving again: resolves it. Run only by the scheduler, from sf-engine's cron.",
+  risk: "write",
+  actors: ["scheduler"],
+  permission: "signed-in",
+  audit: { changesOnly: true },
+  input: z.object({
+    stopped: z.boolean(),
+    reason: z.string().max(2_000).default(""),
+  }),
+  output: z.object({ incidentId: z.string().nullable(), resolved: z.boolean() }),
+  async handler(input, ctx) {
+    // core_incidents_audit_archive_idx: the one open archiver incident, if any.
+    const open = await ctx.db
+      .selectFrom("core_incidents")
+      .select("id")
+      .where("kind", "=", "audit_archive_stopped")
+      .where("resolved_at", "is", null)
+      .limit(1)
+      .executeTakeFirst();
+    if (input.stopped) {
+      if (open) return { incidentId: open.id, resolved: false };
+      const id = newId("incident");
+      ctx.write(
+        ctx.db.insertInto("core_incidents").values({
+          id,
+          // The factory's own incident: no org, project or work item (migration 0366's CHECK
+          // allows that for this kind only; the row type names the columns every other kind has).
+          org_id: null as unknown as string,
+          project_id: null as unknown as string,
+          source_work_item_id: null as unknown as string,
+          run_id: null,
+          kind: "audit_archive_stopped",
+          reason: input.reason || "The audit archive has stopped.",
+          fix_work_item_id: null,
+          created_by: ctx.actor.id,
+          created_at: ctx.now,
+          root_cause: null,
+          proposed_fix: null,
+        }),
+      );
+      ctx.change({ entity: "incident", id, after: { kind: "audit_archive_stopped" } });
+      return { incidentId: id, resolved: false };
+    }
+    if (!open) return { incidentId: null, resolved: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_incidents")
+        .set({
+          resolved_at: ctx.now,
+          resolved_by: ctx.actor.id,
+          resolution: "The audit archive archived again.",
+        })
+        .where("id", "=", open.id)
+        .where("resolved_at", "is", null),
+    );
+    ctx.change({ entity: "incident", id: open.id, after: { resolved: true } });
+    return { incidentId: open.id, resolved: true };
   },
 });
