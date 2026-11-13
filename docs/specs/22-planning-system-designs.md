@@ -132,7 +132,24 @@ Creating a design system when none exists, unless asked (as in kim).
 - Tests: `packages/planning-designs/test/designs.test.ts` (criterion 1), `harness-claude`
   `planning-designs.test.ts`, `core` `design-previews.test.ts` (criterion 4's previews).
 
-### Part B2 (next): the System tab
-The System tab draws each design's preview with what changed against the pulled base highlighted
-(criterion 3), and comments pinned on tables, boxes and arrows reach the planner naming the part
-(criterion 2).
+### Part B2: the System tab and pins on designs
+- **The System tab** (`apps/desktop` `components/planning-system.tsx`, between Mockups and Canvas
+  as in PlanFocus): the item's designs as a toggle row, each drawn from its preview **as an image**
+  (`<img>` with a data URL, `lib/design-view.ts`). The app lays its own boxes over the image from
+  the parts the runner measured; nothing in the SVG runs or is read into the app's DOM.
+- **What changed against the pulled base** (criterion 3): a pulled design compares its parts with
+  revision 0's by id and signature: added parts are outlined green, changed ones amber, and removed
+  ones listed struck through under the drawing, with counts in the header ("Hide changes" turns it
+  off). The Source view shows the text with added and removed lines marked against the base.
+- **Pins on parts** (criterion 2): in comment mode (C) a click on a table, box, arrow, message,
+  state or endpoint pins a chat comment to it. The pin's `element` is the part's id (`table users`,
+  `edge api -> db`), and its place within the part's box is kept, so the marker follows the part
+  across revisions. The planner reads it in its news as any pin, and the planner's instructions say
+  what `pin.element` names.
+- Layout warnings and the drawing's own notes (lines left out, a drawing too big to keep) are shown
+  under it. A revision without a preview shows its source. "Open full size" shows the drawing at
+  its own size.
+- Tests: `apps/desktop/test/design-view.test.ts` (changes, pins following parts, image only),
+  `core/test/design-previews.test.ts` (a pin on a table reaches the planner naming it).
+- Screenshots: `docs/screenshots/planning-system/`, from fixtures drawn by the real checks
+  (`apps/desktop/screenshots/design-fixtures.json`).
