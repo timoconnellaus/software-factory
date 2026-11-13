@@ -41,6 +41,7 @@ describe("Overview", () => {
       answers: {
         "workItem.list": { result: { items: [] } },
         "mergeQueue.list": { result: { entries: [] } },
+        "delivery.status": { result: { repositories: [] } },
       },
     });
     const text = textOf(html);

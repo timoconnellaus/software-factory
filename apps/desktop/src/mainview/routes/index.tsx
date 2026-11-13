@@ -9,6 +9,7 @@ import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
+import { MainRedCard } from "../components/babysitter.tsx";
 import {
   GateDetail,
   PlanningDetail,
@@ -18,6 +19,7 @@ import {
 import { ProtectionChangedCard } from "../components/protection-card.tsx";
 import { ListGroup, ListItem, NestedList, PageArea } from "../components/shell-list.tsx";
 import { useScopedInbox } from "../components/shell-sidebar.tsx";
+import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { entryText, GROUP_ORDER, inboxEntries, selectedEntry } from "../lib/inbox-list.ts";
 import { inboxQuery, workItemQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
@@ -35,11 +37,15 @@ export const Route = createRoute({
       queryClient.ensureQueryData(inboxQuery()),
       queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
     ]);
-    await Promise.all(
-      gateWorkItemIds(inbox).map((id) =>
+    await Promise.all([
+      ...gateWorkItemIds(inbox).map((id) =>
         queryClient.ensureQueryData(workItemQuery(id)).catch(() => null),
       ),
-    );
+      // A red main's card shows its repository's babysitter line (spec 53).
+      ...[...new Set((inbox.mainRed ?? []).map((r) => r.projectId))].map((projectId) =>
+        queryClient.ensureQueryData(deliveryStatusQuery(projectId)).catch(() => null),
+      ),
+    ]);
   },
   pendingComponent: InboxPending,
   errorComponent: ({ error }) => (
@@ -154,6 +160,9 @@ function InboxPage() {
               />
             )}
             {selected.kind === "protection" && <ProtectionChangedCard drift={selected.drift} />}
+            {selected.kind === "mainRed" && (
+              <MainRedCard red={selected.red} projectName={projectName(selected.red.projectId)} />
+            )}
           </>
         )}
       </PageArea>

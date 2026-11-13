@@ -257,6 +257,8 @@ export function useRefreshAfterDecision() {
       queryClient.invalidateQueries({ queryKey: ["work"] }),
       // A config change an approver decided (ADR 0610): the Policy page re-reads the project's.
       queryClient.invalidateQueries({ queryKey: ["config"] }),
+      // The babysitter's line (spec 53): a merge, a repair or a hold changes it.
+      queryClient.invalidateQueries({ queryKey: ["delivery"] }),
       workItemId
         ? queryClient.invalidateQueries({ queryKey: ["workItem", workItemId] })
         : Promise.resolve(),

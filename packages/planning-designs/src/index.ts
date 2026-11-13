@@ -14,6 +14,7 @@ import {
 import { drawD2 } from "./d2.ts";
 import { drawDataModel } from "./dbml.ts";
 import { DesignParseError, describeErrors } from "./errors.ts";
+import { sig } from "./layout.ts";
 import { checkMermaid, drawSequence, drawState } from "./mermaid.ts";
 import { drawApi } from "./openapi.ts";
 import type { Drawn } from "./types.ts";
@@ -38,6 +39,8 @@ export const DESIGN_SOURCE_MAX_BYTES = 300_000;
 export const DESIGN_CHECK_TIMEOUT_MS = 30_000;
 
 const cut = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+/** A part id within the schema's 300 characters, still unique: a long one keeps a hash of all of it. */
+const cutId = (t: string) => (t.length > 300 ? `${t.slice(0, 290)}…${sig(t)}` : t);
 
 async function draw(type: DesignType, source: string): Promise<Drawn> {
   switch (type) {
@@ -87,7 +90,9 @@ export async function checkDesign(
   }
   try {
     const drawn = await draw(type, source);
-    const warnings = drawn.warnings.slice(0, 20);
+    const warnings = drawn.warnings
+      .slice(0, 20)
+      .map((w) => ({ ...w, parts: w.parts.map(cutId), message: cut(w.message, 2_000) }));
     const preview = {
       svg: drawn.svg,
       width: drawn.width,
@@ -95,7 +100,7 @@ export async function checkDesign(
       // Ids and labels fit the schema (review of #163); a cut id still compares stably.
       parts: drawn.parts
         .slice(0, 1_000)
-        .map((p) => ({ ...p, id: cut(p.id, 300), label: cut(p.label, 300) })),
+        .map((p) => ({ ...p, id: cutId(p.id), label: cut(p.label, 300) })),
       warnings,
       sha256: sha256(source),
     };

@@ -168,7 +168,8 @@ export function answerText(kind: string, values: string[]): string {
 
 /** The plan's blocks, as the server compares them (spec 27): one segmentation for both. Spec 21:
  * what an answer sets in its mockup, and a mockup's frame size, shared with the server. Spec 22
- * part B: comparing a design's parts with its pulled base. */
+ * part B: comparing a design's parts with its pulled base. Spec 24: the digest an approval of a
+ * split names. */
 export {
   appliedValues,
   changedSpan,
@@ -184,6 +185,7 @@ export {
   type PartChange,
   type PlanBlock,
   planBlocks,
+  splitDigest,
 } from "@software-factory/runner-contract";
 /** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
 export { isSensitiveQuestion };

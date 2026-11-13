@@ -16,7 +16,7 @@ const LATE_BLOCKS: [number, number][] = [
   // replaces core_audit's delete trigger, which nothing later rebuilds.
   [366, 366],
   // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
-  [367, 367],
+  [367, 368],
 ];
 
 const late = (name: string) => {

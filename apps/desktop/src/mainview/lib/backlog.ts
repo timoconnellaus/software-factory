@@ -44,10 +44,12 @@ export function itemsIn(
  * for doesn't stop a release: the item waits in Queued until those are done.
  */
 export function releaseBlocker(
-  item: Pick<BoardItem, "status" | "repositoryId">,
+  item: Pick<BoardItem, "status" | "repositoryId"> & { heldForParent?: boolean | undefined },
   project: Pick<Project, "repositories" | "policy"> | undefined,
 ): string | null {
   if (item.status !== "backlog" && item.status !== "ready") return null;
+  // Spec 24 (review of #173): split off a plan that hasn't merged, it starts with its siblings.
+  if (item.heldForParent) return "Held until the plan merges: it starts with its siblings";
   if (!project) return "Its project isn't loaded";
   if (project.policy.state !== "valid") {
     return "The project's config isn't valid: fix it in Setup first";
