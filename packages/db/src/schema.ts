@@ -345,15 +345,12 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
-<<<<<<< HEAD
+  /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
+  merge_sha: string | null;
   /** A split parent waiting for its children: holds no active slot (migration 0402). */
   awaiting_children: Generated<number>;
   /** A plan's child: its approved slice {key, size, sha256} as JSON (migration 0402). */
   split_slice: string | null;
-=======
-  /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
-  merge_sha: string | null;
->>>>>>> timoconnellaus/planning-system-tab
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
