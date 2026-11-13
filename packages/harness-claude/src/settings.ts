@@ -406,6 +406,8 @@ export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   planning: "dontAsk",
   build: "bypassPermissions",
   verify: "dontAsk",
+  // The babysitter resolves conflicts and reads CI logs (spec 53): a build's sandboxed mode.
+  babysit: "bypassPermissions",
 };
 
 /**
@@ -418,6 +420,7 @@ export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
   planning: "bypassPermissions",
   build: "bypassPermissions",
   verify: "bypassPermissions",
+  babysit: "bypassPermissions",
 };
 
 /** The permission mode a stage runs in: the project's choice, else the isolation's default. */
@@ -463,6 +466,7 @@ export function stageAllow(
     case "verify":
       return [...read, ...writeResult, ...bash(TOOLCHAIN)];
     case "build":
+    case "babysit":
       return [
         ...read,
         "Edit",

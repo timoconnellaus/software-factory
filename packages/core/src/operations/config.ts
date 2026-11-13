@@ -24,6 +24,7 @@ import {
 } from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
 import { projectId, requireProject } from "./shared.ts";
+import { cleanText, titled } from "./summary.ts";
 import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
@@ -841,16 +842,18 @@ export async function describeConfigDecision(
     .executeTakeFirst()) as ProjectRow | undefined;
   if (!project) return null;
   const input = pendingInput(pa.input);
-  const name = quotedName(project.name);
   const current = versionOf(project.policy_sha) ?? 0;
   const versions =
     input.baseVersion !== undefined && input.baseVersion !== current
       ? `drafted on v${input.baseVersion}, the policy is now v${current}`
       : `v${current} to v${current + 1}`;
   const rollback = pa.operation === "config.rollback";
+  // The engine's facts first, the project's name last (titled, spec 40 M4b): a name can't push the
+  // versions or what the change loosens off the prompt.
+  const named = (facts: string) => titled(facts, project.name, "; project");
   const head = rollback
-    ? `${verb}: roll ${name} back to v${input.toVersion} (${versions})`
-    : `${verb} a change to ${name}'s policy (${versions})`;
+    ? `${verb}: roll the policy back to v${input.toVersion} (${versions})`
+    : `${verb} a change to the policy (${versions})`;
   const before = current ? await storedVersion(ctx.db, project.id, current) : null;
   const target = rollback
     ? typeof input.toVersion === "number"
@@ -860,15 +863,15 @@ export async function describeConfigDecision(
         const parsed = parseProjectPolicy(JSON.stringify(input.policy ?? null));
         return parsed.ok ? parsed.policy : undefined;
       })();
-  if (!target) return `${head}: the change can't be read`;
+  if (!target) return named(`${head}: the change can't be read`);
   const impact = await impactOf(ctx.db, project, before?.policy ?? null, target, ctx.floor);
   const shown = impact.changes.filter((c) => c.class === impact.class).slice(0, SUMMARY_CHANGES);
   const rest = impact.changes.length - shown.length;
-  const what = shown.map((c) => c.summary.replace(/\.$/, "")).join("; ");
-  return `${head}: ${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`;
+  const what = shown.map((c) => cleanText(c.summary).replace(/\.$/, "")).join("; ");
+  return named(
+    `${head}: ${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`,
+  );
 }
-
-const quotedName = (name: string) => `"${name.replace(/\s+/g, " ").slice(0, 60)}"`;
 
 /**
  * An org admin approves a project's existing looser override in one step (review of spec 52 (d2)):

@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds the .app (macOS only; ADR 0390): the view, the bundled Node 24 and sf-runner, the Secure
-# Enclave helper, then Electrobun's bundle for the given environment (dev | canary | stable).
+# Builds the .app (macOS only; ADR 0390): the view, the bundled Node 24 and sf-runner, the key
+# helper (only with SF_KEYS_PROFILE), then Electrobun's bundle for the given environment
+# (dev | canary | stable).
 set -e
 cd "$(dirname "$0")/.."
 env="${1:-dev}"
@@ -8,7 +9,7 @@ export PATH="$HOME/.hutch/bin:$PATH"
 mkdir -p vendor
 node scripts/vendor-node.mjs
 node scripts/bundle-runner.mjs
-swiftc -O -o vendor/sf-keys native/sf-keys.swift
+rm -f vendor/sf-keys
 # The key helper bundle (spec 40 M4b, ADR 0394), only when the release has its provisioning profile
 # (SF_KEYS_PROFILE, a path; from MACOS_KEYS_PROFILE). It is unsigned here: the postPackage hook
 # puts it in Contents/Helpers and signs it after Electrobun's own signing (scripts/keys-helper.ts).
