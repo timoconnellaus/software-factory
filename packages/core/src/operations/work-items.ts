@@ -104,7 +104,7 @@ const itemSummary = z.object({
   orgId: z.string(),
   number: z.number(),
   title: z.string(),
-  kind: z.enum(["change", "incident", "attached"]),
+  kind: z.enum(["change", "incident", "attached", "autopilot"]),
   stage: z.enum(STAGES),
   status: z.enum(ITEM_STATUSES),
   statusReason: z.string().nullable(),
@@ -132,7 +132,7 @@ const summarise = (w: ItemRow): z.input<typeof itemSummary> => ({
   orgId: w.org_id,
   number: w.number,
   title: w.title,
-  kind: w.kind,
+  kind: w.item_kind,
   stage: w.stage,
   status: w.status,
   statusReason: w.status_reason,
@@ -306,7 +306,7 @@ export const workItemCreate = defineOperation({
               requester_user_id: requester,
               body: input.body,
               parent_work_item_id: null,
-              kind: "change",
+              item_kind: "change",
               source: input.source,
             },
             input.state,
@@ -336,7 +336,7 @@ export const workItemCreate = defineOperation({
               title,
               body: input.body,
               parent_work_item_id: null,
-              kind: "change",
+              item_kind: "change",
             });
             return hint ? { hint } : {};
           })()
@@ -379,6 +379,9 @@ export const workItemList = defineOperation({
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
     if (input.status?.length) query = query.where("status", "in", input.status);
     if (input.number !== undefined) query = query.where("number", "=", input.number);
+    // Autopilot runs are left out of the Work lists (ADR 0514): their autopilot's page shows them;
+    // asked for by number, one is still found.
+    else query = query.where("item_kind", "!=", "autopilot");
     const rows = await query.execute();
     const places = await queuePlaces(ctx, rows);
     return {
@@ -1187,11 +1190,11 @@ export const workItemTriage = defineOperation({
     // longer picks, and a pick it still sends is ignored. An item started before 0261 (no
     // `pulled_at`) was promised triage's pick (ADR 0371): it keeps that rule, so the deploy never
     // takes a workflow's gate steps away from work already under way.
-    let workflow = w.kind === "attached" ? null : w.workflow;
-    let workflowReason = w.kind === "attached" ? null : w.workflow_reason;
+    let workflow = w.item_kind === "attached" ? null : w.workflow;
+    let workflowReason = w.item_kind === "attached" ? null : w.workflow_reason;
     // Legacy: never pulled and never shaped (a shaping item's workflow is pinned by
     // workItem.shape, and triage doesn't change it, ADR 0492/0493).
-    if (w.kind !== "attached" && !w.pulled_at && !w.shaping_started_at) {
+    if (w.item_kind !== "attached" && !w.pulled_at && !w.shaping_started_at) {
       const shape = ctx.scope.pinnedPolicy ?? policy;
       const picked = input.result.workflow
         ? (shape.workflows.find(
@@ -1224,7 +1227,7 @@ export const workItemTriage = defineOperation({
       sliceBound && input.result.specRequested === "skip" && slice?.size !== "large";
     if (sliceBound && approvedCriteria) input.result.acceptanceCriteria = approvedCriteria;
     const decision =
-      w.kind === "attached"
+      w.item_kind === "attached"
         ? { required: false, reason: ATTACHED_SKIP_REASON }
         : sliceApproved
           ? {
@@ -1731,6 +1734,8 @@ export const inboxList = defineOperation({
         .selectAll()
         .where("org_id", "in", myOrgs)
         .where("status", "in", ["running", "waiting", "paused"])
+        // Autopilot runs are shown on their autopilot's page (ADR 0514).
+        .where("item_kind", "!=", "autopilot")
         .orderBy("updated_at", "desc")
         .limit(100),
       ctx.db

@@ -49,7 +49,7 @@ export const SOFTWARE: WorkflowDefinition = {
 };
 
 /**
- * An incident's fix (`kind = 'incident'`) takes the Software stages; it is opened running, never
+ * An incident's fix (`item_kind = 'incident'`) takes the Software stages; it is opened running, never
  * shaped, so triage and planning run in delivery.
  */
 export const INCIDENT: WorkflowDefinition = {

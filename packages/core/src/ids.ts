@@ -2,6 +2,7 @@
 
 export const ID_PREFIXES = {
   workItem: "wi",
+  autopilotRun: "apr",
   project: "prj",
   repository: "repo",
   factory: "fac",

@@ -273,7 +273,7 @@ export async function parkIfNotReady(
   w: Parkable & {
     body: string;
     parent_work_item_id: string | null;
-    kind?: string;
+    item_kind?: string;
     source?: string;
   },
   heading: Heading,
@@ -281,7 +281,7 @@ export async function parkIfNotReady(
   // A person's release is their judgement (ADR 0304 as amended): only what no person released parks.
   if (byPerson(ctx)) return null;
   // An incident or an attached PR has its own path (spec 07, ADR 0080): the check is for requests.
-  if (w.kind && w.kind !== "change") return null;
+  if (w.item_kind && w.item_kind !== "change") return null;
   const checked = precheck({ title: w.title, body: w.body, parentId: w.parent_work_item_id });
   if (!checked.ok) {
     return park(ctx, w, {
@@ -338,9 +338,9 @@ export function readinessHint(w: {
   title: string;
   body: string;
   parent_work_item_id: string | null;
-  kind?: string;
+  item_kind?: string;
 }): string | null {
-  if (w.kind && w.kind !== "change") return null;
+  if (w.item_kind && w.item_kind !== "change") return null;
   const checked = precheck({ title: w.title, body: w.body, parentId: w.parent_work_item_id });
   if (checked.ok) return null;
   return "There's little here to work on: triage will ask what it needs, or add a sentence on what you want done.";

@@ -1325,7 +1325,20 @@ async function autopilotUses(
   const agent = config.agents.find((a) => a.name.toLowerCase() === agentName) ?? null;
   const own = Array.isArray(autopilot.skills) ? (autopilot.skills as unknown[]).map(String) : [];
   const attached = config.agentSkills[agentName] ?? [];
-  const ids = [...new Set([...own, ...attached])].filter((x) => Object.hasOwn(config.skills, x));
+  const all = [...new Set([...own, ...attached])];
+  const ids = all.filter((x) => Object.hasOwn(config.skills, x));
+  // Built-in skills it follows (review of #197): their name and text from the code.
+  const builtins = all
+    .filter((x) => !Object.hasOwn(config.skills, x))
+    .flatMap((x) => {
+      const b = BUILTIN_BY_ID.get(x);
+      // One the org doesn't have and no built-in is: shown with no text, so the desktop refuses it.
+      return [
+        b
+          ? { id: x, version: 0, name: b.name, description: null, body: b.body }
+          : { id: x, version: 0, name: null, description: null, body: null },
+      ];
+    });
   // Each skill's current version, by primary key (org, skill, version): at most 40 keys, in
   // chunks of 15 key pairs a query (D1's bound-parameter limit), so at most three queries.
   const keys = ids.slice(0, 40).map((id) => ({ id, version: config.skills[id]?.version ?? 0 }));
@@ -1362,5 +1375,5 @@ async function autopilotUses(
       body: row?.body ?? null,
     };
   });
-  return { agent, attachedSkills: attached, skills };
+  return { agent, attachedSkills: attached, skills: [...skills, ...builtins] };
 }

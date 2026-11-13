@@ -883,7 +883,10 @@ export const verifyRefresh = defineOperation({
     }
     // An attached item that ended without merging (its PR closed, or it was cancelled) no longer
     // owns the PR: reopened, it reads as unattached again and can be attached anew.
-    if (item?.kind === "attached" && ["cancelled", "failed", "rejected"].includes(item.status)) {
+    if (
+      item?.item_kind === "attached" &&
+      ["cancelled", "failed", "rejected"].includes(item.status)
+    ) {
       item = null;
     }
     if (!item) {
@@ -921,7 +924,7 @@ export const verifyRefresh = defineOperation({
     ctx.subject({ workItemId: item.id });
 
     if (
-      item.kind === "attached" &&
+      item.item_kind === "attached" &&
       input.trigger === "pull_request" &&
       input.prNumber !== null &&
       input.prNumber === item.pr_number &&
@@ -1000,15 +1003,15 @@ export const verifyRefresh = defineOperation({
       if (
         output.conclusion === "success" &&
         open &&
-        (item.kind !== "attached" || HOLD_ATTACHED) &&
+        (item.item_kind !== "attached" || HOLD_ATTACHED) &&
         item.repairs_main !== 1 &&
         (await lineStopped(ctx, item))
       ) {
         output = {
           status: "in_progress",
-          title: item.kind === "attached" ? ATTACHED_HELD_TITLE : HELD_TITLE,
+          title: item.item_kind === "attached" ? ATTACHED_HELD_TITLE : HELD_TITLE,
           summary:
-            item.kind === "attached"
+            item.item_kind === "attached"
               ? `Work item #${item.number}: ${item.title}\n\nThe default branch is red. This pull request was opened outside the factory: the owner decides whether it merges before main is green (spec 53, decision 7). The babysitter doesn't merge it.`
               : `Work item #${item.number}: ${item.title}\n\nThe default branch is red, so only repairs merge until it is green again. Verify passed on this commit; it can merge once main is green (spec 53, decision 7).`,
         };
@@ -1155,7 +1158,7 @@ export const prAutoMerge = defineOperation({
     const refuse = (reason: string): never => {
       throw new OperationError("denied", `not check-only: ${reason}`);
     };
-    if (w.kind !== "incident") refuse("only a factory incident's fix may auto-merge");
+    if (w.item_kind !== "incident") refuse("only a factory incident's fix may auto-merge");
     if (!w.pr_number) throw new OperationError("conflict", "no pull request");
     if (w.head_sha !== input.headSha) {
       throw new OperationError("conflict", "the branch moved since the review packet was made");

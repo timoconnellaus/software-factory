@@ -71,4 +71,18 @@ reference. The risk is an agent that creates and ships its own work.
 > gap; one that happens twice fires once, the first time; the firing's dedupe key is its local wall
 > time. A waiting autopilot change carries what it would run with as it is now (its agent and the
 > skills it follows), and the desktop's pending screen shows it.
+>
+> Amended 2026-11-14 (build step (g2a)): **a run's kind has one source of truth, without a table
+> rebuild.** `core_work_items.kind`'s CHECK can't be altered, and rebuilding the table for one more
+> kind risks dropping columns other branches add, so migration 0284 adds `autopilot_run_id` and a
+> virtual generated column `item_kind` (`autopilot` for a run, else the stored kind). Every read that
+> branches or filters on an item's kind uses `item_kind`: the stored `kind` is typed so TypeScript
+> refuses comparing it, and a test fails on a raw SQL read of it. A run is left out of the Work
+> lists, the board and the active limit, and shown in its autopilot's history
+> (`core_autopilot_runs`, kept 90 days). Until runners support autopilots (g2b) a run ends at once,
+> saying so, with no work item (only a run that starts a job gets one); `autopilot.fire` exists for
+> the cron and events (g2c) but nothing calls it yet. Review of #203: run-now and fire are scoped by
+> the org and refuse a project that isn't the org's; the daily cap is counted in SQL over runs that
+> ran and enforced in the insert itself; a kill switch on the org or the project stops a run, a
+> person's too; a person's run now while off, capped or killed is refused and writes nothing.
 

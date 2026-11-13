@@ -5,6 +5,10 @@
 // Sunday). Cron's rule: when both day fields are restricted, a day matches if EITHER does. The
 // minute is one fixed number (at most hourly). Anything else (macros like @daily, names, `L`, `W`,
 // `#`, `?`, reversed ranges, other whitespace) is refused.
+// Only a bare `*` leaves a day field unrestricted: a stepped `*/n` counts as restricted (so `*/2`
+// with a day of week is an OR), unlike Vixie cron, which treats any field starting with `*` as
+// unrestricted (review of #197). Time zones are checked with the runtime's own zone database
+// (workerd's, for both the app that saves and the engine that fires), so save and firing agree.
 
 const BOUNDS: readonly [number, number][] = [
   [0, 59],
@@ -73,6 +77,18 @@ export function parseCron(expr: string): { ok: true; cron: Cron } | { ok: false;
       months: sets[3] ?? new Set(Array.from({ length: 12 }, (_, m) => m + 1)),
       dows: sets[4] ?? null,
     },
+  };
+}
+
+/** A cron's sets as sorted arrays: two spellings of the same schedule have the same shape. */
+export function cronShape(c: Cron) {
+  const sorted = (x: ReadonlySet<number> | null) => (x ? [...x].sort((p, q) => p - q) : null);
+  return {
+    minute: c.minute,
+    hours: sorted(c.hours),
+    doms: sorted(c.doms),
+    months: sorted(c.months),
+    dows: sorted(c.dows),
   };
 }
 

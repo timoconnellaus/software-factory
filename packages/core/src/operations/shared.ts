@@ -1,6 +1,6 @@
 // Pieces several operations share: field schemas, work-item creation, stage transitions and the
 // GitHub repo reference for a project.
-import { json, type WorkItemKind } from "@software-factory/db";
+import { json, type StoredWorkItemKind } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -152,7 +152,8 @@ export interface NewWorkItem {
   body: string;
   source: string;
   requesterUserId: string;
-  kind?: WorkItemKind;
+  /** The stored kind; an autopilot run is a `change` with its run id (migration 0284). */
+  kind?: StoredWorkItemKind;
   parentWorkItemId?: string | null;
   /**
    * An attached PR (spec 05): its own head branch, number, URL and head SHA. Other items get

@@ -24,6 +24,8 @@ export const RETENTION = {
   /** After this the intake event keeps its id (the dedupe) and title, not its body. */
   intakeBodyDays: 90,
   terminalAttachesDays: 90,
+  /** An autopilot's run history (migration 0284); a run's work item keeps its own. */
+  autopilotRunsDays: 90,
   expiredGraceDays: 1,
 } as const;
 
@@ -47,6 +49,8 @@ const PRUNES: { table: string; column: string; days: number }[] = [
   { table: "core_runner_device_codes", column: "expires_at", days: RETENTION.expiredGraceDays },
   { table: "core_cli_device_codes", column: "expires_at", days: RETENTION.expiredGraceDays },
   { table: "core_github_connect_states", column: "expires_at", days: RETENTION.expiredGraceDays },
+  // core_autopilot_runs_created_idx (created_at): the prune's own index.
+  { table: "core_autopilot_runs", column: "created_at", days: RETENTION.autopilotRunsDays },
 ];
 
 /**

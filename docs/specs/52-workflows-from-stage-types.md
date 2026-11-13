@@ -1391,6 +1391,12 @@ screen needs).
    and next-run times. Its `skills` (the org's or built-ins, checked like an agent's) are practice.
    Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
    proof.
+   *As built (g2a), 2026-11-14:* migration 0284 (`autopilot_run_id`, the virtual `item_kind` as the
+   one source of an item's kind, `core_autopilot_runs` with a 90-day prune); `autopilot.runNow`
+   (members) and `autopilot.fire` (the scheduler; no caller until g2c) share `startAutopilotRun`
+   (dedupe key, daily cap, on in the current config, a project in scope); runs are hidden from the
+   Work lists, the board and the active limit and listed by `autopilot.get`; a run ends at once with
+   "no runner supports autopilots yet" until g2b.
 9. **Later, in this order:** the generic review packet (ADR 0512); Preview on the reconciler with
    `decision` and `agent-work`, runner jobs without a repository and media in R2; Publish through a
    connector, Q2's carry-over and the Measure follow-up item; the board's lanes and the all-projects

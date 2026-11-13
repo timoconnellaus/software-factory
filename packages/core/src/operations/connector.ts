@@ -218,7 +218,7 @@ async function personPush(
   // An attached PR's pushes are verify.refresh's (spec 05); a factory item's only from verify on.
   if (
     !item ||
-    item.kind === "attached" ||
+    item.item_kind === "attached" ||
     item.branch !== branch ||
     !["running", "waiting", "paused"].includes(item.status) ||
     (item.stage !== "verify" && item.stage !== "merge") ||

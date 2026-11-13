@@ -37,7 +37,7 @@ export async function recentOutcomes(
     .selectFrom("core_work_items")
     .select(["id", "policy_sha", "trial_id", "status", "updated_at"])
     .where("project_id", "=", projectId)
-    .where("kind", "=", "change")
+    .where("item_kind", "=", "change")
     .where("status", "in", ["done", "failed", "rejected"]);
   if (opts.policySha) q = q.where("policy_sha", "=", opts.policySha).where("trial_id", "is", null);
   if (opts.trialId) q = q.where("trial_id", "=", opts.trialId);

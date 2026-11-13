@@ -97,7 +97,7 @@ export const babysitWake = defineOperation({
     onlyBabysitter(ctx);
     const w = requireWorkItem(ctx);
     const repository = requireRepository(ctx);
-    if (input.reason.kind === "conflict" && w.kind === "attached") {
+    if (input.reason.kind === "conflict" && w.item_kind === "attached") {
       throw new OperationError(
         "forbidden",
         "an attached pull request's conflict goes back to its author: the factory never pushes to their branch",

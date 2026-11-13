@@ -213,7 +213,7 @@ export function startPipeline(
       .$if(!!conditions, (q) =>
         q
           .where(
-            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused') AND a.awaiting_children = 0)`,
+            sql<number>`(SELECT count(*) FROM core_work_items a WHERE a.project_id = ${project.id} AND a.status IN ('running', 'waiting', 'paused') AND a.awaiting_children = 0 AND a.item_kind != 'autopilot')`,
             "<",
             conditions?.activeLimit ?? 0,
           )
@@ -398,6 +398,8 @@ export async function pullQueued(
         .where("status", "in", [...ACTIVE_STATUSES])
         // A split's parent waiting for its children holds no slot (review of #171).
         .where("awaiting_children", "=", 0)
+        // An autopilot run is the factory's own small job: it never counts (ADR 0514).
+        .where("item_kind", "!=", "autopilot")
         .executeTakeFirst()
     )?.n ?? 0,
   );
@@ -1571,12 +1573,15 @@ export const workItemBoard = defineOperation({
       // What each running or waiting item waits on, in this same read (waiting-on.ts).
       .select(waitingOnSelections())
       .where("org_id", "=", input.orgId)
-      .where("status", "in", states as never[]);
+      .where("status", "in", states as never[])
+      // Autopilot runs are shown on their autopilot's page, not on the board (ADR 0514).
+      .where("item_kind", "!=", "autopilot");
     if (input.projectId) q = q.where("project_id", "=", input.projectId);
     let c = ctx.db
       .selectFrom("core_work_items")
       .select(["project_id", "status", sql<number>`count(*)`.as("n")])
       .where("org_id", "=", input.orgId)
+      .where("item_kind", "!=", "autopilot")
       .groupBy(["project_id", "status"]);
     if (input.projectId) c = c.where("project_id", "=", input.projectId);
     const [rows, counts] = await Promise.all([
@@ -1617,7 +1622,7 @@ export const workItemBoard = defineOperation({
           projectId: w.project_id,
           number: w.number,
           title: w.title,
-          kind: w.kind,
+          kind: w.item_kind,
           status: w.status,
           statusReason: w.status_reason,
           stage: w.stage,

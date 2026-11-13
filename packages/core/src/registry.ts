@@ -286,6 +286,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   autopilots.autopilotSave,
   autopilots.autopilotEnable,
   autopilots.autopilotDisable,
+  autopilots.autopilotRunNow,
+  autopilots.autopilotFire,
   workflows.stageTypeList,
   reconcile.reconcileReport,
   reconcile.reconcileStreak,

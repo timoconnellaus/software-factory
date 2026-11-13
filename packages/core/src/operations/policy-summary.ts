@@ -123,7 +123,9 @@ export async function describeOrgConfigDecision(
       const after = ap ? attempt(() => withAutopilot(config, ap)) : null;
       return titled(
         facts(
-          say(`save an org autopilot (${versions})${ap ? `: ${autopilotReach(ap)}` : ""}`),
+          say(
+            `save an org autopilot (${versions})${ap ? `: ${autopilotReach(ap, config.agentSkills[ap.agent.toLowerCase()] ?? [])}` : ""}`,
+          ),
           // A count, so what it may do and its name both fit; the card lists each change.
           ((imp) =>
             typeof imp === "string"
@@ -139,7 +141,11 @@ export async function describeOrgConfigDecision(
       const id = String(raw.autopilotId ?? "");
       const ap = config.autopilots.find((a) => a.id === id);
       return titled(
-        facts(say(`turn on an org autopilot (${versions})${ap ? `: ${autopilotReach(ap)}` : ""}`)),
+        facts(
+          say(
+            `turn on an org autopilot (${versions})${ap ? `: ${autopilotReach(ap, config.agentSkills[ap.agent.toLowerCase()] ?? [])}` : ""}`,
+          ),
+        ),
         `${ap?.name ?? id} in ${org}`,
       );
     }
@@ -249,7 +255,7 @@ export async function describeOverrideApprove(
  * What an autopilot may do once on, in facts (review of #197): its trigger, its output and
  * whether it releases work, the projects it reaches, and its limits. The name goes after, quoted.
  */
-export function autopilotReach(a: AutopilotConfig): string {
+export function autopilotReach(a: AutopilotConfig, attached: readonly string[] = []): string {
   const trigger =
     a.trigger.kind === "schedule"
       ? `${a.trigger.cron} ${a.trigger.timezone}`
@@ -266,6 +272,8 @@ export function autopilotReach(a: AutopilotConfig): string {
           : "proposals";
   const projects =
     a.scope.projects === "all" ? "all projects" : `${a.scope.projects.length} projects`;
-  const uses = `agent ${a.agent}${a.skills.length ? `, ${a.skills.length} skills` : ""}`;
+  // Its own skills and the ones attached to its agent (review of #197).
+  const skillCount = new Set([...a.skills, ...attached]).size;
+  const uses = `agent ${a.agent}${skillCount ? `, ${skillCount} skills` : ""}`;
   return `${trigger}; ${output}; ${projects}; ${uses}; ${a.limits.maxOutputs}/run, ${a.limits.runsPerDay}/day, ${a.limits.minutes} min`;
 }

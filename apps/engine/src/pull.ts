@@ -49,7 +49,7 @@ export async function pullQueuedWork(env: Env, limit = 20): Promise<number> {
          AND h.awaiting_children = 0 AND h.status != 'done'))
        AND (SELECT count(*) FROM core_work_items a
             WHERE a.project_id = w.project_id AND a.status IN ('running', 'waiting', 'paused')
-              AND a.awaiting_children = 0)
+              AND a.awaiting_children = 0 AND a.item_kind != 'autopilot')
            < COALESCE(json_extract(CASE WHEN json_valid(pp.raw) THEN pp.raw END, '$.activeLimit'), 10)
        -- Never a project the pull would refuse anyway, so it can't hold a slot of the LIMIT:
        -- a kill switch on it or its org,
