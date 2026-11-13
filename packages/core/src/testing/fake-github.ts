@@ -452,6 +452,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         [next]: [{ path, status: existed ? "modified" : "added" }],
       };
       state.files[branch] = { ...(state.files[branch] ?? {}), [path]: content };
+      // The files at this commit, so a read at its SHA sees what it wrote.
+      state.blobs = { ...(state.blobs ?? {}), [next]: { ...state.files[branch] } };
       await save(r, state);
       return { commitSha: next };
     },
@@ -472,6 +474,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         ...before,
         ...Object.fromEntries(files.map((f) => [f.path, f.content])),
       };
+      // The files at this commit, so a read at its SHA sees what it wrote.
+      state.blobs = { ...(state.blobs ?? {}), [next]: { ...state.files[branch] } };
       await save(r, state);
       return { commitSha: next };
     },

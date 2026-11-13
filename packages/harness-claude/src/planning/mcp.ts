@@ -10,12 +10,16 @@ import {
   type PlanningOp,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { type DesignChecker, designAfterPull, designBeforeSave } from "./designs.ts";
 import { readHookState } from "./hooks.ts";
 import { callRelay, RelayError, type RelayInfo } from "./relay.ts";
 
-/** Operations the agent calls as tools. News and waits come through the hooks instead. */
+/**
+ * Operations the agent calls as tools. News and waits come through the hooks instead, and a
+ * pulled design's preview is stored by this server itself (spec 22 part B).
+ */
 export const PLANNING_TOOL_OPS = PLANNING_OPS.filter(
-  (op) => op !== "planning.wait" && op !== "planning.peek",
+  (op) => op !== "planning.wait" && op !== "planning.peek" && op !== "design.preview",
 );
 
 /** An MCP tool name for an operation: `question.ask` → `question_ask`. */
@@ -42,7 +46,7 @@ interface Request {
 export async function handleMcp(
   message: Request,
   relay: Pick<RelayInfo, "url" | "token">,
-  options: { fetch?: typeof fetch; relayFile?: string } = {},
+  options: { fetch?: typeof fetch; relayFile?: string; designs?: DesignChecker } = {},
 ): Promise<Record<string, unknown> | null> {
   const reply = (result: unknown) => ({ jsonrpc: "2.0", id: message.id ?? null, result });
   const fail = (code: number, text: string) => ({
@@ -87,13 +91,29 @@ export async function handleMcp(
         const shown = (await readHookState(options.relayFile)).shown;
         if (shown !== undefined) args.ack = shown;
       }
-      try {
-        // The cloud parses them again with the operation's schema.
-        const result = await callRelay(relay, op, args, {
+      const call = (o: PlanningOp, a: Record<string, unknown>) =>
+        callRelay(relay, o, a, {
           timeoutMs: 60_000,
           ...(options.fetch ? { fetch: options.fetch } : {}),
         });
-        return reply({ content: [{ type: "text", text: JSON.stringify(result) }] });
+      try {
+        // A design is checked here, on the runner, before it is saved (spec 22 part B): one that
+        // won't draw is refused with its lines and never reaches the cloud; one that draws goes
+        // with its preview, and its layout warnings come back to the planner.
+        const design = await designBeforeSave(op, args, call, options.designs);
+        if (design?.refused)
+          return reply({ isError: true, content: [{ type: "text", text: design.refused }] });
+        // The cloud parses them again with the operation's schema.
+        const result = await call(op, args);
+        const after = await designAfterPull(op, result, call, options.designs);
+        const extra = design?.warnings?.length
+          ? { layoutWarnings: design.warnings }
+          : after
+            ? { design: after }
+            : {};
+        return reply({
+          content: [{ type: "text", text: JSON.stringify({ ...(result as object), ...extra }) }],
+        });
       } catch (error) {
         const text =
           error instanceof RelayError

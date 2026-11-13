@@ -29,3 +29,8 @@ limits, but nothing uses either.
 ## Consequences
 - Amends ADR 0006. The inbox and the work list group children under their parent.
 - Built in [spec 24](../specs/24-planning-splits.md).
+
+> Amended 2026-11-13 by [ADR 0630](0630-a-split-parent-lands-its-plan-then-its-children-build.md):
+> the children are held until the parent's plan merges (its PR may carry only the approved files,
+> checked in code), `after` is a "waits for" link, and a child whose sibling ends without merging
+> asks the owner.

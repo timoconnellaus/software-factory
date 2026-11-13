@@ -45,3 +45,10 @@ agent-written HTML.
 > waits at the gate the planner can't add, change, delete or pull artifacts; approval records each
 > `.kim/` file's revision and content hash on the spec, and the commit writes exactly those. The gate
 > lists every file it writes, with its text, until part B draws designs.
+>
+> Amended 2026-11-13 (spec 22 part B): the checks run in the planning MCP server on the runner
+> (`packages/planning-designs`). A design that won't parse never reaches the cloud. One that parses
+> is drawn there to a static SVG by the factory's own code (no design text is executed, and Mermaid
+> only parses), which the cloud stores with the revision only when drawn from that content and free
+> of scripts and outside references, and which the app shows only as an image. The approved plan
+> writes it beside the design as `.svg`.

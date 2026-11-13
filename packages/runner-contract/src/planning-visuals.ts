@@ -99,5 +99,7 @@ export const pinSchema = z.object({
   fy: z.number().finite().min(0).max(1),
   /** The document's width when the pin was placed. */
   width: z.number().finite().positive().max(10_000),
+  /** The artifact revision it was placed on (a design's pin, spec 22 part B). */
+  revision: z.number().int().nonnegative().optional(),
 });
 export type Pin = z.output<typeof pinSchema>;

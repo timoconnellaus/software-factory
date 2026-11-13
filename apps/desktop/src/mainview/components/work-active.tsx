@@ -5,6 +5,7 @@
 // phase (the owner's decision, 2026-11-12): Backlog, Shaping, Ready, Queued, Delivery, Done, so
 // every workflow's items share them; its list sorts by who each item waits on. Done is everything
 // that finished, with its outcome.
+
 import { ago } from "@software-factory/client/format";
 import { Button } from "@software-factory/ui/components/button";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
@@ -20,6 +21,7 @@ import { ExternalLink } from "../lib/external.tsx";
 import { peekItem } from "../lib/places.ts";
 import { boardsQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
+import { groupUnderParents } from "../lib/splits.ts";
 import {
   type ActiveItem,
   boardLanes,
@@ -369,7 +371,7 @@ function ActiveTable({
           </tr>
         </thead>
         <tbody>
-          {items.map((i) => {
+          {groupUnderParents(items).map(({ item: i, depth }) => {
             const who = waitingOn(i, needsYou);
             return (
               <tr
@@ -381,7 +383,15 @@ function ActiveTable({
                 aria-current={openId === i.id ? "true" : undefined}
                 data-testid={`row-${i.id}`}
               >
-                <td className="py-2.5 pr-3 pl-3.5">
+                <td className={cn("py-2.5 pr-3 pl-3.5", depth === 1 && "pl-9")}>
+                  {depth === 1 && (
+                    <>
+                      <span className="mr-1.5 text-ink-muted" aria-hidden>
+                        ↳
+                      </span>
+                      <span className="sr-only">Part of the item above: </span>
+                    </>
+                  )}
                   <Link {...peekItem(i.id)} className="font-medium hover:underline">
                     <span className="mr-1.5 font-mono font-normal text-[12px] text-ink-muted">
                       #{i.number}
