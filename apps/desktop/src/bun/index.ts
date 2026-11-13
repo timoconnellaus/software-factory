@@ -13,6 +13,7 @@ import Electrobun, {
   Utils,
 } from "electrobun/main";
 import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
+import { type ApplyEvent, type ApplyState, applyTransition, IDLE } from "../shared/update-apply.ts";
 import { checkSummary } from "../shared/update-check.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
@@ -167,10 +168,11 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       openExternal: ({ url }) => ({ ok: /^https:\/\//.test(url) && Utils.openExternal(url) }),
       updateStatus: () => updateStatus(),
       updateAction: async ({ action }) => {
-        if (action === "restart" && liveJobs().length === 0) await restartToUpdate();
+        // Not awaited: the view shows each step as it is pushed (updateChanged), from the click.
+        if (action === "restart" && liveJobs().length === 0) void restartToUpdate();
         if (action === "restart-when-idle") restartWhenIdle = true;
         // The view named the jobs this cancels.
-        if (action === "restart-anyway") await restartToUpdate(true);
+        if (action === "restart-anyway") void restartToUpdate(true);
         if (action === "download") Utils.openExternal(downloadUrl);
         if (action === "retry") {
           updateRequired = false;
@@ -178,6 +180,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         }
         // Settings > This Mac: the view shows the check as it runs (updateChanged).
         if (action === "check") void updates.checkByPerson();
+        // Back from a refused update's screen.
+        if (action === "back") applyStep({ type: "back" });
         pushUpdate();
         return updateStatus();
       },
@@ -235,7 +239,8 @@ function openWindow(path?: string) {
   w.on("move", () => frames.changed(w));
   w.on("resize", () => frames.changed(w));
   win.on("close", () => {
-    frames.flush(w);
+    // Closed: what was read when it last moved (the window can't be asked any more).
+    frames.flush();
     win = null;
     terminals.closeAll();
   });
@@ -313,6 +318,7 @@ function updateStatus(): UpdateStatus {
     channel: u.channel,
     reason: u.reason,
     installFailure: u.installFailure ?? null,
+    applying: applying.step === "idle" ? null : applying,
   };
 }
 
@@ -332,6 +338,14 @@ async function checkFromMenu() {
 function pushUpdate() {
   toView("updateChanged", updateStatus());
   refreshTray();
+}
+/** "Restart to update", step by step (shared/update-apply.ts): the view's "Updating to …" screen. */
+let applying: ApplyState = IDLE;
+function applyStep(e: ApplyEvent) {
+  const next = applyTransition(applying, e);
+  if (next === applying) return;
+  applying = next;
+  pushUpdate();
 }
 /** "Restart to update" is waiting for the runner to stop claiming, until this time (epoch ms). */
 let waitingForRunner: number | null = null;
@@ -424,15 +438,37 @@ async function restartToUpdate(anyway = false) {
   restarting = true;
   const wasWaiting = restartWhenIdle;
   restartWhenIdle = false;
+  // The window shows "Updating to <version>" from the click (shared/update-apply.ts), and the log
+  // says how long each step took.
+  const started = performance.now();
+  let mark = started;
+  const lap = () => {
+    const now = performance.now();
+    const ms = Math.round(now - mark);
+    mark = now;
+    return ms;
+  };
+  const laps: string[] = [];
+  applyStep({ type: "start", version: updates.state.version ?? "the new version" });
   try {
+    // The signature first, before the runner is touched: cheap when it was checked at download.
+    if (await updates.verifyForApply()) {
+      applyStep({ type: "refused", reason: updates.state.reason ?? "The update was refused." });
+      laps.push(`check ${lap()} ms (refused)`);
+      return;
+    }
+    laps.push(`check ${lap()} ms`);
     const outcome = await restartUpdate(
       {
         drain: (ms) => runner.drain(ms),
         // "Waiting for the runner" in the menu and the view, with when it gives up.
         waiting: (until) => {
           waitingForRunner = until;
+          if (until !== null) applyStep({ type: "waiting" });
+          else laps.push(`runner drain ${lap()} ms`);
           pushUpdate();
         },
+        restarting: () => applyStep({ type: "restarting" }),
         liveJobs: () => liveJobs(),
         // The live socket and every open terminal: an update restarts the app under them.
         stopLive: () => {
@@ -442,10 +478,22 @@ async function restartToUpdate(anyway = false) {
         startLive: () => live.start(),
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
-        apply: () => updates.apply(),
+        // The relaunch comes back where the window is now (window-frame.ts).
+        apply: () => {
+          laps.push(`stop runner ${lap()} ms`);
+          frames.flush(win);
+          console.log(`updates: restart to update: ${laps.join(", ")}; applying`);
+          return updates.apply();
+        },
       },
       { anyway },
     );
+    if (outcome !== "failed") applyStep({ type: "deferred" });
+    else
+      applyStep({
+        type: "refused",
+        reason: updates.state.reason ?? updates.state.error ?? "The update didn't start.",
+      });
     if (outcome === "timeout") {
       restartWhenIdle = true;
       if (!wasWaiting)
@@ -467,11 +515,14 @@ async function restartToUpdate(anyway = false) {
       });
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    applyStep({ type: "refused", reason: `The update didn't install: ${message}` });
     Utils.showNotification({
       title: "Software Factory",
-      body: `The update didn't install: ${error instanceof Error ? error.message : String(error)}`,
+      body: `The update didn't install: ${message}`,
     });
   } finally {
+    if (laps.length) console.log(`updates: restart to update: ${laps.join(", ")}`);
     restarting = false;
     refreshTray();
   }

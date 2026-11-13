@@ -1,6 +1,7 @@
 // The RPC between the Bun main process and the webview (ADR 0390). The view never holds the desktop
 // token: it asks the main process to call operations, and to decide gates (which asks for Touch ID).
 // No message or response here carries a token, a nonce or a key (test/rpc.test.ts checks).
+import type { ApplyState } from "./update-apply.ts";
 
 export type RunnerStatus =
   | "unpaired"
@@ -66,6 +67,8 @@ export interface UpdateStatus {
   reason: string | null;
   /** The last update didn't install (read after the relaunch): shown with Retry, not as new. */
   installFailure?: { version: string; reason: string } | null;
+  /** "Restart to update" under way (shared/update-apply.ts): the window shows each step. */
+  applying?: ApplyState | null;
 }
 
 /**
@@ -158,7 +161,8 @@ export type AppRPC = {
             | "restart-anyway"
             | "download"
             | "retry"
-            | "check";
+            | "check"
+            | "back";
         };
         response: UpdateStatus;
       };

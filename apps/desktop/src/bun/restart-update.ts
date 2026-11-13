@@ -20,6 +20,8 @@ export interface RestartDeps {
   /** The drain started (with the time it gives up, epoch ms) or ended (null): the app shows it. */
   waiting?(until: number | null): void;
   now?(): number;
+  /** The runner is idle (or the person chose to cancel its jobs): the app stops it and restarts. */
+  restarting?(): void;
   liveJobs(): string[];
   stopLive(): void;
   startLive(): void;
@@ -58,6 +60,7 @@ export async function restartToUpdate(
     if (drained === "timeout") return "timeout";
     if (d.liveJobs().length > 0) return "deferred";
   }
+  d.restarting?.();
   d.stopLive();
   try {
     await d.stopRunner();

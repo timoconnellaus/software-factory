@@ -109,12 +109,16 @@ export function fileStore(dataDir: string): Pick<FrameStoreDeps, "read" | "write
 
 /**
  * Saves the window's frame a moment after it stops moving (`changed`), and at once on `flush`
- * (quit, close, restart to update). While zoomed or full screen the frame it would get back to is
- * kept, with the flag: unzooming after a relaunch then lands where the person had it.
+ * (quit, close, restart to update). The window is read when it moves, while it is surely open; only
+ * the write waits. While zoomed or full screen the frame it would get back to is kept, with the
+ * flag: unzooming after a relaunch then lands where the person had it.
  */
 export class FrameKeeper {
   private timer: unknown = null;
+  /** The frame on disk (or read from it at start). */
   private last: SavedFrame | null;
+  /** A frame read but not written yet. */
+  private pending: SavedFrame | null = null;
   private readonly d: Required<FrameStoreDeps>;
 
   constructor(deps: FrameStoreDeps) {
@@ -131,31 +135,41 @@ export class FrameKeeper {
     return this.last;
   }
 
+  /** The window moved or resized: read it now, write it once it settles. */
   changed(win: FrameSource | null) {
-    if (!win) return;
+    const snap = this.read(win);
+    if (!snap) return;
+    this.pending = snap;
     if (this.timer !== null) this.d.clearTimeout(this.timer);
     this.timer = this.d.setTimeout(() => {
       this.timer = null;
-      this.save(win);
+      this.write();
     }, SAVE_DELAY_MS);
   }
 
-  flush(win: FrameSource | null) {
+  /** Write now: from the window if it is still open (quit), else what was read last (closed). */
+  flush(win: FrameSource | null = null) {
     if (this.timer !== null) {
       this.d.clearTimeout(this.timer);
       this.timer = null;
     }
-    if (win) this.save(win);
+    const snap = this.read(win);
+    if (snap) this.pending = snap;
+    this.write();
   }
 
-  private save(win: FrameSource) {
+  private read(win: FrameSource | null): SavedFrame | null {
+    if (!win) return null;
     try {
       const zoomed = win.isMaximized();
       const fullScreen = win.isFullScreen();
       const frame = win.getFrame();
-      // Zoomed or full screen: keep the frame it returns to, which was saved before.
-      const base = (zoomed || fullScreen) && this.last ? this.last : frame;
-      const next: SavedFrame = {
+      // Zoomed or full screen: keep the frame it returns to, which was read before.
+      const base =
+        (zoomed || fullScreen) && (this.pending ?? this.last)
+          ? (this.pending ?? this.last ?? frame)
+          : frame;
+      return {
         x: Math.round(base.x),
         y: Math.round(base.y),
         width: Math.round(base.width),
@@ -163,11 +177,21 @@ export class FrameKeeper {
         zoomed,
         fullScreen,
       };
-      const same = this.last && JSON.stringify(this.last) === JSON.stringify(next);
-      this.last = next;
-      if (!same) this.d.write(JSON.stringify(next));
     } catch {
-      // A window already gone, or a full disk: the last saved frame stays.
+      return null;
+    }
+  }
+
+  private write() {
+    const next = this.pending;
+    this.pending = null;
+    if (!next) return;
+    if (this.last && JSON.stringify(this.last) === JSON.stringify(next)) return;
+    try {
+      this.d.write(JSON.stringify(next));
+      this.last = next;
+    } catch {
+      // A full disk: the last saved frame stays.
     }
   }
 }

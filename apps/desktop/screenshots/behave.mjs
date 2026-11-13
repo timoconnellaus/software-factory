@@ -31,6 +31,8 @@ function page(cdp, base) {
   };
   const $ = (selector) => `document.querySelector(${JSON.stringify(selector)})`;
   const p = {
+    cdp,
+    base,
     evaluate,
     /**
      * A fresh view at a path: one tab, nothing remembered, no writes recorded. `query` goes before
@@ -111,6 +113,40 @@ const ROUTER_ERROR = "document.body.textContent.includes('Something went wrong!'
 
 /** The tests, in order. Each opens its own fresh view. */
 export const TESTS = [
+  {
+    name: "loading: the shell fills the window, its toolbar strip drags it, at the toolbar's height",
+    async run(p) {
+      await p.cdp.send("Page.navigate", { url: `${p.base}?session=slow#/` });
+      await p.waitFor("document.querySelector('[data-testid=window-skeleton]')");
+      for (const [w, h] of [
+        [1200, 800],
+        [760, 1100],
+      ]) {
+        await p.cdp.send("Emulation.setDeviceMetricsOverride", {
+          width: w,
+          height: h,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+        await sleep(100);
+        const box = await p.evaluate(
+          "(() => { const r = document.querySelector('[data-testid=window-skeleton]').getBoundingClientRect(); return [r.width, r.height]; })()",
+        );
+        expect(box.join("x"), `the shell at ${w}x${h}`).toBe(`${w}x${h}`);
+      }
+      await p.cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: 1200,
+        height: 800,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      const strip = await p.evaluate(
+        "(() => { const e = document.querySelector('[data-testid=toolbar-skeleton]'); return [e.classList.contains('electrobun-webkit-app-region-drag'), e.getBoundingClientRect().height]; })()",
+      );
+      expect(strip[0], "the drag region").toBe(true);
+      expect(strip[1], "the toolbar's height").toBe(44);
+    },
+  },
   {
     name: "sign-in: completing it with a route mounted shows the app, not an error screen",
     async run(p) {

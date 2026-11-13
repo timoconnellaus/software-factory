@@ -14,7 +14,9 @@
 //   version (which Electrobun copies into its record) is the bucket's word; a genuine, older signed
 //   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
 //   version must equal the manifest's and be newer than the running one (updates.ts).
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 export const APP_IDENTIFIER = "com.software-factory.desktop";
@@ -90,6 +92,33 @@ export function bundleInfo(
   } catch {
     return null;
   }
+}
+
+/**
+ * A hash of everything in a bundle: every path, its kind, mode and size, a symlink's target and a
+ * file's bytes, in a fixed order. Taken when the staged bundle passes the checks above and taken
+ * again before applying: equal means the bundle applied is, byte for byte, the one checked. About
+ * 0.2 s for the app's 212 MB (the signature checks take seconds: spctl asks Apple's notary).
+ */
+export async function bundleFingerprint(app: string): Promise<string> {
+  const hash = createHash("sha256");
+  async function walk(dir: string, rel: string): Promise<void> {
+    for (const name of (await readdir(dir)).sort()) {
+      const path = join(dir, name);
+      const at = rel ? `${rel}/${name}` : name;
+      const st = await lstat(path);
+      if (st.isSymbolicLink()) hash.update(`L\0${at}\0${await readlink(path)}\n`);
+      else if (st.isDirectory()) {
+        hash.update(`D\0${at}\0${st.mode}\n`);
+        await walk(path, at);
+      } else if (st.isFile()) {
+        hash.update(`F\0${at}\0${st.mode}\0${st.size}\n`);
+        hash.update(await readFile(path));
+      } else hash.update(`O\0${at}\n`);
+    }
+  }
+  await walk(app, "");
+  return hash.digest("hex");
 }
 
 const lastLine = (s: string) => s.trim().split("\n").at(-1)?.slice(0, 200) ?? "";
