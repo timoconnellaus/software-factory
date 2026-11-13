@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APP_REQUIREMENTS, routeGitHubEvent } from "../src/index.ts";
+import { APP_REQUIREMENTS, revertsIn, routeGitHubEvent } from "../src/index.ts";
 
 const SLUG = "software-factory-zerobsai";
 const repository = { name: "software-factory", owner: { login: "timoconnellaus" } };
@@ -145,6 +145,7 @@ describe("routing GitHub App webhooks", () => {
           after: sha("d"),
           pusher: `${SLUG}[bot]`,
           pusherIsApp: true,
+          reverts: [],
         },
       },
     ]);
@@ -269,5 +270,22 @@ describe("routing GitHub App webhooks", () => {
       input: { repo, headSha: sha("f"), trigger: "push" },
     });
     expect(push("refs/heads/factory/1-x").map((c) => c.op)).toEqual(["push.observe"]);
+  });
+});
+
+describe("revertsIn (ADR 0515 §7)", () => {
+  it("reads the reverted PR and commit from GitHub's and git's revert messages", () => {
+    expect(
+      revertsIn([
+        'Revert "Add dark mode (#12)" (#13)\n\nThis reverts commit 0123456789abcdef0123456789abcdef01234567.',
+        'Revert "Merge pull request #44 from o/b"\n\nThis reverts commit abcdef1, reversing\nchanges made to 1234567.',
+        "Add a feature",
+        "This reverts commit fedcba9.",
+      ]),
+    ).toEqual([
+      { sha: "0123456789abcdef0123456789abcdef01234567", pr: 12 },
+      { sha: "abcdef1", pr: 44 },
+      { sha: "fedcba9", pr: null },
+    ]);
   });
 });

@@ -142,3 +142,55 @@ just a config option. Nothing special."
 > hold merges, `SELF_MODIFY_PATHS` in code in every workflow, an org admin lifts the hold, a Preview
 > approval carries to Publish only where `autoApprove` is on, a built-in may be un-tightened back to
 > the shipped version as a loosening an org admin approves). They are decided.
+
+> Amended 2026-11-13 (built, spec 52 (e1)): the `auto-approve` decision is taken when the
+> adjudicator's approval of the merge gate's commit is recorded, not by a separate Workflow step;
+> it is recorded as the decider `auto-approve` under the `self-improve` actor type. The adjudicator's
+> precision on merges counts only people's decisions (gates people decided, and reviews after a
+> sampled merge), never its own auto-approved merges.
+
+> Amended 2026-11-13 (review of #152): **on the factory's own repository auto-approval is
+> default-deny.** A project is the factory's own source when it says so (`factorySource: "yes"`), or
+> by default (`auto`) when its repository holds the engine's package; saying `no` is a loosening an
+> org admin approves. There a change qualifies only when every path it touches is on
+> `FACTORY_SOURCE_ALLOW` in code (`docs/design/**` only); widening that list takes
+> an ADR. On other repositories the deny-lists protect whole package and config surfaces (every
+> `package.json`, lock file, `tsconfig`, build and bundler config, CI and release script, native
+> code, `.factory/**`, agent instruction files) and a submodule pointer bump is risky. The criteria
+> condition counts a spec's ties only when **a person** approved that spec (an adjudicator-approved
+> spec doesn't count). Only an item whose Workflow version has the babysitter's re-check qualifies.
+> The red-main window opens when the merge lands (its merge commit) and closes when main's CI is
+> green on it or a later commit; a revert is matched to the merge commit; the review of every fifth
+> is opened when the merge lands.
+
+> Amended 2026-11-13, last round of the review of #152: **paths are an allow-list everywhere.** The
+> owner's condition 4 was "inside limits you set (size, and paths it may not touch)". This
+> implements the path limit as paths a change **may** touch, which is stricter: the setting carries
+> `allowPaths` (globs an org admin writes, such as `src/components/**`), with no default; empty
+> means nothing qualifies, and turning auto-approval on without them is refused. Every changed path
+> (a rename's old and new) must match `allowPaths` and none may hit the built-in risk and
+> self-modify lists, which stay as a floor no setting removes (now also manifests in every
+> ecosystem, build scripts by any name, CI, deploy and hook configuration, and other agents'
+> instruction files). Widening `allowPaths` loosens (an org admin approves); narrowing tightens. On
+> the factory's own repository `FACTORY_SOURCE_ALLOW` (`docs/design/**` only; screenshots dropped:
+> a PNG has no readable diff) is the ceiling `allowPaths` can't widen. Detection there is
+> default-deny: "not the factory" only when every marker file reads cleanly as absent; migration
+> 0286 marks the factory's own project (`core_projects.factory_source`). Only an org admin lifts
+> a hold. The coordinator is telling the owner.
+
+> Amended 2026-11-13, fifth round of the review of #152: **the floor fails closed.** A deny-list of
+> risky names always leaks a new ecosystem's file, so a changed path qualifies only when it is
+> ordinary content, by allow-list in code (`ORDINARY_EXTENSIONS`, `structuralRisk`): its extension
+> is prose, an asset (`.svg` only under `docs/`) or ordinary source; no segment is hidden or one of
+> the special directories (migrations, seeders, hooks, bin, scripts, vendor, patches, infra, k8s,
+> terraform, helm, deploy, ci); its name isn't a setup, task, hook or agent-instruction name; and
+> the path is NFC with no control or format characters. Every config and data format, every script
+> and every file with no extension is refused, whatever `allowPaths` says; adding to the list is a
+> code change. `allowPaths` matches case-sensitively. **File modes fail closed too**: every path at
+> the head needs a head mode read from GitHub (a GraphQL error fails the read), and only an
+> ordinary file (`100644`) qualifies; modes not read refuse. A hold is a hold whatever its reason
+> says. The babysitter's re-check leaves the approval's own count out of the daily limit. **Earned**
+> (condition 3) now counts approvals a person agreed with on at least 15 **distinct work items**
+> among the last 20 decisions; one approver's decisions can earn it, as for ADR 0374's other
+> kinds. Migration 0286 marks only the factory's own project; every other project's
+> `factory_source` is NULL, which means "detect by markers" (default-deny), not "not the factory".

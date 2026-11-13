@@ -195,7 +195,9 @@ const READ_TODAY: Record<string, readonly string[]> = {
   spec: ["requiredFrom"],
   build: ["retryLimit"],
   verify: ["requiredChecks", "sections"],
-  merge: [],
+  // From the Workflow version with dark factory mode (ADR 0515), read by the adjudicator's merge
+  // verdict (`autoApproveMerge`), not the replayed steps.
+  merge: ["autoApprove"],
 };
 
 /**

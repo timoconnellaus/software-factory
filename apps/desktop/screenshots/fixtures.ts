@@ -1959,6 +1959,14 @@ export const ANSWERS: Answers = {
       precision: 0,
       eligible: false,
     },
+    merge: {
+      mode: "off" as const,
+      decisions: 0,
+      approvals: 0,
+      agreed: 0,
+      precision: 0,
+      eligible: false,
+    },
     configVersion: 12,
   }),
   "desktopDevice.list": () => ({

@@ -7,6 +7,7 @@ import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as autoApprove from "./operations/auto-approve.ts";
 import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
@@ -72,6 +73,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   improve.configTrials,
   adjudicator.adjudicatorRequest,
   adjudicator.adjudicatorRecord,
+  autoApprove.autoApproveReview,
   adjudicator.adjudicatorStatsOp,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,

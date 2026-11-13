@@ -1231,6 +1231,7 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
       .sort();
     expect(human).toEqual([
       "approval.decide",
+      "autoApprove.review",
       "review.merge",
       "review.sendBack",
       "spec.approve",
@@ -1296,6 +1297,13 @@ describe("deciding on the phone (criteria 4 and 5)", () => {
         }
       }
     }
+    // A review after an auto-approved merge (ADR 0515) is the website's only: the phone can't even
+    // ask for a proof for one.
+    const reviewed = await callOp(token, "presence.challenge", {
+      op: "autoApprove.review",
+      input: { pendingActionId: "pa_x", verdict: "shouldNotHaveMerged" },
+    });
+    expect(reviewed.status).toBe(403);
     // The website still decides one.
     const item = await newItem(w, token);
     const id = await gate(w, item, "approval", {}, { operation: "config.save", risk: "write" });

@@ -586,6 +586,11 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
           `query($owner: String!, $name: String!, ${vars}) { repository(owner: $owner, name: $name) { ${fields} } }`,
           variables,
         );
+        // Any GraphQL error fails the read (review of #152: modes fail closed), not just a missing
+        // repository: a partial answer would read as paths with no mode.
+        const errors = (r as { errors?: unknown[] }).errors;
+        if (Array.isArray(errors) && errors.length > 0)
+          fail(`tree entries ${sha}`, { status: 200, json: r });
         const data = (r as { data?: { repository?: Record<string, unknown> } }).data?.repository;
         if (!data) fail(`tree entries ${sha}`, { status: 200, json: r });
         batch.forEach((d, k) => {
@@ -977,6 +982,7 @@ interface GitHubPull {
   merged_at?: string | null;
   merge_commit_sha?: string | null;
   draft?: boolean;
+  changed_files?: number;
   user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
   base: { ref: string };
@@ -997,5 +1003,6 @@ function pullInfo(p: GitHubPull): PullRequestInfo {
     base: { ref: p.base.ref },
     // Before a merge GitHub reports a test-merge commit here: only a merged PR's is its merge.
     mergeCommitSha: (p.merged ?? Boolean(p.merged_at)) ? (p.merge_commit_sha ?? null) : null,
+    ...(typeof p.changed_files === "number" ? { changedFiles: p.changed_files } : {}),
   };
 }

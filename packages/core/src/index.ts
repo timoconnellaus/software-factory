@@ -72,6 +72,7 @@ export {
   PRESENCE_TTL_MS,
   planningReadyEvent,
 } from "./planning.ts";
+export * from "./policy/auto-approve.ts";
 export * from "./policy/gate.ts";
 export * from "./policy/impact.ts";
 export * from "./policy/project-policy.ts";

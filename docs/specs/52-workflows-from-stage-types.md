@@ -1340,6 +1340,73 @@ screen needs).
    (landing stays with today's merge queue until the babysitter's spec replaces it)
    (the next free Workflow version at merge time). Tests: each condition alone sends the item to a person;
    all together merge; each trigger sets the hold; an agent can't save it on.
+   **As built (e1):** `packages/core/src/policy/auto-approve.ts` holds the setting's schema (on
+   `publish` as `autoApprove`, off by default, classified by `autoApproveImpact`: on, a raised limit
+   or a dropped path loosens), `RISK_PATHS`, `SELF_MODIFY_PATHS` (no setting can remove one) and
+   `autoApproveVerdict()`. The adjudicator now shadows merge gates (`adjudicator.merge`, earned under
+   ADR 0374's bar like the other kinds) and never decides one: when it approves a merge gate's
+   commit, `adjudicator.record` calls `autoApproveMerge`, which reads the facts (the packet on that
+   commit: verdict, CI, criteria proven, tests intact; GitHub's compare; the project's hold) and
+   decides the gate as `auto-approve` only when every condition holds; otherwise the gate's reason
+   names the condition. That is the internal decision path: no operation any token can call approves
+   a merge, and the babysitter lands it as it lands a person's approval. Every fifth auto-approval
+   also opens a review-after-merge item (`autoApprove.review`, a person's), whose verdict feeds the
+   adjudicator's precision (auto-approved merges themselves never count as agreement). The hold
+   (`autoApproveHold`, written as config source `auto-approve`) is set by an incident, a revert of
+   an auto-approved PR on the default branch (the connector reads revert commit messages), red CI on
+   the default branch after an auto-approved merge before the next green, and a review's
+   `shouldNotHaveMerged`; removing it is a loosening decided by an org admin. Workflow v14
+   (`dark-factory`, provisional number) stops calling `pr.autoMerge` for incidents (ADR 0230 goes).
+   Deviations: the decision is taken when the adjudicator's verdict arrives (its cron) rather than by
+   a Workflow step, since its approval is a condition anyway; the `auto-approve` actor is recorded as
+   the decider (`decided_by`) under the `self-improve` actor type rather than a new actor type, which
+   would have changed every autonomy table. Not built: deploy approvals (no deploy stage yet) and a
+   desktop card for the hold (the desktop stays read-only on policy decisions until the presence
+   helper covers them).
+   After review: the setting counts only while it is on in both the org version the item pinned and
+   the current one, with the stricter limits (`stricterAutoApprove`), so switching it off stops items
+   already at a gate; a hold is written whatever the setting says. `SELF_MODIFY_PATHS` protects by
+   directory (all of `packages/core/src`, `apps/engine/src`, `apps/app/src`, `apps/desktop/src/bun`,
+   the connectors, `runner-contract`, `runner-local`, `harness-claude`, `local/runner-host`,
+   `packages/db`, `presets`, the deploy and check scripts, `.factory`, `.github`, wrangler configs,
+   `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `docs/adr`), and a test walks the import graph from the
+   gate and verify entry points and fails on any module outside it. The criteria condition counts
+   only ties a person approved (the spec's links, as #146's `everyCriterionProven`): **small items
+   never qualify**, since triage, an agent, ties their criteria. A weakened proof fails it. Wider risk
+   paths (schemas outside migrations, auth and billing by more names, secrets, CI and infra,
+   `.gitmodules`, agent instruction files, evals, every lock file), generated files and any file with
+   no readable diff (binary, too large, a submodule) make an item not low risk; `maxPerDay` (10)
+   caps auto-approvals per project per day, checked and counted in the approval's batch. The babysitter
+   checks again just before it merges (`mergeQueue.merging`): a hold since, or the setting switched
+   off, withdraws the auto-approval, and the item goes back to verify and its gate (v12). The
+   every-fifth review is counted and decided in the same batch, and goes to the gate's assignee or
+   the project's first approver.
+   Third round: on the factory's own repository it is default-deny (only `FACTORY_SOURCE_ALLOW`:
+   `docs/design/**`), recognised by the engine's package in the repository
+   unless the project's `factorySource` says otherwise (`no` loosens); package and config surfaces,
+   native code and release scripts are risk paths everywhere, and a submodule bump is risky; a
+   spec's ties count only when a person approved it; the item's Workflow version must have the
+   babysitter's re-check; the red-main window opens when the merge lands and closes on green at or
+   after its merge commit; a revert is matched by its merge commit (GitHub's Revert button), the PR
+   number only from a merge or squash title; the babysitter's re-check also confirms the approval
+   is for this head; the review of every fifth is opened when the merge lands. ADR 0515 amended.
+   Last round: paths are an allow-list for every project (`allowPaths`, required to turn it on; no
+   default, empty means nothing qualifies; widening loosens), on top of a wider floor (manifests in
+   every ecosystem, build scripts, CI, deploy and hook files, other agents' instruction files). On
+   the factory's own repository the ceiling is `docs/design/**`; "auto" detection is "not the
+   factory" only when every marker (`FACTORY_MARKERS`) reads cleanly as absent; migration 0286 marks
+   the factory's own project (`core_projects.factory_source`, a column the running engine ignores).
+   Fourth round: the floor is structural as well as listed (`structuralRisk`): at any depth and in
+   any case, a hidden segment, a lock file by shape, a manifest, build, setup or task-runner file by
+   name, a migrations, migrate, alembic versions or hooks directory, owners and agent instruction
+   files, and any path with a control character. An empty file list, or one that doesn't match
+   GitHub's `changed_files` for the PR, fails; a symlink, a submodule or a changed mode fails;
+   `allowPaths` entries must name a place, not a bare wildcard. The babysitter reruns the whole
+   verdict at merge against the settings then. An attached PR (merged directly, no babysitter
+   re-check) never qualifies. The adjudicator is eligible only with at least 15 approvals a person
+   agreed with. The adjudicator's minute asks about merge gates only where the project shadows them
+   or has it active. The verdict's journal carries the head, the paths and both settings. All four
+   paths are in the query-plan guard.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

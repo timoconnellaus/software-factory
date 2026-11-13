@@ -8,6 +8,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { holdAutoApproval } from "./auto-approve.ts";
 import { startPipeline } from "./backlog.ts";
 import { createWorkItem, requireProject, requireWorkItem, workItemId } from "./shared.ts";
 
@@ -84,6 +85,8 @@ export async function openIncident(
     id: incidentId,
     after: { kind: input.kind, fixWorkItemId: fix.id, rootCause },
   });
+  // An incident holds dark factory mode on the project (ADR 0515 §7), when its workflow has it on.
+  await holdAutoApproval(ctx, project, `factory incident on #${w.number}: ${what}`, [incidentId]);
   return { incidentId, fixWorkItemId: fix.id, rootCause };
 }
 

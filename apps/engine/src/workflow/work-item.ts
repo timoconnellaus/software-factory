@@ -150,7 +150,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 15;
+export const WORKFLOW_VERSION = 16;
 /** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
@@ -922,7 +922,13 @@ class ItemFlow {
           continue;
         }
         let decided: Awaited<ReturnType<ItemFlow["gate"]>> | null = null;
-        if (has(version, "verify-packet") && meta.kind === "incident") {
+        // v14: ADR 0230 is superseded (ADR 0515): an incident's fix takes the merge gate like any
+        // change, approved with no person only under dark factory mode.
+        if (
+          has(version, "verify-packet") &&
+          meta.kind === "incident" &&
+          !has(version, "dark-factory")
+        ) {
           // A check-only incident fix may merge without a person, if the project opted in and the
           // rule holds (ADR 0230). Refused: the normal merge gate below.
           const autoName = `merge #${b}: auto-merge`;
@@ -1500,7 +1506,7 @@ class ItemFlow {
     | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
-    if (meta.kind === "incident") {
+    if (meta.kind === "incident" && !has(version, "dark-factory")) {
       const auto = await this.landV4(b, "auto-merge", headSha, null, (at) => ({
         op: "pr.autoMerge",
         input: { workItemId: id, headSha: at },

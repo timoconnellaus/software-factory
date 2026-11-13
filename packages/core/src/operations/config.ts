@@ -50,7 +50,15 @@ function pendingInput(raw: string): {
   }
 }
 
-export const CONFIG_SOURCES = ["app", "import", "migrated", "improver", "rollback"] as const;
+export const CONFIG_SOURCES = [
+  "app",
+  "import",
+  "migrated",
+  "improver",
+  "rollback",
+  // The factory's own hold on dark factory mode (ADR 0515 §7): a tightening.
+  "auto-approve",
+] as const;
 export type ConfigSource = (typeof CONFIG_SOURCES)[number];
 
 /** The version number in a `v<N>` key; null for a row read from git before migration 0140. */
@@ -202,6 +210,15 @@ export async function orgAdminDecidesSave(
   const parsed = parseProjectPolicy(JSON.stringify(draft));
   if (!parsed.ok || !at.scope.project) return false;
   const before = at.scope.rawPolicy;
+  // Lifting dark factory mode's hold is an org admin's (ADR 0515 §7, decided by the owner).
+  if (before?.autoApproveHold && !parsed.policy.autoApproveHold) return true;
+  // So is saying the project isn't the factory's own source (review of #152).
+  if (
+    before &&
+    before.factorySource !== parsed.policy.factorySource &&
+    parsed.policy.factorySource !== "yes"
+  )
+    return true;
   if (!onOrgWorkflow(parsed.policy) && !onOrgWorkflow(before)) return false;
   const impact = await impactOf(at.db, at.scope.project, before, parsed.policy, at.floor);
   return impact.changes.some(

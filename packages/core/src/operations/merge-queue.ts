@@ -30,7 +30,9 @@ import {
   onlyEitherSide,
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
+import { adjudicatorStats } from "./adjudicator.ts";
 import { askOne } from "./ask.ts";
+import { AUTO_APPROVE, evaluateAutoApproval, holdReason } from "./auto-approve.ts";
 import { lineStopped } from "./delivery.ts";
 import {
   pendingActionId,
@@ -892,11 +894,34 @@ export const mergeQueueMerging = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId, merging: z.boolean() }),
-  output: z.object({ merging: z.boolean() }),
+  output: z.object({ merging: z.boolean(), withdrawn: z.string().optional() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const entry = await requireBabysitterEntry(ctx, w);
     if (input.merging) await requireOpenToMerge(ctx, w);
+    // Dark factory mode (ADR 0515, review of #152): an approval no person gave is checked again just
+    // before the merge. A hold since, or the setting switched off, withdraws it, and the item goes
+    // back to verify and its merge gate (Workflow v12), where a person decides.
+    if (input.merging && entry.pending_action_id) {
+      const why = await autoApprovalLapsed(ctx, w, entry.pending_action_id, entry.head_sha);
+      if (why) {
+        ctx.writePendingStatus(
+          "close",
+          ctx.db
+            .updateTable("core_pending_actions")
+            .set({
+              status: "rejected",
+              decision: "withdrawn",
+              decided_at: ctx.now,
+              note: `withdrawn: ${why}`,
+            })
+            .where("id", "=", entry.pending_action_id)
+            .where("status", "=", "approved"),
+        );
+        ctx.change({ entity: "merge_queue", id: entry.id, after: { withdrawn: why } });
+        return { merging: false, withdrawn: why };
+      }
+    }
     ctx.write(
       ctx.db
         .updateTable("core_merge_queue")
@@ -999,3 +1024,56 @@ export const mergeQueueHold = defineOperation({
     return wait ? { state: "holding" as const, until } : { state: "resumed" as const, until: null };
   },
 });
+
+/**
+ * Why an auto-approval no longer holds at the merge (ADR 0515): the project is held, or the setting
+ * is off now. Null for a person's approval, or one that still holds. Point reads only.
+ */
+async function autoApprovalLapsed(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  pendingActionId: string,
+  head: string,
+): Promise<string | null> {
+  const pa = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["decided_by", "input", "decided_at"])
+    .where("id", "=", pendingActionId)
+    .executeTakeFirst();
+  if (pa?.decided_by !== AUTO_APPROVE.id) return null;
+  // It approved exactly one head: any other isn't covered (review of #152).
+  let approved: unknown = null;
+  try {
+    approved = (JSON.parse(pa.input) as { headSha?: unknown }).headSha;
+  } catch {
+    approved = null;
+  }
+  if (approved !== head) return "the auto-approval was for another commit";
+  const hold = ctx.scope.rawPolicy?.autoApproveHold;
+  if (hold) return `auto-approved merges are held on this project: ${holdReason(hold)}`;
+  const project = ctx.scope.project;
+  if (!project) return "the project can't be read";
+  // The whole verdict again, against the settings now (review of #152): narrowed allowPaths,
+  // lowered limits, a changed packet or a lost adjudicator record stop it here too.
+  const adjudication = await ctx.db
+    .selectFrom("core_adjudications")
+    .select(["verdict"])
+    .where("pending_action_id", "=", pendingActionId)
+    .executeTakeFirst();
+  const mode = ctx.scope.policy?.adjudicator.merge ?? "off";
+  const stats = await adjudicatorStats(ctx, project.id, "merge");
+  const { verdict } = await evaluateAutoApproval(
+    ctx,
+    pa,
+    w,
+    project,
+    {
+      active: mode === "active",
+      eligible: stats.eligible,
+      approved: adjudication?.verdict === "approve",
+    },
+    { approvedAt: pa.decided_at },
+  );
+  if (verdict.approve) return null;
+  return `it no longer qualifies: ${verdict.reason}`;
+}

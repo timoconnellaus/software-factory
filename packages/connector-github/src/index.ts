@@ -88,7 +88,35 @@ const push = z.object({
   repository,
   pusher: z.object({ name: z.string() }).optional(),
   sender: z.object({ login: z.string(), type: z.string().optional() }).optional(),
+  commits: z
+    .array(z.object({ message: z.string() }))
+    .max(2_048)
+    .optional(),
 });
+
+/**
+ * The merges a push reverts, from its commits' messages (GitHub's and git's revert forms): the
+ * reverted PR's number from the quoted title, and the reverted commit. Dark factory mode holds a
+ * project when one of its auto-approved merges is reverted (ADR 0515 §7).
+ */
+export function revertsIn(
+  messages: readonly string[],
+): { sha: string | null; pr: number | null }[] {
+  const out: { sha: string | null; pr: number | null }[] = [];
+  for (const m of messages) {
+    const title = /^Revert "(.*)"/.exec(m);
+    const sha = /This reverts commit ([0-9a-f]{7,40})/.exec(m)?.[1] ?? null;
+    if (!title && !sha) continue;
+    // The reverted PR from its merge title ("Merge pull request #N …") or a squash title's trailing
+    // "(#N)"; never the first "#N" anywhere ("Fix #9 crash (#41)" is PR 41).
+    const quoted = title?.[1] ?? "";
+    const pr =
+      /^Merge pull request #(\d+)\b/.exec(quoted)?.[1] ?? /\(#(\d+)\)\s*$/.exec(quoted)?.[1];
+    out.push({ sha, pr: pr ? Number(pr) : null });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
 
 const repoEntry = z.object({ name: z.string(), id: z.number().optional() });
 const installation = z.object({
@@ -241,6 +269,7 @@ export function routeGitHubEvent(event: string, payload: unknown, appSlug: strin
               after: d.after,
               pusher,
               pusherIsApp: pusher === `${appSlug}[bot]`,
+              reverts: revertsIn((d.commits ?? []).map((c) => c.message)),
             },
           },
           // A new head on the default branch: its CI is pending (spec 53, ADR 0581).

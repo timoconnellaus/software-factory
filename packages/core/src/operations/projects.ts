@@ -476,6 +476,7 @@ export const projectCreate = defineOperation({
       // writes its own id). Nothing reads it; a later migration drops it.
       repo_owner: found?.repo.owner ?? "",
       repo_name: found?.repo.name ?? id,
+      factory_source: null,
     };
     ctx.write(ctx.db.insertInto("core_projects").values(row));
     ctx.change({ entity: "project", id: row.id, after: { name } });

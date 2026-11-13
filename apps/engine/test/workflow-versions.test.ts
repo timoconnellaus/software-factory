@@ -126,8 +126,8 @@ const V14_STEPS = [
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 15 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(15);
+  it("starts new instances on version 16 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(16);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -140,7 +140,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(15);
+    expect(row.workflow_version).toBe(16);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -185,8 +185,12 @@ describe("Workflow versions", () => {
       [...(WORKFLOW_VERSION_FEATURES[14] ?? []), "triage-ties"].sort(),
     );
     for (let v = 1; v <= 14; v++) expect(has(v, "triage-ties"), `v${v}`).toBe(false);
+    // v16 is v15 plus dark factory mode's merge gate for incidents (ADR 0515).
+    expect([...(WORKFLOW_VERSION_FEATURES[16] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[15] ?? []), "dark-factory"].sort(),
+    );
     // A new item keeps v9's triage readiness and v10's spec critic.
-    for (const v of [11, 12, 13, 14, 15]) {
+    for (const v of [11, 12, 13, 14, 15, 16]) {
       expect(has(v, "triage-readiness"), `v${v}`).toBe(true);
       expect(has(v, "spec-critic"), `v${v}`).toBe(true);
     }

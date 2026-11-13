@@ -7,6 +7,7 @@ import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
 import { has } from "../workflow-features.ts";
+import { AUTO_APPROVE, autoApprovedMergeLanded } from "./auto-approve.ts";
 import { requireOpenToMerge, requireQueueHead } from "./merge-queue.ts";
 import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
@@ -247,6 +248,10 @@ export const prMerge = defineOperation({
       ctx.db.updateTable("core_work_items").set({ merge_sha: sha }).where("id", "=", w.id),
     );
     ctx.change({ entity: "work_item", id: w.id, after: { merged: sha } });
+    // Dark factory mode (ADR 0515): an auto-approved merge starts its red-main window at the merge
+    // commit, is remembered for a revert, and may be sampled for a person's review after it.
+    if (ctx.approval?.decided_by === AUTO_APPROVE.id)
+      await autoApprovedMergeLanded(ctx, w, ctx.approval, sha);
     return { merged: true as const, sha };
   },
 });

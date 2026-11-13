@@ -293,9 +293,34 @@ export const projectPolicySchema = z
       .object({
         spec: z.enum(["off", "shadow", "active"]).default("off"),
         step: z.enum(["off", "shadow", "active"]).default("off"),
+        /**
+         * Merge gates (ADR 0515): it never decides one. Its approval is one of dark factory mode's
+         * conditions, counted only once it is active here, having earned it.
+         */
+        merge: z.enum(["off", "shadow", "active"]).default("off"),
       })
       .strict()
-      .default({ spec: "off", step: "off" }),
+      .default({ spec: "off", step: "off", merge: "off" }),
+    /**
+     * Dark factory mode switched off for this project (ADR 0515 §7): written by the factory when
+     * something goes wrong (a tightening); while set, no merge here is auto-approved. Removing it is
+     * a loosening an org admin makes and approves.
+     */
+    /**
+     * The project is the factory's own source (review of #152): auto-approval there is default-deny,
+     * only `FACTORY_SOURCE_ALLOW`. `auto`: recognised by the engine's package name in the repository.
+     * `no` is a loosening an org admin approves.
+     */
+    factorySource: z.enum(["auto", "yes", "no"]).default("auto"),
+    autoApproveHold: z
+      .object({
+        since: z.string().max(40),
+        reason: z.string().max(1_000),
+        evidence: z.array(z.string().max(300)).max(20).default([]),
+      })
+      .strict()
+      .nullable()
+      .default(null),
   })
   .strict()
   .superRefine((policy, ctx) => {
