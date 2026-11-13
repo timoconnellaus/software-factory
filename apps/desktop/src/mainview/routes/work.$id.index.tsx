@@ -28,7 +28,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Maximize2Icon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
 import { Attachments } from "../components/attachments.tsx";
@@ -68,7 +68,7 @@ import {
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { isTypingTarget } from "../lib/shortcuts.ts";
-import { stageWait } from "../lib/stage-wait.ts";
+import { readFailedStore, stageWait } from "../lib/stage-wait.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -576,8 +576,13 @@ function CancelDialog({
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
   // A read that failed keeps its last data: what it waited on then may no longer be true.
-  const failed =
-    useQueryClient().getQueryState(workItemQuery(detail.item.id).queryKey)?.status === "error";
+  // Subscribed: the refetch that fails is the one that must clear the line.
+  const client = useQueryClient();
+  const store = useMemo(
+    () => readFailedStore(client, workItemQuery(detail.item.id).queryKey),
+    [client, detail.item.id],
+  );
+  const failed = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
   // No agent working on the stage: what it waits on (the server's waitingOn, stage-wait.ts), and

@@ -7,6 +7,7 @@
 // and so is a read that failed: the last answer may no longer be true.
 // Pure, for the tests.
 import type { BoardItem } from "@software-factory/client/ops";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 export type WaitingOn = BoardItem["waitingOn"];
 
@@ -32,7 +33,13 @@ export function stageWait(item: {
         ? `${at}: waiting for an answer`
         : `${at}: waiting for an approval`;
     case "runner":
-      return `${at}: waiting for a runner`;
+      // Why the job can't start, as the claim recorded it (a WIP limit's "waiting on review").
+      return w.reason ? `${at}: ${w.reason}` : `${at}: waiting for a runner`;
+    case "holding":
+      // A person answered "wait an hour" at the queue's bound on updates.
+      return w.until
+        ? `${at}: holding until ${new Date(w.until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+        : `${at}: holding`;
     case "ci":
       return w.position === 1 ? `${at}: waiting on CI (next to land)` : `${at}: waiting on CI`;
     case "updating":
@@ -51,3 +58,16 @@ export function stageWait(item: {
 /** An agent holds a job for it on a runner now: what "Agent working" counts. */
 export const agentWorking = (item: { waitingOn?: WaitingOn | undefined }) =>
   item.waitingOn?.kind === "agent";
+
+/**
+ * Whether the query's last read failed, as a store for `useSyncExternalStore`: subscribed to the
+ * cache, so a refetch that fails (or later succeeds) re-renders what reads it. A component that
+ * only read `getQueryState` once would keep the line it drew before the read failed.
+ */
+export function readFailedStore(client: QueryClient, queryKey: QueryKey) {
+  const cache = client.getQueryCache();
+  return {
+    subscribe: (onChange: () => void) => cache.subscribe(onChange),
+    getSnapshot: () => client.getQueryState(queryKey)?.status === "error",
+  };
+}

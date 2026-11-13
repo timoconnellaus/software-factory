@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
-import { stageWait, type WaitingOn } from "../src/mainview/lib/stage-wait.ts";
+import { readFailedStore, stageWait, type WaitingOn } from "../src/mainview/lib/stage-wait.ts";
 import { renderPage, textOf } from "./route-harness.tsx";
 
 vi.mock("../src/mainview/bridge.ts", () => import("./bridge-stub.ts"));
@@ -43,6 +43,44 @@ describe("stageWait", () => {
     expect(at("merge", { kind: "queue", position: 2, held: true })).toBe(
       "Merge: held, the default branch is red",
     );
+  });
+
+  it("says why a queued job can't start, a person asked at the update bound, and a hold", () => {
+    expect(at("build", { kind: "runner", reason: "waiting on review" })).toBe(
+      "Build: waiting on review",
+    );
+    expect(at("merge", { kind: "person", on: "question", position: 1 })).toBe(
+      "Merge: waiting for an answer",
+    );
+    const until = "2026-11-13T15:30:00.000Z";
+    const time = new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(at("merge", { kind: "holding", position: 1, until })).toBe(
+      `Merge: holding until ${time}`,
+    );
+  });
+
+  it("tells a subscriber when a refetch fails, and when one succeeds again", async () => {
+    const client = new QueryClient();
+    const key = ["workItem.get", "wi_1"];
+    client.setQueryData(key, { ok: true });
+    const store = readFailedStore(client, key);
+    const seen: boolean[] = [];
+    const stop = store.subscribe(() => seen.push(store.getSnapshot()));
+    expect(store.getSnapshot()).toBe(false);
+    await client
+      .fetchQuery({
+        queryKey: key,
+        queryFn: () => Promise.reject(new Error("offline")),
+        retry: false,
+        staleTime: 0,
+      })
+      .catch(() => null);
+    expect(store.getSnapshot()).toBe(true);
+    expect(seen).toContain(true);
+    await client.fetchQuery({ queryKey: key, queryFn: () => ({ ok: true }), staleTime: 0 });
+    expect(store.getSnapshot()).toBe(false);
+    expect(seen.at(-1)).toBe(false);
+    stop();
   });
 
   it("says nothing for an item not moving on its own", () => {

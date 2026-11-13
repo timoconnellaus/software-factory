@@ -18,14 +18,16 @@ import { Updating } from "../components/updating.tsx";
 import { WindowSkeleton } from "../components/window-skeleton.tsx";
 import {
   accountKey,
+  accountLogin,
+  claimAccountLocal,
   clearAccountData,
-  clearAccountLocal,
   gateAccount,
   gateLoaded,
   initialGate,
   shownFor,
 } from "../lib/account.ts";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
+import { closeAllTerminals } from "../lib/open-terminals.ts";
 import { DRAG } from "../lib/title-bar.ts";
 
 export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -113,10 +115,11 @@ function Root() {
  * Which signed-in session the routes are shown for (a number that changes with each sign-in), or
  * null while they load again for it. Signed in at launch: shown at once, as the router loads them.
  * Signing in or out, or a sign-in as another login or device while signed in (`account`, from
- * lib/account.ts), empties the cache and this Mac's account state (tabs, pins, the chosen org,
- * drafts, open terminals), goes back to the start and reloads the routes; only then are they shown,
- * keyed afresh. What shows is decided in render against the account rendered (`shownFor`), so not
- * one frame shows the previous account's routes.
+ * lib/account.ts), empties the cache and closes the open terminals, goes back to the start and
+ * reloads the routes; only then are they shown, keyed afresh. This Mac's account state (tabs, pins,
+ * the chosen org, canvases, drafts) is kept for the same login and forgotten for another one
+ * (`claimAccountLocal`), so signing out and back in keeps it. What shows is decided in render
+ * against the account rendered (`shownFor`), so not one frame shows the previous account's routes.
  */
 export function useSignedInRoutes(account: string | null): number | null {
   const router = useRouter();
@@ -130,10 +133,14 @@ export function useSignedInRoutes(account: string | null): number | null {
       latest.current = next;
       setGate(next);
     }
+    // This Mac's tabs, pins and canvases are one login's: another login forgets them first.
+    const login = accountLogin(account);
+    if (login !== null) claimAccountLocal(login);
     if (reset === null) return;
-    // The update status is the app's, not the account's: it survives (ADR 0393).
+    // The update status is the app's, not the account's: it survives (ADR 0393). The cache and
+    // the open terminals go with every change, signing out included.
     clearAccountData(client);
-    clearAccountLocal();
+    closeAllTerminals();
     router.history.replace("/");
     void router
       .invalidate()

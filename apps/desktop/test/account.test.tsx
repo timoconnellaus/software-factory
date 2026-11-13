@@ -4,8 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { SignedOutWait } from "../src/mainview/components/app-error.tsx";
+import { openedDiffKey } from "../src/mainview/components/review-parts.tsx";
 import {
   accountKey,
+  accountLogin,
+  claimAccountLocal,
   clearAccountData,
   clearAccountLocal,
   gateAccount,
@@ -63,6 +66,8 @@ function memoryStorage(entries: Record<string, string>) {
     },
     key: (i: number) => [...m.keys()][i] ?? null,
     removeItem: (k: string) => void m.delete(k),
+    getItem: (k: string) => m.get(k) ?? null,
+    setItem: (k: string, v: string) => void m.set(k, v),
     keys: () => [...m.keys()].sort(),
   };
 }
@@ -153,8 +158,13 @@ describe("switching accounts while signed in", () => {
       "sf-panel-width": "420",
       "sf-mockups": "on",
     });
-    clearAccountLocal(storage);
+    const session = memoryStorage({
+      [openedDiffKey("u_owner", "wi_owner", "abc")]: "1",
+      "sf-other": "kept",
+    });
+    clearAccountLocal(storage, session);
     expect(storage.keys()).toEqual(["sf-mockups", "sf-panel-width"]);
+    expect(session.keys()).toEqual(["sf-other"]);
     expect(getViewState()).toMatchObject({ pins: [], orgId: undefined });
     expect(getViewState().tabs.map((t) => t.path)).toEqual(["/"]);
     expect(terminalFor("wi_owner")).toBeNull();
@@ -180,5 +190,42 @@ describe("a signed-out refusal on the error screen", () => {
     expect(html).toContain('data-testid="signed-out-wait"');
     expect(html).toContain("Retry");
     expect(html).toContain(`fixed inset-x-0 top-0 h-11 ${DRAG}`);
+  });
+});
+
+describe("this Mac's account state belongs to one login", () => {
+  const kept = () =>
+    memoryStorage({
+      [VIEW_STATE_KEY]: JSON.stringify({ pins: ["wi_a"] }),
+      "sf-canvas-wi_a": "{}",
+    });
+
+  it("signing out and back in as the same login keeps tabs, pins and canvases", () => {
+    const storage = kept();
+    const session = memoryStorage({ [openedDiffKey("u_a", "wi_a", "abc")]: "1" });
+    expect(accountLogin("in:alice:dev_1")).toBe("alice");
+    expect(accountLogin("out")).toBeNull();
+    expect(claimAccountLocal("alice", storage, session)).toBe(false);
+    updateViewState((s) => togglePin(s, "wi_a"));
+    // Out, then in again: a new device id (signing out revokes the old one), the same login.
+    expect(claimAccountLocal(accountLogin("in:alice:dev_2") ?? "", storage, session)).toBe(false);
+    expect(storage.keys()).toEqual(["sf-account-owner", "sf-canvas-wi_a", VIEW_STATE_KEY].sort());
+    expect(session.keys()).toHaveLength(1);
+    expect(getViewState().pins).toContain("wi_a");
+  });
+
+  it("another login forgets them, and the diffs the first opened", () => {
+    const storage = kept();
+    const session = memoryStorage({ [openedDiffKey("u_a", "wi_a", "abc")]: "1" });
+    claimAccountLocal("alice", storage, session);
+    updateViewState((s) => togglePin(s, "wi_a"));
+    expect(claimAccountLocal("bob", storage, session)).toBe(true);
+    expect(storage.keys()).toEqual(["sf-account-owner"]);
+    expect(session.keys()).toEqual([]);
+    expect(getViewState().pins).toEqual([]);
+  });
+
+  it("an approval reads only its own account's opened-diff flag", () => {
+    expect(openedDiffKey("u_a", "wi_1", "abc")).not.toBe(openedDiffKey("u_b", "wi_1", "abc"));
   });
 });

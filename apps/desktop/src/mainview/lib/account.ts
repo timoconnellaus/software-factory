@@ -31,28 +31,87 @@ export function clearAccountData(client: QueryClient) {
 const ACCOUNT_KEYS = (k: string) =>
   k === VIEW_STATE_KEY || k.startsWith("sf-canvas-") || k.startsWith("sf-mentions-");
 
-/**
- * Forgets what this Mac kept for the previous account: the view state (open tabs, pinned items,
- * the chosen org), each item's planning canvas layout and mention drafts, and the open terminals.
- * What isn't the account's (the panel width, developer switches) stays.
- */
-export function clearAccountLocal(storage?: Pick<Storage, "length" | "key" | "removeItem">) {
+/** sessionStorage keys of one account: which full diffs it opened (components/review-parts.tsx). */
+export const OPENED_DIFF_PREFIX = "sf:opened-diff:";
+
+/** localStorage: the login this Mac's kept account state belongs to. Never cleared with it. */
+export const OWNER_KEY = "sf-account-owner";
+
+type KeyedStorage = Pick<Storage, "length" | "key" | "removeItem">;
+
+/** The login of a signed-in account key ("in:<login>:<deviceId>"), else null. */
+export function accountLogin(account: string | null): string | null {
+  if (!account?.startsWith("in:")) return null;
+  return account.slice(3, account.lastIndexOf(":"));
+}
+
+function removeKeys(store: KeyedStorage | undefined, which: (k: string) => boolean) {
   try {
     // Read inside the try: a blocked storage throws on access.
-    const store = storage ?? globalThis.localStorage;
-    if (store) {
-      const keys: string[] = [];
-      for (let i = 0; i < store.length; i++) {
-        const k = store.key(i);
-        if (k !== null && ACCOUNT_KEYS(k)) keys.push(k);
-      }
-      for (const k of keys) store.removeItem(k);
+    if (!store) return;
+    const keys: string[] = [];
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (k !== null && which(k)) keys.push(k);
     }
+    for (const k of keys) store.removeItem(k);
   } catch {
     // Storage blocked: nothing was kept.
   }
+}
+
+/**
+ * Forgets what this Mac kept for the previous account: the view state (open tabs, pinned items,
+ * the chosen org), each item's planning canvas layout and mention drafts, which full diffs it
+ * opened, and the open terminals. What isn't the account's (the panel width, developer switches)
+ * stays.
+ */
+export function clearAccountLocal(storage?: KeyedStorage, session?: KeyedStorage) {
+  let local = storage;
+  let tab = session;
+  try {
+    local ??= globalThis.localStorage;
+    tab ??= globalThis.sessionStorage;
+  } catch {
+    // Storage blocked.
+  }
+  removeKeys(local, ACCOUNT_KEYS);
+  removeKeys(tab, (k) => k.startsWith(OPENED_DIFF_PREFIX));
   resetViewState();
   closeAllTerminals();
+}
+
+/**
+ * Signed in as `login`: this Mac's kept account state is that login's from now on. If it was
+ * another login's, it is forgotten first (`clearAccountLocal`); signing out and back in as the same
+ * login keeps the tabs, pins and canvases. State kept before the owner was recorded is adopted.
+ * Returns whether it forgot anything.
+ */
+let ownerInMemory: string | null = null;
+
+export function claimAccountLocal(
+  login: string,
+  storage?: Pick<Storage, "getItem" | "setItem"> & KeyedStorage,
+  session?: KeyedStorage,
+): boolean {
+  let owner: string | null = null;
+  let local = storage;
+  try {
+    local ??= globalThis.localStorage;
+    owner = local?.getItem(OWNER_KEY) ?? null;
+  } catch {
+    // Storage blocked: nothing was kept there, but the memory's view state may be another login's.
+  }
+  owner ??= ownerInMemory;
+  ownerInMemory = login;
+  const other = owner !== null && owner !== login;
+  if (other) clearAccountLocal(local, session);
+  try {
+    local?.setItem(OWNER_KEY, login);
+  } catch {
+    // ignore
+  }
+  return other;
 }
 
 /** The routes' gate: the account last seen, and which load of the routes shows, for whom. */
