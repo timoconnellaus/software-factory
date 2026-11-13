@@ -2,7 +2,7 @@
 // call on the signed channel, the TerminalRelay Durable Object with real WebSocket pairs, the
 // viewer's attach through EngineApi, read-only enforcement in the relay, caps and the journal.
 import { env } from "cloudflare:workers";
-import type { Actor } from "@software-factory/core";
+import { type Actor, FOREMAN } from "@software-factory/core";
 import {
   type ChannelCallError,
   httpControlPlane,
@@ -683,5 +683,101 @@ describe("held calls wait in the Worker, not in a Durable Object (spec 44 part A
     }
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(objects).toEqual([]);
+  });
+});
+
+describe("the job line (spec 44 part B, ADR 0592)", () => {
+  /** The host's line, as sf-runner would open it with the URL the `line` call answered. */
+  async function line(url: string) {
+    const res = await worker.fetch(
+      new Request(url.replace(/^ws/, "http"), { headers: { upgrade: "websocket" } }),
+      env,
+    );
+    expect(res.status).toBe(101);
+    if (!res.webSocket) throw new Error("no socket");
+    return end(res.webSocket);
+  }
+
+  it("is declared in the heartbeat's answer, fenced, and pushes a steer and a viewer", async () => {
+    const w = await world();
+    const capabilities = [...MANIFEST.capabilities, "terminal", "steer", "job-line"] as const;
+    const { c, job, item, runId } = await running(w, [...capabilities]);
+    const beat = await c.heartbeat({
+      manifest: { ...MANIFEST, capabilities: [...capabilities] },
+      capacity: { max: 2, inUse: 1, accepting: true },
+      activeJobs: [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }],
+    });
+    expect(beat.engine?.capabilities).toContain("job-line");
+    // A stale token is refused before any ticket is minted.
+    await expect(
+      c.line?.(job.jobId, { fencingToken: job.lease.fencingToken + 9 }),
+    ).rejects.toMatchObject({ code: "fenced" });
+    const opened = await c.line?.(job.jobId, { fencingToken: job.lease.fencingToken });
+    expect(opened?.connect.url).toMatch(/\/terminal\/v1\/jobs\/.+\/line\?ticket=[0-9a-f]{64}$/);
+    const l = await line(opened?.connect.url ?? "");
+    // A ticket works once.
+    const again = await worker.fetch(
+      new Request((opened?.connect.url ?? "").replace(/^ws/, "http"), {
+        headers: { upgrade: "websocket" },
+      }),
+      env,
+    );
+    expect(again.status).toBe(401);
+
+    // A steer: pushed at once; the host's own fenced call takes it.
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "add a test" }, w.human);
+    await l.until("the steer push", (e) => e.texts.some((m) => m.t === "steer"));
+    expect(
+      await c.steers?.(job.jobId, { fencingToken: job.lease.fencingToken, waitMs: 0 }),
+    ).toEqual({ steers: [expect.objectContaining({ text: "add a test" })] });
+
+    // A viewer with no host connected: pushed; the host's call answers a ticket at once.
+    const viewer = await view(item.workItemId, runId, w.human);
+    await l.until("the viewer push", (e) => e.texts.some((m) => m.t === "viewer"));
+    const t = await c.terminal?.(job.jobId, { fencingToken: job.lease.fencingToken, waitMs: 0 });
+    expect(t?.connect?.url).toMatch(/ticket=/);
+    viewer.end.ws.close();
+
+    // A second line replaces the first.
+    const second = await line(
+      (await c.line?.(job.jobId, { fencingToken: job.lease.fencingToken }))?.connect.url ?? "",
+    );
+    await l.until("the old line closed", (e) => e.closed !== null);
+    expect(l.closed?.code).toBe(4000);
+    second.ws.close();
+  });
+
+  it("pushes planning changes to the planning job's line", async () => {
+    const w = await world();
+    const item = await ok<{ workItemId: string }>(
+      "workItem.create",
+      { state: "queued", projectId: w.projectId, title: "Plan on a line" },
+      w.human,
+    );
+    await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+    const c = httpControlPlane({
+      baseUrl: base,
+      runnerId: w.runner.runnerId,
+      key: await runnerChannelKey("test-channel-secret", w.runner.runnerId, 1),
+      fetch: engineFetch,
+    });
+    let job: Job | null = null;
+    for (let i = 0; i < 200 && !job; i++) {
+      const claimed = (
+        await c.claim({
+          claimId: uid("claim-"),
+          manifest: { ...MANIFEST, capabilities: [...MANIFEST.capabilities, "job-line"] },
+          capacity: { max: 2, inUse: 0, accepting: true, light: { max: 6, inUse: 0 } },
+        })
+      ).job;
+      if (claimed?.stage === "planning") job = claimed;
+      else if (!claimed) await new Promise((r) => setTimeout(r, 50));
+    }
+    if (!job) throw new Error("no planning job");
+    const opened = await c.line?.(job.jobId, { fencingToken: job.lease.fencingToken });
+    const l = await line(opened?.connect.url ?? "");
+    await ok("chat.send", { workItemId: item.workItemId, text: "Use UTC" }, w.human);
+    await l.until("the planning push", (e) => e.texts.some((m) => m.t === "planning"));
+    l.ws.close();
   });
 });

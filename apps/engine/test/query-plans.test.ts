@@ -17,6 +17,7 @@ import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-con
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
+import { deliverOutbox } from "../src/outbox.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
@@ -171,6 +172,40 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         op: "planning.wait",
         input: { timeoutMs: 3_500 },
       });
+    },
+  },
+  {
+    // Spec 44 part B: the job line's call (the fenced run check, then a ticket from the relay).
+    name: "the job line call (spec 44 part B)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).line?.(job.jobId, {
+        fencingToken: job.fencingToken,
+      });
+    },
+  },
+  {
+    // Spec 44 part B: delivering a run.steered queued before it carried jobId, and a
+    // planning.changed, each finds the item's running job on UNIQUE (work_item_id, run_no).
+    name: "the job line's routing of run.steered and planning.changed",
+    run: async (e) => {
+      if (!job) return null;
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<string>("work_item_id");
+      const ids = [uid("ob_"), uid("ob_")];
+      const now = new Date().toISOString();
+      await env.DB.batch(
+        [
+          ["run.steered", { workItemId: item }],
+          ["planning.changed", { workItemId: item }],
+        ].map(([kind, payload], i) =>
+          env.DB.prepare(
+            "INSERT INTO core_outbox (id, at, kind, payload, attempts, next_at) VALUES (?, ?, ?, ?, 0, ?)",
+          ).bind(ids[i], now, kind, JSON.stringify(payload), now),
+        ),
+      );
+      return deliverOutbox(e, ids);
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
