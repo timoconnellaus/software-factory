@@ -434,6 +434,20 @@ export const configGet = defineOperation({
     ),
     /** More than `pending` shows are waiting (it shows the newest 20). */
     pendingMore: z.boolean(),
+    /**
+     * On an org workflow: each override of the org's value, whether it is looser, and whether an
+     * org admin approved that value for the org's current version (`override.approve`).
+     */
+    orgOverrides: z.array(
+      z.object({
+        stageId: z.string(),
+        key: z.string(),
+        value: z.unknown(),
+        looser: z.boolean(),
+        approved: z.boolean(),
+        orgVersion: z.number(),
+      }),
+    ),
   }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
@@ -557,6 +571,7 @@ export const configGet = defineOperation({
       history,
       pending,
       pendingMore: waiting.length > PENDING_SHOWN,
+      orgOverrides: await orgOverridesOf(ctx, project),
     };
   },
 });
@@ -995,4 +1010,25 @@ export async function applyOverrideApproval(
     },
   });
   return { approved: true, orgVersion: version, value: looser.value };
+}
+
+/** A project's overrides of its org workflow, looser or not, approved or not (config.get). */
+async function orgOverridesOf(ctx: HandlerContext, project: ProjectRow) {
+  const raw = ctx.scope.rawPolicy;
+  if (!raw || !onOrgWorkflow(raw)) return [];
+  // The org's row by primary key, and this project's approvals for its version (indexed, bounded).
+  const { version, config } = await currentOrgConfig(ctx.db, project.org_id);
+  const n = normaliseOverrides(raw, config);
+  const approvals = await overrideApprovals(ctx.db, project.id, version);
+  return Object.entries(n.workflowOverrides).flatMap(([stageId, values]) =>
+    Object.entries(values).map(([key, value]) => ({
+      stageId,
+      key,
+      value,
+      looser: n.looser.some((l) => l.stageId === stageId && l.key === key),
+      approved:
+        Object.hasOwn(approvals[stageId] ?? {}, key) && same(approvals[stageId]?.[key], value),
+      orgVersion: version,
+    })),
+  );
 }
