@@ -247,6 +247,7 @@ export const FACTORY_ITEMS: Summary[] = [
 ];
 
 /** The Factory project's config (spec 41, slice 5): a version as `config.get` returns it. */
+// (CONFIG_HISTORY, below the document, is its versions newest first.)
 export const POLICY_DOC = {
   version: 1,
   autonomyPolicy: "balanced",
@@ -298,6 +299,43 @@ export const POLICY_DOC = {
   ],
   workflow: "Software",
 };
+
+/** The Factory project's config versions, newest first, as `config.get` lists them. */
+export const CONFIG_HISTORY = [
+  {
+    version: 12,
+    sha: "5da8988",
+    source: "app",
+    note: "Two agents and the Software workflow",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 3),
+    valid: true,
+    impact: "neutral" as const,
+    policy: POLICY_DOC,
+  },
+  {
+    version: 11,
+    sha: "a41c9e2",
+    source: "improve",
+    note: "The builder writes the failing test first",
+    createdBy: null,
+    createdAt: ago(60 * 24 * 4),
+    valid: true,
+    impact: "neutral" as const,
+    policy: POLICY_DOC,
+  },
+  {
+    version: 10,
+    sha: "77b0c1d",
+    source: "app",
+    note: "Waiting on you: 5 to 3",
+    createdBy: "owner",
+    createdAt: ago(60 * 24 * 9),
+    valid: true,
+    impact: "tightens" as const,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
+  },
+];
 
 const project = (id: string, orgId: string, name: string, slug: string) => ({
   id,
@@ -1623,19 +1661,9 @@ export const ANSWERS: Answers = {
   }),
   "config.get": (input) => ({
     projectId: input.projectId,
-    current: {
-      version: 12,
-      sha: "5da8988",
-      source: "app",
-      note: "Two agents and the Software workflow",
-      createdBy: "owner",
-      createdAt: ago(60 * 24 * 3),
-      valid: true,
-      impact: "neutral",
-      policy: POLICY_DOC,
-    },
+    current: CONFIG_HISTORY[0] ?? null,
     error: null,
-    history: [],
+    history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
         ? [
@@ -1646,9 +1674,86 @@ export const ANSWERS: Answers = {
               by: "owner",
               createdAt: ago(30),
               baseVersion: 12,
+              policy: { ...POLICY_DOC, retryLimit: 3 },
+              toVersion: null,
             },
           ]
         : [],
+  }),
+  // The engine's classification of a draft against the current version (ADR 0370): here, from the
+  // fields the fixtures change, worded as `policyImpact` words them.
+  "config.preview": (input) => {
+    const draft = input.policy as Record<string, unknown>;
+    const changes: { path: string; class: "loosens" | "tightens" | "neutral"; summary: string }[] =
+      [];
+    for (const [key, label] of [
+      ["retryLimit", "Retry limit"],
+      ["wipLimit", "WIP limit"],
+    ] as const) {
+      const before = POLICY_DOC[key];
+      const after = draft[key];
+      if (typeof after === "number" && after !== before)
+        changes.push({
+          path: key,
+          class: after > before ? "loosens" : "tightens",
+          summary: `${label} ${before} → ${after}`,
+        });
+    }
+    if (draft.autonomyPolicy !== POLICY_DOC.autonomyPolicy)
+      changes.push({
+        path: "autonomyPolicy",
+        class: draft.autonomyPolicy === "cautious" ? "tightens" : "loosens",
+        summary: `Autonomy policy ${POLICY_DOC.autonomyPolicy} → ${String(draft.autonomyPolicy)}`,
+      });
+    const cls = changes.some((c) => c.class === "loosens")
+      ? "loosens"
+      : changes.some((c) => c.class === "tightens")
+        ? "tightens"
+        : "neutral";
+    return {
+      valid: true,
+      error: null,
+      impact: { class: cls, changes },
+      currentVersion: 12,
+    };
+  },
+  "config.trials": () => ({
+    trials: [
+      {
+        id: "trial_1",
+        kind: "instructions",
+        status: "promoted" as const,
+        evidence: {},
+        outcome: null,
+        createdAt: ago(60 * 24 * 6),
+        decidedAt: ago(60 * 24 * 4),
+        summary: "The builder writes the failing test first",
+        reason: "5 items did at least as well",
+        itemsSoFar: 5,
+        targetItems: 5,
+        baseVersion: 10,
+        candidateVersion: 11,
+      },
+    ],
+  }),
+  "adjudicator.stats": () => ({
+    spec: {
+      mode: "shadow" as const,
+      decisions: 14,
+      approvals: 12,
+      agreed: 11,
+      precision: 0.92,
+      eligible: false,
+    },
+    step: {
+      mode: "off" as const,
+      decisions: 3,
+      approvals: 0,
+      agreed: 0,
+      precision: 0,
+      eligible: false,
+    },
+    configVersion: 12,
   }),
   "desktopDevice.list": () => ({
     devices: [

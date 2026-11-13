@@ -1,8 +1,11 @@
 // The parts the Policy, Agents and Workflows pages share (spec 41, slice 5): which project's config
-// they show, the footer with its version and where it is changed, and the notice when a change
-// waits for an approver. The desktop never writes the config: a save is `config.save` on the
-// website, where a loosening waits for an approver (ADR 0370), so every page links there.
+// they show, the footer with its version and where it is changed, and the changes that wait for an
+// approver. Policy is edited here (ADR 0610): a save that loosens waits as a pending action, shown
+// with the engine's classified impact, and an approver decides it with Touch ID
+// (`approval.decide` through `decide()`). Workflows and agents still link to the website until
+// they are edited here too.
 import type { ConfigView, Project } from "@software-factory/client/ops";
+import { Button } from "@software-factory/ui/components/button";
 import {
   Select,
   SelectContent,
@@ -12,14 +15,17 @@ import {
 } from "@software-factory/ui/components/select";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { type QueryClient, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { configProject, versionLine } from "../lib/config-view.ts";
+import { useDecide } from "../lib/decisions.tsx";
 import { ExternalLink, WEBSITE_URL } from "../lib/external.tsx";
 import { configQuery } from "../lib/factory-queries.ts";
+import { read } from "../lib/op.ts";
 import { projectsQuery } from "../lib/queries.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useProjects } from "../lib/session.ts";
 import { getViewState } from "../lib/view-state.ts";
+import { ImpactList } from "./config-editor.tsx";
 import { Empty } from "./data-table.tsx";
 import { type ReadQuery, Reads, readState } from "./read-state.tsx";
 import { Panel } from "./shell-list.tsx";
@@ -95,34 +101,97 @@ export function ProjectPicker({
   );
 }
 
-/** Saves waiting for an approver: they loosen the config, so a person decides on the website. */
+/**
+ * Saves and rollbacks waiting for an approver: they loosen the config. Each shows what it changes as
+ * the engine classifies it against the current version (`config.preview`), and Approve or Reject,
+ * each one decision with Touch ID. One drafted against an older version can't apply any more: it
+ * can only be rejected, and proposed again.
+ */
 export function PendingChanges({ config, projectId }: { config: ConfigView; projectId: string }) {
   if (config.pending.length === 0) return null;
   const n = config.pending.length;
+  const current = config.current?.version ?? 0;
   return (
-    <Panel
-      needsYou
-      className="flex-row flex-wrap items-center gap-x-3 gap-y-1"
-      data-testid="config-pending"
-    >
-      <StatusDot status="waiting" />
-      <span className="font-semibold">
+    <section className="flex flex-col gap-2" data-testid="config-pending">
+      <div className="flex items-center gap-2 font-semibold text-[13px]">
+        <StatusDot status="waiting" />
         {n === 1
           ? "1 change is waiting for an approver"
           : `${n} changes are waiting for an approver`}
-      </span>
-      <span className="min-w-0 flex-1 text-ink-3 text-xs">
-        {config.pending
-          .map((p) =>
-            [p.by ? `${p.by}:` : null, p.note ?? "a change that loosens the config"]
-              .filter(Boolean)
-              .join(" "),
-          )
-          .join(" · ")}
-      </span>
-      <ExternalLink href={configUrl(projectId, "settings")} className="text-xs underline">
-        Review on the website
-      </ExternalLink>
+      </div>
+      {config.pending.map((p) => (
+        <PendingChange key={p.pendingActionId} change={p} current={current} projectId={projectId} />
+      ))}
+    </section>
+  );
+}
+
+function PendingChange({
+  change,
+  current,
+  projectId,
+}: {
+  change: ConfigView["pending"][number];
+  current: number;
+  projectId: string;
+}) {
+  const { decide, pending } = useDecide();
+  const stale = change.baseVersion !== null && change.baseVersion !== current;
+  const policy = change.policy;
+  const impact = useQuery({
+    queryKey: ["config", projectId, "preview", "pending", change.pendingActionId],
+    queryFn: () => read("config.preview", { projectId, policy: policy ?? {} }),
+    enabled: !!policy && !stale,
+    staleTime: 30_000,
+  });
+  const decideIt = (decision: "approved" | "rejected") =>
+    void decide(
+      { kind: "approval.decide", pendingActionId: change.pendingActionId, decision },
+      `${change.pendingActionId}:${decision}`,
+    );
+  return (
+    <Panel needsYou data-testid={`pending-${change.pendingActionId}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="min-w-[min(100%,280px)] flex-1 font-medium text-[13px]">
+          {change.operation === "config.rollback" ? "Roll back" : "Save"}
+          {change.note ? `: ${change.note}` : ""}
+          <span className="font-normal text-ink-3 text-xs">
+            {change.by ? ` · by ${change.by}` : ""}
+            {change.baseVersion !== null ? ` · from v${change.baseVersion}` : ""}
+          </span>
+        </span>
+        {!stale && (
+          <Button
+            size="sm"
+            onClick={() => decideIt("approved")}
+            disabled={pending !== null}
+            data-testid="pending-approve"
+          >
+            Approve
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => decideIt("rejected")}
+          disabled={pending !== null}
+          data-testid="pending-reject"
+        >
+          {stale ? "Discard" : "Reject"}
+        </Button>
+      </div>
+      {stale ? (
+        <div className="text-ink-3 text-xs">
+          This was drafted against v{change.baseVersion}; the config is now v{current}, so it can't
+          apply any more. Discard it and propose it again.
+        </div>
+      ) : impact.data?.impact ? (
+        <ImpactList changes={impact.data.impact.changes} testId="pending-impact" />
+      ) : (
+        <div className="text-ink-3 text-xs">
+          {impact.isError ? "Couldn't classify this change." : "Classifying the change…"}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -136,6 +205,23 @@ export function ConfigFooter({
   projectId: string;
   page: "settings" | "workflows";
 }) {
+  if (page === "settings")
+    return (
+      <div
+        className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 text-ink-3 text-xs"
+        data-testid="config-footer"
+      >
+        <span>{versionLine(config.current)}</span>
+        <span>Tightening saves at once; loosening waits for an approver.</span>
+        <Link
+          to="/factory/policy"
+          search={{ project: projectId, edit: true }}
+          className="text-ink underline"
+        >
+          History and roll back
+        </Link>
+      </div>
+    );
   return (
     <div
       className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 text-ink-3 text-xs"
@@ -147,9 +233,7 @@ export function ConfigFooter({
         loosening waits for an approver.
       </span>
       <ExternalLink href={configUrl(projectId, page)} className="text-ink underline">
-        {page === "settings"
-          ? "Change the policy on the website"
-          : "Change workflows and agents on the website"}
+        Change workflows and agents on the website
       </ExternalLink>
     </div>
   );

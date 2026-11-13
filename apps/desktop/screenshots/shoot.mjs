@@ -194,6 +194,21 @@ export const SCREENS = [
   { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
   { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },
   { name: "factory-policy", path: "/factory/policy", design: "FactoryPolicy.html" },
+  // Policy edited in the app (ADR 0610): the form, a draft that loosens with its impact, History.
+  { name: "policy-edit", path: "/factory/policy?edit=1", design: "FactoryPolicy.html" },
+  {
+    name: "policy-edit-draft",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    clicks: ['[aria-label="Autonomous"]'],
+    scrollTo: "save-bar",
+  },
+  {
+    name: "policy-history",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+  },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
   {

@@ -25,6 +25,22 @@ export const configQuery = (projectId: string) =>
     staleTime: 30_000,
   });
 
+/** The factory's own practice changes on a project (ADR 0373), newest first. */
+export const trialsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "trials"],
+    queryFn: () => read("config.trials", { projectId, limit: 20 }),
+    staleTime: 30_000,
+  });
+
+/** The adjudicator's record against a project's people (spec gates and gate steps). */
+export const adjudicatorQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["config", projectId, "adjudicator"],
+    queryFn: () => read("adjudicator.stats", { projectId }),
+    staleTime: 30_000,
+  });
+
 /** Every org's Setup status, for Settings' repositories (protection) and connections. */
 export const setupStatusesQuery = (orgIds: string[]) =>
   queryOptions({

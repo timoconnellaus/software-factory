@@ -67,7 +67,11 @@ export type ReadOpName =
   | "project.workflow"
   | "mergeQueue.list"
   | "repository.list"
-  | "cliToken.list";
+  | "cliToken.list"
+  | "config.preview"
+  | "config.trials"
+  | "config.export"
+  | "adjudicator.stats";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

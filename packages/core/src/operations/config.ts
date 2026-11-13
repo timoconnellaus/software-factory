@@ -402,6 +402,13 @@ export const configGet = defineOperation({
         by: z.string().nullable(),
         createdAt: z.string(),
         baseVersion: z.number().nullable(),
+        /**
+         * What the save would make current (a rollback: the version it restores), so a client can
+         * show its classified impact with `config.preview` before an approver decides.
+         */
+        policy: z.record(z.string(), z.unknown()).nullable(),
+        /** A rollback's target version; null for a save. */
+        toVersion: z.number().nullable(),
       }),
     ),
   }),
@@ -467,7 +474,12 @@ export const configGet = defineOperation({
       .orderBy("pa.created_at", "desc")
       .execute();
     const pending = waiting.map((p) => {
-      let input: { note?: string; baseVersion?: number; toVersion?: number } = {};
+      let input: {
+        note?: string;
+        baseVersion?: number;
+        toVersion?: number;
+        policy?: Record<string, unknown>;
+      } = {};
       try {
         input = JSON.parse(p.input);
       } catch {
@@ -482,6 +494,13 @@ export const configGet = defineOperation({
         by: p.github_login ?? p.name ?? null,
         createdAt: p.created_at,
         baseVersion: input.baseVersion ?? null,
+        policy:
+          p.operation === "config.rollback"
+            ? (history.find((h) => h.version === input.toVersion)?.policy ?? null)
+            : input.policy && typeof input.policy === "object"
+              ? input.policy
+              : null,
+        toVersion: p.operation === "config.rollback" ? (input.toVersion ?? null) : null,
       };
     });
     return {

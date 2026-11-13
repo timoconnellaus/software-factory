@@ -121,6 +121,12 @@ describe("config.save (spec 09 M1)", () => {
     expect(pa).toMatchObject({ risk: "self-modify", status: "pending" });
     // Still the old version until it's approved.
     expect((await get(w)).current?.version).toBe(base);
+    // The waiting save carries what it would make current, so the desktop shows its impact.
+    const waiting = await ok<{
+      pending: { policy: Record<string, unknown> | null; toVersion: number | null }[];
+    }>("config.get", { projectId: w.projectId }, w.human);
+    expect(waiting.pending[0]?.policy).toMatchObject({ autonomyPolicy: "autonomous" });
+    expect(waiting.pending[0]?.toVersion).toBeNull();
 
     await ok("approval.decide", { pendingActionId: pid(r), decision: "approved" }, w.human);
     const after = await get(w);

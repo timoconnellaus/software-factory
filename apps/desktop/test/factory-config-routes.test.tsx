@@ -68,3 +68,79 @@ describe("Agents", () => {
     expect(text).toContain("Role Configured model, standard tier Configured model, light tier");
   });
 });
+
+describe("Policy: changing it in the app (ADR 0610)", () => {
+  it("offers Edit policy and no website link", async () => {
+    const html = await renderPage("/factory/policy");
+    expect(html).toContain('data-testid="edit-policy"');
+    expect(textOf(html)).not.toContain("on the website");
+  });
+
+  it("shows a waiting change with Approve and Reject", async () => {
+    const html = await renderPage("/factory/policy");
+    const text = textOf(html);
+    expect(text).toContain("1 change is waiting for an approver");
+    expect(text).toContain("Save: Retries per item, 2 to 3");
+    expect(html).toContain('data-testid="pending-approve"');
+    expect(html).toContain('data-testid="pending-reject"');
+  });
+
+  it("offers only Discard for a change drafted against an older version", async () => {
+    const stale = {
+      result: {
+        projectId: "prj_factory",
+        current: { ...CURRENT, version: 13 },
+        error: null,
+        history: [],
+        pending: [
+          {
+            pendingActionId: "pa_old",
+            operation: "config.save",
+            note: "Retries per item, 2 to 3",
+            by: "owner",
+            createdAt: new Date().toISOString(),
+            baseVersion: 12,
+            policy: { retryLimit: 3 },
+            toVersion: null,
+          },
+        ],
+      },
+    };
+    const html = await renderPage("/factory/policy", { answers: { "config.get": stale } });
+    expect(textOf(html)).toContain("drafted against v12; the config is now v13");
+    expect(html).not.toContain('data-testid="pending-approve"');
+    expect(textOf(html)).toContain("Discard");
+  });
+
+  it("edits the whole config as a form, with History and roll back", async () => {
+    const html = await renderPage("/factory/policy?edit=1");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="policy-form"');
+    for (const section of [
+      "Autonomy",
+      "Timeouts and people",
+      "Throughput",
+      "Review packet",
+      "Protection on the default branch",
+      "Self-improvement",
+      "Adjudicator",
+      "History",
+    ])
+      expect(text).toContain(section);
+    expect(text).toContain("Roll back to this");
+    expect(html).toContain('data-testid="edit-json"');
+    expect(html).toContain('data-testid="edit-done"');
+  });
+});
+
+const CURRENT = {
+  version: 12,
+  sha: "5da8988",
+  source: "app",
+  note: null,
+  createdBy: "owner",
+  createdAt: new Date().toISOString(),
+  valid: true,
+  impact: null,
+  policy: { version: 1, autonomyPolicy: "balanced" },
+};

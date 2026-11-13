@@ -222,6 +222,8 @@ export function useRefreshAfterDecision() {
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ["inbox"] }),
       queryClient.invalidateQueries({ queryKey: ["work"] }),
+      // A config change an approver decided (ADR 0610): the Policy page re-reads the project's.
+      queryClient.invalidateQueries({ queryKey: ["config"] }),
       workItemId
         ? queryClient.invalidateQueries({ queryKey: ["workItem", workItemId] })
         : Promise.resolve(),
