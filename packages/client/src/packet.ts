@@ -303,3 +303,25 @@ export function packetProof(p: ParsedPacket): Map<string, CriterionProof> | null
   const r = proofSection.safeParse(p.sections.proof);
   return r.success ? new Map(r.data.map((x) => [x.criterion, x])) : null;
 }
+
+/**
+ * The proven count, and whether any check was set up that could prove a criterion (a declared
+ * check, or a required CI check that reported). `checksSetUp` false: the gate says "No checks are
+ * set up for this project, so nothing can be proven", never "0/N proven". Null for a packet from
+ * before proof; `checksSetUp` null for one from before the flag.
+ */
+export function packetProven(
+  p: ParsedPacket,
+): { proven: number; total: number; checksSetUp: boolean | null } | null {
+  const s = p.sections.proven as
+    | { proven?: unknown; total?: unknown; checksSetUp?: unknown }
+    | undefined;
+  if (typeof s?.proven !== "number" || typeof s.total !== "number") return null;
+  return {
+    proven: s.proven,
+    total: s.total,
+    checksSetUp: typeof s.checksSetUp === "boolean" ? s.checksSetUp : null,
+  };
+}
+
+export { CHECKS_DOCS_URL, whyNotProven } from "@software-factory/core/proof";

@@ -7,7 +7,7 @@ import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
+import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
@@ -53,16 +53,13 @@ function WorkflowsPage() {
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
   const editing = !!search.edit && !!doc;
-  const editor = useConfigDraft(project?.id ?? "");
   const workflows = doc ? workflowList(doc) : [];
   const running = workflows.find((w) => w.current) ?? null;
   const shown =
     workflows.find((w) => w.name === search.workflow) ?? running ?? workflows[0] ?? null;
-  const [selected, setSelected] = useState(() =>
-    Math.max(
-      0,
-      workflows.findIndex((w) => w.name === shown?.name),
-    ),
+  const selected = Math.max(
+    0,
+    workflows.findIndex((w) => w.name === shown?.name),
   );
   return (
     <PageArea>
@@ -86,11 +83,9 @@ function WorkflowsPage() {
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
-      {editing && (
-        <>
-          <WorkflowsForm editor={editor} selected={selected} onSelect={setSelected} />
-          <SaveBar editor={editor} />
-        </>
+      {editing && project && (
+        // Keyed by the project: another project's page starts with no draft.
+        <WorkflowsEditing key={project.id} projectId={project.id} initial={selected} />
       )}
       {doc && !editing && (
         <>
@@ -202,5 +197,17 @@ function Slot({ label, steps }: { label: string; steps: StepView[] }) {
         ))
       )}
     </div>
+  );
+}
+
+function WorkflowsEditing({ projectId, initial }: { projectId: string; initial: number }) {
+  const editor = useConfigDraft(projectId);
+  const [selected, setSelected] = useState(initial);
+  return (
+    <>
+      <UnsavedGuard editor={editor} />
+      <WorkflowsForm editor={editor} selected={selected} onSelect={setSelected} />
+      <SaveBar editor={editor} />
+    </>
   );
 }

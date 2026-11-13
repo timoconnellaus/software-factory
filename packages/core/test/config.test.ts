@@ -1,7 +1,26 @@
 // Spec 09 M1: config as versions in the app (ADR 0370).
 import { describe, expect, it } from "vitest";
-import { type InvokeResult, parseFloor, parseProjectPolicy, policyImpact } from "../src/index.ts";
-import { call, FOREMAN, first, newItem, ok, POLICY, refusal, rows, world } from "./helpers.ts";
+import {
+  type InvokeResult,
+  invoke,
+  PENDING_SHOWN,
+  parseFloor,
+  parseProjectPolicy,
+  policyImpact,
+} from "../src/index.ts";
+import {
+  call,
+  deps,
+  FOREMAN,
+  first,
+  newItem,
+  ok,
+  POLICY,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  world,
+} from "./helpers.ts";
 
 type Got = {
   current: { version: number; policy: Record<string, unknown> } | null;
@@ -335,5 +354,73 @@ describe("policyImpact", () => {
     const before = parsed(base);
     const after = { ...parsed(base), somethingNew: true } as typeof before;
     expect(policyImpact(before, after, floor).class).toBe("loosens");
+  });
+});
+
+describe("deciding a waiting config change (ADR 0610)", () => {
+  it("is refused to agent, runner, CLI and MCP tokens, approving or rejecting", async () => {
+    const w = await world();
+    const r = await save(w, { ...POLICY, autonomyPolicy: "autonomous" }, { note: "more" });
+    const pendingActionId = pid(r);
+    for (const decision of ["approved", "rejected"] as const) {
+      const input = { pendingActionId, decision };
+      const as = (actor: typeof w.human, surface: "cli" | "mcp" | "runner-channel" | "test") =>
+        invoke(deps, "approval.decide", input, { actor, origin: { surface } });
+      for (const [actor, surface] of [
+        [FOREMAN, "test"],
+        [RUNNER_ACTOR("run_1"), "runner-channel"],
+        [w.human, "cli"],
+        [w.human, "mcp"],
+      ] as const) {
+        const e = await refusal(as(actor, surface));
+        expect(e.code, `${actor.type} on ${surface}`).toBe("forbidden");
+      }
+    }
+    // Nothing was decided.
+    const pa = await first<{ status: string }>(
+      "SELECT status FROM core_pending_actions WHERE id = ?",
+      pendingActionId,
+    );
+    expect(pa.status).toBe("pending");
+  });
+
+  it("lists a rollback's target even when it is older than the history shown", async () => {
+    const w = await world();
+    const first0 = (await get(w)).current?.version as number;
+    // A tightening save, then fifty neutral ones, push the first version out of the 50 listed; going
+    // back to it loosens, so the rollback waits.
+    await save(w, { ...POLICY, autonomyPolicy: "cautious" });
+    for (let i = 0; i < 50; i++)
+      await save(w, { ...POLICY, autonomyPolicy: "cautious", retryLimit: (i % 5) + 1 });
+    const r = await call(
+      "config.rollback",
+      {
+        projectId: w.projectId,
+        baseVersion: (await get(w)).current?.version,
+        toVersion: first0,
+      },
+      w.human,
+    );
+    pid(r);
+    const got = await ok<{
+      history: { version: number }[];
+      pending: { policy: Record<string, unknown> | null; toVersion: number | null }[];
+    }>("config.get", { projectId: w.projectId }, w.human);
+    expect(got.history.some((h) => h.version === first0)).toBe(false);
+    expect(got.pending[0]?.toVersion).toBe(first0);
+    expect(got.pending[0]?.policy).not.toBeNull();
+  });
+
+  it(`lists at most the newest ${PENDING_SHOWN} waiting changes, and says there are more`, async () => {
+    const w = await world();
+    for (let i = 0; i <= PENDING_SHOWN; i++)
+      pid(await save(w, { ...POLICY, autonomyPolicy: "autonomous" }, { note: `n${i}` }));
+    const got = await ok<{ pending: { note: string }[]; pendingMore: boolean }>(
+      "config.get",
+      { projectId: w.projectId },
+      w.human,
+    );
+    expect(got.pending).toHaveLength(PENDING_SHOWN);
+    expect(got.pendingMore).toBe(true);
   });
 });

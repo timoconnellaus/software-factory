@@ -23,7 +23,8 @@ import { projectsQuery } from "../lib/queries.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useProjects } from "../lib/session.ts";
 import { getViewState } from "../lib/view-state.ts";
-import { ImpactList } from "./config-editor.tsx";
+import { CannotApproveYet, useCanDecide } from "./cannot-approve.tsx";
+import { ChangeDiff, ImpactList } from "./config-editor.tsx";
 import { Empty } from "./data-table.tsx";
 import { type ReadQuery, Reads, readState } from "./read-state.tsx";
 import { Panel } from "./shell-list.tsx";
@@ -97,39 +98,69 @@ export function ProjectPicker({
 
 /**
  * Saves and rollbacks waiting for an approver: they loosen the config. Each shows what it changes as
- * the engine classifies it against the current version (`config.preview`), and Approve or Reject,
- * each one decision with Touch ID. One drafted against an older version can't apply any more: it
- * can only be rejected, and proposed again.
+ * the engine classifies it against the current version (`config.preview`) and the difference itself,
+ * before and after; Approve is offered only once both are on screen. Approve and Reject are each
+ * one decision with Touch ID, and the prompt shows the engine's own summary of the change. One
+ * drafted against an older version, or one whose document can't be shown, can only be rejected.
  */
 export function PendingChanges({ config, projectId }: { config: ConfigView; projectId: string }) {
   if (config.pending.length === 0) return null;
   const n = config.pending.length;
-  const current = config.current?.version ?? 0;
+  const current = config.current;
   return (
     <section className="flex flex-col gap-2" data-testid="config-pending">
       <div className="flex items-center gap-2 font-semibold text-[13px]">
         <StatusDot status="waiting" />
-        {n === 1
-          ? "1 change is waiting for an approver"
-          : `${n} changes are waiting for an approver`}
+        {config.pendingMore
+          ? `More than ${n} changes are waiting for an approver: the newest ${n} are here`
+          : n === 1
+            ? "1 change is waiting for an approver"
+            : `${n} changes are waiting for an approver`}
       </div>
+      <CannotApproveYet />
       {config.pending.map((p) => (
-        <PendingChange key={p.pendingActionId} change={p} current={current} projectId={projectId} />
+        <PendingChange
+          key={p.pendingActionId}
+          change={p}
+          current={current?.version ?? 0}
+          currentPolicy={current?.policy ?? null}
+          projectId={projectId}
+        />
       ))}
     </section>
   );
 }
 
+/** Why a waiting change can't be approved here, or null when it can (pure; tested). */
+export function cannotApprove(
+  change: { baseVersion: number | null; policy: Record<string, unknown> | null },
+  current: number,
+  classified: "loading" | "failed" | "ready",
+): string | null {
+  if (change.baseVersion !== null && change.baseVersion !== current)
+    return `This was drafted against v${change.baseVersion}; the config is now v${current}, so it can't apply any more. Reject it and propose it again.`;
+  if (!change.policy)
+    return "This change can't be shown: the document it would make current isn't available. Reject it, and propose it again if it's still wanted.";
+  if (classified === "failed")
+    return "The engine couldn't classify this change, so it can't be approved here. Reject it, or try again later.";
+  if (classified === "loading") return "Classifying the change…";
+  return null;
+}
+
 function PendingChange({
   change,
   current,
+  currentPolicy,
   projectId,
 }: {
   change: ConfigView["pending"][number];
   current: number;
+  currentPolicy: Record<string, unknown> | null;
   projectId: string;
 }) {
   const { decide, pending } = useDecide();
+  // A software key's proofs are refused: no Approve or Reject that can only fail (the notice says why).
+  const canDecide = useCanDecide();
   const stale = change.baseVersion !== null && change.baseVersion !== current;
   const policy = change.policy;
   const impact = useQuery({
@@ -138,6 +169,12 @@ function PendingChange({
     enabled: !!policy && !stale,
     staleTime: 30_000,
   });
+  const classified = impact.data?.impact
+    ? "ready"
+    : impact.isError || (impact.data && !impact.data.impact)
+      ? "failed"
+      : "loading";
+  const why = cannotApprove(change, current, classified);
   const decideIt = (decision: "approved" | "rejected") =>
     void decide(
       { kind: "approval.decide", pendingActionId: change.pendingActionId, decision },
@@ -147,18 +184,18 @@ function PendingChange({
     <Panel needsYou data-testid={`pending-${change.pendingActionId}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="min-w-[min(100%,280px)] flex-1 font-medium text-[13px]">
-          {change.operation === "config.rollback" ? "Roll back" : "Save"}
-          {change.note ? `: ${change.note}` : ""}
+          {change.operation === "config.rollback" ? `Roll back to v${change.toVersion}` : "Save"}
+          {change.note && change.operation !== "config.rollback" ? `: ${change.note}` : ""}
           <span className="font-normal text-ink-3 text-xs">
             {change.by ? ` · by ${change.by}` : ""}
             {change.baseVersion !== null ? ` · from v${change.baseVersion}` : ""}
           </span>
         </span>
-        {!stale && (
+        {!why && (
           <Button
             size="sm"
             onClick={() => decideIt("approved")}
-            disabled={pending !== null}
+            disabled={pending !== null || !canDecide}
             data-testid="pending-approve"
           >
             Approve
@@ -168,23 +205,27 @@ function PendingChange({
           size="sm"
           variant="outline"
           onClick={() => decideIt("rejected")}
-          disabled={pending !== null}
+          disabled={pending !== null || !canDecide}
           data-testid="pending-reject"
         >
-          {stale ? "Discard" : "Reject"}
+          Reject
         </Button>
       </div>
-      {stale ? (
-        <div className="text-ink-3 text-xs">
-          This was drafted against v{change.baseVersion}; the config is now v{current}, so it can't
-          apply any more. Discard it and propose it again.
+      {why && (
+        <div className="text-ink-3 text-xs" data-testid="pending-why">
+          {why}
         </div>
-      ) : impact.data?.impact ? (
-        <ImpactList changes={impact.data.impact.changes} testId="pending-impact" />
-      ) : (
-        <div className="text-ink-3 text-xs">
-          {impact.isError ? "Couldn't classify this change." : "Classifying the change…"}
-        </div>
+      )}
+      {impact.data?.impact && !stale && (
+        <>
+          <ImpactList changes={impact.data.impact.changes} testId="pending-impact" />
+          <ChangeDiff
+            before={currentPolicy}
+            after={policy}
+            changes={impact.data.impact.changes}
+            testId="pending-diff"
+          />
+        </>
       )}
     </Panel>
   );

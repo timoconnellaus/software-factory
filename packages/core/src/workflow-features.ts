@@ -42,6 +42,13 @@ export const WORKFLOW_FEATURES = [
    * the merge gate.
    */
   "reverify-on-withdrawal",
+  /**
+   * v13 (provisional: the next number above main's at merge; spec 52, Q3): at each delivery
+   * boundary (before verify, before the merge gate) an item on an org workflow moves onto the org's
+   * current version when it only tightens (`workItem.repinWorkflow`), and the stages ahead of it run
+   * from the new version's plan. A loosened version never moves a running item.
+   */
+  "repin-tightening",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -57,6 +64,7 @@ const v9 = [...v8, "triage-readiness"] as const;
 const v10 = [...v9, "spec-critic"] as const;
 const v11 = [...v10, "babysitter-delivery"] as const;
 const v12 = [...v11, "reverify-on-withdrawal"] as const;
+const v13 = [...v12, "repin-tightening"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -72,6 +80,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   10: new Set(v10),
   11: new Set(v11),
   12: new Set(v12),
+  13: new Set(v13),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

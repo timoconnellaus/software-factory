@@ -41,6 +41,18 @@ export const adjudicatorQuery = (projectId: string) =>
     staleTime: 30_000,
   });
 
+/** An org workflow with its stages' settings (a project on it overrides some of them). */
+export const orgWorkflowQuery = (orgId: string, workflowId: string) =>
+  queryOptions({
+    queryKey: ["workflow", orgId, workflowId],
+    queryFn: () => read("workflow.get", { orgId, workflowId }),
+    staleTime: 30_000,
+  });
+
+/** The org workflow a project's config runs on, if it names one (`wf_…`). */
+export const orgWorkflowOf = (doc: Record<string, unknown> | null | undefined): string | null =>
+  typeof doc?.workflow === "string" && doc.workflow.startsWith("wf_") ? doc.workflow : null;
+
 /** Every org's Setup status, for Settings' repositories (protection) and connections. */
 export const setupStatusesQuery = (orgIds: string[]) =>
   queryOptions({

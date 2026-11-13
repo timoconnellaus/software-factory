@@ -313,12 +313,14 @@ function SlotView({
         <span className="font-medium">{meta?.[1]}</span>
         <span className="text-ink-3">{meta?.[2]}</span>
         <span className="grow" />
-        <Button size="sm" variant="outline" className="h-7" onClick={() => onAdd(slot, "work")}>
-          Add a work step
-        </Button>
-        <Button size="sm" variant="outline" className="h-7" onClick={() => onAdd(slot, "gate")}>
-          Add a gate step
-        </Button>
+        <span className="flex gap-1.5">
+          <Button size="sm" variant="outline" className="h-7" onClick={() => onAdd(slot, "work")}>
+            Add a work step
+          </Button>
+          <Button size="sm" variant="outline" className="h-7" onClick={() => onAdd(slot, "gate")}>
+            Add a gate step
+          </Button>
+        </span>
       </div>
       {steps.map((s, i) => (
         <StepEditor
@@ -391,7 +393,7 @@ function StepEditor({
         ) : (
           <Input
             className="h-8 w-48"
-            placeholder="Approver login (or approvers)"
+            placeholder="Approver login"
             aria-label="Approver"
             value={step.approver ?? ""}
             onChange={(e) =>
@@ -402,28 +404,6 @@ function StepEditor({
             }
           />
         )}
-        <span className="grow" />
-        <Button
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          aria-label={`Move ${step.name} up`}
-          onClick={() => onMove(-1)}
-        >
-          <ChevronUpIcon />
-        </Button>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          aria-label={`Move ${step.name} down`}
-          onClick={() => onMove(1)}
-        >
-          <ChevronDownIcon />
-        </Button>
-        <Button size="sm" variant="ghost" className="h-7" onClick={onRemove}>
-          Remove
-        </Button>
       </div>
       <Textarea
         className="min-h-16 text-[13px]"
@@ -459,6 +439,28 @@ function StepEditor({
           value={step.when?.domain ?? ""}
           onChange={(e) => setWhen("domain", e.target.value.trim())}
         />
+        <span className="grow" />
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7"
+          aria-label={`Move ${step.name} up`}
+          onClick={() => onMove(-1)}
+        >
+          <ChevronUpIcon />
+        </Button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7"
+          aria-label={`Move ${step.name} down`}
+          onClick={() => onMove(1)}
+        >
+          <ChevronDownIcon />
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7" onClick={onRemove}>
+          Remove
+        </Button>
       </div>
     </Panel>
   );

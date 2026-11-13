@@ -5,7 +5,7 @@
 // The design's skills (spec 52) and per-agent usage have no operation yet, so they aren't here.
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
-import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
+import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
@@ -58,7 +58,6 @@ function AgentsPage() {
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
   const editing = !!search.edit && !!doc;
-  const editor = useConfigDraft(project?.id ?? "");
   const agents = doc ? agentRows(doc) : [];
   const chosen = agents.find((a) => a.name === search.agent) ?? agents[0];
   return (
@@ -83,11 +82,9 @@ function AgentsPage() {
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
-      {editing && (
-        <>
-          <AgentsForm editor={editor} />
-          <SaveBar editor={editor} />
-        </>
+      {editing && project && (
+        // Keyed by the project: another project's page starts with no draft.
+        <AgentsEditing key={project.id} projectId={project.id} />
       )}
       {doc && !editing && (
         <>
@@ -175,5 +172,16 @@ function AgentsPage() {
         <ConfigFooter config={config.data} projectId={project.id} />
       )}
     </PageArea>
+  );
+}
+
+function AgentsEditing({ projectId }: { projectId: string }) {
+  const editor = useConfigDraft(projectId);
+  return (
+    <>
+      <UnsavedGuard editor={editor} />
+      <AgentsForm editor={editor} />
+      <SaveBar editor={editor} />
+    </>
   );
 }

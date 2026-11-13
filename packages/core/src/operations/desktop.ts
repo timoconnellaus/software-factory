@@ -22,6 +22,7 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
+import { describeConfigDecision } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
 
@@ -219,11 +220,14 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
         typeof input.pendingActionId === "string"
           ? await ctx.db
               .selectFrom("core_pending_actions")
-              .select(["operation", "work_item_id"])
+              .select(["operation", "work_item_id", "input", "project_id"])
               .where("id", "=", input.pendingActionId)
               .executeTakeFirst()
           : undefined;
       const verb = input.decision === "rejected" ? "Reject" : "Approve";
+      // A config change names the project, the versions and what it loosens (ADR 0610).
+      const config = pa ? await describeConfigDecision(ctx, pa, verb) : null;
+      if (config) return config;
       return `${verb} ${pa ? `${pa.operation} on ${await named(pa.work_item_id)}` : "a pending action"}`;
     }
     default:

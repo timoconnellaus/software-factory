@@ -140,7 +140,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 12;
+export const WORKFLOW_VERSION = 13;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -525,7 +525,7 @@ class ItemFlow {
         meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
+      let plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -687,6 +687,9 @@ class ItemFlow {
             }
           }
 
+          // v13: a tightened org workflow reaches the item here, before verify (spec 52, Q3).
+          if (plan && has(version, "repin-tightening"))
+            plan = await this.repin(`verify #${b}`, plan);
           if (plan) {
             const before = await this.runSlot(meta, plan, "beforeVerify", b, {
               criteria,
@@ -801,6 +804,8 @@ class ItemFlow {
           continue;
         }
 
+        // v13: and here, before the merge gate (spec 52, Q3).
+        if (plan && has(version, "repin-tightening")) plan = await this.repin(`merge #${b}`, plan);
         if (plan) {
           const after = await this.runSlot(meta, plan, "afterVerify", b, {
             criteria,
@@ -2030,8 +2035,8 @@ class ItemFlow {
    * The item's workflow, fixed before the build: its steps per slot with their agents resolved and
    * conditions decided (from triage's size and domains), and the build agent. Journaled once.
    */
-  async workflowPlan(): Promise<WorkflowPlan> {
-    const text = await this.step.do("workflow: plan", async () => {
+  async workflowPlan(name = "workflow: plan"): Promise<WorkflowPlan> {
+    const text = await this.step.do(name, async () => {
       const row = await this.env.DB.prepare(
         "SELECT workflow, size, domains FROM core_work_items WHERE id = ?",
       )
@@ -2047,6 +2052,20 @@ class ItemFlow {
       return JSON.stringify(plan);
     });
     return JSON.parse(text) as WorkflowPlan;
+  }
+
+  /**
+   * v13 (spec 52, Q3): at a stage boundary, moves the item onto the org's current workflow version
+   * when it only tightens, and plans the stages ahead from it. The stages already run keep what they
+   * did; a slot already past isn't run again. Unchanged when the item stays where it is.
+   */
+  async repin(name: string, plan: WorkflowPlan): Promise<WorkflowPlan> {
+    const moved = await this.act(`${name}: repin`, "workItem.repinWorkflow", {
+      workItemId: this.workItemId,
+      at: name,
+    });
+    if (moved.repinned !== true) return plan;
+    return this.workflowPlan(`${name}: workflow plan`);
   }
 
   /**

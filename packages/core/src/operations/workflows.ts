@@ -5,6 +5,7 @@
 // tightened (Q10). Projects name an org workflow by id (PR (d)): a change that would leave one
 // unable to run (archiving its workflow, a save today's engine can't run) is refused, naming them.
 import type { Db } from "@software-factory/db";
+import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
@@ -38,6 +39,14 @@ import {
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
+
+/** How many of an org's admins one org config write notifies, and how many overrides it names. */
+export const NOTIFY_ADMINS = 10;
+export const NOTIFY_ITEMS = 10;
+const listed = (items: string[]) =>
+  items.length <= NOTIFY_ITEMS
+    ? items.join("; ")
+    : `${items.slice(0, NOTIFY_ITEMS).join("; ")}; and ${items.length - NOTIFY_ITEMS} more`;
 
 /** The org config operations whose loosening calls wait for an org admin. */
 export const ORG_CONFIG_WRITES = ["workflow.save", "orgConfig.rollback", "agent.save"] as const;
@@ -338,11 +347,17 @@ export async function writeOrgVersion(
         unapproved.push(`${p.name}: ${l.stageId} ${l.key}`);
   }
   if (lapsed.length || unapproved.length) {
+    // Bounded (review of #128): at most NOTIFY_ADMINS admins, owners first, each told in at most two
+    // messages naming at most NOTIFY_ITEMS overrides, however many projects one save (or one
+    // adoption run) touches.
     const admins = await ctx.db
       .selectFrom("core_member")
       .select("user_id")
       .where("organization_id", "=", org)
       .where("role", "in", ["owner", "admin"])
+      .orderBy(sql`role = 'owner'`, "desc")
+      .orderBy("created_at")
+      .limit(NOTIFY_ADMINS)
       .execute();
     for (const admin of admins) {
       if (lapsed.length)
@@ -351,7 +366,7 @@ export async function writeOrgVersion(
           payload: {
             event: "workflow.overrideLapsed",
             userId: admin.user_id,
-            title: `The org's workflow change ends approved project overrides (the stricter value applies): ${lapsed.join("; ")}`,
+            title: `The org's workflow change ends approved project overrides (the stricter value applies): ${listed(lapsed)}`,
             url: "/settings",
           },
         });
@@ -361,7 +376,7 @@ export async function writeOrgVersion(
           payload: {
             event: "workflow.overrideNeedsApproval",
             userId: admin.user_id,
-            title: `The org's workflow change makes project overrides looser than the org's values; each needs an org admin's approval or removal (the stricter value applies until then): ${unapproved.join("; ")}`,
+            title: `The org's workflow change makes project overrides looser than the org's values; each needs an org admin's approval or removal (the stricter value applies until then): ${listed(unapproved)}`,
             url: "/settings",
           },
         });

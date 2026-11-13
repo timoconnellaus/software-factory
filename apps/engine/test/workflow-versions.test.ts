@@ -109,12 +109,19 @@ const V10_STEPS = [
   "`${name}: expire`",
   "`${name}: record`",
 ];
+// The steps v13 adds (spec 52, Q3): the re-pin at each delivery boundary and the plan it makes.
+const V13_STEPS = [
+  "`${name}: repin`",
+  "`${name}: workflow plan`",
+  "this.repin(`verify #${b}`, plan)",
+  "this.repin(`merge #${b}`, plan)",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 12 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(12);
+  it("starts new instances on version 13 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(13);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -127,7 +134,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(12);
+    expect(row.workflow_version).toBe(13);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -159,8 +166,12 @@ describe("Workflow versions", () => {
     expect([...(WORKFLOW_VERSION_FEATURES[12] ?? [])].sort()).toEqual(
       [...(WORKFLOW_VERSION_FEATURES[11] ?? []), "reverify-on-withdrawal"].sort(),
     );
+    // v13 is v12 plus the tightening re-pin (spec 52, Q3).
+    expect([...(WORKFLOW_VERSION_FEATURES[13] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[12] ?? []), "repin-tightening"].sort(),
+    );
     // A new item keeps v9's triage readiness and v10's spec critic.
-    for (const v of [11, 12]) {
+    for (const v of [11, 12, 13]) {
       expect(has(v, "triage-readiness"), `v${v}`).toBe(true);
       expect(has(v, "spec-critic"), `v${v}`).toBe(true);
     }
@@ -195,5 +206,6 @@ describe("Workflow versions", () => {
     for (const name of V8_STEPS) expect(source, name).toContain(name);
     for (const name of V9_STEPS) expect(source, name).toContain(name);
     for (const name of V10_STEPS) expect(source, name).toContain(name);
+    for (const name of V13_STEPS) expect(source, name).toContain(name);
   });
 });

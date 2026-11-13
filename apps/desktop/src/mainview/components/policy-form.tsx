@@ -28,22 +28,30 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { toast } from "sonner";
-import { adjudicatorQuery, trialsQuery } from "../lib/factory-queries.ts";
-import { OpError, op, submitKey } from "../lib/op.ts";
 import {
+  adjudicatorQuery,
+  orgWorkflowOf,
+  orgWorkflowQuery,
+  trialsQuery,
+} from "../lib/factory-queries.ts";
+import { OpError, op, read, submitKey } from "../lib/op.ts";
+import {
+  ChangeDiff,
   type ConfigEditor,
   changedPaths,
   type Doc,
   EditField,
   EditSection,
   ImpactChip,
+  ImpactList,
   ListEditor,
   NumberInput,
   num,
   obj,
   Segmented,
+  shown,
   strs,
 } from "./config-editor.tsx";
 import { Chip } from "./shell-list.tsx";
@@ -107,9 +115,10 @@ async function act(editor: ConfigEditor, fn: () => Promise<unknown>, done: strin
   }
 }
 
-export function PolicyForm({ editor }: { editor: ConfigEditor }) {
+export function PolicyForm({ editor, orgId }: { editor: ConfigEditor; orgId: string | null }) {
   const { doc, current, set } = editor;
   const [json, setJson] = useState<string | null>(null);
+  const org = useOrgWorkflow(orgId, doc);
   if (!doc) return null;
   const overrides = obj(doc.overrides) as Overrides;
   const sections = Array.isArray(obj(doc.reviewPacket).sections)
@@ -286,15 +295,58 @@ export function PolicyForm({ editor }: { editor: ConfigEditor }) {
       </EditSection>
 
       <EditSection
+        title="Spec approval"
+        changed={changed.has("spec") || changed.has("workflowOverrides")}
+      >
+        {org.on ? (
+          <OverrideField
+            org={org}
+            setting={REQUIRED_FROM}
+            label="Needed from"
+            help="Items this size and up get a spec a person approves; smaller ones skip Plan."
+            editor={editor}
+            render={(value, put) => (
+              <Segmented
+                label="Spec needed from"
+                options={SIZES}
+                value={typeof value === "string" ? value : "medium"}
+                onChange={put}
+              />
+            )}
+          />
+        ) : (
+          <EditField
+            label="Needed from"
+            help="Items this size and up get a spec a person approves; smaller ones skip Plan."
+          >
+            <Segmented
+              label="Spec needed from"
+              options={SIZES}
+              value={
+                typeof obj(doc.spec).requiredFrom === "string"
+                  ? (obj(doc.spec).requiredFrom as string)
+                  : "medium"
+              }
+              onChange={(v) =>
+                set((d) => {
+                  d.spec = { ...obj(d.spec), requiredFrom: v };
+                })
+              }
+            />
+          </EditField>
+        )}
+      </EditSection>
+
+      <EditSection
         title="Throughput"
         changed={changed.has("wipLimit") || changed.has("retryLimit")}
       >
         <EditField
-          label="Waiting on you"
+          label="WIP limit"
           help="How many items may wait at your gates before new builds stop."
         >
           <NumberInput
-            label="Waiting on you"
+            label="WIP limit"
             value={num(doc.wipLimit, 5)}
             min={1}
             max={100}
@@ -307,22 +359,41 @@ export function PolicyForm({ editor }: { editor: ConfigEditor }) {
             }
           />
         </EditField>
-        <EditField
-          label="Build attempts per item"
-          help="Automatic retries of a failed build or verify (0–5)."
-        >
-          <NumberInput
-            label="Build attempts per item"
-            value={num(doc.retryLimit, 2)}
-            min={0}
-            max={5}
-            onChange={(v) =>
-              set((d) => {
-                d.retryLimit = v;
-              })
-            }
+        {org.on ? (
+          <OverrideField
+            org={org}
+            setting={RETRY}
+            label="Retry limit"
+            help="Automatic retries of a failed build or verify (0–5)."
+            editor={editor}
+            render={(value, put) => (
+              <NumberInput
+                label="Retry limit"
+                value={num(value, 2)}
+                min={0}
+                max={5}
+                onChange={put}
+              />
+            )}
           />
-        </EditField>
+        ) : (
+          <EditField
+            label="Retry limit"
+            help="Automatic retries of a failed build or verify (0–5)."
+          >
+            <NumberInput
+              label="Retry limit"
+              value={num(doc.retryLimit, 2)}
+              min={0}
+              max={5}
+              onChange={(v) =>
+                set((d) => {
+                  d.retryLimit = v;
+                })
+              }
+            />
+          </EditField>
+        )}
       </EditSection>
 
       <EditSection
@@ -330,14 +401,31 @@ export function PolicyForm({ editor }: { editor: ConfigEditor }) {
         note="Which sections show at the merge gate, and in what order."
         changed={changed.has("reviewPacket")}
       >
-        <PacketEditor
-          sections={sections}
-          onChange={(next) =>
-            set((d) => {
-              d.reviewPacket = { sections: next };
-            })
-          }
-        />
+        {org.on ? (
+          <OverrideField
+            org={org}
+            setting={SECTIONS_SETTING}
+            label="Sections"
+            help="The org's workflow sets them; this project may show more."
+            editor={editor}
+            block
+            render={(value, put) => (
+              <PacketEditor
+                sections={Array.isArray(value) ? strs(value) : ALL_SECTIONS.slice()}
+                onChange={put}
+              />
+            )}
+          />
+        ) : (
+          <PacketEditor
+            sections={sections}
+            onChange={(next) =>
+              set((d) => {
+                d.reviewPacket = { sections: next };
+              })
+            }
+          />
+        )}
       </EditSection>
 
       <EditSection title="Protection on the default branch" changed={changed.has("protection")}>
@@ -356,24 +444,37 @@ export function PolicyForm({ editor }: { editor: ConfigEditor }) {
             }
           />
         </EditField>
-        <EditField
-          label="Required CI checks"
-          help="Besides factory/verify. Goes into the generated ruleset."
-        >
-          <ListEditor
-            items={
-              Array.isArray(obj(doc.protection).requiredChecks)
-                ? strs(obj(doc.protection).requiredChecks)
-                : ["ci"]
-            }
-            placeholder="check name"
-            onChange={(next) =>
-              set((d) => {
-                d.protection = { ...obj(d.protection), requiredChecks: next };
-              })
-            }
+        {org.on ? (
+          <OverrideField
+            org={org}
+            setting={CHECKS}
+            label="Required CI checks"
+            help="Besides factory/verify. Goes into the generated ruleset."
+            editor={editor}
+            render={(value, put) => (
+              <ListEditor items={strs(value)} placeholder="check name" onChange={put} />
+            )}
           />
-        </EditField>
+        ) : (
+          <EditField
+            label="Required CI checks"
+            help="Besides factory/verify. Goes into the generated ruleset."
+          >
+            <ListEditor
+              items={
+                Array.isArray(obj(doc.protection).requiredChecks)
+                  ? strs(obj(doc.protection).requiredChecks)
+                  : ["ci"]
+              }
+              placeholder="check name"
+              onChange={(next) =>
+                set((d) => {
+                  d.protection = { ...obj(d.protection), requiredChecks: next };
+                })
+              }
+            />
+          </EditField>
+        )}
       </EditSection>
 
       <EditSection
@@ -416,6 +517,7 @@ export function PolicyForm({ editor }: { editor: ConfigEditor }) {
             value={num(obj(doc.improve).weeklyCap, 3)}
             min={1}
             max={10}
+            suffix="changes"
             onChange={(v) =>
               set((d) => {
                 d.improve = { ...obj(d.improve), weeklyCap: v };
@@ -730,7 +832,7 @@ function AdjudicatorModes({
 
 /** Every version, newest first; rolling back saves an earlier one as a new version. */
 export function History({ editor }: { editor: ConfigEditor }) {
-  const { config, currentVersion, busy, projectId } = editor;
+  const { config, currentVersion, busy } = editor;
   const [confirm, setConfirm] = useState<number | null>(null);
   const history = config.data?.history ?? [];
   return (
@@ -762,7 +864,7 @@ export function History({ editor }: { editor: ConfigEditor }) {
                 disabled={busy}
                 onClick={() => setConfirm(h.version)}
               >
-                Roll back to this
+                Roll back
               </Button>
             )}
             {h.version === currentVersion && <Chip>current</Chip>}
@@ -770,38 +872,213 @@ export function History({ editor }: { editor: ConfigEditor }) {
           {h.note && <div className="text-ink-3 text-xs">{h.note}</div>}
         </div>
       ))}
-      <AlertDialog open={confirm !== null} onOpenChange={(o) => !o && setConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Make v{confirm} current again?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This saves it as a new version. If it loosens the config, it waits for an approver.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const toVersion = confirm;
-                setConfirm(null);
-                if (toVersion === null) return;
-                void act(
-                  editor,
-                  () =>
-                    op(
-                      "config.rollback",
-                      { projectId, baseVersion: currentVersion, toVersion },
-                      { idempotencyKey: submitKey() },
-                    ),
-                  `Rolled back: v${toVersion} is current again.`,
-                );
-              }}
-            >
-              Roll back
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <RollbackDialog editor={editor} toVersion={confirm} onClose={() => setConfirm(null)} />
     </EditSection>
+  );
+}
+
+/**
+ * Confirms a rollback with what it would change, as the engine classifies it against the current
+ * version, and the difference itself; Roll back waits until both are on screen.
+ */
+function RollbackDialog({
+  editor,
+  toVersion,
+  onClose,
+}: {
+  editor: ConfigEditor;
+  toVersion: number | null;
+  onClose: () => void;
+}) {
+  const { projectId, currentVersion, config } = editor;
+  const target = config.data?.history.find((h) => h.version === toVersion)?.policy ?? null;
+  const impact = useQuery({
+    queryKey: ["config", projectId, "preview", "rollback", toVersion],
+    queryFn: () => read("config.preview", { projectId, policy: target ?? {} }),
+    enabled: toVersion !== null && !!target,
+  });
+  const changes = impact.data?.impact?.changes ?? [];
+  const ready = !!impact.data?.impact;
+  return (
+    <AlertDialog open={toVersion !== null} onOpenChange={(o) => !o && onClose()}>
+      <AlertDialogContent data-testid="rollback-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Make v{toVersion} current again?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {!ready
+              ? impact.isError
+                ? "The engine couldn't classify this rollback, so it can't be confirmed here."
+                : "Classifying the change…"
+              : impact.data?.impact?.class === "loosens"
+                ? `It saves v${toVersion} as v${currentVersion + 1}. It loosens the config, so it waits for an approver.`
+                : `It saves v${toVersion} as v${currentVersion + 1}, at once.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {ready && (
+          <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+            <ImpactList changes={changes} />
+            <ChangeDiff before={editor.current?.policy ?? null} after={target} changes={changes} />
+          </div>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={!ready}
+            onClick={() => {
+              onClose();
+              if (toVersion === null) return;
+              void act(
+                editor,
+                () =>
+                  op(
+                    "config.rollback",
+                    { projectId, baseVersion: currentVersion, toVersion },
+                    { idempotencyKey: submitKey() },
+                  ),
+                `Rolled back: v${toVersion} is current again.`,
+              );
+            }}
+          >
+            Roll back
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** A setting a project on an org workflow overrides (spec 52, Q5): the stage type and the key. */
+interface Overridable {
+  type: string;
+  key: string;
+  /** What the org's value means when its workflow leaves it unset. */
+  unset: string;
+}
+const RETRY: Overridable = { type: "build", key: "retryLimit", unset: "the stage's default" };
+const CHECKS: Overridable = { type: "checks", key: "requiredChecks", unset: "none" };
+const SECTIONS_SETTING: Overridable = { type: "checks", key: "sections", unset: "every section" };
+const REQUIRED_FROM: Overridable = {
+  type: "interview-planning",
+  key: "requiredFrom",
+  unset: "the stage's default",
+};
+const SIZES = ["small", "medium", "large"] as const;
+
+type OrgWorkflow =
+  | { on: false }
+  | {
+      on: true;
+      name: string;
+      /** The org's value of a setting, and the stage id overrides are keyed by. */
+      at: (s: Overridable) => { stageId: string | null; value: unknown };
+      loading: boolean;
+      /** The org workflow couldn't be read: say so, never "no stage". */
+      failed: boolean;
+    };
+
+/**
+ * The org workflow a project's config runs on, if any (`workflow` names an org workflow id): what
+ * its stages set, so an override is shown against the org's value (PR #121's rules).
+ */
+function useOrgWorkflow(orgId: string | null, doc: Doc | null): OrgWorkflow {
+  const id = orgWorkflowOf(doc);
+  const wf = useQuery({ ...orgWorkflowQuery(orgId ?? "", id ?? ""), enabled: !!orgId && !!id });
+  if (!id) return { on: false };
+  const stages = (Array.isArray(wf.data?.workflow.stages) ? wf.data.workflow.stages : []) as {
+    id: string;
+    type: string;
+    settings?: Doc;
+  }[];
+  return {
+    on: true,
+    name: typeof wf.data?.workflow.name === "string" ? wf.data.workflow.name : id,
+    loading: wf.isPending && !wf.isError,
+    failed: wf.isError,
+    at: (s) => {
+      const stage = stages.find((x) => x.type === s.type);
+      return { stageId: stage?.id ?? null, value: obj(stage?.settings)[s.key] };
+    },
+  };
+}
+
+/**
+ * A setting the org's workflow sets and a project may override: the org's value, whether this
+ * project overrides it, Use the org's value, and that a looser override applies only once an org
+ * admin approves it (the save's impact says whether it loosens).
+ */
+function OverrideField({
+  org,
+  setting,
+  label,
+  help,
+  editor,
+  block = false,
+  render,
+}: {
+  org: Extract<OrgWorkflow, { on: true }>;
+  setting: Overridable;
+  label: string;
+  help: string;
+  editor: ConfigEditor;
+  block?: boolean;
+  render: (value: unknown, put: (v: unknown) => void) => ReactNode;
+}) {
+  const { stageId, value: orgValue } = org.at(setting);
+  const overrides = obj(editor.doc?.workflowOverrides);
+  const mine = stageId ? obj(overrides[stageId]) : {};
+  const overridden = Object.hasOwn(mine, setting.key);
+  const put = (v: unknown) =>
+    editor.set((d) => {
+      if (!stageId) return;
+      const all = { ...obj(d.workflowOverrides) };
+      const stage = { ...obj(all[stageId]) };
+      if (v === undefined) delete stage[setting.key];
+      else stage[setting.key] = v;
+      if (Object.keys(stage).length) all[stageId] = stage;
+      else delete all[stageId];
+      d.workflowOverrides = all;
+    });
+  const note = (
+    <div className="flex flex-col items-start gap-1.5" data-testid={`override-${setting.key}`}>
+      <span className="text-ink-3 text-xs">
+        {org.name} sets {orgValue === undefined ? setting.unset : shown(orgValue)}.{" "}
+        {overridden ? (
+          <>
+            <Chip tone="blue">Overridden here</Chip> A looser value than the org's applies only once
+            an org admin approves it.
+          </>
+        ) : (
+          "This project uses the org's value."
+        )}
+      </span>
+      {overridden && (
+        <Button size="sm" variant="outline" className="h-7" onClick={() => put(undefined)}>
+          Use the org's value
+        </Button>
+      )}
+    </div>
+  );
+  if (!stageId)
+    return (
+      <EditField label={label} help={org.loading ? "Loading the org's workflow…" : help}>
+        <span className="text-ink-3 text-xs" data-testid={`override-${setting.key}`}>
+          {org.failed
+            ? "Couldn't read the org's workflow, so this can't be changed here now. Try again later."
+            : org.loading
+              ? ""
+              : `${org.name} has no stage that sets this.`}
+        </span>
+      </EditField>
+    );
+  const control = render(overridden ? mine[setting.key] : orgValue, put);
+  return block ? (
+    <div className="flex flex-col gap-1.5 py-2.5">
+      {note}
+      {control}
+    </div>
+  ) : (
+    <EditField label={label} help={help} below={note}>
+      {control}
+    </EditField>
   );
 }

@@ -133,6 +133,47 @@ async function newItem(w: World, token: string) {
   return (await json<{ result: { workItemId: string } }>(created)).result.workItemId;
 }
 
+describe("a config change approved from the desktop (ADR 0610)", () => {
+  it("waits as a pending action, and the Touch ID summary names the project, versions and what it loosens", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const got = await json<{ result: { current: { version: number; policy: object } } }>(
+      await callOp(token, "config.get", { projectId: w.projectId }),
+    );
+    const base = got.result.current.version;
+    // A save from the desktop needs no proof; one that loosens waits for an approver.
+    const saved = await callOp(token, "config.save", {
+      projectId: w.projectId,
+      baseVersion: base,
+      policy: { ...got.result.current.policy, autonomyPolicy: "autonomous" },
+    });
+    const pendingActionId = (await json<{ pendingActionId: string }>(saved)).pendingActionId;
+    expect(pendingActionId).toBeTruthy();
+    const input = { pendingActionId, decision: "approved" };
+
+    // Approving needs a proof, and the prompt says what is being approved, from the engine.
+    expect((await callOp(token, "approval.decide", input)).status).toBe(403);
+    const proof = await prove(token, device, "approval.decide", input);
+    expect(proof.summary).toMatch(
+      new RegExp(
+        `^Approve a change to "[^"]+"'s policy \\(v${base} to v${base + 1}\\): loosens: Autonomy policy Balanced → Autonomous`,
+      ),
+    );
+    const reject = await prove(token, device, "approval.decide", {
+      pendingActionId,
+      decision: "rejected",
+    });
+    expect(reject.summary).toMatch(/^Reject a change to "[^"]+"'s policy/);
+
+    const decided = await callOp(token, "approval.decide", input, proof);
+    expect(decided.status).toBe(200);
+    const after = await json<{ result: { current: { version: number } } }>(
+      await callOp(token, "config.get", { projectId: w.projectId }),
+    );
+    expect(after.result.current.version).toBe(base + 1);
+  });
+});
+
 describe("the desktop app's client door (/client/v1)", () => {
   it("signs in once with PKCE; a wrong verifier or a reused code mints nothing (criterion 1)", async () => {
     const w = await world();
