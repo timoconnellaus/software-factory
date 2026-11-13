@@ -37,6 +37,24 @@ export const SCREENS = [
     design: "WorkActive.html",
   },
   { name: "work-done", path: "/work?view=done", design: "WorkDone.html" },
+  // Spec 53: the babysitter while main is red (no design file; nearest: the screens named).
+  {
+    name: "babysitter-overview",
+    path: "/factory?fixture=red",
+    design: "FactoryOverview.html",
+    scrollTo: "babysitter",
+  },
+  {
+    name: "babysitter-inbox",
+    path: "/?item=main-red-repo_software-factory&fixture=red",
+    design: "InboxMerge.html",
+  },
+  {
+    name: "babysitter-held",
+    path: "/work?fixture=red",
+    design: "WorkActive.html",
+    scrollTo: "held-wi_44",
+  },
   { name: "item-overview", path: "/work/wi_13", design: "ItemOverview.html" },
   // #9 has a live run with a takeover hint, so the header shows Pin, Open terminal and Cancel.
   { name: "item-header", path: "/work/wi_9", design: "ItemOverview.html" },
@@ -93,6 +111,67 @@ export const SCREENS = [
     keys: ["f"],
     clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
   },
+  // Spec 22 part B: the System tab, a pulled data model with its changes against the default
+  // branch and a pinned comment; an architecture the planner made; and the source view.
+  {
+    name: "plan-system",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
+  {
+    name: "plan-system-flow",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-design"]:nth-of-type(2)'],
+  },
+  {
+    name: "plan-system-comment",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="comment-mode"]'],
+  },
+  {
+    name: "plan-system-full",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-full"]'],
+  },
+  {
+    name: "plan-system-source",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-source"]'],
+  },
+  // Spec 24: the plan's split at the gate ("Approve the plan and 2 work items"), a parent's
+  // overview with its children, and a child's link to its parent.
+  {
+    name: "plan-split",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "split",
+  },
+  // Review of #173: a child's whole slice, opened at the gate.
+  {
+    name: "plan-split-open",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "split",
+    clicks: ['[data-testid="split-child"]:nth-child(2) button'],
+  },
+  { name: "item-split-parent", path: "/work/wi_9", design: "ItemOverview.html" },
+  {
+    name: "work-list-split",
+    path: "/work?view=active&project=prj_factory&layout=list",
+    design: "WorkActive.html",
+  },
+  { name: "item-split-child", path: "/work/wi_13", design: "ItemOverview.html" },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
@@ -150,6 +229,13 @@ export const SCREENS = [
     scrollTo: "decision",
   },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
+  // ADR 0591: the item's archived entries read back from the audit archive.
+  {
+    name: "item-activity-archived",
+    path: "/work/wi_13?tab=activity",
+    design: "ItemActivity.html",
+    clicks: ['[data-testid="show-archived"]'],
+  },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
@@ -401,6 +487,20 @@ export const SCREENS = [
     design: "SettingsDevices.html",
   },
   {
+    name: "this-mac-update-not-installed",
+    path: "/settings",
+    query: "?check=not-installed",
+    design: "SettingsDevices.html",
+  },
+  // The window while the app loads (WindowSkeleton = index.html's static shell; `?session=slow`).
+  { name: "loading-shell", path: "/", query: "?session=slow" },
+  // Restart to update, step by step (fake-bridge.ts `?applying=`).
+  { name: "updating-verifying", path: "/", query: "?applying=verifying" },
+  { name: "updating-restarting", path: "/", query: "?applying=restarting" },
+  { name: "updating-refused", path: "/", query: "?applying=refused" },
+  // The app's error screen (an error no page handles; fake-bridge.ts `?crash=1`). No design file.
+  { name: "app-error", path: "/", query: "?crash=1" },
+  {
     name: "this-mac-update-off",
     path: "/settings",
     query: "?check=off",
@@ -513,7 +613,7 @@ try {
     }
   }
   if (withDesign) {
-    const designs = [...new Set(screens.map((s) => s.design))];
+    const designs = [...new Set(screens.map((s) => s.design).filter(Boolean))];
     for (const d of designs) {
       const url = `file://${resolve(repo, "docs/design/factory-ui", d)}`;
       await shoot(cdp, url, resolve(out, "design", d.replace(".html", ".png")), "light");

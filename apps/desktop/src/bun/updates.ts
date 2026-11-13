@@ -6,8 +6,11 @@
 //   hash merely differs, which is all Electrobun checks);
 // - Electrobun really staged it (its download swallows errors: its own state is read back, and a
 //   failed download is tried again later);
-// - the staged bundle is signed by this build's Team ID and passes Gatekeeper (update-verify.ts),
-//   checked again right before applying;
+// - the staged bundle is signed by this build's Team ID and passes Gatekeeper (update-verify.ts).
+//   That takes seconds (spctl asks Apple's notary service), so it is done once the download lands,
+//   and the bundle's content hash (bundleFingerprint) is recorded with it, taken before and after
+//   the checks. Right before applying the hash is taken again: equal means the bundle applied is
+//   the one checked; anything else (a changed bundle, another staging folder) is checked in full;
 // - the staged bundle's own version.json (inside that seal) says the manifest's version, newer than
 //   the running one, on this build's channel: the manifest alone can't vouch for an old build;
 // - the app sits where it can replace itself (not translocated, its folder writable). If it can't,
@@ -17,13 +20,31 @@
 // A person can ask for a check (Check for Updates…, Settings > This Mac): `checkByPerson` is not
 // held back by ON_DEMAND_GAP_MS, only by a check already running (every trigger shares one check
 // in flight), and it never downloads again what is already staged or skips a check above.
+// Electrobun's install record must name this bundle or the update fails after the restart
+// (InvalidUpdateIdentity): it is put right at start and again before applying (install-record.ts).
+// An update that didn't install says so after the relaunch, and isn't offered as if new.
 // Nothing here imports Electrobun, so the tests run on Node.
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import type { CheckPhase } from "../shared/rpc.ts";
 import { isNewer } from "../shared/version.ts";
+import {
+  type InstallFailure,
+  lastFailure,
+  plainInstallFailure,
+  readUpdateResults,
+  syncInstallRecord,
+  type UpdateResult,
+} from "./install-record.ts";
 import type { Exec, StagedUpdate } from "./update-verify.ts";
-import { bundleInfo, stagedBundle, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
+import {
+  bundleFingerprint,
+  bundleInfo,
+  stagedBundle,
+  stagedUpdate,
+  teamIdOf,
+  verifyBundle,
+} from "./update-verify.ts";
 
 export interface UpdateState {
   /** A verified update is staged: "Restart to update" can be offered. */
@@ -43,6 +64,8 @@ export interface UpdateState {
   channel: string | null;
   /** `error` in plain words for a person (failed, off, or the app must move); null otherwise. */
   reason: string | null;
+  /** The last update didn't install (read after the relaunch): its version and why, in plain words. */
+  installFailure?: { version: string; reason: string } | null;
 }
 
 /** What this class uses of Electrobun's Updater (src/sdks/main/core/Updater.ts). */
@@ -75,6 +98,13 @@ export interface UpdatesDeps {
   bundle?: (app: string) => { version: string; channel: string } | null;
   setInterval?: (fn: () => void, ms: number) => unknown;
   setTimeout?: (fn: () => void, ms: number) => unknown;
+  /** Makes Electrobun's install record name this bundle (install-record.ts). */
+  syncRecord?: (channelRoot: string, appPath: string) => Promise<unknown>;
+  /** A bundle's content hash (bundleFingerprint). */
+  fingerprint?: (app: string) => Promise<string>;
+  /** The update helper's results in the channel root. */
+  results?: (channelRoot: string) => UpdateResult[];
+  log?: (line: string) => void;
 }
 
 export const EVERY_MS = 6 * 3_600_000;
@@ -122,6 +152,13 @@ export class Updates {
   /** Why this build takes no updates (dev, unsigned), or null; read once. */
   private offWhy: Promise<string | null> | null = null;
   private lastOnDemand = Number.NEGATIVE_INFINITY;
+  /** The staged bundle that passed every check, and its content hash then. */
+  private verified: {
+    stagingPath: string;
+    bundle: string;
+    version: string;
+    fingerprint: string;
+  } | null = null;
   private readonly d: Required<UpdatesDeps>;
 
   constructor(
@@ -135,6 +172,10 @@ export class Updates {
       setInterval: (fn, ms) => setInterval(fn, ms),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       now: () => Date.now(),
+      syncRecord: (root, app) => syncInstallRecord(root, app, { exec: deps.exec }),
+      results: (root) => readUpdateResults(root),
+      fingerprint: (app) => bundleFingerprint(app),
+      log: (line) => console.log(line),
       ...deps,
     };
   }
@@ -167,6 +208,7 @@ export class Updates {
 
   async start(): Promise<void> {
     if (!(await this.mayCheck())) return;
+    await this.prepareInstall();
     await this.check();
     this.d.setInterval(() => void this.check(), EVERY_MS);
   }
@@ -192,6 +234,30 @@ export class Updates {
     if (!(await this.mayCheck())) return;
     if (this.state.ready) return this.set({ phase: "ready", reason: null });
     await this.check();
+  }
+
+  /**
+   * Before any update is prepared: make the install record name this bundle, and read whether the
+   * last update installed. A translocated app is left alone (it is told to move first).
+   */
+  private async prepareInstall(): Promise<void> {
+    try {
+      if (installProblem(this.d.appPath, this.d.writable)) return;
+      const root = await this.d.updater.appDataFolder();
+      await this.d.syncRecord(root, this.d.appPath);
+      const running = (await this.d.updater.getLocalInfo()).version;
+      const failed: InstallFailure | null = lastFailure(this.d.results(root), running);
+      if (failed) {
+        this.d.log(
+          `updates: the update to ${failed.version} didn't install (${failed.phase}: ${failed.message})`,
+        );
+        this.set({
+          installFailure: { version: failed.version, reason: plainInstallFailure(failed) },
+        });
+      }
+    } catch (error) {
+      this.d.log(`updates: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private set(patch: Partial<UpdateState>) {
@@ -287,8 +353,40 @@ export class Updates {
     }
   }
 
-  /** Null when the staged update may be applied; else why not. */
+  /**
+   * Null when the staged update may be applied now; else why not (and the state says so, in plain
+   * words). Cheap when the staged bundle is, by its content hash, the one checked at download.
+   */
+  async verifyForApply(): Promise<string | null> {
+    const why = await this.recheck();
+    if (why) this.fail(why, this.state.version, false);
+    return why;
+  }
+
+  private async recheck(): Promise<string | null> {
+    const v = this.verified;
+    if (v) {
+      try {
+        const running = (await this.d.updater.getLocalInfo()).version;
+        const staged = this.d.staged(await this.d.updater.appDataFolder());
+        const same =
+          staged !== null &&
+          staged.path === v.stagingPath &&
+          staged.version === v.version &&
+          isNewer(v.version, running) &&
+          (await this.d.fingerprint(v.bundle)) === v.fingerprint;
+        if (same) return null;
+      } catch {
+        // Unreadable: checked in full below.
+      }
+      this.verified = null;
+    }
+    return this.verifyStaged();
+  }
+
+  /** Null when the staged update may be applied; else why not. Checks it all, in full. */
   private async verifyStaged(): Promise<string | null> {
+    this.verified = null;
     const local = await this.d.updater.getLocalInfo();
     const running = local.version;
     const staged = this.d.staged(await this.d.updater.appDataFolder());
@@ -298,8 +396,16 @@ export class Updates {
     const team = await teamIdOf(this.d.appPath, this.d.exec);
     if (!team) return "refused: this build isn't signed, so it can't check an update's signature";
     const bundle = stagedBundle(staged.path, this.d.appPath);
+    const t0 = this.d.now();
+    const before = await this.d.fingerprint(bundle).catch(() => null);
+    const t1 = this.d.now();
     const why = await verifyBundle(bundle, team, this.d.exec);
+    const t2 = this.d.now();
     if (why) return `refused ${staged.version}: ${why}`;
+    const after = await this.d.fingerprint(bundle).catch(() => null);
+    this.d.log(
+      `updates: checked ${staged.version}: signature and Gatekeeper ${t2 - t1} ms, content hash ${t1 - t0} ms`,
+    );
     // Read only now, from inside the seal just verified: the manifest's version is the bucket's word.
     const own = this.d.bundle(bundle);
     if (!own) return `refused ${staged.version}: the staged app has no readable version`;
@@ -309,6 +415,14 @@ export class Updates {
       return `refused ${own.version}: not newer than this version (${running})`;
     if (own.channel !== local.channel)
       return `refused ${own.version}: it is a ${own.channel} build, this is ${local.channel}`;
+    // Unchanged while it was checked: remembered, so applying it only hashes it again.
+    if (before !== null && before === after)
+      this.verified = {
+        stagingPath: staged.path,
+        bundle,
+        version: staged.version,
+        fingerprint: before,
+      };
     return null;
   }
 
@@ -318,8 +432,8 @@ export class Updates {
    * brings back whatever it stopped. The reason is in `state.error`.
    */
   async apply(): Promise<void> {
-    const why = await this.verifyStaged();
-    if (why) return this.fail(why, this.state.version, false);
+    await this.prepareInstall();
+    if (await this.verifyForApply()) return;
     await this.d.updater.applyUpdate();
     // Still here: Electrobun didn't restart.
     const after = this.d.updater.updateInfo();

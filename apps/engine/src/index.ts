@@ -9,10 +9,12 @@ import {
   isOperationError,
   PROTECTION_RECHECK_MS,
   parseProjectPolicy,
+  REVERT_AFTER_MS,
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { parseTerminalPath } from "@software-factory/runner-contract";
+import { archiveAudit } from "./audit-archive.ts";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { deliverDue } from "./deliver/deliverer.ts";
@@ -25,7 +27,6 @@ import { terminalRelay } from "./terminal-relay.ts";
 import { handleGitHubWebhook, WEBHOOK_PATH } from "./webhooks.ts";
 
 export { ClientHub } from "./client-hub.ts";
-export { PlanningHub } from "./planning-hub.ts";
 export { EngineApi } from "./rpc.ts";
 export { TerminalRelay } from "./terminal-relay.ts";
 export { WorkItemWorkflow } from "./workflow/work-item.ts";
@@ -40,7 +41,10 @@ export default {
     // The runner host's web terminal socket (ADR 0440), with the one-use ticket the channel's held
     // `terminal` call gave it. Viewers' sockets are only reachable through EngineApi (the binding).
     const terminal = parseTerminalPath(url.pathname);
-    if (terminal?.role === "host") return terminalRelay(env, terminal.jobId).fetch(request);
+    // The job line (spec 44 part B, ADR 0592) is the host's too, with a ticket from the `line` call.
+    if (terminal?.role === "host" || terminal?.role === "line") {
+      return terminalRelay(env, terminal.jobId).fetch(request);
+    }
     if (url.pathname.startsWith(CLI_PREFIX) || url.pathname.startsWith(CLIENT_PREFIX)) {
       return handleCli(request, env);
     }
@@ -75,6 +79,15 @@ export default {
     // Retention (AGENTS.md "Cloudflare cost", rule 3): every minute, a budgeted slice of the
     // oldest ended runs' events goes to R2; once an hour, expired rows go in bounded batches.
     await archiveRunEvents(env, now);
+    // Every five minutes (offset from the shadow pass): machine audit rows older than 90 days go
+    // to R2 as a hash chain, a day at a time (ADR 0590, 0591); a failure only delays the next tick.
+    if (now.getUTCMinutes() % 5 === 2) {
+      try {
+        await archiveAudit(env, now);
+      } catch (error) {
+        console.error("audit archive failed", error);
+      }
+    }
     // Once a day: the archive's expected drain time, and a few archived objects checked with a
     // HEAD, so a lost one opens its incident without waiting for someone to look.
     if (now.getUTCHours() === 0 && now.getUTCMinutes() === 43) {
@@ -91,6 +104,9 @@ export default {
     // Every minute: `factory/verify` held while main was red, on a head whose repository is green
     // again or whose item ended, is evaluated again (decision 7; heals a lost verify.recheck).
     await releaseHeldChecks(env);
+    // And a red main's repair: the engine's revert of a proven or person-named culprit once the
+    // episode is 30 minutes old, then the reland item once a revert has merged (spec 53 §5).
+    await repairRedMain(env, now);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
@@ -155,6 +171,72 @@ export async function releaseHeldChecks(env: Env, limit = 20, now = new Date()):
   return results.length;
 }
 
+/**
+ * Spec 53 §5, decisions 2 and 5, from the minute cron. Reads core_main_health (one row per
+ * repository) for episodes 30 minutes old whose culprit is proven or named by a person and not yet
+ * reverted, and core_reverts_reland_idx (partial: reverts with no reland) for merged reverts; each
+ * at most 10, each acted on through its operation as the babysitter (which re-checks everything).
+ */
+export async function repairRedMain(env: Env, now = new Date(), limit = 10): Promise<number> {
+  const due = new Date(now.getTime() - REVERT_AFTER_MS).toISOString();
+  const [culprits, merged, ended] = await env.DB.batch([
+    env.DB.prepare(
+      `SELECT h.culprit_work_item_id AS id FROM core_main_health h
+       WHERE h.red_since IS NOT NULL AND h.red_since <= ?1
+         AND h.culprit_work_item_id IS NOT NULL AND h.attributed_by IN ('proven', 'person')
+         AND NOT EXISTS (SELECT 1 FROM core_reverts r
+           WHERE r.original_work_item_id = h.culprit_work_item_id AND r.red_since = h.red_since
+             AND (r.status NOT IN ('claimed', 'calling') OR r.lease_until > ?3))
+       LIMIT ?2`,
+    ).bind(due, limit, now.toISOString()),
+    env.DB.prepare(
+      `SELECT r.revert_work_item_id AS id FROM core_reverts r
+       CROSS JOIN core_work_items w ON w.id = r.revert_work_item_id
+       WHERE r.status = 'opened' AND w.status = 'done'
+       ORDER BY r.created_at LIMIT ?1`,
+    ).bind(limit),
+    // A revert whose item ended without merging: closed on GitHub, then it leaves the open index.
+    env.DB.prepare(
+      `SELECT r.revert_work_item_id AS id FROM core_reverts r
+       CROSS JOIN core_work_items w ON w.id = r.revert_work_item_id
+       WHERE r.status = 'opened' AND w.status IN ('cancelled', 'failed', 'rejected')
+       ORDER BY r.created_at LIMIT ?1`,
+    ).bind(limit),
+  ]);
+  const act = async (op: string, id: string, extra: Record<string, unknown> = {}) => {
+    try {
+      const r = await invoke(
+        invokeDeps(env),
+        op,
+        { workItemId: id, ...extra },
+        {
+          actor: BABYSITTER,
+          origin: { surface: "cron", step: op },
+        },
+      );
+      return r.status === "ok" ? (r.output as { status?: string; attempt?: number | null }) : null;
+    } catch (error) {
+      if (!isOperationError(error)) console.error(`${op} ${id} failed`, error);
+      return null;
+    }
+  };
+  const c = (culprits?.results ?? []) as { id: string }[];
+  const m = (merged?.results ?? []) as { id: string }[];
+  const e = (ended?.results ?? []) as { id: string }[];
+  for (const r of c) {
+    // Claim, take the lease, then ask GitHub with it: each committed before the next.
+    let step = await act("mainRed.revert", r.id);
+    if (step?.status === "claimed") step = await act("mainRed.revert", r.id);
+    // With the lease: GitHub's answer is committed first, then the item is made from it.
+    for (let k = 0; k < 2 && step?.status === "calling" && step.attempt; k++) {
+      step = await act("mainRed.revert", r.id, { attempt: step.attempt });
+    }
+  }
+  for (const r of m) await act("mainRed.reland", r.id);
+  for (const r of e) await act("mainRed.closeRevert", r.id);
+  return c.length + m.length + e.length;
+}
+
 /** How long the babysitter keeps its reruns and known flakes (spec 53, decision 3's 14 days, with room). */
 export const BABYSIT_KEEP_DAYS = 30;
 
@@ -164,7 +246,7 @@ export const BABYSIT_KEEP_DAYS = 30;
  */
 export async function pruneBabysit(db: D1Database, now: Date, limit = 500): Promise<number> {
   const cutoff = new Date(now.getTime() - BABYSIT_KEEP_DAYS * 86_400_000).toISOString();
-  const [reruns, flakes] = await db.batch([
+  const [reruns, flakes, resolutions] = await db.batch([
     db
       .prepare(
         `DELETE FROM core_ci_reruns WHERE rowid IN
@@ -177,8 +259,21 @@ export async function pruneBabysit(db: D1Database, now: Date, limit = 500): Prom
            (SELECT id FROM core_flakes WHERE seen_at < ? ORDER BY seen_at LIMIT ?)`,
       )
       .bind(cutoff, limit),
+    // A resolution is kept while its item is open (the gate shows it), then goes. One row per
+    // item that had one: a handful, read through the primary key's join.
+    db
+      .prepare(
+        `DELETE FROM core_babysit_resolutions WHERE work_item_id IN
+           (SELECT r.work_item_id FROM core_babysit_resolutions r
+            CROSS JOIN core_work_items w ON w.id = r.work_item_id
+            WHERE w.status NOT IN ('running', 'waiting', 'paused', 'queued', 'shaping', 'ready', 'backlog')
+            LIMIT ?)`,
+      )
+      .bind(limit),
   ]);
-  return (reruns?.meta.changes ?? 0) + (flakes?.meta.changes ?? 0);
+  return (
+    (reruns?.meta.changes ?? 0) + (flakes?.meta.changes ?? 0) + (resolutions?.meta.changes ?? 0)
+  );
 }
 
 /** How long the factory's check results outlive their item (ADR 0501, fourth review). */

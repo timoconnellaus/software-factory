@@ -220,6 +220,19 @@ export interface GitHubService {
    */
   checkRunDetail(repo: RepoRef, checkRunId: string): Promise<string>;
   /**
+   * Asks GitHub to revert a merged PR (GraphQL `revertPullRequest`, what the PR page's Revert button
+   * does): GitHub makes a branch with the inverse of its merge commit and opens a PR from it. No
+   * code is written by the factory (spec 53 §5). Needs `contents` and `pull_requests: write`.
+   */
+  revertPullRequest(
+    repo: RepoRef,
+    input: { number: number; title: string; body: string },
+  ): Promise<{ number: number; branch: string; headSha: string; url: string }>;
+  /** Closes a PR without merging it, as the App (spec 53 §5: an abandoned revert). */
+  closePullRequest(repo: RepoRef, number: number): Promise<void>;
+  /** Comments on a PR as the App (spec 53 §5: what was reverted and what to reland). */
+  commentOnPullRequest(repo: RepoRef, number: number, body: string): Promise<void>;
+  /**
    * The App's installation covering `owner/repo`, asked as the App itself (its JWT, `GET
    * /repos/{owner}/{repo}/installation`): no user token involved. `reason` says why there is none.
    */
@@ -298,6 +311,14 @@ export interface GitHubService {
    */
   pathEntries(repo: RepoRef, sha: string, paths: readonly string[]): Promise<Tree>;
   /**
+   * Whether two commits have more than one merge base (a criss-cross: each side merged the other),
+   * so a three-way judgement from GitHub's single `merge_base_commit` could be wrong: the merge bases
+   * GitHub reports each way differ, or a commit is new on both sides (a second merge base is
+   * reachable from both heads but not from the first). Null when it can't tell (more commits than a
+   * compare lists): treat that as ambiguous too.
+   */
+  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | null>;
+  /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
    * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.
@@ -331,7 +352,12 @@ export interface FactoryServices {
    * archived (tests that don't need it, sf-app).
    */
   runArchive?: {
-    get(key: string): Promise<string | null>;
+    /**
+     * An archived object's text, or null when it isn't there; throws when R2 can't be read. Objects
+     * are written once, so a read may be served from the isolate's cache, unless `fresh` (what
+     * audit.verify asks for: it checks the bucket as it is now).
+     */
+    get(key: string, opts?: { fresh?: boolean }): Promise<string | null>;
     /** Whether the object is there (an R2 HEAD): run.reportArchiveMissing checks for itself. */
     exists(key: string): Promise<boolean>;
   };

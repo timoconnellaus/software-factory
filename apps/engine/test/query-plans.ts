@@ -5,6 +5,8 @@
 
 /** Tables sized by configuration, not by use: a SCAN of one of these is fine. Every other table grows. */
 export const SMALL_TABLES = new Set([
+  // One row per open item the babysitter resolved a conflict for; pruned hourly once it ends.
+  "core_babysit_resolutions",
   "core_organization",
   "core_member",
   "core_user",
@@ -70,6 +72,10 @@ function tableAliases(sql: string): Map<string, string> {
  * the set grows with the table (every item of an org, sorted to take the newest 50).
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
+  {
+    match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
+    why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
+  },
   {
     match:
       /from "core_work_items" where "repository_id" = \? and "head_sha" = \? order by "updated_at"/,

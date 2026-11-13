@@ -66,6 +66,17 @@ export function checkView(u: UpdateStatus): CheckView {
         ],
       };
   }
+  // The last update didn't install (Electrobun's helper said why; read after the relaunch). It is
+  // never offered again as if nothing happened.
+  const failed =
+    u.installFailure && u.installFailure.version === u.version ? u.installFailure : null;
+  if (u.ready && failed && u.waitingForRunner === null && u.jobs === 0)
+    return {
+      line: failed.reason,
+      busy: false,
+      tone: "error",
+      actions: [{ action: "restart", label: "Retry the update", variant: "default" }],
+    };
   if (u.ready) {
     // The same restart as the menu's (restart-update.ts): no job is cancelled unless chosen here.
     if (u.waitingForRunner !== null)
@@ -101,6 +112,8 @@ export function checkView(u: UpdateStatus): CheckView {
       ],
     };
   }
+  if (u.installFailure)
+    return { line: u.installFailure.reason, busy: false, tone: "error", actions: [check()] };
   return { line: null, busy: false, tone: "normal", actions: [check()] };
 }
 

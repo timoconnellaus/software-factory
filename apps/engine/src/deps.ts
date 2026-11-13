@@ -75,7 +75,10 @@ export function services(env: Env): FactoryServices {
     ...(env.RUNNER_SHA ? { runnerSha: env.RUNNER_SHA } : {}),
     attachments: r2AttachmentBlobs(env.ATTACHMENTS),
     runArchive: {
-      get: (key) => archivedChunk(env.ARCHIVE, key),
+      get: async (key, opts) =>
+        opts?.fresh
+          ? ((await env.ARCHIVE.get(key))?.text() ?? null)
+          : archivedChunk(env.ARCHIVE, key),
       exists: async (key) => (await env.ARCHIVE.head(key)) !== null,
     },
     runnerKey: async (runnerId, version) => {
@@ -138,5 +141,9 @@ function unavailableGitHub(): FactoryServices["github"] {
     userInstallationIds: no,
     rerequestCheckRun: no,
     checkRunDetail: no,
+    mergeBaseAmbiguous: no,
+    revertPullRequest: no,
+    commentOnPullRequest: no,
+    closePullRequest: no,
   };
 }

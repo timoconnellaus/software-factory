@@ -251,6 +251,33 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(batch.results[2]?.code).toBe("forbidden");
   });
 
+  it("says how many work items a split's approval creates, in the Touch ID prompt (spec 24, review of #173)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    const child = (key: string, title: string) => ({
+      key,
+      title,
+      size: "small",
+      goal: "g",
+      scope: ["s"],
+      acceptanceCriteria: ["c"],
+    });
+    await env.DB.prepare(
+      "INSERT INTO core_specs (id, work_item_id, version, body_md, acceptance_criteria, status, created_by, created_at, children) VALUES ('spec_split', ?, 1, '# x', '[]', 'draft', 'test', '2026-11-13T00:00:00.000Z', ?)",
+    )
+      .bind(workItemId, JSON.stringify([child("a", "Issue intake"), child("b", "Report back")]))
+      .run();
+    await env.DB.prepare("UPDATE core_work_items SET current_spec_id = 'spec_split' WHERE id = ?")
+      .bind(workItemId)
+      .run();
+    const proof = await prove(token, device, "spec.approve", { workItemId });
+    const n = (
+      await first<{ number: number }>("SELECT number FROM core_work_items WHERE id = ?", workItemId)
+    )?.number;
+    expect(proof.summary).toBe(`Approve the plan and 2 work items for #${n} "From the desktop"`);
+  });
+
   it("refuses a gate decision without a proof, and lets exactly one proven call past (criteria 3, 4)", async () => {
     const w = await world();
     const { token, device } = await signIn(w);

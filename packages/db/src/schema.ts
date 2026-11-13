@@ -94,6 +94,25 @@ export interface CoreOrgConfigsTable {
   impact: "loosens" | "tightens" | "neutral" | null;
 }
 
+/** A skill's versions (spec 52 (f), ADR 0513, migration 0283). */
+export interface CoreSkillVersionsTable {
+  org_id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  description: string;
+  body: string;
+  sha256: string;
+  overrides: string | null;
+  provenance: string | null;
+  status: "current" | "proposed" | "rejected";
+  source: string;
+  created_by: string | null;
+  note: string | null;
+  parent_version: number | null;
+  created_at: Iso;
+}
+
 /** Spec 52 PR (c): an ended item's shadow verdict (migration 0281), one row per item. */
 export interface CoreReconcileItemsTable {
   work_item_id: string;
@@ -347,6 +366,10 @@ export interface CoreWorkItemsTable {
   repairs_main: Generated<number>;
   /** 0391: the merge commit pr.merge made for it (spec 53 part e: an episode's suspects). */
   merge_sha: string | null;
+  /** A split parent waiting for its children: holds no active slot (migration 0402). */
+  awaiting_children: Generated<number>;
+  /** A plan's child: its approved slice {key, size, sha256} as JSON (migration 0402). */
+  split_slice: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -474,6 +497,10 @@ export interface CoreSpecsTable {
    * [{path, artifactId, revision, sha256}]; spec.commit writes exactly these. Null: none.
    */
   kim_files: string | null;
+  /** The children this version splits into (spec 24, migration 0401), JSON; null: no split. */
+  children: string | null;
+  /** What spec.commit wrote, JSON [{path, sha256}] (migration 0402). */
+  committed_files: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";
@@ -543,7 +570,12 @@ export type IncidentKind =
   | "run_stalled"
   | "manual"
   /** 0364: a run's archived log is lost; for a person, no agent fix. */
-  | "archive_missing";
+  | "archive_missing"
+  /**
+   * 0366: the audit archiver stopped three ticks in a row. The factory's, not an org's: its row has
+   * no org, project or work item (the archiver writes it in SQL; reads by org never see it).
+   */
+  | "audit_archive_stopped";
 
 export interface CoreIncidentsTable {
   id: string;
@@ -565,6 +597,48 @@ export interface CoreIncidentsTable {
   resolved_by: string | null;
   /** 0365: what the person did about it, in their words. */
   resolution: string | null;
+}
+
+/** 0366: one row per archived UTC day of machine audit rows (ADR 0590, 0591). */
+export interface CoreAuditArchivesTable {
+  day: string;
+  chunks: number;
+  rows: number;
+  root: string;
+  prev_root: string;
+  archived_at: Iso;
+}
+
+/** 0366: one row per archived object (a chunk of a day). */
+export interface CoreAuditArchiveChunksTable {
+  day: string;
+  seq: number;
+  r2_key: string;
+  first_at: Iso;
+  first_id: string;
+  last_at: Iso;
+  last_id: string;
+  rows: number;
+  bytes: number;
+  sha256: string;
+  prev_hash: string;
+  last_hash: string;
+  archived_at: Iso;
+}
+
+/** 0366: which archived chunks hold a work item's rows. */
+export interface CoreAuditArchiveItemsTable {
+  work_item_id: string;
+  day: string;
+  seq: number;
+  rows: number;
+}
+
+/** 0366: the audit archiver's lease on a day. */
+export interface CoreAuditArchiveLeasesTable {
+  day: string;
+  holder: string;
+  expires_at: Iso;
 }
 
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
@@ -784,6 +858,8 @@ export interface CoreRunSteersTable {
   interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
+  /** 0369: until when an acking host has been offered it (spec 44 host ack); null otherwise. */
+  offered_until: Iso | null;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
@@ -998,6 +1074,36 @@ export interface CoreDeliveryStateTable {
   babysit_reasons: Generated<JsonText>;
 }
 
+/** 0392: what the babysitter's conflict resolution changed, for the reopened gate. */
+export interface CoreBabysitResolutionsTable {
+  work_item_id: string;
+  head_sha: string;
+  summary: string;
+  patches: Generated<string>;
+  created_at: Iso;
+}
+
+/** 0393 (spec 53 §5): the engine's revert of a red main's culprit, claimed, then opened. */
+export interface CoreRevertsTable {
+  id: string;
+  original_work_item_id: string;
+  repository_id: string;
+  project_id: string;
+  red_since: string;
+  status: "claimed" | "calling" | "opened" | "failed" | "abandoned" | "relanded";
+  attempts: Generated<number>;
+  lease_until: string | null;
+  revert_branch: string | null;
+  root_work_item_id: string;
+  revert_pr_number: number | null;
+  revert_work_item_id: string | null;
+  exact_inverse: number | null;
+  reason: string | null;
+  reland_work_item_id: string | null;
+  created_at: Iso;
+  updated_at: Iso;
+}
+
 /** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
 export interface CoreCiRerunsTable {
   repository_id: string;
@@ -1186,6 +1292,8 @@ export interface CorePlanningArtifactRevisionsTable {
   size: number;
   controls: Generated<string>;
   created_at: Iso;
+  /** A design's preview from the runner's checks (spec 22 part B, migration 0400), JSON. */
+  preview: string | null;
 }
 
 /** A person's edit to the plan's source lines (spec 27, ADR 0471). */
@@ -1362,6 +1470,7 @@ export interface CoreDatabase {
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;
   core_stages: CoreStagesTable;
+  core_skill_versions: CoreSkillVersionsTable;
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;
@@ -1369,6 +1478,10 @@ export interface CoreDatabase {
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;
+  core_audit_archives: CoreAuditArchivesTable;
+  core_audit_archive_chunks: CoreAuditArchiveChunksTable;
+  core_audit_archive_items: CoreAuditArchiveItemsTable;
+  core_audit_archive_leases: CoreAuditArchiveLeasesTable;
   core_outbox: CoreOutboxTable;
   core_runners: CoreRunnersTable;
   core_runner_shares: CoreRunnerSharesTable;
@@ -1394,6 +1507,8 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_babysit_resolutions: CoreBabysitResolutionsTable;
+  core_reverts: CoreRevertsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

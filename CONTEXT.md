@@ -200,7 +200,8 @@ not actionable (ADR 0304). Takes no WIP slot.
 
 **Split**
 A spec that creates child work items when approved, each with its own spec slice; depth 1
-(ADR 0303).
+(ADR 0303). The parent builds nothing: its PR carries only the approved plan's files, and its
+children are released once it merges; it closes when its last child ends (ADR 0630).
 
 **Spec drift**
 Where a build departs from its approved spec's scope; a review-packet section (ADR 0306). Not the
@@ -713,7 +714,10 @@ _Avoid_: PAT, deploy key, user token
 The append-only record of every operation that changed something: actor, origin, gate decision,
 diff. Machine-frequency calls (heartbeats, empty claims, held waits, presence, log batches) are
 recorded only when they change state, and a runner's input is kept as a digest (ADR 0590). Metrics
-are SQL views over it.
+are SQL views over it. **Machine rows** (a runner's, the scheduler's, an intake's or the foreman's
+routine calls, allowed and successful, on a fixed list of operations) move to the **audit archive**
+in R2 after 90 days as a hash chain, read back by the timeline and checked by `audit.verify`;
+everything else stays in D1 forever (ADR 0591).
 _Avoid_: log, history, event store, analytics
 
 **Outbox**

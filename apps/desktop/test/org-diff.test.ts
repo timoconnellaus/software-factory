@@ -164,6 +164,24 @@ describe("round 5 of #159", () => {
     expect([...ORG_CONFIG_KEYS].sort()).toEqual(Object.keys(orgConfigSchema.shape).sort());
   });
 
+  it("shows a rollback's change to a skill and to the skills attached to an agent", async () => {
+    const { orgConfigDiff } = await import("../src/mainview/lib/org-diff.ts");
+    const rows = orgConfigDiff(
+      {
+        skills: { s1: { name: "Careful", body: "Check twice." } },
+        agentSkills: { Critic: ["s1"] },
+      },
+      { skills: { s1: { name: "Careful", body: "Check once." } }, agentSkills: {} },
+    );
+    const labels = rows.map((r) => r.label);
+    expect(labels).toContain("Skill s1");
+    expect(labels).toContain("Skills attached to agent Critic");
+    expect(rows.find((r) => r.label === "Skill s1")?.was).not.toEqual(
+      rows.find((r) => r.label === "Skill s1")?.now,
+    );
+    expect(rows.find((r) => r.label === "Skills attached to agent Critic")?.now).toBe("removed");
+  });
+
   it("shows a rollback's change to the org's built-in copies, and what an added workflow brings", async () => {
     const { orgConfigDiff } = await import("../src/mainview/lib/org-diff.ts");
     const incident = (checks: string[]) => ({

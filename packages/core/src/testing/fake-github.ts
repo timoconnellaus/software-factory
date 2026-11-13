@@ -12,6 +12,7 @@ import type {
   RepoGuards,
   RepoRef,
 } from "../services.ts";
+import { mergeBaseAmbiguousFrom, type SinceBase } from "../verify/merge-base.ts";
 import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
 type Touch =
@@ -37,6 +38,10 @@ interface RepoState {
   ciDefault?: Omit<CheckRunInfo, "id">[];
   /** How many of the minted job tokens were read-only. */
   readOnlyTokens?: number;
+  /** Revert PRs GitHub opened: revert PR number → the PR it reverts. */
+  reverts?: Record<number, number>;
+  /** Comments the App made on PRs. */
+  comments?: { number: number; body: string }[];
   /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
   reruns?: string[];
   /** How many of the next `postCheckRun` calls fail (an outage, a rate limit). */
@@ -145,6 +150,8 @@ export interface FakeGitHub extends GitHubService {
     opts?: {
       byGitHub?: boolean;
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
+      /** What the compare reports for the merge commit's paths (patches, renames). */
+      touches?: Touch[];
     },
   ): Promise<string>;
   /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
@@ -452,6 +459,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         [next]: [{ path, status: existed ? "modified" : "added" }],
       };
       state.files[branch] = { ...(state.files[branch] ?? {}), [path]: content };
+      // The files at this commit, so a read at its SHA sees what it wrote.
+      state.blobs = { ...(state.blobs ?? {}), [next]: { ...state.files[branch] } };
       await save(r, state);
       return { commitSha: next };
     },
@@ -472,6 +481,8 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         ...before,
         ...Object.fromEntries(files.map((f) => [f.path, f.content])),
       };
+      // The files at this commit, so a read at its SHA sees what it wrote.
+      state.blobs = { ...(state.blobs ?? {}), [next]: { ...state.files[branch] } };
       await save(r, state);
       return { commitSha: next };
     },
@@ -593,6 +604,30 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const complete = !state.truncatedTrees?.[m] && !state.truncatedTrees?.[h];
       return { mergeBase: m, paths, complete };
     },
+    async mergeBaseAmbiguous(r, a, b) {
+      // As GitHub answers: one merge base, the same both ways (even for a criss-cross), and each
+      // side's commits since it with their parents; the judgement is the client's.
+      const state = await load(r);
+      const x = state.refs[a] ?? a;
+      const y = state.refs[b] ?? b;
+      const base = mergeBaseOf(state, x, y);
+      const parentsOf = (c: string) => [
+        ...(state.parents[c] ? [state.parents[c] as string] : []),
+        ...(state.merged?.[c] ? [state.merged[c] as string] : []),
+      ];
+      // GitHub lists `head ^other`: the commits the head has that the other side doesn't (checked
+      // against a recorded response: packages/core/test/fixtures/criss-cross-compare.json).
+      const since = (head: string, other: string): SinceBase => {
+        const theirs = reachable(state, other);
+        const commits = [...reachable(state, head)]
+          .filter((c) => !theirs.has(c))
+          .map((sha) => ({ sha, parents: parentsOf(sha) }));
+        return { base, total: commits.length, commits };
+      };
+      return mergeBaseAmbiguousFrom(since(y, x), since(x, y), async (sha, b0) =>
+        reachable(state, b0).has(sha),
+      );
+    },
     async pathEntries(r, at, paths) {
       const state = await load(r);
       const tree = treeAt(state, state.refs[at] ?? at);
@@ -606,6 +641,15 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
       if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
       if (opts.tree) {
+        // The paths it sets differ from the merged-in side: the compare lists them, as GitHub's does.
+        state.touched = {
+          ...(state.touched ?? {}),
+          [next]: [
+            ...(state.touched?.[next] ?? []),
+            ...Object.keys(opts.tree.set ?? {}),
+            ...(opts.touches ?? []),
+          ],
+        };
         const tree = { ...treeAt(state, next), ...opts.tree.set };
         for (const p of opts.tree.remove ?? []) delete tree[p];
         state.trees = { ...(state.trees ?? {}), [next]: tree };
@@ -713,6 +757,57 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         ...c,
         id: `ci-${at.slice(0, 8)}-${i}`,
       }));
+    },
+    async revertPullRequest(r, input) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === input.number);
+      if (pull?.state !== "merged" || !pull.mergeSha) throw new Error("only a merged PR reverts");
+      const branch = `revert-${input.number}-${pull.head.replace(/\//g, "-")}`;
+      const base = state.refs[pull.base] ?? null;
+      if ((state.failPosts ?? 0) > 0) {
+        state.failPosts = (state.failPosts ?? 0) - 1;
+        await save(r, state);
+        throw new Error("GitHub couldn't revert: a merge conflict");
+      }
+      const headSha = await commit(state, base, branch);
+      state.touched = { ...(state.touched ?? {}), [headSha]: state.touched?.[pull.mergeSha] ?? [] };
+      // The exact inverse: every path the merge changed goes back to its first parent's content.
+      const before = state.parents[pull.mergeSha];
+      if (before) {
+        const tree = { ...treeAt(state, base ?? before) };
+        const was = treeAt(state, before);
+        for (const p of touchesBetween(state, before, pull.mergeSha).keys()) {
+          if (was[p]) tree[p] = was[p];
+          else delete tree[p];
+        }
+        state.trees = { ...(state.trees ?? {}), [headSha]: tree };
+      }
+      state.refs[branch] = headSha;
+      const number = state.pulls.length + 1;
+      state.pulls.push({
+        number,
+        head: branch,
+        base: pull.base,
+        title: input.title,
+        state: "open",
+        body: input.body,
+        author: `${FAKE_APP.slug}[bot]`,
+        draft: false,
+      });
+      state.reverts = { ...(state.reverts ?? {}), [number]: input.number };
+      await save(r, state);
+      return { number, branch, headSha, url: pullUrl(r, number) };
+    },
+    async closePullRequest(r, number) {
+      const state = await load(r);
+      const pull = state.pulls.find((p) => p.number === number);
+      if (pull && pull.state === "open") pull.state = "closed";
+      await save(r, state);
+    },
+    async commentOnPullRequest(r, number, body) {
+      const state = await load(r);
+      state.comments = [...(state.comments ?? []), { number, body }];
+      await save(r, state);
     },
     async rerequestCheckRun(r, checkRunId) {
       const state = await load(r);

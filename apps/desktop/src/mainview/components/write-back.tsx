@@ -13,8 +13,10 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import { ChevronRightIcon } from "lucide-react";
 import { useMemo } from "react";
+import { svgDataUrl } from "../lib/design-view.ts";
 import { lineDiff } from "../lib/line-diff.ts";
 import { read } from "../lib/op.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 
 /** The write-back for the plan as it stands: keyed on the spec and each artifact's revision. */
 const writeBackQuery = (workItemId: string, view: PlanningView) =>
@@ -43,6 +45,9 @@ export function approveLabel(kimCount: number | undefined): string {
 
 export function WriteBack({ workItemId, view }: { workItemId: string; view: PlanningView }) {
   const data = useWriteBack(workItemId, view, true);
+  // In a narrow window the list starts folded to its one line, so the panes keep their room
+  // (review of #130); the approve button still says how many files it writes.
+  const roomy = planningLayout(true, useMedia(WIDE_PLANNING)).writeBackOpen;
   if (!data) {
     return (
       <div
@@ -55,8 +60,8 @@ export function WriteBack({ workItemId, view }: { workItemId: string; view: Plan
   }
   return (
     <Collapsible
-      defaultOpen
-      className="flex max-h-[40vh] flex-none flex-col border-line-soft border-t bg-panel"
+      defaultOpen={roomy}
+      className="flex max-h-[30vh] flex-none flex-col border-line-soft border-t bg-panel"
       data-testid="write-back"
     >
       <CollapsibleTrigger className="group flex items-center gap-1.5 px-[22px] pt-2.5 pb-1.5 text-left font-semibold text-sm">
@@ -86,7 +91,11 @@ function WriteBackFile({
     base: string | null;
   };
 }) {
-  const lines = useMemo(() => lineDiff(file.base, file.content), [file.base, file.content]);
+  const preview = file.kind === "preview";
+  const lines = useMemo(
+    () => (preview ? [] : lineDiff(file.base, file.content)),
+    [preview, file.base, file.content],
+  );
   const added = lines.filter((l) => l.mark === "+").length;
   const removed = lines.filter((l) => l.mark === "-").length;
   return (
@@ -101,36 +110,47 @@ function WriteBackFile({
             {file.status === "new" ? "New" : "Changed"}
           </Badge>
           <span className="grow" />
-          <span className="flex-none font-mono text-status-done">+{added}</span>
+          {!preview && <span className="flex-none font-mono text-status-done">+{added}</span>}
           {removed > 0 && (
             <span className="flex-none font-mono text-status-failed">-{removed}</span>
           )}
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <pre
-            className="mt-1 max-h-[320px] overflow-auto rounded-md bg-selected py-2 font-mono text-xs"
-            data-testid="write-back-text"
-          >
-            {lines.map((l, i) => (
-              <div
-                // biome-ignore lint/suspicious/noArrayIndexKey: lines have no identity but their place.
-                key={i}
-                className={cn(
-                  "whitespace-pre px-3",
-                  l.mark === "+" && "bg-status-done/10 text-status-done",
-                  l.mark === "-" && "bg-status-failed/10 text-status-failed",
-                )}
-              >
-                <span aria-hidden className="select-none pr-2 opacity-70">
-                  {l.mark}
-                </span>
-                <span className="sr-only">
-                  {l.mark === "+" ? "added: " : l.mark === "-" ? "removed: " : ""}
-                </span>
-                {l.text}
-              </div>
-            ))}
-          </pre>
+          {preview ? (
+            // The design's preview, drawn on the runner (spec 22 part B): only ever an image, so
+            // nothing in it runs or loads.
+            <img
+              src={svgDataUrl(file.content)}
+              alt={`Preview of ${file.path}`}
+              className="mt-1 max-h-[320px] max-w-full rounded-md border border-line-soft bg-white object-contain"
+              data-testid="write-back-preview"
+            />
+          ) : (
+            <pre
+              className="mt-1 max-h-[320px] overflow-auto rounded-md bg-selected py-2 font-mono text-xs"
+              data-testid="write-back-text"
+            >
+              {lines.map((l, i) => (
+                <div
+                  // biome-ignore lint/suspicious/noArrayIndexKey: lines have no identity but their place.
+                  key={i}
+                  className={cn(
+                    "whitespace-pre px-3",
+                    l.mark === "+" && "bg-status-done/10 text-status-done",
+                    l.mark === "-" && "bg-status-failed/10 text-status-failed",
+                  )}
+                >
+                  <span aria-hidden className="select-none pr-2 opacity-70">
+                    {l.mark}
+                  </span>
+                  <span className="sr-only">
+                    {l.mark === "+" ? "added: " : l.mark === "-" ? "removed: " : ""}
+                  </span>
+                  {l.text}
+                </div>
+              ))}
+            </pre>
+          )}
         </CollapsibleContent>
       </Collapsible>
     </li>

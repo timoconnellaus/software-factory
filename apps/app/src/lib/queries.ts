@@ -46,8 +46,9 @@ export const timelineQuery = (workItemId: string) =>
   });
 
 /**
- * A work item's planning (spec 20): the session, questions, spec, chat and who's here. No polling:
- * the Planning tab's live stream (Server-Sent Events from the engine) invalidates it on each change.
+ * A work item's planning (spec 20): the session, questions, spec, chat and who's here. No polling of
+ * its own: the Planning tab re-reads it every 15 s while visible, backing off to 2 minutes while
+ * nothing changes (spec 44 PR 3; the engine's stream is gone).
  */
 export const planningQuery = (workItemId: string) =>
   queryOptions({

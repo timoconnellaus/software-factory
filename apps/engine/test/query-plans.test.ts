@@ -4,18 +4,22 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
   resolveScope,
+  SCHEDULER,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
+import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
+import { deliverOutbox } from "../src/outbox.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
@@ -43,8 +47,176 @@ function minute17(): number {
   return d.getTime() > Date.now() ? d.getTime() - 3_600_000 : d.getTime();
 }
 
+/**
+ * A job's skills resolved at enqueue (the pinned org config by primary key, the needed skill versions
+ * by primary key, without bodies), the list, a proposal, reading it and accepting it, and the
+ * runner's read of a skill (`skill.forJob`: its job, run and lease by key, then the version).
+ */
+async function skillsScenario(e: Env) {
+  const o = await world();
+  const call = (op: string, input: unknown, actor: World["human"] = o.human) =>
+    as(e, op, input, actor);
+  const out = async <T>(op: string, input: unknown, actor?: World["human"]) => {
+    const r = await call(op, input, actor);
+    if (r.status !== "ok") throw new Error(`${op} is ${r.status}`);
+    return r.output as T;
+  };
+  await out("agent.save", {
+    orgId: o.orgId,
+    baseVersion: 0,
+    agent: { name: "Builder", role: "implement", tier: "standard", instructions: "" },
+  });
+  await out("skill.save", {
+    orgId: o.orgId,
+    baseVersion: 1,
+    skill: { name: "Write a migration", description: "d", body: "b" },
+  });
+  const list = await out<{ skills: { id: string; builtin: boolean }[] }>("skill.list", {
+    orgId: o.orgId,
+  });
+  const skillId = list.skills.find((x) => !x.builtin)?.id as string;
+  await out("skill.attach", {
+    orgId: o.orgId,
+    baseVersion: 2,
+    skillId,
+    target: { agent: "Builder" },
+  });
+  // A second skill on the same agent: the enqueue reads two keys in one OR (review of #155).
+  await out("skill.save", {
+    orgId: o.orgId,
+    baseVersion: 3,
+    skill: { name: "Name the index", description: "d", body: "b" },
+  });
+  const second = (
+    await out<{ skills: { id: string; builtin: boolean }[] }>("skill.list", { orgId: o.orgId })
+  ).skills.find((x) => !x.builtin && x.id !== skillId)?.id as string;
+  await out("skill.attach", {
+    orgId: o.orgId,
+    baseVersion: 4,
+    skillId: second,
+    target: { agent: "Builder" },
+  });
+  const ship = {
+    ...SOFTWARE,
+    id: "wf_ship",
+    name: "Ship",
+    stages: SOFTWARE.stages.map((x) => (x.id === "build" ? { ...x, agent: "Builder" } : x)),
+  };
+  await out("workflow.save", { orgId: o.orgId, baseVersion: 5, workflow: ship });
+  const cfg = await out<{
+    current: { version: number; policy: Record<string, unknown> | null } | null;
+  }>("config.get", { projectId: o.projectId });
+  await out("config.save", {
+    projectId: o.projectId,
+    baseVersion: cfg.current?.version ?? 0,
+    policy: { ...(cfg.current?.policy ?? {}), workflow: "wf_ship", workflows: [], agents: [] },
+  });
+  const item = await out<{ workItemId: string }>("workItem.create", {
+    state: "backlog",
+    projectId: o.projectId,
+    title: "Skilled",
+  });
+  await e.DB.prepare("UPDATE core_work_items SET org_config_version = 6 WHERE id = ?")
+    .bind(item.workItemId)
+    .run();
+  await out(
+    "job.enqueue",
+    { workItemId: item.workItemId, stage: "build", role: "implement", prompt: "x", context: {} },
+    FOREMAN as never,
+  );
+  // The factory proposes a change; a person reads it and accepts it.
+  await out(
+    "skill.propose",
+    {
+      projectId: o.projectId,
+      skillId,
+      skill: { name: "Write a migration", description: "d", body: "c" },
+    },
+    { type: "self-improve", id: "improver" } as never,
+  );
+  await out("skill.list", { orgId: o.orgId });
+  const read = await out<{ version: { acceptHash: string } }>("skill.get", {
+    orgId: o.orgId,
+    skillId,
+    version: 2,
+  });
+  await out("skill.accept", {
+    orgId: o.orgId,
+    baseVersion: 6,
+    skillId,
+    version: 2,
+    acceptHash: read.version.acceptHash,
+  });
+  // The runner reads the job's skill: its run and lease, as a claim leaves them.
+  const reg = await out<{ runnerId: string }>("runner.register", { name: "M5" });
+  const runner = { type: "runner", id: reg.runnerId } as never;
+  const job = await e.DB.prepare("SELECT id FROM core_jobs WHERE work_item_id = ?")
+    .bind(item.workItemId)
+    .first<{ id: string }>();
+  if (!job) throw new Error("no job");
+  const now = new Date().toISOString();
+  await e.DB.batch([
+    e.DB.prepare(
+      `INSERT INTO core_runs (id, job_id, work_item_id, run_no, stage, runner_id, branch, base_branch,
+         fencing_token, status, started_at) VALUES (?, ?, ?, 1, 'build', ?, 'b', 'main', 7, 'running', ?)`,
+    ).bind(uid("run_"), job.id, item.workItemId, reg.runnerId, now),
+    e.DB.prepare(
+      `INSERT INTO core_leases (work_item_id, holder_kind, holder_id, fencing_token, claimed_at) VALUES (?, 'run', ?, 7, ?)
+       ON CONFLICT (work_item_id) DO UPDATE SET fencing_token = 7, holder_kind = 'run', holder_id = excluded.holder_id`,
+    ).bind(item.workItemId, job.id, now),
+  ]);
+  return out(
+    "skill.forJob",
+    { workItemId: item.workItemId, jobId: job.id, fencingToken: 7, slug: "write-a-migration" },
+    runner,
+  );
+}
+
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
+  {
+    // Spec 24: a split's parent waits for its children (each event, and once a day in its held
+    // wait), by core_work_items_parent_idx (migration 0401).
+    // Review of #171: a child's end (its siblings, and who waits for it), the release, and the
+    // existing-children check at approval.
+    name: "a split's child ends: its siblings and who waits for it",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT * FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT work_item_id FROM core_work_item_links WHERE waits_for_id = ? AND work_item_id IN (?, ?)",
+      )
+        .bind("wi_child", "wi_a", "wi_b")
+        .all();
+    },
+  },
+  {
+    name: "a split's release and its existing-children check",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' AND status = 'ready' LIMIT 8",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 1",
+      )
+        .bind("wi_parent")
+        .all();
+    },
+  },
+  {
+    name: "a split's parent reads its children",
+    run: (e) =>
+      e.DB.prepare(
+        "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all(),
+  },
   {
     // The minute cron, on the minute that also sweeps attachment blobs and runs the improver.
     name: "the minute cron",
@@ -106,6 +278,18 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 host ack: an acking host's held steer call, whose poll also skips steers on offer.
+    name: "the held steer call's poll, for a host that acks (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+        ack: [],
+      });
+    },
+  },
+  {
     // Spec 44 part A: the held terminal call reads whether the run has an open attach
     // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
     name: "the held terminal call's poll (spec 44)",
@@ -139,6 +323,71 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
           .bind(was, job.jobId)
           .run();
       }
+    },
+  },
+  {
+    // Spec 44 part A3: the held planning wait polls planning.peek in the Worker (the session by its
+    // job, the events after the cursor on (work_item_id, id), the open questions), every 3 s.
+    name: "the held planning wait's poll (planning.peek, spec 44)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan the guard" },
+        w.human,
+      );
+      await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+      const c = await channel(env, w.runner.runnerId);
+      let planningJob: { jobId: string; fencingToken: number } | null = null;
+      for (let i = 0; i < 200 && !planningJob; i++) {
+        const { job: got } = await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 1, accepting: true, light: { max: 6, inUse: 0 } },
+        });
+        if (got?.stage === "planning") {
+          planningJob = { jobId: got.jobId, fencingToken: got.lease.fencingToken };
+        } else if (!got) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!planningJob) throw new Error("no planning job");
+      return (await channel(e, w.runner.runnerId)).planning?.(planningJob.jobId, {
+        fencingToken: planningJob.fencingToken,
+        op: "planning.wait",
+        input: { timeoutMs: 3_500 },
+      });
+    },
+  },
+  {
+    // Spec 44 part B: the job line's call (the fenced run check, then a ticket from the relay).
+    name: "the job line call (spec 44 part B)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).line?.(job.jobId, {
+        fencingToken: job.fencingToken,
+      });
+    },
+  },
+  {
+    // Spec 44 part B: delivering a run.steered queued before it carried jobId, and a
+    // planning.changed, each finds the item's running job on UNIQUE (work_item_id, run_no).
+    name: "the job line's routing of run.steered and planning.changed",
+    run: async (e) => {
+      if (!job) return null;
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<string>("work_item_id");
+      const ids = [uid("ob_"), uid("ob_")];
+      const now = new Date().toISOString();
+      await env.DB.batch(
+        [
+          ["run.steered", { workItemId: item }],
+          ["planning.changed", { workItemId: item }],
+        ].map(([kind, payload], i) =>
+          env.DB.prepare(
+            "INSERT INTO core_outbox (id, at, kind, payload, attempts, next_at) VALUES (?, ?, ?, ?, 0, ?)",
+          ).bind(ids[i], now, kind, JSON.stringify(payload), now),
+        ),
+      );
+      return deliverOutbox(e, ids);
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
@@ -243,6 +492,42 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       // Green again: the release.
       await github.setChecks(w.repo, main, ci("success"));
       await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+    },
+  },
+  {
+    // Spec 53 §5: the engine's revert of a named culprit (claim, lease, ask GitHub: refused here,
+    // so the give-up path too), then the reland and close lookups (refused: not a revert).
+    name: "mainRed.revert, mainRed.reland and mainRed.closeRevert",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { projectId: w.projectId, title: "A culprit" },
+        w.human,
+      );
+      const id = item.workItemId;
+      const row = await e.DB.prepare("SELECT repository_id FROM core_work_items WHERE id = ?")
+        .bind(id)
+        .first<{ repository_id: string }>();
+      const at = new Date(Date.now() - 3_600_000).toISOString();
+      await e.DB.batch([
+        e.DB.prepare(
+          "UPDATE core_work_items SET status = 'done', merge_sha = ?, pr_number = 9999 WHERE id = ?",
+        ).bind("c".repeat(40), id),
+        e.DB.prepare(
+          `INSERT OR REPLACE INTO core_main_health (repository_id, project_id, head_sha, state,
+             checked_at, red_since, first_red_sha, culprit_work_item_id, attributed_by)
+           VALUES (?, ?, ?, 'red', ?, ?, ?, ?, 'person')`,
+        ).bind(row?.repository_id, w.projectId, "c".repeat(40), at, at, "c".repeat(40), id),
+      ]);
+      const step = (extra: Record<string, unknown> = {}) =>
+        as(e, "mainRed.revert", { workItemId: id, ...extra }, w.human).catch(() => null);
+      await step();
+      const lease = (await step()) as { status: string; output?: { attempt?: number } } | null;
+      await step({ attempt: lease?.output?.attempt ?? 1 });
+      await as(e, "mainRed.reland", { workItemId: id }, w.human).catch(() => null);
+      await e.DB.prepare("UPDATE core_main_health SET red_since = NULL WHERE repository_id = ?")
+        .bind(row?.repository_id)
+        .run();
     },
   },
   {
@@ -370,6 +655,12 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 52 (f), reviews of #155: a job's skills resolved at enqueue, then list, propose, read
+    // and accept, and the runner's skill.forJob (see skillsScenario).
+    name: "skills: enqueue, list, propose, get, accept and skill.forJob",
+    run: (e) => skillsScenario(e),
+  },
+  {
     // The last four: they end the test's run 31 days ago, archive it, read it back, and lose one of its objects.
     name: "archiving an ended run's events (retention)",
     run: async (e) => {
@@ -390,6 +681,50 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         .first<string>("work_item_id");
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
+    },
+  },
+  {
+    // Every five minutes: the audit archiver's tick (ADR 0591). With a day recorded 100 days ago,
+    // the days after it are due: each takes its lease, finds the rowid floor with probes, bounds
+    // the window, reads a page and records the (empty) day. Its chunk batches run over real old
+    // rows in audit-archive.test.ts, under the same check.
+    name: "the audit archive's tick",
+    run: async (e) => {
+      const day = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 0, 0, ?, ?, ?)",
+      )
+        .bind(day, "0".repeat(64), "0".repeat(64), new Date().toISOString())
+        .run();
+      return archiveAudit(e, new Date(), { rows: 1_000 });
+    },
+  },
+  {
+    // Polled by an open item's Activity tab: the D1 entries and the item's archived chunks, one
+    // request; then, on demand, the archived entries read back.
+    name: "workItem.timeline, with its archived entries",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      await as(e, "workItem.timeline", { workItemId: item }, w.human);
+      return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
+    },
+  },
+  {
+    // The archiver's health report (only after three stopped ticks, or the tick after): the open
+    // archiver incident on core_incidents_audit_archive_idx.
+    name: "audit.archiveHealth",
+    run: (e) =>
+      as(e, "audit.archiveHealth", { stopped: false }, SCHEDULER as unknown as World["human"]),
+  },
+  {
+    // An org admin's verify of the chain (on demand): the days and their chunks by primary key.
+    name: "audit.verify",
+    run: (e) => {
+      const to = new Date(Date.now() - 95 * 86_400_000).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
     },
   },
   {
@@ -525,4 +860,26 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
       expect(await growingScans(env.DB, seen)).toEqual([]);
     });
   }
+
+  it("every read of a skill version uses its full key or a named index, never the org's history", async () => {
+    const seen: Recorded[] = [];
+    await skillsScenario(recordingEnv(env, seen));
+    const reads = seen.filter(
+      (r) => /core_skill_versions/.test(r.sql) && /^\s*select/i.test(r.sql),
+    );
+    expect(reads.length).toBeGreaterThan(0);
+    for (const { sql, params } of reads) {
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .bind(...params)
+        .all<{ detail: string }>();
+      const lines = results.map((r) => r.detail).filter((d) => /core_skill_versions/.test(d));
+      for (const d of lines)
+        expect(d, sql).toMatch(
+          /(?:PRIMARY KEY|INDEX sqlite_autoindex_core_skill_versions_1) \(org_id=\? AND skill_id=\?(?: AND version=\?)?\)|core_skill_versions_(status|rejected|author)_idx/,
+        );
+      // The batch read of versions by key: each arm on the whole primary key.
+      if (/\bOR\b/.test(sql))
+        expect(lines.join("\n"), sql).toMatch(/org_id=\? AND skill_id=\? AND version=\?/);
+    }
+  });
 });

@@ -1,5 +1,6 @@
 // The Factory section (spec 41, slice 5): its nested list beside the page. Only screens with an
-// operation behind them are listed: Skills and Autopilots (spec 52) have no server side yet.
+// operation behind them are listed: Skills (spec 52) have their operations (`skill.*`) but no screen
+// here yet; Autopilots have no server side yet.
 import { createRoute, Outlet, useRouterState } from "@tanstack/react-router";
 import { ListItem, NestedList } from "../components/shell-list.tsx";
 import { appRoute } from "./_app.tsx";

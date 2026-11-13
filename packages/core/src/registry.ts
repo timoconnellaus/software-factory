@@ -7,6 +7,7 @@ import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as audit from "./operations/audit.ts";
 import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
@@ -29,7 +30,9 @@ import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
 import * as reconcile from "./operations/reconcile.ts";
+import * as revert from "./operations/revert.ts";
 import * as runners from "./operations/runners.ts";
+import * as skills from "./operations/skills.ts";
 import * as specs from "./operations/specs.ts";
 import * as terminal from "./operations/terminal.ts";
 import * as verify from "./operations/verify.ts";
@@ -73,6 +76,16 @@ export const OPERATIONS: readonly AnyOperation[] = [
   improve.configTrials,
   adjudicator.adjudicatorRequest,
   adjudicator.adjudicatorRecord,
+  skills.skillList,
+  skills.skillGet,
+  skills.skillSave,
+  skills.skillAttach,
+  skills.skillDetach,
+  skills.skillArchive,
+  skills.skillPropose,
+  skills.skillAccept,
+  skills.skillReject,
+  skills.skillForJob,
   adjudicator.adjudicatorStatsOp,
   onboarding.githubConnectStart,
   onboarding.githubConnectInstallation,
@@ -132,6 +145,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   artifacts.artifactGet,
   artifacts.artifactRead,
   artifacts.designPull,
+  artifacts.designPreview,
   planning.specReleaseEdit,
   planning.planningWait,
   planning.planningYield,
@@ -148,6 +162,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   specs.specPropose,
   specs.specAccept,
   specs.specCommit,
+  specs.splitRelease,
   specs.specWriteBack,
   gates.approvalDecide,
   cli.cliDeviceStart,
@@ -196,10 +211,15 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.workItemMarkRepair,
   delivery.deliveryStatus,
   delivery.mainRedAttribute,
+  revert.mainRedRevert,
+  revert.mainRedReland,
+  revert.mainRedCloseRevert,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
   babysit.babysitWake,
   babysit.babysitNext,
+  babysit.babysitResolution,
+  babysit.babysitResolutionPatches,
   babysit.ciRerun,
   babysit.flakeRecord,
   verify.reviewPacketRecord,
@@ -213,6 +233,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   connector.pushObserve,
   connector.githubInstallation,
   incidents.incidentOpen,
+  audit.auditVerify,
+  audit.auditArchiveHealth,
   incidents.incidentListArchiveMissing,
   incidents.incidentResolve,
   runners.runnerRegister,

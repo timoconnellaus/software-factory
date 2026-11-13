@@ -16,7 +16,8 @@ export type InboxEntry =
   | { key: string; group: "Specs"; kind: "planning"; planning: Inbox["planning"][number] }
   | { key: string; group: "Questions"; kind: "question"; question: Inbox["questions"][number] }
   | { key: string; group: "Approvals"; kind: "release"; flag: Inbox["releaseFlags"][number] }
-  | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] };
+  | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] }
+  | { key: string; group: "Notices"; kind: "mainRed"; red: Inbox["mainRed"][number] };
 
 export const GROUP_ORDER = ["Merges", "Specs", "Questions", "Approvals", "Notices"] as const;
 
@@ -43,6 +44,10 @@ export function inboxEntries(inbox: Inbox): InboxEntry[] {
   // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on this person's choice.
   for (const flag of inbox.releaseFlags ?? []) {
     add({ key: flag.workItemId, group: "Approvals", kind: "release", flag });
+  }
+  // Spec 53 decision 4: one card per red episode, for the project's approvers.
+  for (const red of inbox.mainRed ?? []) {
+    add({ key: `main-red-${red.repositoryId}`, group: "Notices", kind: "mainRed", red });
   }
   for (const drift of inbox.protection) {
     add({ key: `protection-${drift.projectId}`, group: "Notices", kind: "protection", drift });
@@ -93,6 +98,12 @@ export function entryText(
         title: `#${e.flag.number} ${e.flag.title}`,
         sub: "Its workflow's shaping changed: choose before release",
         status: "waiting",
+      };
+    case "mainRed":
+      return {
+        title: `${e.red.branch} is red on ${e.red.repo.name}`,
+        sub: e.red.failing.length ? `${e.red.failing.join(", ")} failing` : "CI failed",
+        status: "failed",
       };
     case "protection":
       return {
