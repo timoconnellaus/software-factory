@@ -1043,6 +1043,15 @@ async function pendingOrgChange(
       if (proposal) after = withAgent(config, proposal as never);
     } else if (p.operation === "orgConfig.rollback" && toVersion !== null) {
       after = await storedOrgConfig(db, orgId, toVersion);
+      // The whole org config, now and as the rollback would make it: every workflow and agent
+      // compared field by field before anyone approves it (review of #159, round 4).
+      current = { workflows: config.workflows, agents: config.agents } as unknown as Record<
+        string,
+        unknown
+      >;
+      proposal = after
+        ? ({ workflows: after.workflows, agents: after.agents } as unknown as Record<string, unknown>)
+        : null;
     }
   } catch {
     after = null;

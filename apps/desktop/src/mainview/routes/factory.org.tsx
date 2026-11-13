@@ -59,7 +59,13 @@ import {
   stageTypesQuery,
 } from "../lib/factory-queries.ts";
 import { op, read } from "../lib/op.ts";
-import { agentDiff, type DiffRow, unreadable, workflowDiff } from "../lib/org-diff.ts";
+import {
+  agentDiff,
+  type DiffRow,
+  orgConfigDiff,
+  unreadable,
+  workflowDiff,
+} from "../lib/org-diff.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
@@ -402,18 +408,18 @@ type Pending = OpOutput<"orgConfig.get">["pending"][number];
 
 /** Why a waiting org change can't be approved here, or null (pure; tested). */
 export function cannotApproveOrg(p: Pending, version: number): string | null {
-  if (p.baseVersion !== null && p.baseVersion !== version)
-    return `This was drafted on v${p.baseVersion}; the org's workflows are now v${version}, so it can't apply. Reject it and propose it again.`;
+  // Fail closed: a change that doesn't say which version it was drafted on can't apply here.
+  if (p.baseVersion === null || p.baseVersion !== version)
+    return `This was drafted on ${p.baseVersion === null ? "an unknown version" : `v${p.baseVersion}`}; the org's workflows are now v${version}, so it can't apply. Reject it and propose it again.`;
   if (!p.impact)
     return "The engine couldn't classify this change, so it can't be approved here. Reject it, or look again later.";
-  if (p.operation !== "orgConfig.rollback" && !p.proposal)
-    return "This change can't be shown: what it would save isn't readable. Reject it.";
-  // The engine says it changes something, but no difference can be shown: nothing to approve blind.
+  if (!p.proposal)
+    return "This change can't be shown: what it would make current isn't readable. Reject it.";
   const rows = differenceOf(p);
-  if (p.operation !== "orgConfig.rollback" && unreadable(rows))
+  if (unreadable(rows))
     return "Part of this change can't be shown here (the two sides read the same). Reject it, and look at it again.";
-  if (p.impact.changes.length > 0 && p.operation !== "orgConfig.rollback" && rows.length === 0)
-    return "The engine sees a change here that this screen can't show. Reject it, and look at it again.";
+  // Nothing shown is nothing to approve.
+  if (rows.length === 0) return "This change changes nothing this screen can show. Reject it.";
   return null;
 }
 
@@ -421,6 +427,7 @@ export function cannotApproveOrg(p: Pending, version: number): string | null {
 export function differenceOf(p: Pending): DiffRow[] {
   if (p.operation === "workflow.save") return workflowDiff(p.current, p.proposal);
   if (p.operation === "agent.save") return agentDiff(p.current, p.proposal);
+  if (p.operation === "orgConfig.rollback") return orgConfigDiff(p.current, p.proposal);
   return [];
 }
 
@@ -494,9 +501,14 @@ function PendingOrgChanges({ config }: { config: OpOutput<"orgConfig.get"> }) {
 
 /** What a waiting org change would change, field by field, before and after. */
 function OrgDifference({ change }: { change: Pending }) {
-  if (change.operation === "orgConfig.rollback")
-    return <div className="text-ink-3 text-xs">Back to v{change.toVersion}, as a new version.</div>;
-  return <DiffRows rows={differenceOf(change)} testId="org-pending-diff" />;
+  return (
+    <>
+      {change.operation === "orgConfig.rollback" && (
+        <div className="text-ink-3 text-xs">Back to v{change.toVersion}, as a new version:</div>
+      )}
+      <DiffRows rows={differenceOf(change)} testId="org-pending-diff" />
+    </>
+  );
 }
 
 const ROLES = ["triage", "implement", "review", "summarise"].map((r) => ({ value: r, label: r }));
@@ -516,6 +528,8 @@ function OrgAgents({
   const version = config?.version ?? 0;
   const latest = edit ? latestOf(agents, edit) : null;
   const agentMoved = edit !== null && edit.base !== version;
+  // A new agent named like an existing one would replace it: refused here (review of #159).
+  const nameTaken = edit !== null && edit.original.name === "" && latest !== null;
   const type = (patch: Partial<Agent>) => setEdit((e) => (e ? typeIn(e, patch) : e));
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
@@ -605,6 +619,12 @@ function OrgAgents({
             onChange={(e) => type({ instructions: e.target.value })}
           />
           <CharCount value={editing.instructions ?? ""} />
+          {nameTaken && (
+            <div className="text-[13px] text-chip-amber-ink" data-testid="org-agent-name-taken">
+              The org already has an agent called {latest?.name}: saving would replace it. Choose
+              another name, or edit {latest?.name} instead.
+            </div>
+          )}
           {agentMoved && (
             <div className="flex flex-col gap-2 text-[13px]" data-testid="org-agent-moved">
               <span>
@@ -634,7 +654,9 @@ function OrgAgents({
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={!editing.name.trim() || pending !== null || !canDecide || agentMoved}
+              disabled={
+                !editing.name.trim() || pending !== null || !canDecide || agentMoved || nameTaken
+              }
               onClick={async () => {
                 const out = await run(
                   "agent.save",

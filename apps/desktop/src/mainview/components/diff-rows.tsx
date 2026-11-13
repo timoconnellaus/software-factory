@@ -1,5 +1,5 @@
 // A change's difference as rows (lib/org-diff.ts): a label, what was, what will be.
-import type { DiffRow } from "../lib/org-diff.ts";
+import { changedRegion, type DiffRow } from "../lib/org-diff.ts";
 
 /** Difference rows: a label, what was, what will be. */
 export function DiffRows({ rows, testId }: { rows: DiffRow[]; testId?: string }) {
@@ -13,16 +13,31 @@ export function DiffRows({ rows, testId }: { rows: DiffRow[]; testId?: string })
         // biome-ignore lint/suspicious/noArrayIndexKey: two stages may share a name; rows are a fixed list.
         <div key={i} className="contents">
           <span className="text-ink-3">{r.label}</span>
-          <span className="flex min-w-0 flex-col gap-0.5">
-            <span className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-ink-3 line-through">
-              {r.was}
-            </span>
-            <span className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-medium">
-              {r.now}
-            </span>
-          </span>
+          <Region was={r.was} now={r.now} />
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Where two values differ: the shared context shortened, the differing part marked on each side,
+ * and spaces, tabs and invisible characters shown, so no change is invisible (review of #159).
+ */
+function Region({ was, now }: { was: string; now: string }) {
+  const r = changedRegion(was, now);
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5 break-words font-mono text-[11px]">
+      <span className="text-ink-3" data-testid="diff-was">
+        {r.before}
+        <mark className="bg-chip-amber text-chip-amber-ink line-through">{r.was || "∅"}</mark>
+        {r.after}
+      </span>
+      <span data-testid="diff-now">
+        {r.before}
+        <mark className="bg-chip-green text-chip-green-ink">{r.now || "∅"}</mark>
+        {r.after}
+      </span>
+    </span>
   );
 }

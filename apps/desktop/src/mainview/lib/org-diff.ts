@@ -19,7 +19,18 @@ const text = (v: unknown): string => {
   if (typeof v === "string") return v || "empty";
   return JSON.stringify(v, null, 1);
 };
-const differ = (a: unknown, b: unknown) => JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+/** JSON with object keys sorted: a change of key order alone is not a difference. */
+export function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object")
+    return `{${Object.keys(v as Rec)
+      .sort()
+      .filter((k) => (v as Rec)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonical((v as Rec)[k])}`)
+      .join(",")}}`;
+  return JSON.stringify(v ?? null);
+}
+const differ = (a: unknown, b: unknown) => canonical(a) !== canonical(b);
 
 const STAGE_FIELDS = ["name", "type", "typeVersion", "phase", "agent", "when", "settings"] as const;
 
@@ -58,6 +69,85 @@ export function workflowDiff(before: unknown, after: unknown): DiffRow[] {
 }
 
 /** Every field of an agent that differs (whatever fields it has). */
+/**
+ * Every difference between two whole org configs (a rollback): each workflow by id, field by
+ * field, workflows added or removed, and each agent by name (review of #159, round 4).
+ */
+export function orgConfigDiff(before: unknown, after: unknown): DiffRow[] {
+  const b = rec(before);
+  const a = rec(after);
+  const list = (r: Rec | null, k: string) => (Array.isArray(r?.[k]) ? (r[k] as Rec[]) : []);
+  const rows: DiffRow[] = [];
+  const wb = list(b, "workflows");
+  const wa = list(a, "workflows");
+  for (const id of [...new Set([...wb, ...wa].map((w) => String(w.id)))]) {
+    const was = wb.find((w) => String(w.id) === id) ?? null;
+    const now = wa.find((w) => String(w.id) === id) ?? null;
+    const name = text((now ?? was)?.name);
+    if (!was || !now) {
+      rows.push({
+        label: `Workflow ${name}`,
+        was: was ? "present" : "none",
+        now: now ? "added back" : "removed",
+      });
+      continue;
+    }
+    for (const r of workflowDiff(was, now)) rows.push({ ...r, label: `${name}: ${r.label}` });
+  }
+  const ab = list(b, "agents");
+  const aa = list(a, "agents");
+  const key = (x: Rec) => String(x.name).toLowerCase();
+  for (const k of [...new Set([...ab, ...aa].map(key))]) {
+    const was = ab.find((x) => key(x) === k) ?? null;
+    const now = aa.find((x) => key(x) === k) ?? null;
+    const name = text((now ?? was)?.name);
+    if (!was || !now) {
+      rows.push({
+        label: `Agent ${name}`,
+        was: was ? "present" : "none",
+        now: now ? "added back" : "removed",
+      });
+      continue;
+    }
+    for (const r of agentDiff(was, now)) rows.push({ ...r, label: `Agent ${name}: ${r.label}` });
+  }
+  return rows;
+}
+
+/**
+ * The changed region of two texts, with what is invisible made visible: the common start and end
+ * shortened to context, the differing middle marked. Whitespace at the edges, tabs, and format
+ * characters (zero-width, bidi) are shown as markers, so no change is invisible.
+ */
+export function changedRegion(was: string, now: string, context = 40) {
+  let start = 0;
+  while (start < was.length && start < now.length && was[start] === now[start]) start++;
+  let end = 0;
+  while (
+    end < was.length - start &&
+    end < now.length - start &&
+    was[was.length - 1 - end] === now[now.length - 1 - end]
+  )
+    end++;
+  const shown = (s: string) =>
+    s
+      .replace(
+        /\p{Cf}/gu,
+        (c) => `⟨U+${c.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")}⟩`,
+      )
+      .replace(/\t/g, "⇥");
+  // In the changed part, spaces too: a space added or removed is a change you can see.
+  const marked = (s: string) => shown(s).replace(/ /g, "·");
+  const pre = was.slice(Math.max(0, start - context), start);
+  return {
+    before: (start > context ? "…" : "") + shown(pre),
+    was: marked(was.slice(start, was.length - end)),
+    now: marked(now.slice(start, now.length - end)),
+    after:
+      shown(was.slice(was.length - end, was.length - end + context)) + (end > context ? "…" : ""),
+  };
+}
+
 /** Rows that render the same text on both sides: the difference isn't shown, so nothing to approve. */
 export const unreadable = (rows: DiffRow[]) => rows.some((r) => r.was === r.now);
 

@@ -82,7 +82,7 @@ describe("a change the screen can't show", () => {
         changes: [{ path: "x", class: "loosens" as const, summary: "Something" }],
       },
     };
-    expect(cannotApproveOrg(p, 4)).toMatch(/can't show/);
+    expect(cannotApproveOrg(p, 4)).toMatch(/changes nothing/);
   });
 });
 
@@ -107,5 +107,51 @@ describe("round 3 of #159", () => {
     ).map((r) => r.label);
     expect(labels).toContain("Reviewer: typeVersion");
     expect(labels).toContain("Workflow template");
+  });
+});
+
+describe("round 4 of #159", () => {
+  it("shows a waiting rollback field by field, across workflows and agents", async () => {
+    const { orgConfigDiff } = await import("../src/mainview/lib/org-diff.ts");
+    const now = {
+      workflows: [{ id: "wf_a", name: "A", stages: [stage()] }],
+      agents: [{ name: "Critic", role: "review", instructions: "Strict." }],
+    };
+    const target = {
+      workflows: [],
+      agents: [{ name: "Critic", role: "review", instructions: "Lenient." }],
+    };
+    const rows = orgConfigDiff(now, target);
+    expect(rows).toContainEqual({ label: "Workflow A", was: "present", now: "removed" });
+    expect(rows).toContainEqual({
+      label: "Agent Critic: instructions",
+      was: "Strict.",
+      now: "Lenient.",
+    });
+  });
+
+  it("doesn't count a change of key order alone", () => {
+    expect(
+      workflowDiff(
+        { stages: [stage({ settings: { a: 1, b: 2 } })] },
+        { stages: [stage({ settings: { b: 2, a: 1 } })] },
+      ),
+    ).toEqual([]);
+  });
+
+  it("makes invisible and trailing-space changes visible, and marks where they differ", async () => {
+    const { changedRegion } = await import("../src/mainview/lib/org-diff.ts");
+    const zw = changedRegion("Pass only green builds.", "Pass only green\u200b builds.");
+    expect(zw.was).toBe("");
+    expect(zw.now).toBe("⟨U+200B⟩");
+    const trailing = changedRegion("Be strict.", "Be strict. ");
+    expect(trailing.now).toBe("·");
+    const long = changedRegion(
+      `${"x".repeat(500)}a${"y".repeat(500)}`,
+      `${"x".repeat(500)}b${"y".repeat(500)}`,
+    );
+    expect(long.was).toBe("a");
+    expect(long.now).toBe("b");
+    expect(long.before.startsWith("…")).toBe(true);
   });
 });

@@ -274,7 +274,7 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
       by: null,
       createdAt: "",
       baseVersion: 4,
-      proposal: { id: "wf_x" },
+      proposal: { id: "wf_x", name: "New" },
       current: null,
       toVersion: null,
       impact: { class: "loosens" as const, changes: [] },
@@ -283,5 +283,8 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     expect(cannotApproveOrg(base, 5)).toMatch(/drafted on v4/);
     expect(cannotApproveOrg({ ...base, impact: null }, 4)).toMatch(/couldn't classify/);
     expect(cannotApproveOrg({ ...base, proposal: null }, 4)).toMatch(/can't be shown/);
+    // Fail closed: no base version, or nothing shown, is nothing to approve.
+    expect(cannotApproveOrg({ ...base, baseVersion: null }, 4)).toMatch(/unknown version/);
+    expect(cannotApproveOrg({ ...base, proposal: { id: "wf_x" } }, 4)).toMatch(/changes nothing/);
   });
 });
