@@ -183,6 +183,30 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "refused",
           "mobile": "refused",
         },
+        "skill.accept": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "skill.archive": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "skill.attach": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "skill.detach": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "skill.reject": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
+        "skill.save": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "spec.approve": {
           "desktop": "proof",
           "mobile": "proof",
