@@ -174,6 +174,16 @@ export const SCREENS = [
   { name: "item-split-child", path: "/work/wi_13", design: "ItemOverview.html" },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
+  // Spec 53 decision 1: the babysitter's resolution at the reopened gate (no design file).
+  {
+    name: "item-review-resolution",
+    path: "/work/wi_13?tab=review&fixture=resolution",
+    clicks: ['[data-testid="resolution-file"] button'],
+  },
+  {
+    name: "item-review-resolution-unreadable",
+    path: "/work/wi_13?tab=review&fixture=resolution-unclean",
+  },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
   {
     name: "item-review-criteria",

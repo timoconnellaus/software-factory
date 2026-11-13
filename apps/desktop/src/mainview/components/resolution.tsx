@@ -95,8 +95,9 @@ export function ResolutionPanel({ detail }: { detail: WorkItemDetail }) {
           <div className="flex items-start gap-2 font-medium" data-testid="resolution-outside">
             <StatusDot status="failed" className="mt-1.5" />
             <span>
-              {outside.size === 1 ? "1 file" : `${outside.size} files`} outside the conflict differ
-              from a plain merge: look at these closely.
+              {outside.size === 1
+                ? "1 file outside the conflict differs from a plain merge: look at it closely."
+                : `${outside.size} files outside the conflict differ from a plain merge: look at these closely.`}
             </span>
           </div>
         )}

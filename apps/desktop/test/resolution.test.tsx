@@ -76,7 +76,7 @@ describe("the resolution at the reopened merge gate", () => {
     expect(text).toContain("The resolution");
     expect(text).toContain("src/verify.ts");
     expect(text).toContain("Took neither side: new content");
-    expect(text).toContain("1 file outside the conflict differ from a plain merge");
+    expect(text).toContain("1 file outside the conflict differs from a plain merge");
     expect(text).toContain("differs from the default branch's change");
     expect(text).toContain("2 more files aren't listed");
   });
