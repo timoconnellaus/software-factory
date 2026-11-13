@@ -1,6 +1,6 @@
 # Spec 44: Durable Objects are never held awake
 
-**Status: building.** PR 1 (steers and the terminal, part A1 and A2) is built (migration 0367); PR 2 (planning, part A3) is built. The coordinator schedules the build after #73 and the planning
+**Status: building.** PR 1 (steers and the terminal, part A1 and A2) is built (migration 0367); PR 2 (planning, part A3) is built; PR 3 deletes the PlanningHub: the website (sign-in only, ADR 0610) keeps a 15 s re-read and no socket, and the desktop already hears `planning.changed` on its ClientHub. The coordinator schedules the build after #73 and the planning
 PRs land, because they touch the same files (`channel.ts`, `planning.ts`, `planning.tsx`,
 `local/runner-host`).
 

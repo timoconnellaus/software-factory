@@ -238,6 +238,13 @@ jobs:
           spctl --assess --type exec --verbose=2 "$app"
           xcrun stapler validate "$app"
 
+      # A moved app can still update: Electrobun's install record follows it (InvalidUpdateIdentity
+      # otherwise, found on canary 0.1.56 → 0.1.70). Runs the built app's own helper.
+      - name: Check the install record follows a moved app
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: apps/desktop
+        run: sh scripts/check-install-record.sh "$(ls -d build/*-macos-arm64/*.app)" "${{ steps.channel.outputs.channel }}"
+
       # The helper as a downloaded and an updated Mac get it: signature, requirement, entitlements,
       # embedded profile, Gatekeeper, and the launch smoke test (spec 40 M4b).
       - name: Check the key helper
