@@ -346,3 +346,12 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 >    address is checked as its IPv4.
 > 4. **The weaker macOS sandbox finds the user's `/var/folders` from `getconf`**
 >    (`DARWIN_USER_TEMP_DIR`, `DARWIN_USER_CACHE_DIR`), never TMPDIR, which the launchd job doesn't set.
+
+> **Amended 2026-11-13 (honest proof at the merge gate, the owner's decision).** When a project has
+> no declared checks and no CI check its config requires reported on the SHA, nothing could prove a
+> criterion, so the gate and `factory/verify` no longer say "0/N criteria proven": they say "No
+> checks are set up for this project, so nothing can be proven" and link to
+> [`docs/checks.md`](../checks.md) (there is no screen to declare checks yet). The packet records
+> it as `proven.checksSetUp`. When checks exist, the count stays and each criterion not proven says
+> why ("no check is named for this", a named check that didn't pass, a static check, or only the
+> reviewer's link).

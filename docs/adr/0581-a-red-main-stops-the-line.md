@@ -1,6 +1,6 @@
 # ADR 0581: A red main stops the line
 
-Status: proposed, 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md)).
+Status: accepted, 2026-11-13; proposed 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md)).
 Builds on [ADR 0580](0580-approval-and-delivery-are-separate.md) and [ADR 0280](0280-protect-main-with-a-generated-ruleset.md).
 
 ## Context
@@ -23,6 +23,10 @@ top of a red `main` makes the failure harder to attribute and the repair harder 
 4. **Holding is code, not a setting.** The Deliver stage's `holdOnRedMain` can't be turned off.
 
 ## Consequences
-- A person can still press merge on GitHub during an episode; spec 53 question 7 asks whether
-  `factory/verify` should read "held" on non-repair heads so GitHub refuses that too.
+- A person can still press merge on GitHub during an episode, so `factory/verify` on each waiting
+  non-repair head reads "held: main is red" (pending) and GitHub refuses that too (spec 53,
+  decision 7, 2026-11-13).
 - Every landing between the last green SHA and the first red one is a **suspect** of the episode.
+
+> Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
+> recommendation (spec 53, **Decisions**). This ADR is accepted as written. Question 7 is decided: while `main` is red, `factory/verify` on each waiting non-repair PR reads "held: main is red" (pending), so GitHub refuses those merges too.

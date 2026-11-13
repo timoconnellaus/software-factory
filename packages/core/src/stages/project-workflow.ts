@@ -442,3 +442,40 @@ export function shapingStagesOf(def: WorkflowDefinition): unknown[] {
       };
     });
 }
+
+/**
+ * Whether a running item may move from the org config version it pinned to a newer one (spec 52,
+ * Q3): the project's workflow resolved under each (its overrides with that version's approvals) and
+ * compared stage by stage, judging stages by what their agents are. The item moves only when nothing
+ * loosens; an unresolvable side (the workflow archived, a version that no longer validates) is a
+ * loosening, so the item stays where it is.
+ */
+export function repinImpact(
+  raw: ProjectPolicy,
+  pinned: { config: OrgConfig; approvals: OverrideApprovals },
+  current: { config: OrgConfig; approvals: OverrideApprovals },
+): PolicyImpact {
+  const was = resolveProjectWorkflow(raw, pinned.config, {
+    kind: "effective",
+    approvals: pinned.approvals,
+  });
+  const now = resolveProjectWorkflow(raw, current.config, {
+    kind: "effective",
+    approvals: current.approvals,
+  });
+  if (!was?.ok || !now?.ok)
+    return summarise([
+      {
+        path: "workflow",
+        class: "loosens",
+        summary: !now?.ok
+          ? `The project's workflow can't be resolved under the newer version${now && !now.ok ? `: ${now.error}` : ""}.`
+          : "The project's workflow can't be resolved under the version the item pinned.",
+      },
+    ]);
+  const agents = {
+    before: namedAgents(was.value, pinned.config),
+    after: namedAgents(now.value, current.config),
+  };
+  return workflowImpact(was.value, now.value, agents);
+}

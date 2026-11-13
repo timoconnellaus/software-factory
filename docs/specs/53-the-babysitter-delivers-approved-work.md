@@ -193,7 +193,7 @@ that receives GitHub's events, leases, a queue and runners. So the babysitter ha
     item marked in one episode is held in the next unless someone marks it again.
   - **Items landing through their own Workflow (v4 to v7) are never held**: they started before the
     babysitter and land as they always did until they drain. Only the babysitter's deliveries hold.
-  - **Who is told (owner question 4, recommended, not yet answered):** the project's approvers,
+  - **Who is told (decision 4):** the project's approvers,
     fixed when the episode opens (`core_main_health.audience`, one function: `mainRedAudience`).
     The Inbox card and the `main.red`/`main.green` pushes go to them only.
 
@@ -239,9 +239,10 @@ approval is actually about: the change.
     item back to verify the new head without a build (`verify #b: head`), then to the merge gate: the
     person decides on a new packet. v11 instances, which have no such path, treat a withdrawal as a
     failed delivery and go back to build.
-  - **Owner questions behind one function each:** Q1 `approvalSurvivesMergeOfMain`
-    (`packages/core/src/verify/change-digest.ts`), Q4 `mainRedAudience` (`delivery.ts`), Q6
-    `mergedForGood` (the deliverer: Done on GitHub's merge response).
+  - **Decisions behind one function each** (answered 2026-11-13, see **Decisions**): 1
+    `approvalSurvivesMergeOfMain` (`packages/core/src/verify/change-digest.ts`), 4
+    `mainRedAudience` (`delivery.ts`), 6 `mergedForGood` (the deliverer: Done on GitHub's merge
+    response).
   - The deliverer reads CI before every merge, not only after an update. Re-running the criteria's
     checks (spec 51 PR B) and re-checking `autoApprove` (ADR 0515) on the new head wait for those.
 - **After the second review (2026-11-13): a surviving approval waits for the new head's own
@@ -455,30 +456,25 @@ Small PRs, deterministic part first. Block **AP**: migrations 0350–0359 (0350 
    path always goes to a person, and `autoApprove` never approves a revert.
 10. Nothing in the babysitter pushes to the default branch, and no `babysit` job can merge.
 
-## Questions for the owner (each with a recommendation)
-1. **Approval across a merge of `main`.** Recommended: it survives a clean merge whose change digest
-   is unchanged and whose checks pass again on the new head (§3); a resolved conflict or any other new
-   commit withdraws it and the person sees only the resolution. Alternative: every new head goes back
-   to the person.
-2. **The one thing it may merge on its own.** Recommended: an engine-made revert of the attributed
-   culprit, after 30 minutes red, only when the workflow's Deliver stage has `revertWithoutPerson` on
-   (off by default; its own switch, never `autoApprove`), the revert's own CI proves it repairs
-   `main`, and it touches no self-modify path (§5). Working answer until the owner decides: off by
-   default. Alternative: every revert goes to a person, with a phone push.
-3. **Recording flakes.** Recommended: a known-flake list (`core_flakes`) per repository, and a
-   backlog item to fix a check once it flakes three times in 14 days. Alternative: a backlog item for
-   every first flake.
-4. **Who is told when `main` is red.** Recommended: one Inbox card per red episode for the
-   project's approvers, the held badge on the board, the Overview line, and a phone push at the start,
-   when a revert needs a person, and at green. Nothing per held item.
-5. **Reverted work.** Recommended: a new backlog item "Reland: <title>" linked to the original,
-   which stays Done. Alternative: reopen the original item.
-6. **When an item is Done.** Recommended: when its merge commit is on the default branch; a red
-   `main` after it makes it a suspect, not undone. Alternative: Done only after `main`'s CI on the
-   merge is green.
-7. **Merges on GitHub while held.** Only the factory merges, but a person can still press merge on
-   GitHub while `main` is red. Recommended: `factory/verify` on a non-repair PR's head reads "held:
-   main is red" (pending) during an episode, as patientos's `main-health` status does, so GitHub
-   refuses those merges too. Alternative: leave GitHub alone and only hold inside the factory.
-8. **Attached PRs.** Recommended: delivered by the babysitter like any item, but a conflict goes back
-   to their author; the factory never pushes to their branch (ADR 0290).
+## Decisions (the owner, 2026-11-13)
+The owner answered all eight questions and accepted every recommendation.
+1. **Approval across a merge of `main`.** It survives a clean merge of `main` when the change is
+   identical (the change digest is unchanged) and every check passes again on the new head (§3). A
+   resolved conflict or any other new commit withdraws it, and the person sees only the resolution.
+2. **The one thing it may merge on its own.** An engine-made revert of the attributed culprit, and
+   only when the workflow's Deliver stage has `revertWithoutPerson` on (off by default; its own
+   switch, never `autoApprove`; never on the built-in self-modify paths, ADR 0515 and ADR 0584) and
+   the revert's own CI shows it repairs `main` (§5). Otherwise every revert goes to a person.
+3. **Recording flakes.** A known-flake list per repository (`core_flakes`), and a backlog item to
+   fix a check once it flakes three times in 14 days.
+4. **Who is told when `main` is red.** One Inbox card per red episode for the project's approvers,
+   the held badge on waiting items, the Overview line, and a phone push at the start, when a revert
+   needs a person, and at green. Nothing per held item.
+5. **Reverted work.** The reverted item stays Done; a new backlog item "Reland: <title>" is linked
+   to it.
+6. **When an item is Done.** When its merge commit is on the default branch. A red `main` after it
+   makes it a suspect; it doesn't undo Done.
+7. **Merges on GitHub while held.** While `main` is red, `factory/verify` on each waiting non-repair
+   PR's head reads "held: main is red" (pending), so GitHub refuses those merges too.
+8. **Attached PRs.** Delivered by the babysitter like any item, but a conflict goes back to their
+   author; the factory never pushes to their branch (ADR 0290).

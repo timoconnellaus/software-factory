@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   assemblePacket,
+  type CiSummary,
   declaredChecks,
   executedChecks,
   FOREMAN,
@@ -16,6 +17,7 @@ import {
   storedProof,
   summarizeCi,
   verifyCheckOutput,
+  whyNotProven,
 } from "../src/index.ts";
 import { newItem, ok, POLICY, world } from "./helpers.ts";
 
@@ -382,6 +384,73 @@ describe("executed checks and proof (pure)", () => {
     expect(carried.checkLines[0]).toMatch(
       /ran on ccccccc, not on this commit \(carried by the merge queue\)/,
     );
+  });
+
+  it("says no checks are set up, never 0/N proven, when nothing declared and no required CI reported", () => {
+    const base = {
+      headSha: SHA,
+      evidence: {
+        ...reviewerFailing,
+        checks: [],
+        criteria: [{ criterion: "A", met: true, evidence: "x" }],
+      },
+      files: [],
+      sameModelAsImplementer: false,
+      hostChecks: true,
+      declaredChecks: [],
+    };
+    const out = (packet: ReturnType<typeof assemblePacket>, ci: CiSummary = green) =>
+      verifyCheckOutput({
+        evidencePass: packet.evidencePass,
+        evidenceReasons: packet.evidenceReasons,
+        warnings: packet.warnings,
+        riskFlags: [],
+        ci,
+        workItem: { number: 7, title: "x" },
+        ...storedProof(packet.sections),
+      }).summary;
+    // The config requires "ci", but no check run of that name reported: nothing could prove.
+    const otherCi = ciWith("build");
+    const none = assemblePacket({ ...base, ci: otherCi, requiredCi: ["ci"] });
+    expect(none.sections.proven).toMatchObject({ proven: 0, total: 1, checksSetUp: false });
+    expect(out(none, otherCi)).toContain(
+      "No checks are set up for this project, so nothing can be proven.",
+    );
+    expect(out(none, otherCi)).not.toContain("Criteria proven");
+    // factory/verify itself is never what makes checks "set up".
+    const onlyVerify = assemblePacket({ ...base, ci: otherCi, requiredCi: ["factory/verify"] });
+    expect(onlyVerify.sections.proven).toMatchObject({ checksSetUp: false });
+    // A required CI check that reported counts: then the count, and why each criterion isn't proven.
+    const ci = ciWith("ci");
+    const withCi = assemblePacket({ ...base, ci, requiredCi: ["ci"] });
+    expect(withCi.sections.proven).toMatchObject({ checksSetUp: true });
+    expect(out(withCi, ci)).toContain("Criteria proven by an executed check: 0/1");
+    expect(out(withCi, ci)).toContain("- Not proven: A (no check is named for this)");
+    // Declared checks count too.
+    const declared = assemblePacket({
+      ...base,
+      ci: otherCi,
+      declaredChecks: ["tests"],
+      checksRun: [ran("tests", 0)],
+    });
+    expect(declared.sections.proven).toMatchObject({ checksSetUp: true });
+  });
+
+  it("says why a criterion is not proven", () => {
+    const p = {
+      proven: false,
+      provenBy: [],
+      unproven: [],
+      notCounted: [],
+      linkedBy: "spec" as const,
+    };
+    expect(whyNotProven(p)).toBe("no check is named for this");
+    expect(whyNotProven({ ...p, unproven: ["tests"] })).toBe("tests didn't pass on this commit");
+    expect(whyNotProven({ ...p, notCounted: ["lint"] })).toMatch(/^lint can't prove a criterion/);
+    expect(whyNotProven({ ...p, notCounted: ["tests"], linkedBy: "reviewer" })).toMatch(
+      /^only the reviewer named tests/,
+    );
+    expect(whyNotProven({ ...p, proven: true, provenBy: ["tests"] })).toBe("");
   });
 
   it("reads the checks from config: the project's, then the item's workflow's", () => {

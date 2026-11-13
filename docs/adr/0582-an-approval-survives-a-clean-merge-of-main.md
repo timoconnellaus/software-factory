@@ -1,6 +1,6 @@
 # ADR 0582: An approval survives a clean merge of main, and nothing else
 
-Status: proposed, 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md),
+Status: accepted, 2026-11-13; proposed 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md),
 question 1). Amends [ADR 0330](0330-the-factory-runs-its-own-merge-queue.md) §3; keeps
 [ADR 0037](0037-factory-verify-pinned-and-sha-bound.md).
 
@@ -42,3 +42,6 @@ proves how the commit was made, not that the change the person approved is the c
 > `mergeQueue.enter` accepts only for a head whose change digest is the approved one. The change is
 > read by its changed paths (GitHub's compare, then those paths' entries), never whole trees, and
 > fails closed past 250 changed paths.
+
+> Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
+> recommendation (spec 53, **Decisions**). This ADR is accepted as written.
