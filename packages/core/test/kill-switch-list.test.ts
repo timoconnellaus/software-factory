@@ -76,6 +76,17 @@ describe("turning a switch off against the switch seen", () => {
     expect((stale as { code: string }).code).toBe("conflict");
   });
 
+  it("asks every surface to say which switch it saw", async () => {
+    const w = await world();
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: true }, w.human);
+    const blind = await call(
+      "killSwitch.set",
+      { scope: "project", id: w.projectId, on: false },
+      w.human,
+    ).catch((e: { code: string }) => e);
+    expect((blind as { code: string }).code).toBe("invalid_input");
+  });
+
   it("asks the desktop to say which switch it saw", async () => {
     const w = await world();
     await ok("killSwitch.set", { scope: "project", id: w.projectId, on: true }, w.human);

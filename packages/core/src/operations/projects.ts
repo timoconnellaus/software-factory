@@ -1017,7 +1017,7 @@ export const killSwitchSet = defineOperation({
     /**
      * The switch's epoch the person saw (killSwitch.list): turning it off is refused if it was
      * turned on again since, so an off decided against an old reason can't apply (review of #165).
-     * Required from the desktop.
+     * Required to turn a switch off, from every surface.
      */
     epoch: z.number().int().nonnegative().optional(),
   }),
@@ -1047,7 +1047,8 @@ export const killSwitchSet = defineOperation({
       .where("scope_id", "=", input.id)
       .executeTakeFirst();
     const wasOn = current?.is_on === 1;
-    if (!input.on && input.epoch === undefined && ctx.origin.surface === "desktop")
+    // Every surface names the switch it saw before turning it off (review of #165).
+    if (!input.on && input.epoch === undefined)
       throw new OperationError("invalid_input", "say which switch you saw: send its epoch");
     if (!input.on && input.epoch !== undefined && input.epoch !== (current?.epoch ?? 0))
       throw new OperationError(
@@ -1056,6 +1057,18 @@ export const killSwitchSet = defineOperation({
       );
     const epoch = (current?.epoch ?? 0) + (input.on && !wasOn ? 1 : 0);
     if (wasOn === input.on) return { on: input.on, epoch, workItems: 0, changed: false };
+    // The write is conditional on the switch being as read: a change in between refuses this one.
+    if (current)
+      ctx.guardExists(
+        "kill switch unchanged",
+        ctx.db
+          .selectFrom("core_kill_switches")
+          .select("scope_id")
+          .where("scope", "=", input.scope)
+          .where("scope_id", "=", input.id)
+          .where("epoch", "=", current.epoch)
+          .where("is_on", "=", current.is_on),
+      );
 
     ctx.write(
       ctx.db
