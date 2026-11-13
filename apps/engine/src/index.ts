@@ -3,6 +3,7 @@
 
 import { GITHUB_INTAKE } from "@software-factory/connector-github";
 import {
+  BABYSITTER,
   FOREMAN,
   invoke,
   isOperationError,
@@ -87,12 +88,52 @@ export default {
       // And the babysitter's reruns and known flakes older than 30 days (spec 53 §4).
       await pruneBabysit(env.DB, now);
     }
+    // Every minute: `factory/verify` held while main was red, on a head whose repository is green
+    // again or whose item ended, is evaluated again (decision 7; heals a lost verify.recheck).
+    await releaseHeldChecks(env);
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
       await sweepStrayAttachmentBlobs(env.DB, r2AttachmentBlobs(env.ATTACHMENTS), now);
     }
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * Decision 7's release sweep: up to `limit` held `factory/verify` checks (core_verify_checks_held_idx,
+ * partial: only held rows) whose repository is no longer red or whose item has ended, each
+ * evaluated again with verify.refresh. Idempotent: one that stays held stays held.
+ */
+export async function releaseHeldChecks(env: Env, limit = 20): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `SELECT v.head_sha, v.pr_number, r.owner, r.name FROM core_verify_checks v
+     JOIN core_work_items w ON w.id = v.work_item_id
+     JOIN core_repositories r ON r.id = w.repository_id
+     LEFT JOIN core_main_health h ON h.repository_id = r.id
+     WHERE v.held_at IS NOT NULL
+       AND (h.red_since IS NULL OR w.status NOT IN ('running', 'waiting', 'paused'))
+     LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{ head_sha: string; pr_number: number | null; owner: string; name: string }>();
+  for (const r of results) {
+    try {
+      await invoke(
+        invokeDeps(env),
+        "verify.refresh",
+        {
+          repo: { owner: r.owner, name: r.name },
+          headSha: r.head_sha,
+          prNumber: r.pr_number,
+          trigger: "rerequested",
+        },
+        { actor: BABYSITTER, origin: { surface: "cron", step: "release held" } },
+      );
+    } catch (error) {
+      console.error(`release held ${r.head_sha} failed`, error);
+    }
+  }
+  return results.length;
+}
 
 /** How long the babysitter keeps its reruns and known flakes (spec 53, decision 3's 14 days, with room). */
 export const BABYSIT_KEEP_DAYS = 30;

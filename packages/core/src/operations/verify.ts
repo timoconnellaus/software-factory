@@ -33,7 +33,13 @@ import {
 } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
-import { HELD_TITLE, lineStopped } from "./delivery.ts";
+import {
+  ATTACHED_HELD_TITLE,
+  HELD_TITLE,
+  HELD_TITLES,
+  HOLD_ATTACHED,
+  lineStopped,
+} from "./delivery.ts";
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
@@ -123,6 +129,8 @@ export async function postVerify(
     review_packet_id: args.packetId ?? existing?.review_packet_id ?? null,
     updated_at: ctx.now,
     repository_id: repositoryId ?? existing?.repository_id ?? null,
+    // Decision 7: when it was set to held, so the release sweep finds it; null otherwise.
+    held_at: HELD_TITLES.has(args.output.title) ? (existing?.held_at ?? ctx.now) : null,
   };
   ctx.write(
     ctx.db
@@ -630,7 +638,7 @@ export const verifyRefresh = defineOperation({
 
     const existing = await ctx.db
       .selectFrom("core_verify_checks")
-      .select(["status", "work_item_id"])
+      .select(["status", "work_item_id", "held_at"])
       .where("project_id", "=", project.id)
       .where((eb) =>
         eb.or([eb("repository_id", "=", repository.id), eb("repository_id", "is", null)]),
@@ -656,6 +664,35 @@ export const verifyRefresh = defineOperation({
           .executeTakeFirst()) ?? null;
     }
 
+    // A held check (decision 7) on an item that has ended: it says so, never stays pending.
+    if (
+      item &&
+      existing?.held_at &&
+      !["running", "waiting", "paused", "done"].includes(item.status)
+    ) {
+      const output = {
+        status: "completed" as const,
+        conclusion: "failure" as const,
+        title: `Work item #${item.number} ended (${item.status})`,
+        summary: `Work item #${item.number}: ${item.title}\n\nIt ended while the default branch was red, so nothing merges from this commit.`,
+      };
+      await postVerify(ctx, {
+        project,
+        repo,
+        headSha: input.headSha,
+        item,
+        prNumber: input.prNumber,
+        packetId: null,
+        output,
+      });
+      return {
+        outcome: "posted" as const,
+        workItemId: item.id,
+        status: output.status,
+        conclusion: output.conclusion,
+        ciState: null,
+      };
+    }
     // An attached item that ended without merging (its PR closed, or it was cancelled) no longer
     // owns the PR: reopened, it reads as unattached again and can be attached anew.
     if (item?.kind === "attached" && ["cancelled", "failed", "rejected"].includes(item.status)) {
@@ -767,19 +804,25 @@ export const verifyRefresh = defineOperation({
         ...storedTestFindings(sections),
         ...storedProof(sections),
       });
-      // Decision 7 (spec 53): while the repository's line is stopped, a factory head that isn't a
+      // Decision 7 (spec 53): while the repository's line is stopped, an open head that isn't a
       // repair reads pending, so GitHub refuses a person's merge too. It comes back when main is
-      // green (main.observe re-evaluates the heads). An attached PR lands through its own gate.
+      // green (main.observe re-evaluates the heads; the cron's release sweep heals a lost event).
+      // An attached PR is held too, saying the owner decides (HOLD_ATTACHED, one switch).
+      const open = ["running", "waiting", "paused"].includes(item.status);
       if (
         output.conclusion === "success" &&
-        item.kind !== "attached" &&
+        open &&
+        (item.kind !== "attached" || HOLD_ATTACHED) &&
         item.repairs_main !== 1 &&
         (await lineStopped(ctx, item))
       ) {
         output = {
           status: "in_progress",
-          title: HELD_TITLE,
-          summary: `Work item #${item.number}: ${item.title}\n\nThe default branch is red, so only repairs merge until it is green again. Verify passed on this commit; it can merge once main is green (spec 53, decision 7).`,
+          title: item.kind === "attached" ? ATTACHED_HELD_TITLE : HELD_TITLE,
+          summary:
+            item.kind === "attached"
+              ? `Work item #${item.number}: ${item.title}\n\nThe default branch is red. This pull request was opened outside the factory: the owner decides whether it merges before main is green (spec 53, decision 7). The babysitter doesn't merge it.`
+              : `Work item #${item.number}: ${item.title}\n\nThe default branch is red, so only repairs merge until it is green again. Verify passed on this commit; it can merge once main is green (spec 53, decision 7).`,
         };
       }
     } else if (input.trigger === "ci" && existing) {

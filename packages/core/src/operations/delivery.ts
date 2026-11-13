@@ -6,7 +6,9 @@
 import type { CoreDatabase, MainHealthState } from "@software-factory/db";
 import type { Selectable } from "kysely";
 import { z } from "zod";
+import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { approverIds } from "../scope.ts";
 import type { CheckRunInfo } from "../services.ts";
@@ -48,6 +50,10 @@ const mainHealth = z.object({
   /** The culprit, once proven (or named by a person), and why. Never a guess. */
   culpritWorkItemId: z.string().nullable(),
   attribution: z.string().nullable(),
+  /** Who named it: proven in code (it reproduced), a person, or the babysit job. */
+  attributedBy: z.enum(["proven", "person", "agent"]).nullable(),
+  /** A single landing waiting on its failing checks' rerun: not a culprit until it reproduces. */
+  candidateWorkItemId: z.string().nullable(),
 });
 type Suspect = z.infer<typeof mainHealth>["suspects"][number];
 
@@ -72,6 +78,8 @@ export function mainHealthOf(row: MainHealthRow): z.infer<typeof mainHealth> {
     suspects: parseSuspects(row.suspects),
     culpritWorkItemId: row.culprit_work_item_id,
     attribution: row.attribution,
+    attributedBy: row.attributed_by,
+    candidateWorkItemId: row.candidate_work_item_id,
   };
 }
 
@@ -120,10 +128,10 @@ async function suspectsSince(
 }
 
 /**
- * The culprit, only when it is proven (ADR 0584: never revert a guess): exactly one landing since
- * green, its merge commit is the first red head, and that commit's first parent is the last green
- * head. Anything else (several landings, someone else's push in between) is left to the babysit job
- * or a person.
+ * The candidate culprit (ADR 0584: never revert a guess): exactly one landing since green, its merge
+ * commit is the first red head, and that commit's first parent is the last green head. It is proven
+ * only once the failing checks, rerun once on that head, fail again (`redReproduced`). Anything
+ * else (several landings, someone else's push in between) is left to the babysit job or a person.
  */
 async function provenCulprit(
   ctx: HandlerContext,
@@ -138,7 +146,7 @@ async function provenCulprit(
   if (parents[0] !== lastGreen) return null;
   return {
     workItemId: only.workItemId,
-    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, and main went red on it`,
+    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, main went red on it, and the red reproduced on a rerun`,
   };
 }
 
@@ -147,6 +155,14 @@ async function provenCulprit(
  * stopped (spec 53, decision 7): pending, so GitHub refuses a person's merge there too.
  */
 export const HELD_TITLE = "held: main is red";
+/**
+ * An attached PR (opened outside the factory) while main is red: held too, saying the owner
+ * decides (decision 7 as written; the owner is asked whether attached PRs should be).
+ */
+export const ATTACHED_HELD_TITLE = "main is red: ask the owner";
+/** The one switch: whether an attached PR's `factory/verify` is held while main is red. */
+export const HOLD_ATTACHED = true;
+export const HELD_TITLES: ReadonlySet<string> = new Set([HELD_TITLE, ATTACHED_HELD_TITLE]);
 
 /**
  * A red episode opened or closed: every open factory PR in the repository at its merge gate or in
@@ -158,21 +174,33 @@ async function recheckHeads(
   projectId: string,
   repository: { id: string; owner: string; name: string },
 ): Promise<void> {
-  const items = await ctx.db
-    .selectFrom("core_work_items")
-    .select(["head_sha", "pr_number"])
-    .where("project_id", "=", projectId)
-    .where("status", "in", ["running", "waiting"])
-    .where("repository_id", "=", repository.id)
-    .where("stage", "=", "merge")
-    .where("kind", "!=", "attached")
-    .where("repairs_main", "=", 0)
-    .where("pr_number", "is not", null)
-    .where("head_sha", "is not", null)
+  // Only heads in an open delivery state in this repository: the babysitter's queue
+  // (core_merge_queue_babysitter_idx, partial: queued babysitter entries) and open merge gates
+  // (core_pending_actions_open_merge_idx, partial: pending merge gates). Each at most 50.
+  const queued = await ctx.db
+    .selectFrom("core_merge_queue")
+    .innerJoin("core_work_items", "core_work_items.id", "core_merge_queue.work_item_id")
+    .select(["core_work_items.head_sha", "core_work_items.pr_number"])
+    .where("core_merge_queue.project_id", "=", projectId)
+    .where("core_merge_queue.status", "=", "queued")
+    .where("core_merge_queue.driver", "=", "babysitter")
+    .where("core_work_items.repository_id", "=", repository.id)
     .limit(50)
     .execute();
-  for (const i of items) {
-    if (!i.head_sha) continue;
+  const gated = await ctx.db
+    .selectFrom("core_pending_actions")
+    .innerJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+    .select(["core_work_items.head_sha", "core_work_items.pr_number"])
+    .where("core_pending_actions.kind", "=", "merge")
+    .where("core_pending_actions.status", "=", "pending")
+    .where("core_work_items.project_id", "=", projectId)
+    .where("core_work_items.repository_id", "=", repository.id)
+    .limit(50)
+    .execute();
+  const seen = new Set<string>();
+  for (const i of [...queued, ...gated]) {
+    if (!i.head_sha || !i.pr_number || seen.has(i.head_sha)) continue;
+    seen.add(i.head_sha);
     ctx.emit({
       kind: "verify.recheck",
       payload: {
@@ -182,6 +210,40 @@ async function recheckHeads(
       },
     });
   }
+}
+
+/** Failed conclusions for a rerun's proof. */
+const RED = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+
+/**
+ * Whether the red on `head` reproduced (finding 3 of #162's review): the failing checks were each
+ * rerun once (core_ci_reruns, primary-key prefix) and every rerun has completed red after it was
+ * asked. A rerun still running, or one that passed, proves nothing.
+ */
+async function redReproduced(
+  ctx: HandlerContext,
+  repositoryId: string,
+  head: string,
+  runs: readonly CheckRunInfo[],
+): Promise<boolean> {
+  const reruns = await ctx.db
+    .selectFrom("core_ci_reruns")
+    .select(["check_name", "asked_at", "passed"])
+    .where("repository_id", "=", repositoryId)
+    .where("head_sha", "=", head)
+    .limit(20)
+    .execute();
+  if (reruns.length === 0) return false;
+  return reruns.every((r) =>
+    runs.some(
+      (c) =>
+        c.name === r.check_name &&
+        c.status === "completed" &&
+        RED.has(c.conclusion ?? "") &&
+        !!c.completedAt &&
+        c.completedAt > r.asked_at,
+    ),
+  );
 }
 
 export async function lineStopped(
@@ -294,7 +356,15 @@ export const mainObserve = defineOperation({
       ? await suspectsSince(ctx, project.id, repository.id, before?.green_at ?? null)
       : null;
     const lastGreen = before?.last_green_sha ?? null;
-    const proven = suspects ? await provenCulprit(ctx, repo, suspects, head, lastGreen) : null;
+    // A single landing that fits is only a candidate: its failing checks are rerun once on the red
+    // head, and it is proven only if they fail again (a flake proves nothing).
+    const candidate = suspects ? await provenCulprit(ctx, repo, suspects, head, lastGreen) : null;
+    const reproduced =
+      state === "red" &&
+      !opens &&
+      !!before?.candidate_work_item_id &&
+      head === before.first_red_sha &&
+      (await redReproduced(ctx, repository.id, head, counted));
     const row: MainHealthRow = {
       repository_id: repository.id,
       project_id: project.id,
@@ -318,23 +388,38 @@ export const mainObserve = defineOperation({
         : state === "green"
           ? "[]"
           : (before?.suspects ?? "[]"),
-      culprit_work_item_id: opens
-        ? (proven?.workItemId ?? null)
-        : state === "green"
+      culprit_work_item_id:
+        state === "green"
           ? null
-          : (before?.culprit_work_item_id ?? null),
-      attribution: opens
-        ? (proven?.why ?? null)
-        : state === "green"
+          : reproduced
+            ? (before?.candidate_work_item_id ?? null)
+            : opens
+              ? null
+              : (before?.culprit_work_item_id ?? null),
+      candidate_work_item_id:
+        state === "green" || reproduced
           ? null
-          : (before?.attribution ?? null),
+          : opens
+            ? (candidate?.workItemId ?? null)
+            : (before?.candidate_work_item_id ?? null),
+      attribution:
+        state === "green" ? null : opens ? (candidate?.why ?? null) : (before?.attribution ?? null),
+      attributed_by:
+        state === "green"
+          ? null
+          : reproduced
+            ? "proven"
+            : opens
+              ? null
+              : (before?.attributed_by ?? null),
     };
     const changed =
       !before ||
       before.head_sha !== row.head_sha ||
       before.state !== row.state ||
       before.failing !== row.failing ||
-      before.red_since !== row.red_since;
+      before.red_since !== row.red_since ||
+      reproduced;
     // The same state seen again writes nothing, not even its time (no row, no audit: Cloudflare
     // cost rule 12). The cost: a read that started before this one and saw another state can still
     // commit after it; that needs main to flap within one read's few seconds, and the next check
@@ -371,6 +456,8 @@ export const mainObserve = defineOperation({
             suspects: row.suspects,
             culprit_work_item_id: row.culprit_work_item_id,
             attribution: row.attribution,
+            attributed_by: row.attributed_by,
+            candidate_work_item_id: row.candidate_work_item_id,
           }),
         ),
     );
@@ -381,6 +468,74 @@ export const mainObserve = defineOperation({
       after: { state, sha: head, failing: ci.failing },
     });
     const where = `${repository.owner}/${repository.name}`;
+    // The candidate's proof: each failing check rerun once on the red head (once per check per
+    // SHA, core_ci_reruns' key), as the babysitter does for a flake.
+    if (opens && candidate) {
+      for (const run of counted.filter((c) => RED.has(c.conclusion ?? "")).slice(0, 5)) {
+        const asked = await github.rerequestCheckRun(repo, run.id).catch(() => null);
+        if (!asked?.ok) continue;
+        ctx.write(
+          ctx.db
+            .insertInto("core_ci_reruns")
+            .values({
+              repository_id: repository.id,
+              head_sha: head,
+              check_name: run.name,
+              work_item_id: candidate.workItemId,
+              test_name: null,
+              run_url: run.url,
+              asked_at: ctx.now,
+              passed: null,
+            })
+            .onConflict((oc) => oc.doNothing()),
+        );
+      }
+    }
+    if (reproduced) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_ci_reruns")
+          .set({ passed: 0 })
+          .where("repository_id", "=", repository.id)
+          .where("head_sha", "=", head),
+      );
+    }
+    // Green on the red head after its rerun: it was a flake, recorded as one (decision 3).
+    if (closes && before?.first_red_sha) {
+      const flaked = await ctx.db
+        .selectFrom("core_ci_reruns")
+        .select(["check_name", "run_url", "work_item_id"])
+        .where("repository_id", "=", repository.id)
+        .where("head_sha", "=", before.first_red_sha)
+        .where("passed", "is", null)
+        .limit(20)
+        .execute();
+      for (const f of flaked) {
+        ctx.write(
+          ctx.db.insertInto("core_flakes").values({
+            id: newId("flake"),
+            project_id: project.id,
+            repository_id: repository.id,
+            check_name: f.check_name,
+            test_name: null,
+            head_sha: before.first_red_sha,
+            run_url: f.run_url,
+            work_item_id: f.work_item_id,
+            seen_at: ctx.now,
+          }),
+        );
+      }
+      if (flaked.length > 0) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_ci_reruns")
+            .set({ passed: 1 })
+            .where("repository_id", "=", repository.id)
+            .where("head_sha", "=", before.first_red_sha)
+            .where("passed", "is", null),
+        );
+      }
+    }
     // Decision 7: `factory/verify` on waiting heads goes to held (or back) with the line.
     if (opens || closes) await recheckHeads(ctx, project.id, repository);
     if (opens) {
@@ -483,21 +638,48 @@ export const workItemMarkRepair = defineOperation({
   },
 });
 
+/** How strong an attribution is: a weaker one never overwrites a stronger one. */
+const ATTRIBUTION_RANK = { agent: 1, person: 2, proven: 3 } as const;
+
 export const mainRedAttribute = defineOperation({
   name: "mainRed.attribute",
   description:
-    "Name the landing that turned a repository's default branch red (spec 53 §5, ADR 0584): one of the open red episode's suspects (the factory's landings since main was last green), with why. The factory names one itself only when it is proven (a single landing whose merge commit is the first red head); otherwise a person, or the babysitter, says which. Recorded on the episode; it never reverts anything by itself. Refused when the line isn't stopped or the item isn't a suspect.",
+    "Name the landing that turned a repository's default branch red (spec 53 §5, ADR 0584): one of the open red episode's suspects (the factory's landings since main was last green), with why. The factory names one itself only when it is proven (a single landing whose merge commit is the first red head, and the red reproduced on a rerun); otherwise a person, or the repository's babysit job through the babysitter (with its current delivery fence), says which. Recorded with who named it; a weaker attribution (agent < person < proven) never overwrites a stronger one. It never reverts anything by itself. Refused when the line isn't stopped or the item isn't a suspect.",
   risk: "write",
   actors: ["human", "agent"],
   permission: "approver",
-  input: z.object({ workItemId, why: z.string().trim().min(1).max(2_000) }),
-  output: z.object({ culpritWorkItemId: z.string() }),
+  input: z.object({
+    workItemId,
+    why: z.string().trim().min(1).max(2_000),
+    /** An agent's call: the repository's babysit job's delivery fence (the babysitter only). */
+    deliveryFence: z.number().int().min(1).optional(),
+  }),
+  output: z.object({ culpritWorkItemId: z.string(), attributedBy: z.enum(["person", "agent"]) }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     if (!w.repository_id) throw new OperationError("conflict", `#${w.number} has no repository`);
+    const by: "person" | "agent" = ctx.actor.type === "human" ? "person" : "agent";
+    if (by === "agent") {
+      // Only the babysitter, for the repository's babysit job, with its current fence.
+      if (ctx.actor.type !== BABYSITTER.type || ctx.actor.id !== BABYSITTER.id) {
+        throw new OperationError(
+          "forbidden",
+          "only a person or the repository's babysit job names a culprit",
+        );
+      }
+      const state = await ctx.db
+        .selectFrom("core_delivery_state")
+        .innerJoin("core_jobs", "core_jobs.id", "core_delivery_state.babysit_job_id")
+        .select(["core_delivery_state.babysit_fence", "core_jobs.stage"])
+        .where("core_delivery_state.key", "=", `${w.project_id}:${w.repository_id}`)
+        .executeTakeFirst();
+      if (state?.stage !== "babysit" || state.babysit_fence !== input.deliveryFence) {
+        throw new OperationError("fenced", "not the repository's current babysit job");
+      }
+    }
     const row = await ctx.db
       .selectFrom("core_main_health")
-      .select(["red_since", "suspects", "culprit_work_item_id"])
+      .select(["red_since", "suspects", "culprit_work_item_id", "attributed_by"])
       .where("repository_id", "=", w.repository_id)
       .executeTakeFirst();
     if (!row?.red_since) {
@@ -512,10 +694,21 @@ export const mainRedAttribute = defineOperation({
         `#${w.number} didn't land since main was last green: it isn't a suspect`,
       );
     }
+    if (row.attributed_by && ATTRIBUTION_RANK[row.attributed_by] > ATTRIBUTION_RANK[by]) {
+      throw new OperationError(
+        "conflict",
+        `the culprit was already named (${row.attributed_by}): ${by === "agent" ? "an agent" : "a person"} can't overwrite it`,
+      );
+    }
     ctx.write(
       ctx.db
         .updateTable("core_main_health")
-        .set({ culprit_work_item_id: w.id, attribution: input.why })
+        .set({
+          culprit_work_item_id: w.id,
+          attribution: input.why,
+          attributed_by: by,
+          candidate_work_item_id: null,
+        })
         .where("repository_id", "=", w.repository_id)
         .where("red_since", "=", row.red_since),
     );
@@ -523,10 +716,10 @@ export const mainRedAttribute = defineOperation({
     ctx.change({
       entity: "main_health",
       id: w.repository_id,
-      before: { culprit: row.culprit_work_item_id },
-      after: { culprit: w.id, why: input.why },
+      before: { culprit: row.culprit_work_item_id, by: row.attributed_by },
+      after: { culprit: w.id, why: input.why, by },
     });
-    return { culpritWorkItemId: w.id };
+    return { culpritWorkItemId: w.id, attributedBy: by };
   },
 });
 

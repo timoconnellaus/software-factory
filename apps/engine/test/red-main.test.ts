@@ -4,9 +4,9 @@
 // when it is proven.
 import { env } from "cloudflare:workers";
 import { sign } from "@software-factory/connector-webhook";
-import { HELD_TITLE } from "@software-factory/core";
+import { ATTACHED_HELD_TITLE, BABYSITTER, FOREMAN, HELD_TITLE } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
-import worker from "../src/index.ts";
+import worker, { releaseHeldChecks } from "../src/index.ts";
 import {
   build,
   call,
@@ -108,6 +108,8 @@ const health = async (w: World) =>
           suspects: { workItemId: string; mergeSha: string }[];
           culpritWorkItemId: string | null;
           attribution: string | null;
+          attributedBy: string | null;
+          candidateWorkItemId: string | null;
         } | null;
       }[];
     }>("delivery.status", { projectId: w.projectId }, w.human)
@@ -174,18 +176,58 @@ describe("held: main is red (decision 7)", () => {
 });
 
 describe("an episode's suspects and culprit (spec 53 §5)", () => {
-  it("one landing whose merge commit turned main red is the proven culprit", async () => {
+  it("one landing whose merge commit turned main red is a candidate until its failing checks fail again on a rerun", async () => {
     const w = await world();
     await mainCi(w, await mainHead(w), "success");
     const a = await land(w, "Breaks main", "src/a.ts");
     await mainCi(w, a.mergeSha, "failure");
-    const main = await health(w);
-    expect(main?.suspects.map((s) => s.workItemId)).toEqual([a.id]);
-    expect(main?.culpritWorkItemId).toBe(a.id);
-    expect(main?.attribution).toMatch(/the only landing since .* was green/);
+    const opened = await health(w);
+    expect(opened?.suspects.map((s) => s.workItemId)).toEqual([a.id]);
+    // Not yet proven: the failing check is rerun once on the red head.
+    expect(opened).toMatchObject({ culpritWorkItemId: null, candidateWorkItemId: a.id });
+    expect((await github.state(w.repo)).reruns ?? []).toHaveLength(1);
+    // The rerun fails again: proven.
+    await mainCi(w, a.mergeSha, "failure");
+    const proven = await health(w);
+    expect(proven).toMatchObject({
+      culpritWorkItemId: a.id,
+      attributedBy: "proven",
+      candidateWorkItemId: null,
+    });
+    expect(proven?.attribution).toMatch(/reproduced on a rerun/);
+    // A person can't overwrite a proven culprit.
+    await expect(
+      call("mainRed.attribute", { workItemId: a.id, why: "mine" }, w.human),
+    ).rejects.toMatchObject({ code: "conflict" });
     // Green again: the episode, its suspects and its culprit are over.
     await mainCi(w, a.mergeSha, "success");
     expect(await health(w)).toMatchObject({ suspects: [], culpritWorkItemId: null });
+  });
+
+  it("a red that passes on its rerun proves nothing: main is green, the flake recorded, nothing held", async () => {
+    const w = await world();
+    await mainCi(w, await mainHead(w), "success");
+    const a = await land(w, "Flaky landing", "src/a.ts");
+    const waiting = await toMergeGate(w, "Waits behind it", "src/b.ts");
+    await mainCi(w, a.mergeSha, "failure");
+    const head = await gateHead(waiting);
+    await waitFor("held", async () =>
+      (await verifyCheck(head))?.title === HELD_TITLE ? true : null,
+    );
+    await mainCi(w, a.mergeSha, "success");
+    expect(await health(w)).toMatchObject({
+      state: "green",
+      culpritWorkItemId: null,
+      candidateWorkItemId: null,
+    });
+    const flakes = await first<{ check_name: string }>(
+      "SELECT check_name FROM core_flakes WHERE head_sha = ?",
+      a.mergeSha,
+    );
+    expect(flakes).toEqual({ check_name: "ci" });
+    await waitFor("released", async () =>
+      (await verifyCheck(head))?.conclusion === "success" ? true : null,
+    );
   });
 
   it("two landings: no culprit is guessed; a person names one of the suspects, and only a suspect", async () => {
@@ -214,6 +256,70 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
     expect(await health(w)).toMatchObject({
       culpritWorkItemId: a.id,
       attribution: "the failing test is in src/a.ts",
+      attributedBy: "person",
     });
+    // An agent is only ever the repository's babysit job, through the babysitter with its fence.
+    await expect(
+      call("mainRed.attribute", { workItemId: b.id, why: "guess" }, FOREMAN),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      call("mainRed.attribute", { workItemId: b.id, why: "guess", deliveryFence: 1 }, BABYSITTER),
+    ).rejects.toMatchObject({ code: "fenced" });
+  });
+
+  it("an attached PR is held too, saying the owner decides (decision 7)", async () => {
+    const w = await world();
+    await mainCi(w, await mainHead(w), "success");
+    const branch = `tim/${uid("b")}`;
+    const pr = await github.openOutsidePull(w.repo, { branch, title: "Docs", body: "Docs." });
+    const attached = await ok<{ workItemId: string }>(
+      "workItem.attachPr",
+      { projectId: w.projectId, prNumber: pr.number },
+      w.human,
+    );
+    await runStage(w, attached.workItemId, "triage", () => triage("small"));
+    await runStage(w, attached.workItemId, "verify", () => verifyPass);
+    await gateOpen(attached.workItemId, "merge");
+    await mainCi(w, await mainHead(w), "failure");
+    await waitFor("attached held", async () =>
+      (await verifyCheck(pr.headSha))?.title === ATTACHED_HELD_TITLE ? true : null,
+    );
+    await mainCi(w, await mainHead(w), "success");
+    await waitFor("released", async () =>
+      (await verifyCheck(pr.headSha))?.conclusion === "success" ? true : null,
+    );
+  });
+
+  it("the cron releases a held check whose repository is green again, or whose item ended; idempotently", async () => {
+    const w = await world();
+    await mainCi(w, await mainHead(w), "success");
+    const a = await toMergeGate(w, "Held, then the event is lost", "src/a.ts");
+    const b = await toMergeGate(w, "Held, then cancelled", "src/b.ts");
+    await mainCi(w, await mainHead(w), "failure");
+    const [ha, hb] = [await gateHead(a), await gateHead(b)];
+    await waitFor("both held", async () =>
+      (await verifyCheck(ha))?.title === HELD_TITLE && (await verifyCheck(hb))?.title === HELD_TITLE
+        ? true
+        : null,
+    );
+    await ok("workItem.cancel", { workItemId: b, reason: "not needed" }, w.human);
+    // Main goes green, and the webhook that would release A is lost.
+    await env.DB.prepare(
+      "UPDATE core_main_health SET red_since = NULL, state = 'green' WHERE project_id = ?",
+    )
+      .bind(w.projectId)
+      .run();
+    await releaseHeldChecks(env);
+    await releaseHeldChecks(env);
+    expect(await verifyCheck(ha)).toMatchObject({ conclusion: "success" });
+    expect(await verifyCheck(hb)).toMatchObject({ conclusion: "failure" });
+    expect((await verifyCheck(hb))?.title).toMatch(/ended \(cancelled\)/);
+    expect(
+      await first(
+        "SELECT head_sha FROM core_verify_checks WHERE held_at IS NOT NULL AND head_sha IN (?, ?)",
+        ha,
+        hb,
+      ),
+    ).toBeNull();
   });
 });

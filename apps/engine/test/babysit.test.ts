@@ -344,6 +344,26 @@ describe("the babysit job (spec 53 §4)", () => {
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 
+  it("a babysit job no runner claims in 30 minutes ends the wait, saying why", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Nobody claims it", "src/a.ts");
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await github.setMergeable(w.repo, a.pr, false);
+    await approve(w, a.id);
+    const job = await babysitJob(a.id);
+    // No runner asked for work at all, so no wait reason was ever set.
+    await env.DB.prepare("UPDATE core_jobs SET created_at = ?, wait_reason = NULL WHERE id = ?")
+      .bind(new Date(Date.now() - 31 * 60_000).toISOString(), job.id)
+      .run();
+    await deliverRepository(env, a.projectId, a.repositoryId);
+    const left = await waitFor("the delivery ended", async () => {
+      const e = await entry(a.id);
+      return e?.status === "left" ? e : null;
+    });
+    expect(left?.end_reason).toMatch(/no runner claimed the babysit job in 30 minutes/);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
   it("only the babysitter wakes a job, and never for an attached PR's conflict (decision 8)", async () => {
     const w = await world();
     const branch = `tim/${uid("b")}`;

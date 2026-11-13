@@ -17,7 +17,6 @@ import {
   BABYSITTER,
   type BabysitReason,
   babysitResult,
-  HELD_TITLE,
   has,
   invoke,
   isOperationError,
@@ -44,6 +43,8 @@ const IDLE_RECHECK_MS = 60 * 60_000;
  * the safety look.
  */
 export const BABYSIT_RECHECK_MS = 10 * 60_000;
+/** A babysit job no runner has claimed in this long ends the wait (no runner online at all). */
+export const BABYSIT_UNCLAIMED_MS = 30 * 60_000;
 /** Rounds of one wake: a pass, then again while something changed meanwhile. */
 const ROUNDS = 5;
 /**
@@ -655,17 +656,19 @@ async function settleBabysit(
   if (job && (job.status === "queued" || job.status === "claimed")) {
     const waited = Date.now() - Date.parse(job.created_at);
     const reason = context.reason;
-    if (
-      job.status === "queued" &&
-      job.wait_reason === NO_BABYSIT_RUNNER &&
-      waited >= BABYSIT_RECHECK_MS &&
-      reason
-    ) {
+    // No runner said why (none online at all claims anything): the job's age bounds the wait.
+    const why =
+      job.wait_reason === NO_BABYSIT_RUNNER && waited >= BABYSIT_RECHECK_MS
+        ? NO_BABYSIT_RUNNER
+        : waited >= BABYSIT_UNCLAIMED_MS
+          ? `no runner claimed the babysit job in ${BABYSIT_UNCLAIMED_MS / 60_000} minutes`
+          : null;
+    if (job.status === "queued" && why && reason) {
       await next(true);
       return {
         kind: "end",
         delivery: reason.kind === "conflict" ? "conflict" : "failed",
-        reason: `${NO_BABYSIT_RUNNER}: the ${reason.kind === "conflict" ? "conflict" : `failing check (${reason.checks.join(", ") || "CI"})`} on ${reason.headSha.slice(0, 7)} needs a person`,
+        reason: `${why}: the ${reason.kind === "conflict" ? "conflict" : `failing check (${reason.checks.join(", ") || "CI"})`} on ${reason.headSha.slice(0, 7)} needs a person`,
       };
     }
     return { kind: "wait", ms: BABYSIT_RECHECK_MS };
@@ -760,14 +763,14 @@ async function settleBabysit(
  */
 async function releaseHeld(env: Env, lease: Lease, head: HeadRow, at: string): Promise<void> {
   const row = await env.DB.prepare(
-    `SELECT v.title, r.owner, r.name, w.pr_number FROM core_verify_checks v
+    `SELECT v.held_at, r.owner, r.name, w.pr_number FROM core_verify_checks v
      JOIN core_work_items w ON w.id = ?3
      JOIN core_repositories r ON r.id = w.repository_id
      WHERE v.project_id = ?1 AND v.head_sha = ?2`,
   )
     .bind(head.project_id, at, head.work_item_id)
-    .first<{ title: string | null; owner: string; name: string; pr_number: number | null }>();
-  if (!row || row.title !== HELD_TITLE) return;
+    .first<{ held_at: string | null; owner: string; name: string; pr_number: number | null }>();
+  if (!row?.held_at) return;
   await call(env, lease, "verify.refresh", {
     repo: { owner: row.owner, name: row.name },
     headSha: at,

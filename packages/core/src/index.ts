@@ -26,7 +26,7 @@ export {
   resolveCliToken,
 } from "./operations/cli.ts";
 export { PENDING_SHOWN } from "./operations/config.ts";
-export { HELD_TITLE } from "./operations/delivery.ts";
+export { ATTACHED_HELD_TITLE, HELD_TITLE } from "./operations/delivery.ts";
 export {
   DESKTOP_APPROVE_PATH,
   DESKTOP_CALLBACK_URL,

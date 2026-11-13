@@ -855,6 +855,8 @@ export interface CoreVerifyChecksTable {
   updated_at: Iso;
   /** 0260 (ADR 0490): the repository the head SHA is in. */
   repository_id: string | null;
+  /** 0391 (spec 53, decision 7): when it was set to held; null when it isn't held. */
+  held_at: string | null;
 }
 
 // ---- 0060: onboarding (installations, connect state, runner device login) ----
@@ -1036,6 +1038,10 @@ export interface CoreMainHealthTable {
   culprit_work_item_id: string | null;
   /** 0391: why it is the culprit. */
   attribution: string | null;
+  /** 0391: who named it. A weaker one never overwrites a stronger one. */
+  attributed_by: "proven" | "person" | "agent" | null;
+  /** 0391: a single landing's candidate, proven only if its failing checks fail again on a rerun. */
+  candidate_work_item_id: string | null;
   repository_id: string;
   project_id: string;
   head_sha: string;
