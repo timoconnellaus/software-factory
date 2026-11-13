@@ -85,6 +85,14 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
+      - name: TEMPORARY diagnostic (the old stdin form), removed before merge
+        continue-on-error: true
+        run: |
+          sw_vers
+          f=apps/desktop/test/fixtures/sf-keys-profile.plist
+          echo "--- stdin json"; plutil -extract Entitlements json -o - - < "$f"; echo "exit $?"
+          echo "--- file json"; plutil -extract Entitlements json -o - "$f"; echo "exit $?"
+          echo "--- stdin xml1"; plutil -extract Entitlements xml1 -o - - < "$f"; echo "exit $?"
       - name: Profile check self-test
         run: |
           set -euo pipefail
