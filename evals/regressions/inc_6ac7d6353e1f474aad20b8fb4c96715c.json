@@ -1,0 +1,28 @@
+{
+  "incident": "inc_6ac7d6353e1f474aad20b8fb4c96715c",
+  "rootCause": "runner",
+  "summary": "Work item #61's build gave up after 3 attempts: the runner's sandbox blocked the full runner-host tests and the desktop typecheck, so the generic container-runtime wording never landed and NO_MAC_CONTAINER_LINE on main still named OrbStack alone. This check keeps the OrbStack-only wording from coming back once #61 merges.",
+  "check": "runner-names-container-runtime-generically",
+  "cases": [
+    {
+      "path": "local/runner-host/src/check-mode.ts",
+      "content": "export const NO_MAC_CONTAINER_LINE = `${NO_MAC_CONTAINER} (OrbStack is not answering): start it, or set checks.weakerMacSandbox`;",
+      "expect": "fail"
+    },
+    {
+      "path": "local/runner-host/src/check-mode.ts",
+      "content": "//   - macOS without one: nothing runs (\"not run: this Mac runner has no\n//     container runtime (OrbStack isn't answering): …\")",
+      "expect": "fail"
+    },
+    {
+      "path": "local/runner-host/src/check-mode.ts",
+      "content": "export const NO_MAC_CONTAINER_LINE = `${NO_MAC_CONTAINER}; no container runtime is answering (Docker Desktop or OrbStack): start it, or set checks.weakerMacSandbox`;",
+      "expect": "pass"
+    },
+    {
+      "path": "local/runner-host/src/runner.ts",
+      "content": " * The `docker` CLI a container runner uses: runner.json's, else on PATH, Homebrew's, OrbStack's",
+      "expect": "pass"
+    }
+  ]
+}

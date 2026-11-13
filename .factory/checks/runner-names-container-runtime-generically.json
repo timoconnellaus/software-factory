@@ -1,0 +1,7 @@
+{
+  "name": "runner-names-container-runtime-generically",
+  "description": "Work item #61: a Mac runner checks for any Docker-compatible container runtime (Docker Desktop or OrbStack), so the line it reports when none answers (NO_MAC_CONTAINER_LINE, the not-run reason and the doctor line) must name the runtime generically, never OrbStack alone. Incident inc_6ac7d6353e1f474aad20b8fb4c96715c.",
+  "appliesTo": ["local/runner-host/src/**/*.ts"],
+  "forbid": ["OrbStack\\s+(is\\s+not|isn't)\\s+(answering|running)"],
+  "message": "Name the container runtime generically when none answers: say 'no container runtime is answering (Docker Desktop or OrbStack)', not '(OrbStack is not answering)'. A Mac runner accepts any Docker-compatible runtime. See work item #61 and local/runner-host/src/check-mode.ts."
+}
