@@ -381,7 +381,8 @@ export function splitProblem(children: readonly SpecChild[]): string | null {
   const after = new Map(children.map((c) => [c.key, c.after]));
   for (const c of children) {
     if (c.after === undefined) continue;
-    if (!keys.has(c.after)) return `"${c.key}" waits for "${c.after}", which isn't one of the children`;
+    if (!keys.has(c.after))
+      return `"${c.key}" waits for "${c.after}", which isn't one of the children`;
     const seen = new Set([c.key]);
     for (let k: string | undefined = c.after; k !== undefined; k = after.get(k)) {
       if (seen.has(k)) return `"${c.key}" waits for itself through "after"`;

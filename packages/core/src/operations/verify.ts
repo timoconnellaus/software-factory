@@ -4,7 +4,6 @@
 import { checkResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
-import { splitFiles } from "../splits.ts";
 import { newId } from "../ids.ts";
 import { reviewerMatchesImplementer } from "../model-roles.ts";
 import {
@@ -15,6 +14,7 @@ import {
 } from "../operation.ts";
 import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
+import { splitFiles } from "../splits.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {

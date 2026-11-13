@@ -29,13 +29,13 @@ import {
   TRIAGE_PARK_CAP,
 } from "../readiness.ts";
 import { activeKillSwitch, approverIds, loadPolicy, overrideApprovals } from "../scope.ts";
+import { childEnded } from "../splits.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
   repinImpact,
   resolveProjectWorkflow,
   shapingStagesOf,
 } from "../stages/project-workflow.ts";
-import { childEnded } from "../splits.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
@@ -1800,9 +1800,10 @@ export async function resumeParked(
     }
   }
   // The answers become part of the request, so triage and the planner read them.
-  const body = answers.length && marker.source !== "split"
-    ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
-    : item.body;
+  const body =
+    answers.length && marker.source !== "split"
+      ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
+      : item.body;
   for (const q of open) {
     ctx.write(
       ctx.db

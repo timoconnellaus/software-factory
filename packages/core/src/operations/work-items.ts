@@ -11,9 +11,9 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { endPlanningSessions } from "../planning.ts";
 import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
-import { childEnded } from "../splits.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { childEnded } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -918,7 +918,8 @@ export const workItemTriage = defineOperation({
         : sliceApproved
           ? {
               required: false,
-              reason: "its slice of the parent's plan is complete, and a person approved it with the parent's spec (spec 24)",
+              reason:
+                "its slice of the parent's plan is complete, and a person approved it with the parent's spec (spec 24)",
             }
           : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;

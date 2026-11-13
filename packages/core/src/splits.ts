@@ -270,8 +270,5 @@ export async function splitFiles(
   if (!spec || !childrenOf(spec.children).length) return null;
   const kim = parseJson<{ path?: unknown }[]>(spec.kim_files ?? "[]", []);
   const plan = spec.path ? [spec.path, spec.path.replace(/^docs\/specs\//, ".kim/plans/")] : [];
-  return [
-    ...plan,
-    ...kim.flatMap((k) => (typeof k.path === "string" ? [k.path] : [])),
-  ];
+  return [...plan, ...kim.flatMap((k) => (typeof k.path === "string" ? [k.path] : []))];
 }

@@ -6,9 +6,9 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { approvedKimFiles, planPath, writeBackFiles } from "../kim.ts";
-import { childrenOf, releaseSplitChildren } from "../splits.ts";
 import { defineOperation } from "../operation.ts";
 import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
+import { childrenOf, releaseSplitChildren } from "../splits.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 export const specPropose = defineOperation({
@@ -147,7 +147,8 @@ export const specCommit = defineOperation({
       : undefined;
     if (spec?.status !== "approved") throw new OperationError("conflict", "no approved spec");
     const children = childrenOf(spec.children).length;
-    if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha, children };
+    if (spec.commit_sha && spec.path)
+      return { path: spec.path, commitSha: spec.commit_sha, children };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
     const repo = await repoRef(ctx, requireRepository(ctx));
