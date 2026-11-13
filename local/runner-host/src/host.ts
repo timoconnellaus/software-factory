@@ -130,6 +130,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private confirmed = false;
   /** A pending update has waited past its first cap: report the heavy pool full (ADR 0520). */
   private heavyClosed = false;
+  /** What the engine's last heartbeat said it supports beyond the contract (spec 44 part B). */
+  private engineCapabilities: string[] = [];
   /** Whether it has logged claiming nothing for the engine's `minRunnerCompat` (once per spell). */
   private loggedIncompatible = false;
   readonly log: (message: string) => void;
@@ -208,8 +210,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         this.log(`accounts: ${err instanceof Error ? err.message : err}`);
         return undefined;
       });
-      const { commands, leases, desiredVersion, minRunnerCompat } = await this.options.cp.heartbeat(
-        {
+      const { commands, leases, desiredVersion, minRunnerCompat, engine } =
+        await this.options.cp.heartbeat({
           manifest,
           capacity,
           activeJobs: [...this.running.values()]
@@ -222,8 +224,9 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           ...(selfUpdate ? { version: selfUpdate.report() } : {}),
           ...(accounts ? { accounts } : {}),
           compat: this.compat,
-        },
-      );
+        });
+      // What the engine supports (spec 44 part B): the job line is used only when it says so.
+      this.engineCapabilities = engine?.capabilities ?? [];
       this.failures = 0;
       if (selfUpdate && !this.confirmed) {
         this.confirmed = true;
@@ -421,6 +424,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       ...(this.options.checkSandbox ? { checkSandbox: this.options.checkSandbox } : {}),
       ...(this.options.checksDir ? { checksDir: this.options.checksDir } : {}),
       checkSlot: (signal) => this.checkSlot(job.jobId, signal),
+      engineHasLine: () => this.engineCapabilities.includes("job-line"),
       ...(this.options.maxTreeBytes ? { maxTreeBytes: this.options.maxTreeBytes } : {}),
     })
       .then((report) => {

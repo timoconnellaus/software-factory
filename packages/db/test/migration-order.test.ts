@@ -12,11 +12,16 @@ import { describe, expect, it } from "vitest";
  * apply after it. Add a block here while its PR may merge after higher-numbered ones.
  */
 const LATE_BLOCKS: [number, number][] = [
+  // Spec 44 host ack: a column on core_run_steers, which nothing after 0390 rebuilds.
+  [369, 369],
   // The audit archive's migration (block AQ, ADR 0591) lands after 0390: it only adds tables and
   // replaces core_audit's delete trigger, which nothing later rebuilds.
   [366, 366],
   // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
-  [367, 367],
+  [367, 368],
+  // The babysitter's reverts (block AT, spec 53 §5) land after 0400–0402: 0393 only creates
+  // core_reverts and its indexes, which nothing later touches.
+  [393, 393],
 ];
 
 const late = (name: string) => {

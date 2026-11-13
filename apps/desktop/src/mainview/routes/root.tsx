@@ -1,19 +1,27 @@
 // The root: signed out shows sign-in; signed in shows the `_app` layout. `sf://` links arrive from the
 // main process as paths and are routed here, with the hash history (views:// has no server).
+// Signed out is a state, never an error: the routes still load while the sign-in screen shows (and
+// refuse as signed out), so on signing in the routes are loaded again before they are shown, under
+// fresh error boundaries (`generation`). Any error no page handles lands on AppError.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Toaster } from "@software-factory/ui/components/sonner";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../shared/rpc.ts";
 import { bun, onInbox, onNavigate } from "../bridge.ts";
+import { AppError } from "../components/app-error.tsx";
 import { KeyNotices } from "../components/key-notices.tsx";
 import { UpdateRequired } from "../components/update-required.tsx";
+import { Updating } from "../components/updating.tsx";
+import { WindowSkeleton } from "../components/window-skeleton.tsx";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
+import { DRAG } from "../lib/title-bar.ts";
 
 export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
+  errorComponent: AppError,
 });
 
 /** An `sf://` link's path as a route in the app (ADR 0382's trampoline sends these). */
@@ -53,16 +61,19 @@ function Root() {
     [client],
   );
   // Signing in or out changes everything the cache holds.
-  const signedIn = session?.signedIn ?? false;
-  useEffect(() => {
-    void signedIn;
-    // The update status is the app's, not the account's: it survives (ADR 0393).
-    client.removeQueries({
-      predicate: (q) => q.queryKey[0] !== "session" && q.queryKey[0] !== "update",
-    });
-    void router.invalidate();
-  }, [signedIn, client, router]);
-  if (!session) return null;
+  const shown = useSignedInRoutes(session ? session.signedIn : null);
+  // The main process hasn't answered yet: the window's shell, as index.html drew it.
+  if (!session) return <WindowSkeleton />;
+  // Restart to update, from the click until the app restarts (or a refusal): the whole window.
+  if (update?.applying)
+    return (
+      <Updating
+        applying={update.applying}
+        back={async () =>
+          client.setQueryData(["update"], await bun.updateAction({ action: "back" }))
+        }
+      />
+    );
   // The door refused this build (ADR 0393): only updating helps, signed in or not.
   if (update?.required)
     return (
@@ -76,11 +87,57 @@ function Root() {
     );
   return (
     <>
-      {session.signedIn ? <Outlet /> : <SignIn session={session} />}
+      {!session.signedIn ? (
+        <SignIn session={session} />
+      ) : shown !== null ? (
+        <Outlet key={shown} />
+      ) : (
+        <WindowSkeleton />
+      )}
       <Toaster position="bottom-right" closeButton />
       <KeyNotices session={session} />
     </>
   );
+}
+
+/**
+ * Which signed-in session the routes are shown for (a number that changes with each sign-in), or
+ * null while they load again for it. Signed in at launch: shown at once, as the router loads them.
+ * Signing in (or out) empties the cache and reloads the routes; only then are they shown, keyed
+ * afresh, so nothing loaded or caught while signed out (a "signed out" refusal) is shown.
+ */
+function useSignedInRoutes(signedIn: boolean | null): number | null {
+  const router = useRouter();
+  const client = useQueryClient();
+  // Signed in when first rendered: shown at once (the router is loading with that session).
+  const [shown, setShown] = useState<number | null>(signedIn ? 0 : null);
+  const generation = useRef(0);
+  /** The session as last known: null until the main process first answers. */
+  const known = useRef<boolean | null>(signedIn);
+  useEffect(() => {
+    if (signedIn === null) return;
+    const before = known.current;
+    known.current = signedIn;
+    // The first answer: the router is loading with that session already (`_app` asks it).
+    if (before === null) {
+      if (signedIn) setShown(0);
+      return;
+    }
+    if (before === signedIn) return;
+    const mine = ++generation.current;
+    setShown(null);
+    // The update status is the app's, not the account's: it survives (ADR 0393).
+    client.removeQueries({
+      predicate: (q) => q.queryKey[0] !== "session" && q.queryKey[0] !== "update",
+    });
+    void router
+      .invalidate()
+      .catch(() => undefined)
+      .finally(() => {
+        if (signedIn && generation.current === mine) setShown(mine);
+      });
+  }, [signedIn, client, router]);
+  return shown;
 }
 
 function SignIn({ session }: { session: Session }) {
@@ -88,6 +145,8 @@ function SignIn({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   return (
     <main className="mx-auto grid min-h-screen max-w-md place-content-center gap-4 p-6">
+      {/* The window has no title bar (spec 41): the top strip still moves it. */}
+      <div aria-hidden="true" className={`fixed inset-x-0 top-0 h-11 ${DRAG}`} />
       <h1 className="font-semibold text-2xl tracking-tight">Software Factory</h1>
       <p className="text-muted-foreground text-sm">
         Sign in through your browser. You'll approve this Mac on the website, then come back here.

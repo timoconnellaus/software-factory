@@ -27,6 +27,17 @@ function deps(over: Partial<RestartDeps> & { jobsAfterDrain?: string[] } = {}) {
 }
 
 describe("restartToUpdate", () => {
+  it("says it is restarting once the runner is idle, before anything is stopped", async () => {
+    const { d, calls } = deps();
+    d.restarting = () => calls.push("restarting");
+    expect(await restartToUpdate(d, { anyway: false })).toBe("failed");
+    expect(calls.slice(0, 3)).toEqual(["drain", "restarting", "stopLive"]);
+    const busy = deps({ jobsAfterDrain: ["job-1"] });
+    busy.d.restarting = () => busy.calls.push("restarting");
+    await restartToUpdate(busy.d, { anyway: false });
+    expect(busy.calls).not.toContain("restarting");
+  });
+
   it("drains first, and stops nothing when a job was claimed in the window", async () => {
     const { d, calls } = deps({ jobsAfterDrain: ["job-1"] });
     expect(await restartToUpdate(d, { anyway: false })).toBe("deferred");

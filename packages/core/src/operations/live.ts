@@ -730,23 +730,35 @@ export const runSteer = defineOperation({
       logPlanning(ctx, item.id, "chat.steered", { messageId, steerId: id });
       await takeBackFromGate(ctx, item, "a person steered the planner");
     }
-    // Wakes the runner host's held steer call (sf-engine: the work item's hub).
-    ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
+    // Wakes the host through its job line, when it keeps one (spec 44 part B): routed to the job's
+    // relay. A host without a line finds the steer on its held call's next poll.
+    if (runnerHas(run, "job-line")) {
+      ctx.emit({ kind: "run.steered", payload: { workItemId: item.id, jobId: run.job_id } });
+    }
     return { steerId: id, text, status: "queued" as const };
   },
 });
 
+/** How long a steer stays offered to an acking host before it is offered again. */
+const STEER_OFFER_MS = 60_000;
+
 export const runTakeSteers = defineOperation({
   name: "run.takeSteers",
   description:
-    "The runner host takes a running job's queued steers, oldest first, and they are marked delivered (at most once, ADR 0400). sf-engine's channel holds the call while none are queued, polling for one in the Worker (spec 44). Fenced: a stale token is refused.",
+    "The runner host takes a running job's queued steers, oldest first (ADR 0400). sf-engine's channel holds the call while none are queued, polling for one in the Worker (spec 44). A host that acks (it sends `ack`, even empty) is offered them for 60 s and they are delivered when it acks, so a take by a call whose host had gone is offered again (the host drops a steer it already has, by id); a host that doesn't is handed them, delivered at once. Fenced: a stale token is refused.",
   risk: "write",
-  // Re-taken every 25 s per running job: audited only when it hands steers over (ADR 0590).
-  audit: { changesOnly: true, changed: (out) => out.steers.length > 0 },
+  // Re-taken every 25 s per running job: audited only when it hands steers over or takes acks
+  // (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.steers.length > 0 || out.acked > 0 },
   actors: ["runner"],
   permission: "signed-in",
   fenced: true,
-  input: z.object({ jobId, fencingToken }),
+  input: z.object({
+    jobId,
+    fencingToken,
+    /** The steers the host has received; its presence opts into acking (spec 44 host ack). */
+    ack: z.array(z.string().min(1).max(64)).max(100).optional(),
+  }),
   output: z.object({
     workItemId: z.string(),
     /** The job's run: what the channel's held call polls for queued steers (spec 44). */
@@ -760,6 +772,8 @@ export const runTakeSteers = defineOperation({
         kind: z.enum(["message", "takeover"]),
       }),
     ),
+    /** How many of the acked steers this call marked delivered. */
+    acked: z.number(),
   }),
   async handler(input, ctx) {
     const run = await ctx.db
@@ -772,40 +786,90 @@ export const runTakeSteers = defineOperation({
       throw new OperationError("forbidden", "this job belongs to another runner");
     }
     if (!ACTIVE.includes(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
-    const queued = await ctx.db
-      .selectFrom("core_run_steers")
-      .select(["id", "text", "created_at", "interrupt"])
-      .select(["id", "text", "created_at", "kind"])
-      .where("run_id", "=", run.id)
-      .where("delivered_at", "is", null)
-      .orderBy("created_at", "asc")
-      .limit(20)
-      .execute();
-    if (queued.length > 0) {
+    const acking = input.ack !== undefined;
+    const ack = [...new Set(input.ack ?? [])];
+    // A steer's delivery, and its planning chat message's (spec 26): at the take for a host that
+    // doesn't ack, at the ack for one that does.
+    const deliver = (ids: string[]) => {
       ctx.write(
         ctx.db
           .updateTable("core_run_steers")
           .set({ delivered_at: ctx.now })
-          .where(
-            "id",
-            "in",
-            queued.map((s) => s.id),
-          )
+          .where("run_id", "=", run.id)
+          .where("id", "in", ids)
           .where("delivered_at", "is", null),
       );
-      // A steer typed into a planning session is its chat message's delivery (spec 26).
+    };
+    const deliverMessages = (ids: string[]) =>
       ctx.write(
         ctx.db
           .updateTable("core_planning_messages")
           .set({ delivered_at: ctx.now })
-          .where(
-            "steer_id",
-            "in",
-            queued.map((s) => s.id),
-          )
+          .where("steer_id", "in", ids)
           .where("delivered_at", "is", null),
       );
+    let acked = 0;
+    if (ack.length > 0) {
+      // Only this run's steers, still undelivered: a repeated ack changes nothing.
+      const pending = await ctx.db
+        .selectFrom("core_run_steers")
+        .select("id")
+        .where("run_id", "=", run.id)
+        .where("delivered_at", "is", null)
+        .where("id", "in", ack)
+        .execute();
+      if (pending.length > 0) {
+        const ids = pending.map((p) => p.id);
+        deliver(ids);
+        deliverMessages(ids);
+        acked = ids.length;
+      }
     }
+    const offerOpen = new Date(Date.parse(ctx.now) + STEER_OFFER_MS).toISOString();
+    const queued = await ctx.db
+      .selectFrom("core_run_steers")
+      .select(["id", "text", "created_at", "interrupt", "kind"])
+      .where("run_id", "=", run.id)
+      .where("delivered_at", "is", null)
+      // An acking host: not one already offered (to it, or to a call whose host had gone) and
+      // still on offer; nor one it acks in this very call.
+      .$if(acking, (q) =>
+        q.where((eb) =>
+          eb.or([eb("offered_until", "is", null), eb("offered_until", "<=", ctx.now)]),
+        ),
+      )
+      .$if(ack.length > 0, (q) => q.where("id", "not in", ack))
+      .orderBy("created_at", "asc")
+      .limit(20)
+      .execute();
+    if (queued.length > 0) {
+      const ids = queued.map((s) => s.id);
+      if (acking) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_run_steers")
+            .set({ offered_until: offerOpen })
+            .where("id", "in", ids)
+            .where("delivered_at", "is", null)
+            .where((eb) =>
+              eb.or([eb("offered_until", "is", null), eb("offered_until", "<=", ctx.now)]),
+            ),
+        );
+      } else {
+        deliver(ids);
+      }
+      // Every steer this call read is the one it offers or delivers, or the batch aborts: two
+      // takes racing can't both hand the same steer over (the loser is told it raced, and the
+      // channel's held call takes again).
+      ctx.guardExists(
+        "steers taken once",
+        ctx.db
+          .selectNoFrom(sql<number>`1`.as("one"))
+          .where(sql<boolean>`changes() = ${ids.length}`),
+      );
+      if (!acking) deliverMessages(ids);
+    }
+    if (queued.length > 0 || acked > 0) ctx.changed();
     return {
       workItemId: run.work_item_id,
       runId: run.id,
@@ -817,6 +881,7 @@ export const runTakeSteers = defineOperation({
         ...(s.interrupt ? { interrupt: true } : {}),
         kind: s.kind === "takeover" ? ("takeover" as const) : ("message" as const),
       })),
+      acked,
     };
   },
 });
@@ -856,8 +921,10 @@ export const runTakeover = defineOperation({
       }),
     );
     ctx.change({ entity: "run_steer", id, after: { runId: run.id, kind: "takeover" } });
-    // The same wake as a steer: the host's held steer call takes it at once.
-    ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
+    // Like a steer: pushed down the job line, else found on the held call's next poll (spec 44).
+    if (runnerHas(run, "job-line")) {
+      ctx.emit({ kind: "run.steered", payload: { workItemId: item.id, jobId: run.job_id } });
+    }
     return { requestId: id, status: "queued" as const };
   },
 });
