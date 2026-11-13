@@ -180,6 +180,13 @@ export {
   type PlanBlock,
   planBlocks,
 } from "@software-factory/runner-contract";
+/** Design previews (spec 22 part B): comparing a design's parts with its pulled base. */
+export {
+  compareParts,
+  type DesignPart,
+  type DesignPreview,
+  type PartChange,
+} from "@software-factory/runner-contract";
 /** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
 export { isSensitiveQuestion };
 

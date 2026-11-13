@@ -93,6 +93,42 @@ export const SCREENS = [
     keys: ["f"],
     clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
   },
+  // Spec 22 part B: the System tab, a pulled data model with its changes against the default
+  // branch and a pinned comment; an architecture the planner made; and the source view.
+  {
+    name: "plan-system",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+  },
+  {
+    name: "plan-system-flow",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-design"]:nth-of-type(2)'],
+  },
+  {
+    name: "plan-system-comment",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="comment-mode"]'],
+  },
+  {
+    name: "plan-system-full",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-full"]'],
+  },
+  {
+    name: "plan-system-source",
+    path: "/work/wi_12?tab=plan&pane=system",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="system-source"]'],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.

@@ -124,6 +124,46 @@ describe("design previews (spec 22 part B)", () => {
     expect(size.size).toBeGreaterThan(D2.length);
   });
 
+  it("brings a comment pinned on a table of a data model to the planner, naming the table (criterion 2)", async () => {
+    const w = await world();
+    const { item, agent } = await planning(w);
+    const dbml = "Table users {\n  id int [pk]\n}\n";
+    const { artifactId } = await agent<{ artifactId: string }>("artifact.add", {
+      kind: "design",
+      designType: "data-model",
+      title: "Schema",
+      content: dbml,
+      preview: await previewOf(dbml),
+    });
+    await agent("planning.news");
+    await ok(
+      "chat.send",
+      {
+        workItemId: item.workItemId,
+        text: "Add a created_at here",
+        pin: {
+          artifactId,
+          element: "table users",
+          selector: null,
+          x: 80,
+          y: 12,
+          fx: 0.8,
+          fy: 0.2,
+          width: 300,
+        },
+      },
+      w.human,
+    );
+    const news = await agent<{ events: Record<string, unknown>[] }>("planning.news");
+    expect(news.events).toEqual([
+      expect.objectContaining({
+        type: "chat.message",
+        text: "Add a created_at here",
+        pin: expect.objectContaining({ artifactId, artifact: "Schema", element: "table users" }),
+      }),
+    ]);
+  });
+
   it("stores a pulled base's preview, and reads revision 0 back (criterion 3)", async () => {
     const w = await world();
     await onMain(w, ".kim/designs/system.d2", D2);
