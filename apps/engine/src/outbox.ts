@@ -5,8 +5,8 @@ import { BABYSITTER, invoke, type OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
 import { invokeDeps } from "./deps.ts";
-import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 interface OutboxRow {
   id: string;
@@ -144,15 +144,29 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);
       return;
-    case "planning.changed":
-      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
-      await planningHub(env, message.payload.workItemId).notify();
+    case "planning.changed": {
+      // Open Planning views hear it on their ClientHub socket (spec 26; spec 44 PR 3 deleted the
+      // PlanningHub, the website's stream).
       await notifyPlanningViewers(env, message.payload.workItemId);
+      // Last, and only a wake: the planning job's line, when its runner keeps one (spec 44 part B).
+      // Nothing here may fail the delivery after the notifications went out (a retry would send
+      // them again): a failed lookup or push is logged, and the host's safety poll covers it.
+      try {
+        const planningJob = await activeJob(env, message.payload.workItemId, "planning");
+        if (planningJob) await pushLine(env, planningJob, "planning");
+      } catch (error) {
+        console.warn(`job line lookup for ${message.payload.workItemId} failed: ${String(error)}`);
+      }
       return;
-    case "run.steered":
-      // Nothing to wake: the runner host's held steer call polls for queued steers in the Worker
-      // (spec 44 part A); the runner socket's push (part B) will route here by job.
+    }
+    case "run.steered": {
+      // Pushed down the job's line (spec 44 part B, ADR 0592): the host then takes its steers with
+      // its own fenced call. A host without a line finds them on its held call's poll (part A).
+      // Queued only for a runner that declared `job-line`, so today's hosts pay nothing.
+      const jobId = message.payload.jobId ?? (await activeJob(env, message.payload.workItemId));
+      if (jobId) await pushLine(env, jobId, "steer");
       return;
+    }
     case "device.revoked":
       // A revoked device's live socket closes now, not when it next calls (ADR 0541).
       await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
@@ -170,7 +184,7 @@ const PLANNING_VIEWER_MS = 60_000;
 
 /**
  * Tells the desktop apps of everyone with this work item's Planning view open that it changed (spec
- * 26), so the desktop re-reads instead of polling; sf-app hears it from the PlanningHub's stream.
+ * 26), so the desktop re-reads instead of polling. The website's tab re-reads every 15 s.
  */
 export async function notifyPlanningViewers(env: Env, workItemId: string): Promise<string[]> {
   const since = new Date(Date.now() - PLANNING_VIEWER_MS).toISOString();
@@ -214,4 +228,32 @@ export async function notifyClients(env: Env, payload: NotifyPayload): Promise<s
     ),
   );
   return users;
+}
+
+/** A wake down a job's line: never throws, since the rest of the delivery mustn't wait on it. */
+async function pushLine(env: Env, jobId: string, t: "steer" | "planning"): Promise<void> {
+  try {
+    await terminalRelay(env, jobId).push(t);
+  } catch (error) {
+    console.warn(`job line push ${t} to ${jobId} failed: ${String(error)}`);
+  }
+}
+
+/**
+ * The work item's running job (optionally of one stage) whose runner declared `job-line`: the
+ * newest active run, read backwards on UNIQUE (work_item_id, run_no) (a few runs per item), and its
+ * runner by primary key. For a `run.steered` queued before it carried `jobId`, and for
+ * `planning.changed` (spec 44 part B). Null for every runner without the line: no relay request.
+ */
+async function activeJob(env: Env, workItemId: string, stage?: string): Promise<string | null> {
+  return env.DB.prepare(
+    `SELECT r.job_id FROM core_runs r JOIN core_runners rn ON rn.id = r.runner_id
+     WHERE r.work_item_id = ?
+       AND r.status IN ('claimed', 'preparing', 'running', 'collecting')
+       ${stage ? "AND r.stage = ?" : ""}
+       AND rn.manifest LIKE '%"job-line"%'
+     ORDER BY r.run_no DESC LIMIT 1`,
+  )
+    .bind(...(stage ? [workItemId, stage] : [workItemId]))
+    .first<string>("job_id");
 }

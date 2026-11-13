@@ -35,6 +35,7 @@ import {
   resolveOrgWorkflow,
   runEvent,
   SLOTS,
+  splitSettledEvent,
   WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
@@ -69,6 +70,8 @@ type TriageResult = ReturnType<typeof triageResultSchema.parse>;
 export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
   | { status: "failed" | "rejected"; workItemId: string; reason: string }
+  /** v16 (spec 24): every child of a split was cancelled. */
+  | { status: "cancelled"; workItemId: string; reason: string }
   /** v8 (spec 23): triage parked it for its requester; the next release starts a new Workflow. */
   | { status: "parked"; workItemId: string; reason: string };
 
@@ -145,12 +148,16 @@ export type WorkItemOutcome =
  * one (`verify #b: head after packet`) open no gate: the item verifies the newest head instead,
  * once, however many pushes came meanwhile. Any version whose open merge gate is withdrawn this
  * way goes back to verify too (the decision never reached a factory item's gate before).
+ * v16 (spec 24, "splits"): a spec that split the item into children builds nothing. `runSplit`
+ * verifies the parent's PR as the approved plan's files only, lands it through the merge gate,
+ * releases the children (`split.release`) and waits for `split-<item>`, closing done if any child
+ * merged and cancelled if none did.
  */
 /** Whether the table has a row for `version`: an instance on any other version errors. */
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 15;
+export const WORKFLOW_VERSION = 16;
 /** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
@@ -484,6 +491,7 @@ class ItemFlow {
       }
       let criteria = triage.acceptanceCriteria;
       let specPath: string | null = null;
+      let split = 0;
 
       if (recorded.specRequired === true) {
         await this.act("spec: enter", "workItem.enterStage", { workItemId: id, stage: "spec" });
@@ -546,11 +554,14 @@ class ItemFlow {
         }
         const committed = await this.act("spec: commit", "spec.commit", { workItemId: id });
         specPath = String(committed.path);
+        split = Number(committed.children ?? 0);
       }
       // v7: the shaping stages are done. Unreleased work waits here for its release (ADR 0493),
       // and delivery re-reads the item and its config as pinned at the pull.
       if (has(version, "release-wait") && (await this.waitForRelease()))
         meta = await this.refreshMeta();
+      // v16 (spec 24): split into children, the parent builds nothing and carries the plan.
+      if (has(version, "splits") && split > 0) return await this.runSplit(meta, version, split);
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
       let plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
@@ -971,6 +982,128 @@ class ItemFlow {
       }
     } catch (error) {
       return this.ended(error);
+    }
+  }
+
+  // ---- a split's parent (spec 24, ADR 0630) ----
+  // The parent's PR is its approved spec and .kim/ files, nothing else (the packet decides that in
+  // code from the diff). It goes through CI, the packet and the merge gate like any change; a fail
+  // or a send-back waits for a push, since there is no build to send back to. Once merged, the
+  // children are released, and the parent waits until the last of them ends.
+  async runSplit(meta: Meta, version: number, children: number): Promise<WorkItemOutcome> {
+    const id = this.workItemId;
+    await this.act("split: enter", "workItem.enterStage", {
+      workItemId: id,
+      stage: "verify",
+      skipped: [
+        {
+          stage: "build",
+          reason: `split into ${children} work items: they build, and this carries the approved plan`,
+        },
+      ],
+    });
+    let close: { as: "done" | "sent_back" | "failed"; reason: string } | null = null;
+    let carried: string | null = null;
+    for (let b = 1; ; b++) {
+      const headSha = await this.head(`split #${b}: head`);
+      if (close) {
+        await this.act(`split #${b}: enter`, "workItem.enterStage", {
+          workItemId: id,
+          stage: "verify",
+          closeAs: close.as,
+          reason: close.reason,
+        });
+      }
+      const pr = await this.act(`split #${b}: open PR`, "pr.open", {
+        workItemId: id,
+        body: `The approved plan for #${meta.number}, split into ${children} work items that build it. This pull request carries only the plan's files.`,
+      });
+      await this.waitForCi(b, headSha, version, 1, `split #${b}`);
+      const packet = await this.act(`split #${b}: packet`, "reviewPacket.record", {
+        workItemId: id,
+        headSha,
+        summary: `The approved plan's files only (spec 24): ${children} work items build it.`,
+      });
+      if (packet.verdict !== "pass") {
+        const reasons = (packet.reasons as string[] | undefined) ?? [];
+        const why = `the plan's pull request isn't only the approved files, or CI isn't green: ${reasons.join("; ") || "see the review packet"}`;
+        await this.waitForHead(b, headSha, why);
+        close = { as: "failed", reason: why };
+        continue;
+      }
+      await this.act(`split #${b}: merge`, "workItem.enterStage", {
+        workItemId: id,
+        stage: "merge",
+      });
+      const landed = await this.mergeV4(
+        meta,
+        b,
+        headSha,
+        pr.touchesFactoryConfig === true,
+        version,
+        carried,
+      );
+      if (landed.kind === "done") break;
+      if (landed.kind === "reverify") {
+        carried = landed.approvalId;
+        close = { as: "done", reason: landed.reason };
+        continue;
+      }
+      if (landed.kind === "withdrawn") {
+        close = { as: "done", reason: landed.reason };
+        continue;
+      }
+      const why =
+        landed.kind === "sent_back"
+          ? `Sent back at review: ${landed.note ?? ""}`.trim()
+          : landed.kind === "conflict"
+            ? "the plan's pull request conflicts with the default branch: push a merge"
+            : landed.reason;
+      await this.waitForHead(b, headSha, why);
+      close = { as: landed.kind === "sent_back" ? "sent_back" : "failed", reason: why };
+    }
+    await this.act("split: release", "split.release", { workItemId: id });
+    for (let i = 1; ; i++) {
+      const settled = await this.step.do(`split: children #${i}`, async () => {
+        // core_work_items_parent_idx (migration 0401), bounded by the split's size.
+        const { results } = await this.env.DB.prepare(
+          "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+        )
+          .bind(id)
+          .all<{ status: string }>();
+        const ended = ["done", "failed", "rejected", "cancelled"];
+        return {
+          open: results.filter((r) => !ended.includes(r.status)).length,
+          done: results.filter((r) => r.status === "done").length,
+          total: results.length,
+        };
+      });
+      if (settled.open === 0) {
+        if (settled.done === 0) {
+          const reason = `all ${settled.total} of its children ended without merging`;
+          await this.act("end: cancelled", "workItem.finish", {
+            workItemId: id,
+            status: "cancelled",
+            reason,
+          });
+          return { status: "cancelled", workItemId: id, reason };
+        }
+        await this.act("end: done", "workItem.finish", {
+          workItemId: id,
+          status: "done",
+          reason: `its plan merged, and ${settled.done} of its ${settled.total} children merged`,
+        });
+        return { status: "done", workItemId: id };
+      }
+      try {
+        // Told when the last child ends; a missed event costs at most a day.
+        await this.step.waitForEvent(`split: wait #${i}`, {
+          type: splitSettledEvent(id),
+          timeout: "1 day",
+        });
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+      }
     }
   }
 
