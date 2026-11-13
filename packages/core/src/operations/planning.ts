@@ -650,24 +650,25 @@ export const planningPeek = defineOperation({
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
     const from = Math.max(input.cursor ?? 0, session.delivered_cursor);
-    const [rows, open] = await Promise.all([
+    const events = (types?: readonly string[]) =>
       ctx.db
         .selectFrom("core_planning_events")
-        .select(["id", "type", "at"])
         .where("work_item_id", "=", session.work_item_id)
         .where("id", ">", from)
-        .orderBy("id", "desc")
-        .limit(200)
-        .execute(),
+        .$if(types !== undefined, (q) => q.where("type", "in", types as string[]));
+    // Only what is pending for the agent, each on (work_item_id, id): the newest event, whether any
+    // is news (LIMIT 1), and a person's latest (the batch rule needs only that one).
+    const [newest, anyNews, latestUser, open] = await Promise.all([
+      events().select("id").orderBy("id", "desc").limit(1).executeTakeFirst(),
+      events(NEWS_EVENTS).select("id").limit(1).executeTakeFirst(),
+      events(USER_EVENTS).select(["type", "at"]).orderBy("id", "desc").limit(1).executeTakeFirst(),
       openQuestionCount(ctx, session.work_item_id),
     ]);
-    const userEvents = rows
-      .filter((r) => (USER_EVENTS as readonly string[]).includes(r.type))
-      .reverse();
-    const dueAt = session.paused_at === null ? batchDue(userEvents, open, input.idleMs) : null;
+    const dueAt =
+      session.paused_at === null && latestUser ? batchDue([latestUser], open, input.idleMs) : null;
     return {
-      latest: rows[0]?.id ?? from,
-      news: rows.some((r) => (NEWS_EVENTS as readonly string[]).includes(r.type)),
+      latest: newest?.id ?? from,
+      news: anyNews !== undefined,
       dueAt: dueAt === null ? null : new Date(dueAt).toISOString(),
       yield: session.yield_requested_at !== null,
       ended: !OPEN_SESSION.includes(session.status),
