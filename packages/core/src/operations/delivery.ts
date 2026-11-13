@@ -76,9 +76,8 @@ export async function lineStopped(
 }
 
 /**
- * Who hears that `main` is red (spec 53, owner question 4, not yet answered): the recommendation, the
- * project's approvers. One place, so a different answer is a change here only. Recorded on the
- * episode (`core_main_health.audience`) for the Inbox card and used for the push.
+ * Who hears that `main` is red (spec 53, decision 4, 2026-11-13): the project's approvers.
+ * Recorded on the episode (`core_main_health.audience`) for the Inbox card and used for the push.
  */
 export async function mainRedAudience(ctx: HandlerContext, orgId: string): Promise<string[]> {
   return approverIds(ctx.db, orgId, ctx.scope.policy);

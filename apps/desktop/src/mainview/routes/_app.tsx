@@ -17,7 +17,14 @@ import { CommandPalette } from "../components/shell-palette.tsx";
 import { OrgRail, Sidebar } from "../components/shell-sidebar.tsx";
 import { StatusBar } from "../components/shell-status-bar.tsx";
 import { Toolbar, useTabs } from "../components/shell-toolbar.tsx";
-import { inboxQuery, meQuery, projectsQuery, workListsQuery } from "../lib/queries.ts";
+import {
+  inboxQuery,
+  meQuery,
+  projectsQuery,
+  setupStatusQuery,
+  workListsQuery,
+} from "../lib/queries.ts";
+import { orgScope } from "../lib/scope.ts";
 import { isTypingTarget, matchShortcut, type ShortcutAction } from "../lib/shortcuts.ts";
 import {
   getViewState,
@@ -41,9 +48,13 @@ export const appRoute = createRoute({
   },
   // What the shell renders on every page: the projects, the inbox (the counts, the rail's dots,
   // the status bar) and each org's recent work items (pins, tabs, search). Child loaders run
-  // alongside this one, and their reads go out in the same batch.
+  // alongside this one, and their reads go out in the same batch. Setup's status (the dots on
+  // Settings and Setup) asks GitHub, so it is started but not waited for.
   loader: ({ context }) => {
     const orgIds = context.session.orgs.map((o) => o.id);
+    const setupOrg =
+      orgScope(context.session, getViewState().orgId) ?? context.session.personalOrgId;
+    if (setupOrg) void context.queryClient.prefetchQuery(setupStatusQuery(setupOrg));
     return Promise.all([
       context.queryClient.ensureQueryData(projectsQuery(orgIds)),
       context.queryClient.ensureQueryData(inboxQuery()),

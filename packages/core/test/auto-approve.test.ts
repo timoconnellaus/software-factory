@@ -320,7 +320,7 @@ async function atMergeGate(
   const item = await newItem(w, uid("dark "));
   await rows(
     "UPDATE core_work_items SET workflow_version = ? WHERE id = ?",
-    opts.workflowVersion ?? 14,
+    opts.workflowVersion ?? 16,
     item.workItemId,
   );
   const at = new Date().toISOString();

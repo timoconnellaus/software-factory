@@ -19,7 +19,7 @@ import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
-import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
+import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
 let w: World;
@@ -119,6 +119,52 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
+  {
+    // Not polled, but per push: a person's push to a factory item's branch at its merge stage
+    // (ADR 0587) reads the item, its open gates and its queue entry, then moves its head.
+    name: "a person's push to a factory item's branch (push.observe)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Pushed to" },
+        w.human,
+      );
+      const row = await e.DB.prepare("SELECT branch, number FROM core_work_items WHERE id = ?")
+        .bind(item.workItemId)
+        .first<{ branch: string; number: number }>();
+      const branch = String(row?.branch);
+      // Its Workflow has entered triage (so it won't set the stage after the update below).
+      await waitFor("the triage job", () =>
+        e.DB.prepare("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'triage'")
+          .bind(item.workItemId)
+          .first(),
+      );
+      const before = await github.push(w.repo, branch, undefined, ["src/a.ts"]);
+      await e.DB.prepare(
+        "UPDATE core_work_items SET stage = 'merge', status = 'waiting', head_sha = ? WHERE id = ?",
+      )
+        .bind(before, item.workItemId)
+        .run();
+      const after = await github.push(w.repo, branch, undefined, ["docs/b.md"]);
+      const pushed = await invoke<{ outcome: string }>(
+        invokeDeps(e),
+        "push.observe",
+        {
+          repo: { owner: w.repo.owner, name: w.repo.repo },
+          ref: `refs/heads/${branch}`,
+          before,
+          after,
+          pusher: "octocat",
+          pusherIsApp: false,
+        },
+        { actor: { type: "intake", id: "github" }, origin: { surface: "test" } },
+      );
+      // The whole path ran: the gate and queue reads, and the head moved.
+      if (pushed.status !== "ok" || pushed.output.outcome !== "reverify") {
+        throw new Error(`push.observe: ${JSON.stringify(pushed)}`);
+      }
+    },
+  },
   {
     name: "workItem.list by org (polled)",
     run: (e) => as(e, "workItem.list", { orgId: w.orgId }, w.human),

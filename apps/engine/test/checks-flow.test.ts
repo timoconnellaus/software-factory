@@ -2,7 +2,7 @@
 // them, the host's results decide, a failure after the session's own fixes asks a person, and the
 // reviewer's word alone never proves a criterion.
 import { env } from "cloudflare:workers";
-import { has } from "@software-factory/core";
+import { FOREMAN, has } from "@software-factory/core";
 import type { Job } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { pruneCheckResults } from "../src/index.ts";
@@ -123,7 +123,10 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     expect(String(run?.output?.summary)).toContain(
       "### Checks run by the factory\n- lint: passed (`pnpm lint`, exit 0, 1 s)\n- tests: passed (`pnpm test`, exit 0, 1 s)",
     );
-    expect(String(run?.output?.summary)).toContain("Criteria proven by an executed check: 0/1");
+    // A small item's criteria come from triage: counted apart from a person's ties, never "proven".
+    expect(String(run?.output?.summary)).toContain(
+      "Criteria that passed the check triage named (not checked by a person, not proven): 0/1",
+    );
   });
 
   it("goes on to verify and the merge gate when the runner could not run the checks: said plainly, never passed or proven, no build burned", async () => {
@@ -663,5 +666,150 @@ describe("checks the factory runs itself (spec 51, ADR 0501)", () => {
     // At the end it starts over: the open item's rows are read again, and kept.
     expect(await pruneCheckResults(env.DB, now, 2)).toBe(0);
     expect(await left(open)).toBe(2);
+  });
+});
+
+// The owner's decision (2026-11-13): a small item skips the spec stage, so before the Workflow's `triage-ties` feature its
+// criteria came from triage with no check named and nothing on it could ever be Proven (the
+// reviewer's links never prove). From `triage-ties` triage names the proving check for each criterion, only
+// from the project's declared checks and required CI checks; the code validates the names.
+describe("triage ties each criterion to a check (Workflow feature triage-ties)", () => {
+  const TIED = {
+    ...CHECKS,
+    checks: [{ name: "install", run: "pnpm install --frozen-lockfile" }, ...CHECKS.checks],
+    protection: { onRed: "warn", requiredChecks: ["ci", "e2e"] },
+  };
+  const C = {
+    passed: "The page has a dark mode toggle",
+    failed: "The toggle works in the browser",
+    none: "The toggle looks right to a person",
+    invented: "The toggle state persists",
+  };
+
+  it("says a small item's criterion passed the check triage named, never Proven; a failed tie, a dropped name and 'none' did not", async () => {
+    const w = await world(TIED);
+    const item = await create(w);
+    // The CI the config requires: `ci` green, `e2e` red on every head.
+    await github.setCiDefault(w.repo, [
+      { name: "ci", status: "completed", conclusion: "success", appSlug: "gh", url: null },
+      { name: "e2e", status: "completed", conclusion: "failure", appSlug: "gh", url: null },
+    ]);
+    await runStage(w, item.workItemId, "triage", (j) => {
+      // Triage is told exactly which names can prove a criterion.
+      // Only checks that can prove: not install (setup) or lint (static).
+      expect(j.harness.prompt).toMatch(/proves it when it passes[^\n]*\n- tests\n- ci\n- e2e\n/);
+      expect(j.harness.prompt).not.toMatch(/^- (install|lint)$/m);
+      expect(j.harness.prompt).toMatch(/"criterionChecks"/);
+      return triage("small", {
+        acceptanceCriteria: Object.values(C),
+        criterionChecks: [
+          { criterion: C.passed, checks: ["tests"] },
+          { criterion: C.failed, checks: ["E2E"] },
+          { criterion: C.none, checks: [] },
+          // Not a declared check: dropped, so this criterion is untied.
+          // Install is a setup check: it can never prove anything, so it is dropped too.
+          { criterion: C.invented, checks: ["manual-qa", "install"] },
+        ],
+      });
+    });
+    const spec = await first<{ acceptance_criteria: string }>(
+      "SELECT acceptance_criteria FROM core_specs WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    expect(JSON.parse(spec?.acceptance_criteria ?? "[]")).toEqual([
+      `${C.passed} [checks: tests]`,
+      `${C.failed} [checks: e2e]`,
+      `${C.none} [checks: none]`,
+      C.invented,
+    ]);
+    // The dropped name is journaled with the triage.
+    const triaged = await first<{ diff: string }>(
+      "SELECT diff FROM core_audit WHERE work_item_id = ? AND operation = 'workItem.triage'",
+      item.workItemId,
+    );
+    expect(triaged?.diff).toContain("manual-qa");
+    expect(triaged?.diff).toContain("install");
+
+    await runStage(w, item.workItemId, "build", () => ({
+      ...build(),
+      checks: [
+        { name: "install", exitCode: 0 },
+        { name: "lint", exitCode: 0 },
+        { name: "tests", exitCode: 0 },
+      ],
+    }));
+    // The reviewer tries to tie the untied criteria itself, in its links and in the text: ignored.
+    await runStage(w, item.workItemId, "verify", () => ({
+      result: {
+        ...verifyPass.result,
+        criteria: [
+          { criterion: C.passed, met: true, evidence: "theme.test.ts" },
+          { criterion: C.failed, met: true, evidence: "e2e/theme.spec.ts" },
+          { criterion: `${C.none} [checks: tests]`, met: true, evidence: "looked" },
+          { criterion: C.invented, met: true, evidence: "store.test.ts", checks: ["tests"] },
+        ],
+      },
+    }));
+    const packet = await waitFor("the review packet", () =>
+      first<{ sections: string }>(
+        "SELECT sections FROM core_review_packets WHERE work_item_id = ?",
+        item.workItemId,
+      ),
+    );
+    const sections = JSON.parse(packet.sections);
+    expect(sections.proof).toMatchObject([
+      // Triage is an agent: its tie passed, but that is never "Proven" (no person checked it).
+      {
+        criterion: C.passed,
+        proven: false,
+        provenBy: [],
+        passedTriageCheck: ["tests"],
+        linkedBy: "triage",
+        fromTriage: true,
+      },
+      { criterion: C.failed, proven: false, unproven: ["e2e"], linkedBy: "triage" },
+      { criterion: C.none, proven: false, provenBy: [], uncovered: true, linkedBy: "triage" },
+      { criterion: C.invented, proven: false, provenBy: [], linkedBy: "reviewer" },
+    ]);
+    expect(sections.proof[1].passedTriageCheck).toBeUndefined();
+    // Counted apart: nothing a person tied, 1 of 4 passed the check triage named.
+    expect(sections.proven).toMatchObject({
+      proven: 0,
+      total: 0,
+      triage: { passed: 1, total: 4 },
+      checksSetUp: true,
+    });
+    const head = await first<{ head_sha: string }>(
+      "SELECT head_sha FROM core_review_packets WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    const summary = String((await verifyRun(w, String(head?.head_sha)))?.output?.summary);
+    expect(summary).toContain(
+      "Criteria that passed the check triage named (not checked by a person, not proven): 1/4",
+    );
+    expect(summary).not.toContain("Criteria proven by an executed check");
+  });
+
+  it("refuses triage once the item has left the triage stage, so no later stage can tie a criterion", async () => {
+    const w = await world(TIED);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await waitFor("the build stage", () =>
+      first("SELECT id FROM core_work_items WHERE id = ? AND stage = 'build'", item.workItemId),
+    );
+    const again = call(
+      "workItem.triage",
+      {
+        workItemId: item.workItemId,
+        result: {
+          size: "small",
+          reason: "again",
+          acceptanceCriteria: ["The page has a dark mode toggle"],
+          criterionChecks: [{ criterion: "The page has a dark mode toggle", checks: ["tests"] }],
+        },
+      },
+      FOREMAN,
+    );
+    await expect(again).rejects.toThrow(/only in the triage stage/);
   });
 });
