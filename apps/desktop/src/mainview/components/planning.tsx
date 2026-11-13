@@ -72,7 +72,7 @@ import { op, submitKey } from "../lib/op.ts";
 import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
-import { useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
@@ -157,7 +157,8 @@ export function Planning({
     setDraft({ text, questionId });
     setChatOpen(true);
   };
-  const chatPinned = focus && wide;
+  const layout = planningLayout(focus, wide);
+  const chatPinned = layout.chatPinned;
   const showChat = chatPinned || chatOpen;
   // Designs (spec 22) are text in their own notation, not HTML: the mockup panes leave them out.
   const visuals = { ...view, artifacts: view.artifacts.filter((x) => x.kind !== "design") };
@@ -176,9 +177,8 @@ export function Planning({
           onDiscuss={discuss}
           onPreview={setPreview}
           className={cn(
-            "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
-            focus && wide && "w-[336px]",
-            !wide && "w-[268px]",
+            "flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
+            layout.questionsWidth,
           )}
         />
         <section className="flex min-w-0 flex-1 flex-col bg-panel" data-testid="workspace">
@@ -245,7 +245,7 @@ export function Planning({
             draft={draft}
             onDraft={setDraft}
             onClose={chatPinned ? undefined : () => setChatOpen(false)}
-            className={cn("w-[330px] flex-none border-line-soft border-l", !wide && "w-[300px]")}
+            className={cn("flex-none border-line-soft border-l", layout.chatWidth)}
           />
         ) : (
           <button
