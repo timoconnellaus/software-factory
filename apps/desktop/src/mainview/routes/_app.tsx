@@ -2,6 +2,7 @@
 // content panel (each section puts its nested list and page in it) and the status bar. Only the
 // list and the page scroll. `beforeLoad` puts who is signed in (`org.list`) in the route context,
 // for every page under it.
+import { OpError } from "@software-factory/client/ops";
 import { TooltipProvider } from "@software-factory/ui/components/tooltip";
 import {
   createRoute,
@@ -40,6 +41,8 @@ export const appRoute = createRoute({
   id: "_app",
   beforeLoad: async ({ context }) => {
     const desktop = await bun.session({});
+    // Signed out is a state (the root shows sign-in), so the door isn't asked for anything.
+    if (!desktop.signedIn) throw new OpError("unauthenticated", "signed out");
     const session = await context.queryClient.ensureQueryData({
       ...meQuery(desktop.login),
       revalidateIfStale: true,
