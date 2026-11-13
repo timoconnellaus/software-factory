@@ -1,7 +1,14 @@
 // Signing the desktop app in (ADR 0391): a device key, PKCE, the website approval, the sf://
 // callback and the exchange. The token goes to the keychain and stays in the main process.
 import type { Session } from "../shared/rpc.ts";
-import { createDeviceKey, type DeviceKey, forgetDeviceKey, loadDeviceKey } from "./device-key.ts";
+import {
+  createDeviceKey,
+  type DeviceKey,
+  forgetDeviceKey,
+  helper,
+  keyFingerprint,
+  loadDeviceKey,
+} from "./device-key.ts";
 import type { Door } from "./door.ts";
 import { deleteSecret, getSecret, setSecret } from "./keychain.ts";
 import { pkcePair, randomUrlSafe } from "./pkce.ts";
@@ -24,6 +31,9 @@ export class Auth {
   })();
   key: DeviceKey | null = null;
   error: string | null = null;
+  private fingerprint: string | null = null;
+  /** A software key on a build whose key helper works (spec 40 M4b): offer to sign in again. */
+  private upgradable = false;
 
   constructor(
     private readonly door: () => Door,
@@ -34,6 +44,7 @@ export class Auth {
 
   async init(): Promise<void> {
     this.key = await loadDeviceKey();
+    this.upgradable = this.key?.storage === "software" && (await helper.works());
   }
 
   session(): Session {
@@ -44,6 +55,8 @@ export class Auth {
       keyStorage: this.key?.storage ?? null,
       signingIn: !!this.pending,
       error: this.error,
+      keyFingerprint: this.pending ? this.fingerprint : null,
+      keyUpgrade: !!this.token && this.upgradable && this.key?.storage === "software",
     };
   }
 
@@ -52,6 +65,7 @@ export class Auth {
     this.error = null;
     // A new key per sign-in: a revoked device's key is never reused.
     this.key = await createDeviceKey();
+    this.fingerprint = await keyFingerprint(this.key.publicKey);
     const { verifier, challenge } = await pkcePair();
     const state = randomUrlSafe(16);
     const started = await this.door().signInCall<{ approveUrl: string }>("desktop/start", {
@@ -88,6 +102,29 @@ export class Auth {
     } catch (error) {
       this.error = error instanceof Error ? error.message : "Sign-in failed";
     }
+  }
+
+  /**
+   * Moves a software-key Mac to the Secure Enclave (spec 40 M4b): sign out as usual (revoking this
+   * device and forgetting the software key), then sign in, which makes the Secure Enclave key and
+   * registers it as a new device. Returns the website page to open.
+   */
+  async signInAgain(beforeSignOut: () => void = () => undefined): Promise<string> {
+    // The old software-key device must be revoked before its key is forgotten: if it stayed live,
+    // its 30-day token (which an agent may already hold) would outlive the move. So a failed
+    // revoke stops here, with everything as it was. (The engine also revokes it when the new
+    // Secure Enclave device for this Mac is approved.)
+    if (this.token && this.identity) {
+      const r = await this.door()
+        .call("desktopDevice.revoke", { deviceId: this.identity.deviceId })
+        .catch(() => ({ ok: false }) as const);
+      if (!r.ok)
+        throw new Error("Couldn't sign the old key out: check your connection and try again.");
+    }
+    beforeSignOut();
+    await this.signOut();
+    this.upgradable = false;
+    return this.start();
   }
 
   /** Sign out: revoke this device (its token stops working), then forget everything locally. */
