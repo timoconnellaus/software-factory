@@ -129,6 +129,11 @@ async function list(w: World): Promise<Map<string, WaitingOn>> {
   return new Map(l.items.map((i) => [i.id, i.waitingOn ?? null]));
 }
 
+async function get(w: World, id: string): Promise<WaitingOn> {
+  const g = await ok<{ waitingOn: WaitingOn }>("workItem.get", { workItemId: id }, w.human);
+  return g.waitingOn;
+}
+
 describe("what an item waits on", () => {
   it("in verify: a runner, the agent, then CI until the packet; after it, never CI", async () => {
     const w = await world({ ...POLICY, activeLimit: 10 });
@@ -144,9 +149,11 @@ describe("what an item waits on", () => {
     await run("UPDATE core_jobs SET status = 'done' WHERE work_item_id = ?", id);
     expect((await board(w)).get(id)).toEqual({ kind: "ci" });
     expect((await list(w)).get(id)).toEqual({ kind: "ci" });
+    expect(await get(w, id)).toEqual({ kind: "ci" });
     // CI answered and the packet is recorded: an afterVerify slot agent (stage verify) runs next.
     await packet(id, T0 + 10);
     expect((await board(w)).get(id)).toBeNull();
+    expect(await get(w, id)).toBeNull();
     await job(w, id, "verify", "queued", T0 + 11);
     expect((await board(w)).get(id)).toEqual({ kind: "runner" });
     await run(
@@ -196,6 +203,8 @@ describe("what an item waits on", () => {
     let b = await board(w);
     expect(b.get(head)).toEqual({ kind: "updating", position: 1 });
     expect(b.get(second)).toEqual({ kind: "queue", position: 2 });
+    expect(await get(w, head)).toEqual({ kind: "updating", position: 1 });
+    expect(await get(w, second)).toEqual({ kind: "queue", position: 2 });
     const status = await ok<{
       repositories: { deliveries: { workItemId: string; step: string | null }[] }[];
     }>("delivery.status", { projectId: w.projectId }, w.human);

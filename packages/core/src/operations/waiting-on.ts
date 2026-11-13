@@ -100,10 +100,23 @@ export async function queuePlaces(
   const inMerge = items.filter(
     (i) => i.stage === "merge" && (i.status === "running" || i.status === "waiting"),
   );
-  const places = new Map<string, QueuePlace>();
-  if (inMerge.length === 0) return places;
+  if (inMerge.length === 0) return new Map();
   const projects = [...new Set(inMerge.map((i) => i.project_id))];
-  const entries = await queuedEntriesQuery(ctx, projects).execute();
+  return placesIn(await queuedEntriesQuery(ctx, projects).execute());
+}
+
+type QueueEntry = Parameters<typeof headStep>[0] & {
+  project_id: string;
+  work_item_id: string;
+  repository_id: string | null;
+  repairs_main: number;
+  driver: string;
+  stopped: number;
+};
+
+/** Each entry's place in its own repository's queue, from entries head first (queuedEntriesQuery). */
+export function placesIn(entries: readonly QueueEntry[]): Map<string, QueuePlace> {
+  const places = new Map<string, QueuePlace>();
   const seen = new Map<string, number>();
   for (const e of entries) {
     const queue = `${e.project_id}:${e.repository_id ?? ""}`;
