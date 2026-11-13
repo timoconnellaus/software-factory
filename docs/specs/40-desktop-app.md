@@ -370,7 +370,13 @@ the profile never ships a helper that failed a check.
     `embedded.provisionprofile` is intact, and that `spctl --assess` and `codesign --verify --deep
     --strict` accept, along with the outer app.
   The spike's PR reports exactly what works. The placement and hook it finds are written here and in
-  ADR 0394 (dated amendment) before the helper is built. If no hook works, the fallback is to sign,
+  ADR 0394 (dated amendment) before the helper is built.
+  **Found (2026-11-13, ADR 0394's amendment):** Electrobun re-signs a nested bundle in
+  `Contents/Helpers` or `Contents/Resources` with the app's entitlements, and `postWrap` comes
+  after the update archive is made, so the helper goes in at **`postPackage`**
+  (`scripts/keys-helper.ts`): into `Contents/Helpers/SF Keys.app` of the unpacked update archive,
+  signed with its own entitlements, the outer seal re-signed, notarized and stapled again, the
+  archive and its manifest rebuilt. Delta patches are off on releases with the helper. If no hook works, the fallback is to sign,
   notarize and package outside Electrobun (it builds unsigned, the release does the rest), recorded
   as its own ADR.
 - **The bundle.** `scripts/bundle.sh` builds `vendor/SF Keys.app` from `native/sf-keys.swift`: the

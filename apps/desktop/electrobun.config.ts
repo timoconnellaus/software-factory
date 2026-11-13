@@ -23,6 +23,11 @@ export default {
   // Updates (spec 40 M4): canary and stable share one folder; files are prefixed by channel.
   release: {
     baseUrl: "https://downloads.zerobsai.com/desktop",
+    // The postPackage hook rebuilds the update archive when it adds the key helper (spec 40 M4b,
+    // scripts/keys-helper.ts), and a delta patch would rebuild Electrobun's archive instead, so
+    // releases with the helper (scripts/bundle.sh builds it only when SF_KEYS_PROFILE is set) ship
+    // full archives only.
+    generatePatch: !process.env.SF_KEYS_PROFILE,
   },
   build: {
     mainProcess: "bun",
