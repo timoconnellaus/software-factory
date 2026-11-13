@@ -113,3 +113,15 @@ helper exists ([ADR 0610](0610-everything-but-sign-in-moves-to-the-desktop-app.m
 approvals (ADR 0516 decision 5) become presence-decidable on the `desktop` surface, each with a
 proof for that exact call. Approving a runner, CLI, desktop or phone login and registering a runner
 or rotating its key stay on the website. The CLI, MCP, runners and agents gain nothing.
+
+## Amendment, 2026-11-13: the summary's facts come first
+A work item's title is written by agents, and the summary used to start with it (`Merge #12 "Fix the
+inbox count" into main`): a title with a double quote could pose as the repository and push the
+rest (", without its checks") off the Touch ID sheet. Every summary now puts the engine's facts
+first and the title last, quoted, with double quotes, format characters (Cf) and line breaks
+removed; the title gets only the room the facts leave under 120 characters, and the facts are never
+cut (`titled` in `packages/core`): `Merge 3f2a91c into main of acme/widgets, without its checks:
+"Fix the inbox count"`. The key helper refuses a summary with format, separator or control
+characters (spec 40 M4b). Every `describeDecision` case follows the same rule, the config save and
+rollback summaries included (the project's name last: `Approve a change to the policy (v2 to v3):
+loosens: …; project "Acme"`).

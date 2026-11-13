@@ -35,6 +35,8 @@ export interface GitHubAppConfig {
 
 /** Permissions of the job token: push to one repo, nothing else (ADR 0033). */
 export const JOB_TOKEN_PERMISSIONS = { contents: "write" } as const;
+/** A job that pushes nothing (a babysit job judging a failed check, spec 53): read only. */
+export const JOB_READ_TOKEN_PERMISSIONS = { contents: "read" } as const;
 /** Permissions the control plane uses for branches, spec commits, PRs and merges. */
 export const CONTROL_PLANE_PERMISSIONS = { contents: "write", pull_requests: "write" } as const;
 /** Posting and reading check runs (`factory/verify`, CI). A separate token, so an App installed
@@ -263,7 +265,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
     app: { id: config.appId, slug: config.appSlug },
     appJwt,
     installationToken,
-    mintRepoToken: (repo) => installationToken(repo, JOB_TOKEN_PERMISSIONS),
+    mintRepoToken: (repo, opts) =>
+      installationToken(repo, opts?.readOnly ? JOB_READ_TOKEN_PERMISSIONS : JOB_TOKEN_PERMISSIONS),
     async getInstallation(installationId): Promise<InstallationInfo | null> {
       const response = await asApp(`/app/installations/${encodeURIComponent(installationId)}`);
       if (response.status === 404) return null;
@@ -710,6 +713,47 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         if (out.length >= body.total_count || body.check_runs.length === 0) break;
       }
       return out;
+    },
+    async rerequestCheckRun(repo, checkRunId) {
+      const r = await api(
+        repo,
+        "POST",
+        `/check-runs/${encodeURIComponent(checkRunId)}/rerequest`,
+        undefined,
+        CHECKS_PERMISSIONS,
+      );
+      return r.status === 201
+        ? { ok: true, reason: "" }
+        : { ok: false, reason: `GitHub answered ${r.status} to the rerun` };
+    },
+    async checkRunDetail(repo, checkRunId) {
+      const id = encodeURIComponent(checkRunId);
+      const run = await api(repo, "GET", `/check-runs/${id}`, undefined, CHECKS_PERMISSIONS);
+      if (run.status !== 200) return `GitHub answered ${run.status} for check run ${checkRunId}`;
+      const output = (run.json as { output?: { title?: string; summary?: string; text?: string } })
+        .output;
+      const notes = await api(
+        repo,
+        "GET",
+        `/check-runs/${id}/annotations?per_page=50`,
+        undefined,
+        CHECKS_PERMISSIONS,
+      );
+      const annotations =
+        notes.status === 200
+          ? (
+              notes.json as {
+                path: string;
+                start_line: number;
+                annotation_level: string;
+                message: string;
+              }[]
+            ).map((a) => `${a.annotation_level} ${a.path}:${a.start_line}: ${a.message}`)
+          : [];
+      return [output?.title, output?.summary, output?.text, ...annotations]
+        .filter((x): x is string => typeof x === "string" && x.length > 0)
+        .join("\n")
+        .slice(0, 12_000);
     },
     async postCheckRun(repo, check) {
       const body = {

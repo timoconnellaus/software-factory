@@ -18,6 +18,7 @@ export {
   SWEEP_CURSOR_KEY,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
+export { type BabysitReason, babysitResult } from "./operations/babysit.ts";
 export {
   CLI_APPROVE_PATH,
   CLI_DEVICE_ACTOR,
@@ -26,13 +27,16 @@ export {
 } from "./operations/cli.ts";
 export { PENDING_SHOWN } from "./operations/config.ts";
 export {
+  cleanTitle,
   DESKTOP_APPROVE_PATH,
   DESKTOP_CALLBACK_URL,
   DESKTOP_DEVICE_ACTOR,
   DESKTOP_TOKEN_PREFIX,
+  MAX_SUMMARY,
   presenceMessage,
   rawSignature,
   resolveDesktopToken,
+  titled,
 } from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export {
@@ -57,7 +61,7 @@ export {
 } from "./operations/mobile.ts";
 export { PROTECTION_RECHECK_MS } from "./operations/protection.ts";
 export { NEVER_BULK_ACCEPTED_DOMAINS } from "./operations/questions.ts";
-export { LEASE_TTL_MS } from "./operations/runners.ts";
+export { LEASE_TTL_MS, NO_BABYSIT_RUNNER } from "./operations/runners.ts";
 export { ATTACHED_SKIP_REASON, RUN_ARCHIVE_AFTER_DAYS, STAGE_PHASE } from "./operations/shared.ts";
 export { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./operations/work-items.ts";
 export {

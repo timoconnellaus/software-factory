@@ -36,6 +36,23 @@ import { FETCH_NAMESPACE, hostGit } from "../src/git.ts";
 
 export const RUNNER = "r_hosttest01";
 
+/**
+ * True when this machine's git has no `--attr-source` (it came in git 2.40). The host's clean tree
+ * export (`exportTree` in src/git.ts) needs it, so a test that exports a tree can't run here. That
+ * is the case in a check container: the agent image's git is Debian bookworm's 2.39. Such a test is
+ * skipped there, never weakened. Every runner host's own git is 2.40 or later (macOS ships 2.50).
+ */
+export const NO_GIT_ATTR_SOURCE = (() => {
+  try {
+    execFileSync("git", ["--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "version"], {
+      stdio: "ignore",
+    });
+    return false;
+  } catch {
+    return true;
+  }
+})();
+
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
     cwd,
