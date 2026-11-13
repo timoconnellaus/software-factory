@@ -169,7 +169,7 @@ export function changedRegion(was: string, now: string, context = 40) {
       .map((c) => {
         const v = shown([c]);
         if (c === " ") return "·";
-        return v === c && /[^\x00-\x7f]/u.test(c) ? `${c}${point(c)}` : v;
+        return v === c && (c.codePointAt(0) ?? 0) > 0x7f ? `${c}${point(c)}` : v;
       })
       .join("");
   let wasPart = marked(w.slice(start, w.length - end));
