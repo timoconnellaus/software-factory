@@ -2,7 +2,7 @@
 // client door per tick). Route loaders `ensureQueryData` everything their page renders, so a
 // navigation fetches in one request; a cached page shows at once and refreshes in the background.
 // The keys match sf-app's, so the screens ported from it invalidate the same way.
-import type { Project } from "@software-factory/client/ops";
+import type { OpOutput, Project } from "@software-factory/client/ops";
 import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { read } from "./op.ts";
 
@@ -122,6 +122,37 @@ export const workListsQuery = (orgIds: string[]) =>
     },
     staleTime: 10_000,
     refetchInterval: 15_000,
+  });
+
+/** An open archive incident, tagged with its org. */
+export type ArchiveIncident = OpOutput<"incident.listArchiveMissing">["incidents"][number] & {
+  orgId: string;
+};
+
+/**
+ * Every org's open archive incidents (`incident.listArchiveMissing`): runs whose archived log lost an
+ * object, a record for a person to resolve. Read when Checks and incidents opens, never polled (an
+ * indexed read of a near-empty partial index, but not one to add to every tick).
+ */
+export const archiveIncidentsQuery = (orgIds: string[]) =>
+  queryOptions({
+    queryKey: ["incidents", "archive", orgIds],
+    queryFn: async () => {
+      const lists = await Promise.all(
+        orgIds.map(async (orgId) => {
+          const r = await read("incident.listArchiveMissing", { orgId });
+          const incidents: ArchiveIncident[] = r.incidents.map((i) => ({ ...i, orgId }));
+          return { more: r.more, incidents };
+        }),
+      );
+      return {
+        incidents: lists
+          .flatMap((l) => l.incidents)
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
+        more: lists.some((l) => l.more),
+      };
+    },
+    staleTime: 60_000,
   });
 
 /**
