@@ -59,4 +59,16 @@ reference. The risk is an agent that creates and ships its own work.
 > ranges, anything but ASCII spaces) are refused at save. The agent an enabled autopilot hands to,
 > the skills attached to that agent, and the skills it follows are part of its reach: changing them
 > loosens, as for an agent that judges work.
+>
+> Amended 2026-11-13 (third review of #197): schedules are compared in **local calendar space**,
+> not by enumerating instants: every (month, day, weekday, hour) a cron could fire at, about 61,000
+> checks with no clock, so the answer holds for every year (29 February included) and costs a few
+> milliseconds. Same time zone: practice only if every local time the new one fires at, the old one
+> did; a time-zone change loosens. Time zones are named IANA zones only (no offsets such as
+> +00:07), and a cron that never fires (31 February) is refused at save. The clock is used only for
+> the next fire time, which walks local days for up to 9 years and converts only the matches.
+> **Daylight saving, decided:** a local time that doesn't exist fires at the first minute after the
+> gap; one that happens twice fires once, the first time; the firing's dedupe key is its local wall
+> time. A waiting autopilot change carries what it would run with as it is now (its agent and the
+> skills it follows), and the desktop's pending screen shows it.
 

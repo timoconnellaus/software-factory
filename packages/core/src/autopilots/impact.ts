@@ -5,7 +5,7 @@
 // (the person approving sees all it would reach). A new autopilot is judged against nothing:
 // creating one that is on loosens; one created off is practice until it is turned on.
 import type { ImpactChange } from "../policy/impact.ts";
-import { cronFires, parseCron } from "./cron.ts";
+import { cronWithin, parseCron } from "./cron.ts";
 import type { AutopilotConfig } from "./schema.ts";
 
 type Projects = "all" | readonly string[];
@@ -52,20 +52,6 @@ const NOTHING: Reach = {
 };
 
 const STATE_RANK: Record<string, number> = { backlog: 0, ready: 1, queued: 2 };
-
-/** A schedule's fire times over the fixed horizon (cached: a version's schedules don't change). */
-const fireCache = new Map<string, ReadonlySet<number>>();
-function firesOf(cron: string, timeZone: string): ReadonlySet<number> | null {
-  const key = `${cron}|${timeZone}`;
-  const hit = fireCache.get(key);
-  if (hit) return hit;
-  const parsed = parseCron(cron);
-  if (!parsed.ok) return null;
-  const set = new Set(cronFires(parsed.cron, timeZone));
-  if (fireCache.size > 200) fireCache.clear();
-  fireCache.set(key, set);
-  return set;
-}
 
 function reachOf(a: AutopilotConfig): Reach {
   const event = a.trigger.kind === "event";
@@ -147,13 +133,17 @@ function compare(label: string, path: string, b: Reach, a: Reach): ImpactChange[
       `${label} now runs on ${a.triggerKind === "event" ? "an event" : "a schedule"}.`,
     );
   else if (a.schedule && b.schedule && JSON.stringify(a.schedule) !== JSON.stringify(b.schedule)) {
-    const was = firesOf(b.schedule.cron, b.schedule.timeZone);
-    const now = firesOf(a.schedule.cron, a.schedule.timeZone);
-    const within = !!was && !!now && [...now].every((t) => was.has(t));
-    if (!within) add("trigger", "loosens", `${label} runs at times it didn't before.`);
-    else if ((now?.size ?? 0) < (was?.size ?? 0))
+    // In local calendar space, exact for every year (review of #197): no clock, no horizon.
+    const was = parseCron(b.schedule.cron);
+    const now = parseCron(a.schedule.cron);
+    if (!was.ok || !now.ok || a.schedule.timeZone !== b.schedule.timeZone)
+      add("trigger", "loosens", `${label} runs at times it didn't before.`);
+    else if (!cronWithin(now.cron, was.cron))
+      add("trigger", "loosens", `${label} runs at times it didn't before.`);
+    else if (!cronWithin(was.cron, now.cron))
       add("trigger", "tightens", `${label} runs less often.`);
   }
+
   if (a.outputKind !== b.outputKind && a.outputKind !== null)
     add("output", "loosens", `${label}'s output is now ${a.outputKind}.`);
   else if (a.outputProject !== b.outputProject && a.outputProject !== null)

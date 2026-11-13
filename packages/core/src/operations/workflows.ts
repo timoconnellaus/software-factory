@@ -1167,6 +1167,10 @@ async function pendingOrgChange(
         proposal = { ...was, enabled: true } as unknown as Record<string, unknown>;
         after = withAutopilotEnabled(config, was.id, true);
       }
+      // What it would run with, as it is now (review of #197): its agent and the skills it follows,
+      // so whoever approves sees them even if they changed while it was off.
+      if (proposal)
+        proposal = { ...proposal, uses: await autopilotUses(db, orgId, config, proposal) };
     } else if (p.operation === "orgConfig.rollback" && toVersion !== null) {
       after = await storedOrgConfig(db, orgId, toVersion);
       // The whole org config, now and as the rollback would make it: every workflow and agent
@@ -1224,3 +1228,54 @@ export const orgConfigPreviewRollback = defineOperation({
     };
   },
 });
+
+/** The agent a (proposed) autopilot hands to and the skills it follows, as they are now. */
+async function autopilotUses(
+  db: Db,
+  orgId: string,
+  config: OrgConfig,
+  autopilot: Record<string, unknown>,
+) {
+  const agentName = String(autopilot.agent ?? "").toLowerCase();
+  const agent = config.agents.find((a) => a.name.toLowerCase() === agentName) ?? null;
+  const own = Array.isArray(autopilot.skills) ? (autopilot.skills as unknown[]).map(String) : [];
+  const attached = config.agentSkills[agentName] ?? [];
+  const ids = [...new Set([...own, ...attached])].filter((x) => Object.hasOwn(config.skills, x));
+  // Each skill's current version, by primary key (org, skill, version): at most 40 keys, in
+  // chunks of 15 key pairs a query (D1's bound-parameter limit), so at most three queries.
+  const keys = ids.slice(0, 40).map((id) => ({ id, version: config.skills[id]?.version ?? 0 }));
+  const rows: {
+    skill_id: string;
+    version: number;
+    name: string;
+    description: string;
+    body: string;
+  }[] = [];
+  for (let i = 0; i < keys.length; i += 15) {
+    const chunk = keys.slice(i, i + 15);
+    rows.push(
+      ...(await db
+        .selectFrom("core_skill_versions")
+        .select(["skill_id", "version", "name", "description", "body"])
+        .where("org_id", "=", orgId)
+        .where((eb) =>
+          eb.or(
+            chunk.map((k) => eb.and([eb("skill_id", "=", k.id), eb("version", "=", k.version)])),
+          ),
+        )
+        .limit(15)
+        .execute()),
+    );
+  }
+  const skills = keys.map((k) => {
+    const row = rows.find((r) => r.skill_id === k.id && r.version === k.version);
+    return {
+      id: k.id,
+      version: k.version,
+      name: row?.name ?? null,
+      description: row?.description ?? null,
+      body: row?.body ?? null,
+    };
+  });
+  return { agent, attachedSkills: attached, skills };
+}

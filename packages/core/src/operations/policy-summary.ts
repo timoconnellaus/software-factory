@@ -244,5 +244,6 @@ export function autopilotReach(a: AutopilotConfig): string {
           : "proposals";
   const projects =
     a.scope.projects === "all" ? "all projects" : `${a.scope.projects.length} projects`;
-  return `${trigger}; ${output}; ${projects}; ${a.limits.maxOutputs}/run, ${a.limits.runsPerDay}/day, ${a.limits.minutes} min`;
+  const uses = `agent ${a.agent}${a.skills.length ? `, ${a.skills.length} skills` : ""}`;
+  return `${trigger}; ${output}; ${projects}; ${uses}; ${a.limits.maxOutputs}/run, ${a.limits.runsPerDay}/day, ${a.limits.minutes} min`;
 }

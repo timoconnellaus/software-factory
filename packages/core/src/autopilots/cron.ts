@@ -89,8 +89,54 @@ export function cronMatches(
   return dom ?? dow ?? true;
 }
 
+// ---- Comparing schedules: in local calendar space, exact for every year (review of #197) ----
+
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * Every local (month, day, weekday, hour) at which a cron could fire, as a callback: every valid
+ * calendar date (29 February included) with every weekday, since each such combination happens in
+ * some year. About 61,000 checks, no time zone and no clock.
+ */
+function eachLocalSlot(
+  visit: (t: { month: number; day: number; weekday: number; hour: number }) => boolean,
+) {
+  for (let month = 1; month <= 12; month++)
+    for (let day = 1; day <= (DAYS_IN_MONTH[month - 1] as number); day++)
+      for (let weekday = 0; weekday < 7; weekday++)
+        for (let hour = 0; hour < 24; hour++) if (!visit({ month, day, weekday, hour })) return;
+}
+
+/** Whether a cron never fires in any year (e.g. 31 February). */
+export function cronNeverFires(c: Cron): boolean {
+  let fires = false;
+  eachLocalSlot((t) => {
+    fires = cronMatches(c, { ...t, minute: c.minute });
+    return !fires;
+  });
+  return !fires;
+}
+
+/**
+ * Whether every local time `next` fires at, `prev` fires at too, in any year: the change fires at
+ * no new time (in the same time zone; a time-zone change is a change of time, judged apart).
+ */
+export function cronWithin(next: Cron, prev: Cron): boolean {
+  let within = true;
+  eachLocalSlot((t) => {
+    if (
+      cronMatches(next, { ...t, minute: next.minute }) &&
+      !cronMatches(prev, { ...t, minute: next.minute })
+    )
+      within = false;
+    return within;
+  });
+  return within;
+}
+
+// ---- The next fire time: for the firing code (g2c), one time-zone conversion per candidate ----
+
 const formatters = new Map<string, Intl.DateTimeFormat>();
-const WEEKDAY: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
 /** The local wall-clock fields of a UTC instant in a time zone. */
 export function localTime(ms: number, timeZone: string) {
@@ -99,9 +145,9 @@ export function localTime(ms: number, timeZone: string) {
     f = new Intl.DateTimeFormat("en-US", {
       timeZone,
       hourCycle: "h23",
+      year: "numeric",
       month: "numeric",
       day: "numeric",
-      weekday: "short",
       hour: "numeric",
       minute: "numeric",
     });
@@ -109,45 +155,75 @@ export function localTime(ms: number, timeZone: string) {
   }
   const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
   return {
+    year: Number(p.year),
     month: Number(p.month),
     day: Number(p.day),
-    weekday: WEEKDAY[p.weekday ?? ""] ?? -1,
     hour: Number(p.hour) % 24,
     minute: Number(p.minute),
   };
 }
 
-/** A fixed start for comparing schedules: the same horizon for both sides of a change. */
-export const CRON_EPOCH = Date.UTC(2026, 0, 1);
-export const CRON_HORIZON_DAYS = 400;
-
-/**
- * Every time a cron fires in a time zone, as UTC milliseconds, from `from` for `days`. Steps
- * through UTC in 15-minute steps aligned to the cron's minute (every zone's offset is a multiple of
- * 15 minutes), so daylight saving's skipped and repeated hours come out as they happen.
- */
-export function cronFires(
-  cron: Cron,
-  timeZone: string,
-  from = CRON_EPOCH,
-  days = CRON_HORIZON_DAYS,
-): number[] {
-  const out: number[] = [];
-  const end = from + days * 86_400_000;
-  // Every zone's offset is a multiple of 15 minutes, so the local minute is the cron's only at UTC
-  // minutes congruent to it modulo 15: step from the first of those.
-  const first = Math.floor(from / 900_000) * 900_000 + (cron.minute % 15) * 60_000;
-  for (let ms = first < from ? first + 900_000 : first; ms < end; ms += 900_000)
-    if (cronMatches(cron, localTime(ms, timeZone))) out.push(ms);
-  return out;
+/** The zone's offset from UTC at an instant, in minutes. */
+function offsetAt(ms: number, timeZone: string): number {
+  const l = localTime(ms, timeZone);
+  return Math.round(
+    (Date.UTC(l.year, l.month - 1, l.day, l.hour, l.minute) - Math.floor(ms / 60_000) * 60_000) /
+      60_000,
+  );
 }
 
-/** The next time a cron fires strictly after `after` (within a year and a day), or null. */
+/** The years `nextFire` looks ahead: enough for 29 February after a skipped leap year. */
+export const NEXT_FIRE_YEARS = 9;
+
+/**
+ * The next time a cron fires strictly after `after`, as UTC milliseconds, or null when it doesn't
+ * within NEXT_FIRE_YEARS. Walks local calendar days (no clock per minute) and converts only the
+ * matching candidates. Daylight saving, decided (review of #197): a local time that doesn't exist
+ * (clocks go forward) fires at the first minute after the gap; one that happens twice (clocks go
+ * back) fires once, the first time. The dedupe key of a firing is its local wall time, so the
+ * repeated hour can't fire it again.
+ */
 export function nextFire(cron: Cron, timeZone: string, after: number): number | null {
-  let start = Math.floor(after / 900_000) * 900_000 + (cron.minute % 15) * 60_000;
-  while (start <= after) start += 900_000;
-  const end = start + 367 * 86_400_000;
-  for (let ms = start; ms < end; ms += 900_000)
-    if (cronMatches(cron, localTime(ms, timeZone))) return ms;
+  const start = localTime(after, timeZone);
+  const first = Date.UTC(start.year, start.month - 1, start.day);
+  for (let d = 0; d <= NEXT_FIRE_YEARS * 366; d++) {
+    const date = new Date(first + d * 86_400_000);
+    const month = date.getUTCMonth() + 1;
+    const day = date.getUTCDate();
+    const weekday = date.getUTCDay();
+    if (!cron.months.has(month)) continue;
+    const dom = cron.doms ? cron.doms.has(day) : null;
+    const dow = cron.dows ? cron.dows.has(weekday) : null;
+    if (!(dom !== null && dow !== null ? dom || dow : (dom ?? dow ?? true))) continue;
+    for (const hour of [...cron.hours].sort((a, b) => a - b)) {
+      const wall = Date.UTC(date.getUTCFullYear(), month - 1, day, hour, cron.minute);
+      const t = fromWall(wall, timeZone);
+      if (t > after) return t;
+    }
+  }
   return null;
+}
+
+/** A local wall time to the UTC instant it fires at (the first of a repeated one; after a gap). */
+function fromWall(wall: number, timeZone: string): number {
+  // The offsets a day either side (a transition is never within a day of another): whichever
+  // reads back as this wall time, the earliest.
+  const fits = [
+    offsetAt(wall - 24 * 3_600_000, timeZone),
+    offsetAt(wall + 24 * 3_600_000, timeZone),
+  ]
+    .map((o) => wall - o * 60_000)
+    .filter((t) => {
+      const l = localTime(t, timeZone);
+      return Date.UTC(l.year, l.month - 1, l.day, l.hour, l.minute) === wall;
+    });
+  if (fits.length) return Math.min(...fits);
+  // It doesn't exist (clocks went forward): the first minute after the gap.
+  // From before the gap, minute by minute: at most a few hours of a rare case.
+  let t = wall - offsetAt(wall - 24 * 3_600_000, timeZone) * 60_000 - 180 * 60_000;
+  for (let i = 0; i < 360; i++, t += 60_000) {
+    const l = localTime(t, timeZone);
+    if (Date.UTC(l.year, l.month - 1, l.day, l.hour, l.minute) > wall) return t;
+  }
+  return t;
 }

@@ -5,7 +5,7 @@
 import { CAPABILITIES } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { anySkillIdSchema, hasHidden } from "../skills/schema.ts";
-import { parseCron } from "./cron.ts";
+import { cronNeverFires, parseCron } from "./cron.ts";
 
 export const AUTOPILOT_EVENTS = [
   "ci.failedOnDefaultBranch",
@@ -21,13 +21,19 @@ export const MAX_AUTOPILOTS = 20;
 /** Why a cron isn't one an autopilot runs, or null (the one evaluator, `cron.ts`). */
 export function cronError(cron: string): string | null {
   const parsed = parseCron(cron);
-  return parsed.ok ? null : parsed.error;
+  if (!parsed.ok) return parsed.error;
+  return cronNeverFires(parsed.cron) ? "this cron never fires (no such date)" : null;
 }
 
 const timezone = z
   .string()
   .min(1)
   .max(64)
+  // A named IANA zone (review of #197): not an offset such as +00:07, which Intl also takes.
+  .regex(
+    /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/,
+    "a named time zone, such as Australia/Sydney",
+  )
   .refine((tz) => {
     try {
       new Intl.DateTimeFormat("en", { timeZone: tz });

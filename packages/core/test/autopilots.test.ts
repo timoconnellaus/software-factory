@@ -6,9 +6,7 @@ import {
   type AutopilotConfig,
   autopilotImpact,
   autopilotSchema,
-  CRON_EPOCH,
   cronError,
-  cronFires,
   nextFire,
   parseCron,
 } from "../src/autopilots/index.ts";
@@ -111,47 +109,65 @@ describe("the autopilot's shape", () => {
 });
 
 describe("the cron evaluator (review of #197): the one the firing code uses", () => {
-  const fires = (expr: string, tz = "UTC") => {
+  const EPOCH = Date.UTC(2026, 0, 1);
+  /** The first n fire times from 1 January 2026, by the firing code's own `nextFire`. */
+  const fires = (expr: string, tz = "UTC", n = 5) => {
     const p = parseCron(expr);
     if (!p.ok) throw new Error(p.error);
-    return cronFires(p.cron, tz);
+    const out: string[] = [];
+    let at = EPOCH - 1;
+    for (let k = 0; k < n; k++) {
+      const t = nextFire(p.cron, tz, at);
+      if (t === null) break;
+      out.push(new Date(t).toISOString());
+      at = t;
+    }
+    return out;
   };
-  const iso = (ms: number) => new Date(ms).toISOString();
 
   it("fires when known crons do", () => {
-    expect(fires("0 2 * * *")).toHaveLength(400);
-    expect(iso(fires("0 2 * * *")[0] as number)).toBe("2026-01-01T02:00:00.000Z");
-    // Yearly: 1 January, twice in 400 days from 1 January 2026.
-    expect(fires("0 0 1 1 *").map(iso)).toEqual([
+    expect(fires("0 2 * * *", "UTC", 2)).toEqual([
+      "2026-01-01T02:00:00.000Z",
+      "2026-01-02T02:00:00.000Z",
+    ]);
+    expect(fires("0 0 1 1 *", "UTC", 2)).toEqual([
       "2026-01-01T00:00:00.000Z",
       "2027-01-01T00:00:00.000Z",
     ]);
-    // January only.
-    expect(fires("0 0 * 1 *")).toHaveLength(31 + 31);
-    // Day of month OR day of week when both are restricted (cron's rule).
-    const either = fires("0 0 1 * 1").map((t) => new Date(t));
-    expect(either.every((d) => d.getUTCDate() === 1 || d.getUTCDay() === 1)).toBe(true);
-    expect(either.length).toBeGreaterThan(57 + 13 - 3);
+    // 29 February: the next leap year.
+    expect(fires("0 0 29 2 *", "UTC", 2)).toEqual([
+      "2028-02-29T00:00:00.000Z",
+      "2032-02-29T00:00:00.000Z",
+    ]);
+    // Day of month OR day of week when both are restricted (cron's rule): the 1st, or a Monday.
+    for (const t of fires("0 0 1 * 1", "UTC", 12)) {
+      const d = new Date(t);
+      expect(d.getUTCDate() === 1 || d.getUTCDay() === 1, t).toBe(true);
+    }
     // 0 and 7 are both Sunday.
     expect(fires("0 0 * * 0")).toEqual(fires("0 0 * * 7"));
     // A minute that isn't a multiple of 15, in a zone off by half an hour.
-    expect(iso(fires("7 9 * * *", "Asia/Kolkata")[0] as number)).toBe("2026-01-01T03:37:00.000Z");
-    // Sydney's daylight saving: 02:30 happens twice on 5 April 2026 (clocks go back) and not at
-    // all on 4 October 2026 (clocks go forward); every fire is a real instant.
-    const sydney = fires("30 2 * * *", "Australia/Sydney").map(iso);
-    expect(
-      sydney.filter((t) => t.startsWith("2026-04-04T15:30") || t.startsWith("2026-04-04T16:30")),
-    ).toHaveLength(2);
-    expect(
-      sydney.some((t) => t.startsWith("2026-10-03T15:30") || t.startsWith("2026-10-03T16:30")),
-    ).toBe(false);
-    // The next fire after a time.
-    const p = parseCron("0 2 * * *");
-    if (!p.ok) throw new Error(p.error);
-    expect(iso(nextFire(p.cron, "UTC", CRON_EPOCH) as number)).toBe("2026-01-01T02:00:00.000Z");
+    expect(fires("7 9 * * *", "Asia/Kolkata", 1)).toEqual(["2026-01-01T03:37:00.000Z"]);
   });
 
-  it("refuses what it doesn't run: reversed ranges, macros, names, other whitespace", () => {
+  it("daylight saving, decided: a skipped time fires after the gap; a repeated one fires once", () => {
+    // Sydney, 4 October 2026: 02:00 -> 03:00. 02:30 fires at 03:00 local (16:00 UTC the day before).
+    const skipped = fires("30 2 3-5 10 *", "Australia/Sydney", 3);
+    expect(skipped).toEqual([
+      "2026-10-02T16:30:00.000Z",
+      "2026-10-03T16:00:00.000Z",
+      "2026-10-04T15:30:00.000Z",
+    ]);
+    // Sydney, 5 April 2026: 03:00 -> 02:00. 02:30 happens twice; it fires once, the first time.
+    const repeated = fires("30 2 4-6 4 *", "Australia/Sydney", 3);
+    expect(repeated).toEqual([
+      "2026-04-03T15:30:00.000Z",
+      "2026-04-04T15:30:00.000Z",
+      "2026-04-05T16:30:00.000Z",
+    ]);
+  });
+
+  it("refuses what it doesn't run: reversed ranges, macros, names, other whitespace, a date that never comes", () => {
     for (const bad of [
       "0 22-2 * * *",
       "@daily",
@@ -162,9 +178,27 @@ describe("the cron evaluator (review of #197): the one the firing code uses", ()
       "\ufeff0 2 * * *",
       "0\t2 * * *",
       "*/15 * * * *",
+      "0 0 31 2 *",
     ])
       expect(cronError(bad), bad).not.toBeNull();
     expect(cronError("0 2 * * *")).toBeNull();
+  });
+
+  it("refuses an offset time zone: named zones only", () => {
+    for (const tz of ["+00:07", "-03:17", "+10:00"])
+      expect(
+        autopilotSchema.safeParse({
+          ...AP(),
+          trigger: { kind: "schedule", cron: "0 2 * * *", timezone: tz },
+        }).success,
+        tz,
+      ).toBe(false);
+    expect(
+      autopilotSchema.safeParse({
+        ...AP(),
+        trigger: { kind: "schedule", cron: "0 2 * * *", timezone: "Etc/GMT+3" },
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -216,6 +250,14 @@ describe("how a change to an autopilot classifies: by reach (ADR 0514 §5, revie
       ["0 0 1 * 1", "0 0 1-31 * 1"],
       ["0 0 * * 0,7", "0 0 * * 0,1"],
       ["0 5 * * *", "0 22-23 * * *"],
+    ] as const)
+      expect(loosens([sched(from)], [sched(to)]), `${from} -> ${to}`).toBe(true);
+    // Exact for every year (no horizon): each of these fires at a time the old one never did.
+    for (const [from, to] of [
+      ["0 0 1 1 *", "0 0 29 2 *"],
+      ["0 0 29 2 *", "0 * 29 2 *"],
+      ["0 0 * 3 0", "0 0 1 3 *"],
+      ["0 0 2,9,16,23,30 3 *", "0 0 * 3 1"],
     ] as const)
       expect(loosens([sched(from)], [sched(to)]), `${from} -> ${to}`).toBe(true);
     // A subset of its times tightens; the same times in another form changes nothing.
@@ -439,6 +481,8 @@ describe("autopilot operations", () => {
     }>("orgConfig.get", { orgId: w.orgId }, w.human);
     const p = got.pending.find((x) => x.operation === "autopilot.save");
     expect(p?.proposal).toMatchObject({ enabled: true, output: { kind: "digest" } });
+    // What it would run with, as it is now: its agent (and the skills it follows).
+    expect(p?.proposal).toMatchObject({ uses: { agent: { name: "Triager" }, skills: [] } });
     expect(p?.current).toBeNull();
     expect(p?.impact?.class).toBe("loosens");
   });
@@ -543,7 +587,7 @@ describe("autopilot operations", () => {
     );
     // What it may do first, then how many loosenings.
     expect(summary).toMatch(
-      /^Approve: save an org autopilot \(v1 to v2\): 0 2 \* \* \* Australia\/Sydney; files and RELEASES work; all projects; 5\/run, 4\/day, 30 min/,
+      /^Approve: save an org autopilot \(v1 to v2\): 0 2 \* \* \* Australia\/Sydney; files and RELEASES work; all projects; agent Triager; 5\/run, 4\/day, 30 min/,
     );
     // The facts come first; the name follows only where it fits (titled()).
     expect(summary).toMatch(/: \d+ loosenings/);
