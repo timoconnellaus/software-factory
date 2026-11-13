@@ -12,7 +12,6 @@ import {
 export const svgDataUrl = (svg: string) =>
   `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
-
 /** A part drawn over the preview: where, what changed, and its pins. */
 export interface Overlay {
   part: DesignPart;
@@ -32,7 +31,9 @@ export function designOverlays(
   const counts: Record<PartChange, number> = { added: 0, changed: 0, removed: 0 };
   if (!base) {
     return {
-      overlays: preview.parts.flatMap((part) => (part.box ? [{ part, box: part.box, change: null }] : [])),
+      overlays: preview.parts.flatMap((part) =>
+        part.box ? [{ part, box: part.box, change: null }] : [],
+      ),
       removed: [],
       counts,
     };

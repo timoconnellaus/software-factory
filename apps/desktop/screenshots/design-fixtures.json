@@ -1,268 +1,268 @@
 {
- "art_schema": {
-  "type": "data-model",
-  "content": "Table projects {\n  id text [pk]\n  name text [not null]\n}\n\nTable work_items {\n  id text [pk]\n  project_id text [ref: > projects.id]\n  title text [not null]\n  state text\n  source text\n}\n\nTable github_issues {\n  id text [pk]\n  work_item_id text [ref: > work_items.id]\n  repo text [not null]\n  number int [not null]\n}\n",
-  "base": "Table projects {\n  id text [pk]\n  name text [not null]\n}\n\nTable work_items {\n  id text [pk]\n  project_id text [ref: > projects.id]\n  title text [not null]\n  state text\n}\n\nTable legacy_imports {\n  id text [pk]\n  work_item_id text [ref: > work_items.id]\n}\n",
-  "preview": {
-   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"506\" height=\"288\" viewBox=\"0 0 506 288\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"506\" height=\"288\" fill=\"#f6f6f7\"/><path d=\"M189.5 224 L260 224 L305 200.7\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"195.5\" y=\"218\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><text x=\"285\" y=\"192.7\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><path d=\"M215 86 L260 86 L305 109.3\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"221\" y=\"80\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><text x=\"285\" y=\"101.3\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><rect x=\"49.5\" y=\"184\" width=\"140\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M49.519999999999996 214 H189.51999999999998\" stroke=\"#d3d7dd\"/><text x=\"61.5\" y=\"204\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">projects</text><text x=\"59.5\" y=\"230\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"81.5\" y=\"230\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"179.5\" y=\"230\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"81.5\" y=\"252\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">name</text><text x=\"179.5\" y=\"252\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"305\" y=\"82\" width=\"176.2\" height=\"146\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M305.03999999999996 112 H481.19999999999993\" stroke=\"#d3d7dd\"/><text x=\"317\" y=\"102\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">work_items</text><text x=\"315\" y=\"128\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"337\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"471.2\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"315\" y=\"150\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"337\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">project_id</text><text x=\"471.2\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">title</text><text x=\"471.2\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"194\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">state</text><text x=\"471.2\" y=\"194\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"216\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">source</text><text x=\"471.2\" y=\"216\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"24\" y=\"24\" width=\"191\" height=\"124\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M24 54 H215.04\" stroke=\"#d3d7dd\"/><text x=\"36\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">github_issues</text><text x=\"34\" y=\"70\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"56\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"205\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"34\" y=\"92\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"56\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">work_item_id</text><text x=\"205\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"56\" y=\"114\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">repo</text><text x=\"205\" y=\"114\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"56\" y=\"136\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">number</text><text x=\"205\" y=\"136\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">int</text></svg>",
-   "width": 505.19999999999993,
-   "height": 288,
-   "parts": [
-    {
-     "id": "ref projects(id) - work_items(project_id)",
-     "kind": "relation",
-     "label": "projects.id → work_items.project_id",
-     "sig": "8211e862",
-     "box": {
-      "x": 214.77999999999997,
-      "y": 214,
-      "w": 20,
-      "h": 20
-     }
+  "art_schema": {
+    "type": "data-model",
+    "content": "Table projects {\n  id text [pk]\n  name text [not null]\n}\n\nTable work_items {\n  id text [pk]\n  project_id text [ref: > projects.id]\n  title text [not null]\n  state text\n  source text\n}\n\nTable github_issues {\n  id text [pk]\n  work_item_id text [ref: > work_items.id]\n  repo text [not null]\n  number int [not null]\n}\n",
+    "base": "Table projects {\n  id text [pk]\n  name text [not null]\n}\n\nTable work_items {\n  id text [pk]\n  project_id text [ref: > projects.id]\n  title text [not null]\n  state text\n}\n\nTable legacy_imports {\n  id text [pk]\n  work_item_id text [ref: > work_items.id]\n}\n",
+    "preview": {
+      "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" data-drawn-by=\"software-factory\" width=\"506\" height=\"288\" viewBox=\"0 0 506 288\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"506\" height=\"288\" fill=\"#f6f6f7\"/><path d=\"M189.5 224 L260 224 L305 200.7\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"195.5\" y=\"218\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><text x=\"285\" y=\"192.7\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><path d=\"M215 86 L260 86 L305 109.3\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"221\" y=\"80\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><text x=\"285\" y=\"101.3\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><rect x=\"49.5\" y=\"184\" width=\"140\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M49.519999999999996 214 H189.51999999999998\" stroke=\"#d3d7dd\"/><text x=\"61.5\" y=\"204\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">projects</text><text x=\"59.5\" y=\"230\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"81.5\" y=\"230\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"179.5\" y=\"230\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"81.5\" y=\"252\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">name</text><text x=\"179.5\" y=\"252\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"305\" y=\"82\" width=\"176.2\" height=\"146\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M305.03999999999996 112 H481.19999999999993\" stroke=\"#d3d7dd\"/><text x=\"317\" y=\"102\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">work_items</text><text x=\"315\" y=\"128\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"337\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"471.2\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"315\" y=\"150\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"337\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">project_id</text><text x=\"471.2\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">title</text><text x=\"471.2\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"194\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">state</text><text x=\"471.2\" y=\"194\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"216\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">source</text><text x=\"471.2\" y=\"216\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"24\" y=\"24\" width=\"191\" height=\"124\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M24 54 H215.04\" stroke=\"#d3d7dd\"/><text x=\"36\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">github_issues</text><text x=\"34\" y=\"70\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"56\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"205\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"34\" y=\"92\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"56\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">work_item_id</text><text x=\"205\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"56\" y=\"114\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">repo</text><text x=\"205\" y=\"114\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"56\" y=\"136\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">number</text><text x=\"205\" y=\"136\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">int</text></svg>",
+      "width": 505.19999999999993,
+      "height": 288,
+      "parts": [
+        {
+          "id": "ref projects(id) - work_items(project_id)",
+          "kind": "relation",
+          "label": "projects.id → work_items.project_id",
+          "sig": "8211e862",
+          "box": {
+            "x": 214.77999999999997,
+            "y": 214,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "ref github_issues(work_item_id) - work_items(id)",
+          "kind": "relation",
+          "label": "github_issues.work_item_id → work_items.id",
+          "sig": "cf7c9dc8",
+          "box": {
+            "x": 227.53999999999996,
+            "y": 76,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "table projects",
+          "kind": "table",
+          "label": "projects",
+          "sig": "543255ed",
+          "box": {
+            "x": 49.519999999999996,
+            "y": 184,
+            "w": 140,
+            "h": 80
+          }
+        },
+        {
+          "id": "table work_items",
+          "kind": "table",
+          "label": "work_items",
+          "sig": "46b7a1df",
+          "box": {
+            "x": 305.03999999999996,
+            "y": 82,
+            "w": 176.16,
+            "h": 146
+          }
+        },
+        {
+          "id": "table github_issues",
+          "kind": "table",
+          "label": "github_issues",
+          "sig": "10adac3a",
+          "box": {
+            "x": 24,
+            "y": 24,
+            "w": 191.04,
+            "h": 124
+          }
+        }
+      ],
+      "warnings": [],
+      "sha256": "90526050f4a496f240852dfa1a03caa8411b95996dafc2d32ec1ec1085ee12b2"
     },
-    {
-     "id": "ref github_issues(work_item_id) - work_items(id)",
-     "kind": "relation",
-     "label": "github_issues.work_item_id → work_items.id",
-     "sig": "cf7c9dc8",
-     "box": {
-      "x": 227.53999999999996,
-      "y": 76,
-      "w": 20,
-      "h": 20
-     }
-    },
-    {
-     "id": "table projects",
-     "kind": "table",
-     "label": "projects",
-     "sig": "543255ed",
-     "box": {
-      "x": 49.519999999999996,
-      "y": 184,
-      "w": 140,
-      "h": 80
-     }
-    },
-    {
-     "id": "table work_items",
-     "kind": "table",
-     "label": "work_items",
-     "sig": "46b7a1df",
-     "box": {
-      "x": 305.03999999999996,
-      "y": 82,
-      "w": 176.16,
-      "h": 146
-     }
-    },
-    {
-     "id": "table github_issues",
-     "kind": "table",
-     "label": "github_issues",
-     "sig": "10adac3a",
-     "box": {
-      "x": 24,
-      "y": 24,
-      "w": 191.04,
-      "h": 124
-     }
+    "basePreview": {
+      "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" data-drawn-by=\"software-factory\" width=\"506\" height=\"244\" viewBox=\"0 0 506 244\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"506\" height=\"244\" fill=\"#f6f6f7\"/><path d=\"M189.5 180 L260 180 L305 160.4\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"195.5\" y=\"174\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><text x=\"285\" y=\"152.4\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><path d=\"M215 64 L260 64 L305 83.6\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"221\" y=\"58\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><text x=\"285\" y=\"75.6\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><rect x=\"49.5\" y=\"140\" width=\"140\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M49.519999999999996 170 H189.51999999999998\" stroke=\"#d3d7dd\"/><text x=\"61.5\" y=\"160\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">projects</text><text x=\"59.5\" y=\"186\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"81.5\" y=\"186\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"179.5\" y=\"186\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"81.5\" y=\"208\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">name</text><text x=\"179.5\" y=\"208\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"305\" y=\"60\" width=\"176.2\" height=\"124\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M305.03999999999996 90 H481.19999999999993\" stroke=\"#d3d7dd\"/><text x=\"317\" y=\"80\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">work_items</text><text x=\"315\" y=\"106\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"337\" y=\"106\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"471.2\" y=\"106\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"315\" y=\"128\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"337\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">project_id</text><text x=\"471.2\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">title</text><text x=\"471.2\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">state</text><text x=\"471.2\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"24\" y=\"24\" width=\"191\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M24 54 H215.04\" stroke=\"#d3d7dd\"/><text x=\"36\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">legacy_imports</text><text x=\"34\" y=\"70\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"56\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"205\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"34\" y=\"92\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"56\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">work_item_id</text><text x=\"205\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text></svg>",
+      "width": 505.19999999999993,
+      "height": 244,
+      "parts": [
+        {
+          "id": "ref projects(id) - work_items(project_id)",
+          "kind": "relation",
+          "label": "projects.id → work_items.project_id",
+          "sig": "8211e862",
+          "box": {
+            "x": 214.77999999999997,
+            "y": 170,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "ref legacy_imports(work_item_id) - work_items(id)",
+          "kind": "relation",
+          "label": "legacy_imports.work_item_id → work_items.id",
+          "sig": "cf7c9dc8",
+          "box": {
+            "x": 227.53999999999996,
+            "y": 54,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "table projects",
+          "kind": "table",
+          "label": "projects",
+          "sig": "543255ed",
+          "box": {
+            "x": 49.519999999999996,
+            "y": 140,
+            "w": 140,
+            "h": 80
+          }
+        },
+        {
+          "id": "table work_items",
+          "kind": "table",
+          "label": "work_items",
+          "sig": "93a03753",
+          "box": {
+            "x": 305.03999999999996,
+            "y": 60,
+            "w": 176.16,
+            "h": 124
+          }
+        },
+        {
+          "id": "table legacy_imports",
+          "kind": "table",
+          "label": "legacy_imports",
+          "sig": "ba7d0d1d",
+          "box": {
+            "x": 24,
+            "y": 24,
+            "w": 191.04,
+            "h": 80
+          }
+        }
+      ],
+      "warnings": [],
+      "sha256": "8239e7e008f0ed1c8baae46abfb5d6fe72c533cc7c1772b7ff40e1c5250842a1"
     }
-   ],
-   "warnings": [],
-   "sha256": "90526050f4a496f240852dfa1a03caa8411b95996dafc2d32ec1ec1085ee12b2"
   },
-  "basePreview": {
-   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"506\" height=\"244\" viewBox=\"0 0 506 244\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"506\" height=\"244\" fill=\"#f6f6f7\"/><path d=\"M189.5 180 L260 180 L305 160.4\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"195.5\" y=\"174\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><text x=\"285\" y=\"152.4\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><path d=\"M215 64 L260 64 L305 83.6\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><text x=\"221\" y=\"58\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">n</text><text x=\"285\" y=\"75.6\" font-size=\"11\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\">1</text><rect x=\"49.5\" y=\"140\" width=\"140\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M49.519999999999996 170 H189.51999999999998\" stroke=\"#d3d7dd\"/><text x=\"61.5\" y=\"160\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">projects</text><text x=\"59.5\" y=\"186\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"81.5\" y=\"186\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"179.5\" y=\"186\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"81.5\" y=\"208\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">name</text><text x=\"179.5\" y=\"208\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"305\" y=\"60\" width=\"176.2\" height=\"124\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M305.03999999999996 90 H481.19999999999993\" stroke=\"#d3d7dd\"/><text x=\"317\" y=\"80\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">work_items</text><text x=\"315\" y=\"106\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"337\" y=\"106\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"471.2\" y=\"106\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"315\" y=\"128\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"337\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">project_id</text><text x=\"471.2\" y=\"128\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">title</text><text x=\"471.2\" y=\"150\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"337\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">state</text><text x=\"471.2\" y=\"172\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><rect x=\"24\" y=\"24\" width=\"191\" height=\"80\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><path d=\"M24 54 H215.04\" stroke=\"#d3d7dd\"/><text x=\"36\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#0e0f11\">legacy_imports</text><text x=\"34\" y=\"70\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">PK</text><text x=\"56\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">id</text><text x=\"205\" y=\"70\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text><text x=\"34\" y=\"92\" font-size=\"9\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\" fill=\"#1f6bff\">FK</text><text x=\"56\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#0e0f11\">work_item_id</text><text x=\"205\" y=\"92\" font-size=\"12\" font-family=\"ui-monospace, SFMono-Regular, Menlo, monospace\" fill=\"#676c74\" text-anchor=\"end\">text</text></svg>",
-   "width": 505.19999999999993,
-   "height": 244,
-   "parts": [
-    {
-     "id": "ref projects(id) - work_items(project_id)",
-     "kind": "relation",
-     "label": "projects.id → work_items.project_id",
-     "sig": "8211e862",
-     "box": {
-      "x": 214.77999999999997,
-      "y": 170,
-      "w": 20,
-      "h": 20
-     }
+  "art_flow": {
+    "type": "architecture",
+    "content": "direction: right\ngithub: GitHub\nengine: sf-engine {\n  webhook: Webhook\n  intake: Intake\n}\nd1: D1 {shape: cylinder}\ngithub -> engine.webhook: issues\nengine.webhook -> engine.intake: labelled\nengine.intake -> d1: work item\nengine.intake -> github: comment\n",
+    "base": null,
+    "preview": {
+      "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" data-drawn-by=\"software-factory\" width=\"982\" height=\"216\" viewBox=\"0 0 982 216\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"982\" height=\"216\" fill=\"#f6f6f7\"/><rect x=\"285\" y=\"24\" width=\"420\" height=\"168\" rx=\"10\" fill=\"#eef0f3\" stroke=\"#d3d7dd\"/><text x=\"297\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#676c74\">sf-engine</text><rect x=\"24\" y=\"96\" width=\"95\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"71.5\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">GitHub</text><rect x=\"895\" y=\"70\" width=\"63\" height=\"118\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"926.5\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">D1</text><rect x=\"315\" y=\"54\" width=\"112\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"371\" y=\"92\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">Webhook</text><rect x=\"585\" y=\"96\" width=\"90\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"630\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">Intake</text><path d=\"M119 112 L142.3 105.2 L168.1 99.7 L195.4 95.3 L223 92 L249.9 89.6 L274.9 88.1 L297 87.3 L315 87\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"186.2\" y=\"81.2\" width=\"46\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"209.2\" y=\"97.7\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">issues</text><path d=\"M427 87 L449.3 87.3 L469.5 88.2 L488.1 89.8 L506 92.4 L523.9 96 L542.5 100.7 L562.7 106.6 L585 114\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"467.1\" y=\"78.6\" width=\"60\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"497.1\" y=\"95.1\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">labelled</text><path d=\"M675 128.8 L693.6 128.8 L717.5 128.8 L745.2 128.8 L775.4 128.8 L806.8 128.8 L838.1 128.9 L868 128.9 L895 129\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"725.3\" y=\"116.3\" width=\"70\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"760.3\" y=\"132.8\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">work item</text><path d=\"M585 143.5 L562.2 150.9 L541.1 156.8 L521.6 161.5 L503.2 165.1 L486 167.7 L469.6 169.3 L453.8 170.2 L438.5 170.5 L423 170.5 L407 170.5 L390.8 170.5 L374.7 170.5 L359 170.5 L344 170.5 L329.9 170.5 L317 170.5 L301.6 170.2 L280.5 169.4 L255.3 167.9 L227.5 165.5 L198.4 162.2 L169.7 157.8 L142.7 152.3 L119 145.5\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"348.3\" y=\"158\" width=\"69\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"382.8\" y=\"174.5\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">comment</text></svg>",
+      "width": 982,
+      "height": 216,
+      "parts": [
+        {
+          "id": "box engine",
+          "kind": "box",
+          "label": "sf-engine",
+          "sig": "eb50ef18",
+          "box": {
+            "x": 285,
+            "y": 24,
+            "w": 420,
+            "h": 168
+          }
+        },
+        {
+          "id": "box github",
+          "kind": "box",
+          "label": "GitHub",
+          "sig": "b8d1a78e",
+          "box": {
+            "x": 24,
+            "y": 96,
+            "w": 95,
+            "h": 66
+          }
+        },
+        {
+          "id": "box d1",
+          "kind": "box",
+          "label": "D1",
+          "sig": "7524c877",
+          "box": {
+            "x": 895,
+            "y": 70,
+            "w": 63,
+            "h": 118
+          }
+        },
+        {
+          "id": "box engine.webhook",
+          "kind": "box",
+          "label": "Webhook",
+          "sig": "64377f6c",
+          "box": {
+            "x": 315,
+            "y": 54,
+            "w": 112,
+            "h": 66
+          }
+        },
+        {
+          "id": "box engine.intake",
+          "kind": "box",
+          "label": "Intake",
+          "sig": "2e01462d",
+          "box": {
+            "x": 585,
+            "y": 96,
+            "w": 90,
+            "h": 66
+          }
+        },
+        {
+          "id": "edge github -> engine.webhook",
+          "kind": "edge",
+          "label": "issues",
+          "sig": "521aa3b1",
+          "box": {
+            "x": 199.1796880364418,
+            "y": 83.650390625,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "edge engine.webhook -> engine.intake",
+          "kind": "edge",
+          "label": "labelled",
+          "sig": "e91f9e5e",
+          "box": {
+            "x": 487.0507823228836,
+            "y": 81.12382861226797,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "edge engine.intake -> d1",
+          "kind": "edge",
+          "label": "work item",
+          "sig": "9aedfed9",
+          "box": {
+            "x": 750.2859236598015,
+            "y": 118.78818456828594,
+            "w": 20,
+            "h": 20
+          }
+        },
+        {
+          "id": "edge engine.intake -> github",
+          "kind": "edge",
+          "label": "comment",
+          "sig": "fba603d0",
+          "box": {
+            "x": 372.7571269571781,
+            "y": 160.5,
+            "w": 20,
+            "h": 20
+          }
+        }
+      ],
+      "warnings": [],
+      "sha256": "5fe8fedf26c6b17f3c0d127437be673d339e6613eb32cb8e54ba0016cc6a7c69"
     },
-    {
-     "id": "ref legacy_imports(work_item_id) - work_items(id)",
-     "kind": "relation",
-     "label": "legacy_imports.work_item_id → work_items.id",
-     "sig": "cf7c9dc8",
-     "box": {
-      "x": 227.53999999999996,
-      "y": 54,
-      "w": 20,
-      "h": 20
-     }
-    },
-    {
-     "id": "table projects",
-     "kind": "table",
-     "label": "projects",
-     "sig": "543255ed",
-     "box": {
-      "x": 49.519999999999996,
-      "y": 140,
-      "w": 140,
-      "h": 80
-     }
-    },
-    {
-     "id": "table work_items",
-     "kind": "table",
-     "label": "work_items",
-     "sig": "93a03753",
-     "box": {
-      "x": 305.03999999999996,
-      "y": 60,
-      "w": 176.16,
-      "h": 124
-     }
-    },
-    {
-     "id": "table legacy_imports",
-     "kind": "table",
-     "label": "legacy_imports",
-     "sig": "ba7d0d1d",
-     "box": {
-      "x": 24,
-      "y": 24,
-      "w": 191.04,
-      "h": 80
-     }
-    }
-   ],
-   "warnings": [],
-   "sha256": "8239e7e008f0ed1c8baae46abfb5d6fe72c533cc7c1772b7ff40e1c5250842a1"
+    "basePreview": null
   }
- },
- "art_flow": {
-  "type": "architecture",
-  "content": "direction: right\ngithub: GitHub\nengine: sf-engine {\n  webhook: Webhook\n  intake: Intake\n}\nd1: D1 {shape: cylinder}\ngithub -> engine.webhook: issues\nengine.webhook -> engine.intake: labelled\nengine.intake -> d1: work item\nengine.intake -> github: comment\n",
-  "base": null,
-  "preview": {
-   "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"982\" height=\"216\" viewBox=\"0 0 982 216\"><defs><marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"9\" refY=\"5\" markerWidth=\"7\" markerHeight=\"7\" orient=\"auto-start-reverse\"><path d=\"M0 0 L10 5 L0 10 z\" fill=\"#676c74\"/></marker></defs><rect width=\"982\" height=\"216\" fill=\"#f6f6f7\"/><rect x=\"285\" y=\"24\" width=\"420\" height=\"168\" rx=\"10\" fill=\"#eef0f3\" stroke=\"#d3d7dd\"/><text x=\"297\" y=\"44\" font-size=\"13\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"600\" fill=\"#676c74\">sf-engine</text><rect x=\"24\" y=\"96\" width=\"95\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"71.5\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">GitHub</text><rect x=\"895\" y=\"70\" width=\"63\" height=\"118\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"926.5\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">D1</text><rect x=\"315\" y=\"54\" width=\"112\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"371\" y=\"92\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">Webhook</text><rect x=\"585\" y=\"96\" width=\"90\" height=\"66\" rx=\"6\" fill=\"#ffffff\" stroke=\"#d3d7dd\"/><text x=\"630\" y=\"134\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#0e0f11\" text-anchor=\"middle\">Intake</text><path d=\"M119 112 L142.3 105.2 L168.1 99.7 L195.4 95.3 L223 92 L249.9 89.6 L274.9 88.1 L297 87.3 L315 87\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"186.2\" y=\"81.2\" width=\"46\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"209.2\" y=\"97.7\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">issues</text><path d=\"M427 87 L449.3 87.3 L469.5 88.2 L488.1 89.8 L506 92.4 L523.9 96 L542.5 100.7 L562.7 106.6 L585 114\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"467.1\" y=\"78.6\" width=\"60\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"497.1\" y=\"95.1\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">labelled</text><path d=\"M675 128.8 L693.6 128.8 L717.5 128.8 L745.2 128.8 L775.4 128.8 L806.8 128.8 L838.1 128.9 L868 128.9 L895 129\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"725.3\" y=\"116.3\" width=\"70\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"760.3\" y=\"132.8\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">work item</text><path d=\"M585 143.5 L562.2 150.9 L541.1 156.8 L521.6 161.5 L503.2 165.1 L486 167.7 L469.6 169.3 L453.8 170.2 L438.5 170.5 L423 170.5 L407 170.5 L390.8 170.5 L374.7 170.5 L359 170.5 L344 170.5 L329.9 170.5 L317 170.5 L301.6 170.2 L280.5 169.4 L255.3 167.9 L227.5 165.5 L198.4 162.2 L169.7 157.8 L142.7 152.3 L119 145.5\" fill=\"none\" stroke=\"#676c74\" stroke-width=\"1.4\" marker-end=\"url(#arrow)\"/><rect x=\"348.3\" y=\"158\" width=\"69\" height=\"25\" rx=\"4\" fill=\"#f6f6f7\"/><text x=\"382.8\" y=\"174.5\" font-size=\"16\" font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" fill=\"#676c74\" text-anchor=\"middle\">comment</text></svg>",
-   "width": 982,
-   "height": 216,
-   "parts": [
-    {
-     "id": "box engine",
-     "kind": "box",
-     "label": "sf-engine",
-     "sig": "eb50ef18",
-     "box": {
-      "x": 285,
-      "y": 24,
-      "w": 420,
-      "h": 168
-     }
-    },
-    {
-     "id": "box github",
-     "kind": "box",
-     "label": "GitHub",
-     "sig": "b8d1a78e",
-     "box": {
-      "x": 24,
-      "y": 96,
-      "w": 95,
-      "h": 66
-     }
-    },
-    {
-     "id": "box d1",
-     "kind": "box",
-     "label": "D1",
-     "sig": "7524c877",
-     "box": {
-      "x": 895,
-      "y": 70,
-      "w": 63,
-      "h": 118
-     }
-    },
-    {
-     "id": "box engine.webhook",
-     "kind": "box",
-     "label": "Webhook",
-     "sig": "64377f6c",
-     "box": {
-      "x": 315,
-      "y": 54,
-      "w": 112,
-      "h": 66
-     }
-    },
-    {
-     "id": "box engine.intake",
-     "kind": "box",
-     "label": "Intake",
-     "sig": "2e01462d",
-     "box": {
-      "x": 585,
-      "y": 96,
-      "w": 90,
-      "h": 66
-     }
-    },
-    {
-     "id": "edge github -> engine.webhook",
-     "kind": "edge",
-     "label": "issues",
-     "sig": "521aa3b1",
-     "box": {
-      "x": 199.1796880364418,
-      "y": 83.650390625,
-      "w": 20,
-      "h": 20
-     }
-    },
-    {
-     "id": "edge engine.webhook -> engine.intake",
-     "kind": "edge",
-     "label": "labelled",
-     "sig": "e91f9e5e",
-     "box": {
-      "x": 487.0507823228836,
-      "y": 81.12382861226797,
-      "w": 20,
-      "h": 20
-     }
-    },
-    {
-     "id": "edge engine.intake -> d1",
-     "kind": "edge",
-     "label": "work item",
-     "sig": "9aedfed9",
-     "box": {
-      "x": 750.2859236598015,
-      "y": 118.78818456828594,
-      "w": 20,
-      "h": 20
-     }
-    },
-    {
-     "id": "edge engine.intake -> github",
-     "kind": "edge",
-     "label": "comment",
-     "sig": "fba603d0",
-     "box": {
-      "x": 372.7571269571781,
-      "y": 160.5,
-      "w": 20,
-      "h": 20
-     }
-    }
-   ],
-   "warnings": [],
-   "sha256": "5fe8fedf26c6b17f3c0d127437be673d339e6613eb32cb8e54ba0016cc6a7c69"
-  },
-  "basePreview": null
- }
 }

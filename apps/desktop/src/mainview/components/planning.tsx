@@ -76,8 +76,8 @@ import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
-import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
 import { SystemPane } from "./planning-system.tsx";
+import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
 import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */

@@ -2,7 +2,12 @@
 // base by part, pins on a part that follow it, and the preview only ever as an image.
 import type { DesignPreview } from "@software-factory/client/planning";
 import { describe, expect, it } from "vitest";
-import { designOverlays, pinOnPart, pinPlace, svgDataUrl } from "../src/mainview/lib/design-view.ts";
+import {
+  designOverlays,
+  pinOnPart,
+  pinPlace,
+  svgDataUrl,
+} from "../src/mainview/lib/design-view.ts";
 
 const part = (id: string, sig: string, x = 0) => ({
   id,
@@ -37,7 +42,10 @@ describe("the System tab's drawing (spec 22 part B)", () => {
   });
 
   it("pins on a part by its id, and the pin follows the part when it moves", () => {
-    const pin = pinOnPart("art_1", { width: 400 }, part("table users", "1", 100), { x: 175, y: 10 });
+    const pin = pinOnPart("art_1", { width: 400 }, part("table users", "1", 100), {
+      x: 175,
+      y: 10,
+    });
     expect(pin).toMatchObject({ artifactId: "art_1", element: "table users", fx: 0.75, fy: 0.2 });
     expect(pinPlace(pin, [part("table users", "1", 300)])).toEqual({ x: 375, y: 10 });
     expect(pinPlace(pin, [])).toEqual({ x: 175, y: 10 });

@@ -73,8 +73,8 @@ export function SystemPane({
   if (!current) {
     return (
       <div className="px-8 py-6 text-ink-muted text-sm" data-testid="system-empty">
-        No system designs yet. The planner adds a data model, an architecture, a flow or an API
-        when the plan needs one, or pulls one from the repository's .kim/designs.
+        No system designs yet. The planner adds a data model, an architecture, a flow or an API when
+        the plan needs one, or pulls one from the repository's .kim/designs.
       </div>
     );
   }
@@ -255,7 +255,9 @@ function Design({
               >
                 <AlertTriangleIcon className="mt-0.5 size-3.5 flex-none text-status-waiting" />
                 <span>
-                  <span className="font-medium">Layout: </span>
+                  <span className="font-medium">
+                    {w.code.startsWith("layout/") ? "Layout: " : "Drawing: "}
+                  </span>
                   {w.message}
                   {w.fixes[0] && <span className="text-ink-muted"> {w.fixes[0]}.</span>}
                 </span>
@@ -412,7 +414,10 @@ function PinList({ view, design }: { view: PlanningView; design: Artifact }) {
   return (
     <div className="mt-4 grid gap-1.5" data-testid="system-pins">
       {pins.map((p) => (
-        <div key={p.message.id} className="flex gap-2 rounded-lg bg-status-done/10 px-2.5 py-1.5 text-xs">
+        <div
+          key={p.message.id}
+          className="flex gap-2 rounded-lg bg-status-done/10 px-2.5 py-1.5 text-xs"
+        >
           <span className="flex size-4 flex-none items-center justify-center rounded-full bg-status-done font-semibold text-[10px] text-white">
             {p.n}
           </span>

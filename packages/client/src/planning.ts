@@ -167,25 +167,23 @@ export function answerText(kind: string, values: string[]): string {
 }
 
 /** The plan's blocks, as the server compares them (spec 27): one segmentation for both. Spec 21:
- * what an answer sets in its mockup, and a mockup's frame size, shared with the server. */
+ * what an answer sets in its mockup, and a mockup's frame size, shared with the server. Spec 22
+ * part B: comparing a design's parts with its pulled base. */
 export {
   appliedValues,
   changedSpan,
+  compareParts,
+  type DesignPart,
+  type DesignPreview,
   dedent,
   editAnswer,
   editWrote,
   foldSpace,
   frameSize,
   normalizeLines,
+  type PartChange,
   type PlanBlock,
   planBlocks,
-} from "@software-factory/runner-contract";
-/** Design previews (spec 22 part B): comparing a design's parts with its pulled base. */
-export {
-  compareParts,
-  type DesignPart,
-  type DesignPreview,
-  type PartChange,
 } from "@software-factory/runner-contract";
 /** The one sensitive-question check, shared with the server (ADR 0042, review of #71). */
 export { isSensitiveQuestion };

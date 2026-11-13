@@ -1809,16 +1809,16 @@ export const ANSWERS: Answers = {
     input.artifactId === "art_schema" || input.artifactId === "art_flow"
       ? designGet(input.artifactId, input.revision)
       : {
-    artifactId: input.artifactId,
-    kind: "mockup",
-    title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
-    revision: input.artifactId === "art_a" ? 2 : 1,
-    latest: input.artifactId === "art_a" ? 2 : 1,
-    content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
-    controls: ["--accent"],
-    designType: null,
-    preview: null,
-  },
+          artifactId: input.artifactId,
+          kind: "mockup",
+          title: input.artifactId === "art_a" ? "A: GitHub connection" : "B: On each project",
+          revision: input.artifactId === "art_a" ? 2 : 1,
+          latest: input.artifactId === "art_a" ? 2 : 1,
+          content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
+          controls: ["--accent"],
+          designType: null,
+          preview: null,
+        },
   "run.live": () => liveView(),
   "runner.list": () => ({
     runners: [
