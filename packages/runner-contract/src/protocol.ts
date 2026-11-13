@@ -35,6 +35,7 @@ import type {
   SteersResponse,
   TerminalCallRequest,
   TerminalCallResponse,
+  LineCallResponse,
   TokenResponse,
 } from "./wire.ts";
 
@@ -51,7 +52,23 @@ export const PATHS = {
   planning: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/planning`,
   steer: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/steer`,
   terminal: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/terminal`,
+  /** The job line's one-use socket URL (spec 44 part B, ADR 0592). */
+  line: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/line`,
 } as const;
+
+/**
+ * What the engine supports beyond the contract, declared in its heartbeat answer
+ * (`engine.capabilities`, spec 44 part B): a host uses the job line only when both declare it.
+ */
+export const ENGINE_CAPABILITIES = ["job-line"] as const;
+export type EngineCapability = (typeof ENGINE_CAPABILITIES)[number];
+
+/** The host pings its job line this often; auto-responded by the relay, so never billed. */
+export const LINE_PING_MS = 30_000;
+/** A ping with no pong within this long means the line is half-open: the host treats it as down. */
+export const LINE_PONG_DEADLINE_MS = 10_000;
+/** While the line is up, the host still makes each call once (`waitMs: 0`) this often. */
+export const LINE_SAFETY_POLL_MS = 5 * 60_000;
 
 /** How long the cloud holds a steer call with nothing queued (ADR 0400). */
 export const STEER_WAIT_MAX_MS = 25_000;
@@ -81,6 +98,7 @@ export const JOB_CALLS = [
   "planning",
   "steer",
   "terminal",
+  "line",
 ] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
@@ -110,7 +128,8 @@ export function isUnstoredPath(path: string): boolean {
     call === "attachment" ||
     call === "planning" ||
     call === "steer" ||
-    call === "terminal"
+    call === "terminal" ||
+    call === "line"
   );
 }
 
@@ -165,6 +184,12 @@ export interface ControlPlaneClient {
     body: TerminalCallRequest,
     signal?: AbortSignal,
   ): Promise<TerminalCallResponse>;
+  /**
+   * The job line (spec 44 part B, ADR 0592): a one-use socket URL to the job's relay, which pushes
+   * `{ t: "steer" | "viewer" | "planning" }` when there is something to fetch. Fenced like the
+   * others. Answered at once; 404 or `unavailable` from an engine without it.
+   */
+  line?(jobId: string, body: TerminalCallRequest): Promise<LineCallResponse>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -264,5 +289,7 @@ export function httpControlPlane(config: {
     // Not stored: each wait is new, and its ticket works once.
     terminal: (jobId, body, signal) =>
       call(PATHS.terminal(jobId), `term:${jobId}:${crypto.randomUUID()}`, body, signal),
+    // Not stored: its ticket works once.
+    line: (jobId, body) => call(PATHS.line(jobId), `line:${jobId}:${crypto.randomUUID()}`, body),
   };
 }

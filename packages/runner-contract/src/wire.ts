@@ -454,6 +454,11 @@ export const heartbeatResponseSchema = z.object({
    * updated. Optional: an older engine omits it, and then nothing forces a drain.
    */
   minRunnerCompat: z.number().int().min(0).optional(),
+  /**
+   * What this engine supports beyond the contract (spec 44 part B): `job-line`. Optional and
+   * additive: an older engine omits it, and a host then keeps its held calls.
+   */
+  engine: z.object({ capabilities: z.array(z.string()) }).optional(),
 });
 
 export const claimRequestSchema = z.object({
@@ -548,6 +553,14 @@ export const terminalCallResponseSchema = z.object({
   connect: z.object({ url: z.string() }).nullable(),
 });
 export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
+
+/** The job line call's answer: the one-use socket URL (spec 44 part B, ADR 0592). */
+export const lineCallResponseSchema = z.object({ connect: z.object({ url: z.string() }) });
+export type LineCallResponse = z.infer<typeof lineCallResponseSchema>;
+
+/** What the relay pushes down a job line: a wake only, never data (spec 44 rule 1). */
+export const lineMessageSchema = z.object({ t: z.enum(["steer", "viewer", "planning"]) });
+export type LineMessage = z.infer<typeof lineMessageSchema>;
 export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
 export type SteersResponse = z.infer<typeof steersResponseSchema>;
 
