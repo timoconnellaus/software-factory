@@ -355,3 +355,14 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > it as `proven.checksSetUp`. When checks exist, the count stays and each criterion not proven says
 > why ("no check is named for this", a named check that didn't pass, a static check, or only the
 > reviewer's link).
+
+> **Amended 2026-11-13 (triage ties, the owner's decision; Workflow v13, `triage-ties`).** A small
+> item skips the spec stage, so it had no person-approved links and none of its criteria could be
+> Proven. From v13 triage names the proving check for each criterion it writes, from
+> `checks.provable` (the declared checks, then the required CI checks, never `factory/verify`).
+> The tie is data the code validates: `workItem.triage` keeps only those names (an unknown one is
+> dropped and journaled, leaving the criterion Not proven), records them as `[checks: …]` tags on
+> triage's spec, accepts `[checks: none]` ("not covered by a check") as an honest answer, and is
+> refused once the item has left triage. `reviewPacket.record` proves an item without a spec
+> against those ties (`linkedBy: "triage"`); the reviewer's links still never prove. A check may not
+> be called `none`.

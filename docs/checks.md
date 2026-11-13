@@ -24,8 +24,23 @@ removes or changes a check loosens policy, so it waits for an approver).
 
 ## Tying a criterion to a check
 
-A criterion is tied to a check by the approved spec: a criterion that ends with
-`[checks: tests, e2e]`. A person approved the spec, so the tie is theirs.
+A tie is a `[checks: tests, e2e]` tag at the end of a criterion, read by `proveCriteria`
+(`packages/core/src/verify/proof.ts`). `[checks: none]` says no declared check can prove it, shown
+as "not covered by a check". Where the tie comes from:
+
+- **An item with a spec** (medium and large by default): the approved spec's criteria. A person
+  approved the spec, so the tie is theirs.
+- **An item without a spec** (small by default, `spec.requiredFrom` is `medium`), from Workflow v13:
+  triage. It is given the names that can prove anything (`checks.provable`: the declared checks,
+  then the required CI checks) and returns `criterionChecks`, one entry per criterion.
+  `workItem.triage` keeps only those names (any other is dropped and journaled, and that criterion
+  is untied, so Not proven), writes the tags into triage's spec, and refuses once the item has left
+  triage, so no later stage can add or change a tie. Before v13 a small item had no ties at all, so
+  none of its criteria could ever be Proven.
+- **The reviewer** may name checks too. They are shown, but never prove anything.
+
+A tied criterion is Proven only when one of its checks passed on the head commit: a declared check
+the runner host ran, or a required CI check that is green. Never a static check.
 
 ## What the gate says
 
