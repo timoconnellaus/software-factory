@@ -1,26 +1,34 @@
 // Factory: Workflows (spec 41, slice 5; design FactoryWorkflow). The project's named workflows
 // (ADR 0371) and the one it runs (ADR 0492), then that workflow's stages: the fixed skeleton with
-// the steps its three slots add. Read-only from `config.get`: workflows are changed on the website.
+// the steps its three slots add, from `config.get`. Edit workflows (`?edit=1`) edits them in the app
+// (ADR 0610): saved with the rest of the config, a loosening waits for an approver.
 // Stage types and shaping stages (spec 52) are design only, so the stages are the skeleton's.
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
+import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
   configProjectId,
+  EditToggle,
+  editSearch,
+  PendingChanges,
   ProjectPicker,
   projectSearch,
   useProjectConfig,
 } from "../components/config-parts.tsx";
 import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
+import { WorkflowsForm } from "../components/workflow-form.tsx";
 import { type StepView, skeleton, type WorkflowView, workflowList } from "../lib/config-view.ts";
 import { configQuery } from "../lib/factory-queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
   project?: string;
+  edit?: boolean;
   workflow?: string;
 }
 
@@ -29,6 +37,7 @@ export const Route = createRoute({
   path: "/factory/workflows",
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...projectSearch(s),
+    ...editSearch(s),
     ...(typeof s.workflow === "string" ? { workflow: s.workflow } : {}),
   }),
   loaderDeps: ({ search }) => ({ project: search.project }),
@@ -43,20 +52,47 @@ function WorkflowsPage() {
   const search = Route.useSearch();
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
+  const editing = !!search.edit && !!doc;
+  const editor = useConfigDraft(project?.id ?? "");
   const workflows = doc ? workflowList(doc) : [];
   const running = workflows.find((w) => w.current) ?? null;
   const shown =
     workflows.find((w) => w.name === search.workflow) ?? running ?? workflows[0] ?? null;
+  const [selected, setSelected] = useState(() =>
+    Math.max(
+      0,
+      workflows.findIndex((w) => w.name === shown?.name),
+    ),
+  );
   return (
     <PageArea>
       <PageHeader
         above={project?.name}
         title="Workflows"
         sub="A workflow fills the factory's fixed stages with steps of its own. Spec approval, verify and the merge gate always come from the factory. A project runs one workflow."
-        actions={<ProjectPicker projects={projects} project={project} from="/factory/workflows" />}
+        actions={
+          <>
+            <ProjectPicker projects={projects} project={project} from="/factory/workflows" />
+            {doc && (
+              <EditToggle
+                from="/factory/workflows"
+                projectId={project?.id}
+                editing={editing}
+                label="Edit workflows"
+              />
+            )}
+          </>
+        }
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
-      {doc && (
+      {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
+      {editing && (
+        <>
+          <WorkflowsForm editor={editor} selected={selected} onSelect={setSelected} />
+          <SaveBar editor={editor} />
+        </>
+      )}
+      {doc && !editing && (
         <>
           {workflows.length === 0 ? (
             <Empty>
@@ -111,7 +147,7 @@ function WorkflowsPage() {
         </>
       )}
       {project && config.data?.current && (
-        <ConfigFooter config={config.data} projectId={project.id} page="workflows" />
+        <ConfigFooter config={config.data} projectId={project.id} />
       )}
     </PageArea>
   );

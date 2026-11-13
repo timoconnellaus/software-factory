@@ -1,25 +1,32 @@
 // Factory: Agents (spec 41, slice 5; design FactoryAgents). The project's agents (ADR 0372): each a
 // model role and tier with standing instructions, never a model or a harness; then each model role
-// with the model the owner configured for it (config, shown as set; ADR 0018: code asks for a role). Read-only from `config.get`: agents are changed on the website.
+// with the model the owner configured for it (config, shown as set; ADR 0018: code asks for a role),
+// from `config.get`. Edit agents (`?edit=1`) edits them in the app (ADR 0610), saved with the config.
 // The design's skills (spec 52) and per-agent usage have no operation yet, so they aren't here.
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
+import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
   configProjectId,
+  EditToggle,
+  editSearch,
+  PendingChanges,
   ProjectPicker,
   projectSearch,
   useProjectConfig,
 } from "../components/config-parts.tsx";
 import { Cell, Empty, Row, TablePanel, WIDE } from "../components/data-table.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
+import { AgentsForm } from "../components/workflow-form.tsx";
 import { agentRows, modelRoleRows } from "../lib/config-view.ts";
 import { configQuery } from "../lib/factory-queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
   project?: string;
+  edit?: boolean;
   agent?: string;
 }
 
@@ -28,6 +35,7 @@ export const Route = createRoute({
   path: "/factory/agents",
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...projectSearch(s),
+    ...editSearch(s),
     ...(typeof s.agent === "string" ? { agent: s.agent } : {}),
   }),
   loaderDeps: ({ search }) => ({ project: search.project }),
@@ -49,6 +57,8 @@ function AgentsPage() {
   const search = Route.useSearch();
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
   const doc = config.data?.current?.policy ?? null;
+  const editing = !!search.edit && !!doc;
+  const editor = useConfigDraft(project?.id ?? "");
   const agents = doc ? agentRows(doc) : [];
   const chosen = agents.find((a) => a.name === search.agent) ?? agents[0];
   return (
@@ -57,10 +67,29 @@ function AgentsPage() {
         above={project?.name}
         title="Agents"
         sub="An agent is a role in the workflow: a model role, a tier and standing instructions. The runner chooses the model for the role."
-        actions={<ProjectPicker projects={projects} project={project} from="/factory/agents" />}
+        actions={
+          <>
+            <ProjectPicker projects={projects} project={project} from="/factory/agents" />
+            {doc && (
+              <EditToggle
+                from="/factory/agents"
+                projectId={project?.id}
+                editing={editing}
+                label="Edit agents"
+              />
+            )}
+          </>
+        }
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
-      {doc && (
+      {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
+      {editing && (
+        <>
+          <AgentsForm editor={editor} />
+          <SaveBar editor={editor} />
+        </>
+      )}
+      {doc && !editing && (
         <>
           {agents.length === 0 ? (
             <Empty>No agents of the project's own. Steps and builds use the built-in ones.</Empty>
@@ -143,7 +172,7 @@ function AgentsPage() {
         </>
       )}
       {project && config.data?.current && (
-        <ConfigFooter config={config.data} projectId={project.id} page="workflows" />
+        <ConfigFooter config={config.data} projectId={project.id} />
       )}
     </PageArea>
   );

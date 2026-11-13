@@ -72,7 +72,7 @@ describe("Agents", () => {
 describe("Policy: changing it in the app (ADR 0610)", () => {
   it("offers Edit policy and no website link", async () => {
     const html = await renderPage("/factory/policy");
-    expect(html).toContain('data-testid="edit-policy"');
+    expect(html).toContain('data-testid="edit-config"');
     expect(textOf(html)).not.toContain("on the website");
   });
 
@@ -144,3 +144,31 @@ const CURRENT = {
   impact: null,
   policy: { version: 1, autonomyPolicy: "balanced" },
 };
+
+describe("Workflows and Agents: changing them in the app (ADR 0610)", () => {
+  it.each(["/factory/workflows", "/factory/agents", "/factory/policy"])(
+    "%s offers an edit button and no website link",
+    async (path) => {
+      const html = await renderPage(path);
+      expect(html).toContain('data-testid="edit-config"');
+      expect(textOf(html)).not.toContain("on the website");
+    },
+  );
+
+  it("edits a workflow's slots and steps", async () => {
+    const html = await renderPage("/factory/workflows?edit=1");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="workflow-editor"');
+    expect(html).toContain('data-testid="slot-afterSpec"');
+    expect(html).toContain('data-testid="step-critic"');
+    expect(text).toContain("Add a work step");
+    expect(text).toContain("Merge gate Always a person");
+  });
+
+  it("edits the agents", async () => {
+    const html = await renderPage("/factory/agents?edit=1");
+    expect(html).toContain('data-testid="agents-form"');
+    expect(html).toContain('data-testid="agent-0"');
+    expect(html).toContain('data-testid="add-agent"');
+  });
+});

@@ -5,13 +5,15 @@
 // the current version (ADR 0370). Loosening policy is a person's decision: the approval goes
 // through `decide()` with a presence proof, never `op()`.
 import { Button } from "@software-factory/ui/components/button";
-import { createRoute, Link } from "@tanstack/react-router";
+import { createRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
   configProjectId,
+  EditToggle,
+  editSearch,
   PendingChanges,
   ProjectPicker,
   projectSearch,
@@ -35,7 +37,7 @@ export const Route = createRoute({
   path: "/factory/policy",
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...projectSearch(s),
-    ...(s.edit === true || s.edit === "1" || s.edit === "true" ? { edit: true } : {}),
+    ...editSearch(s),
   }),
   loaderDeps: ({ search }) => ({ project: search.project, edit: !!search.edit }),
   loader: async ({ context, deps }) => {
@@ -72,7 +74,6 @@ function PolicyPage() {
   const editor = useConfigDraft(project?.id ?? "");
   const doc = config.data?.current?.policy ?? null;
   const editing = !!search.edit && !!doc;
-  const here = project ? { project: project.id } : {};
   return (
     <PageArea>
       <PageHeader
@@ -92,24 +93,14 @@ function PolicyPage() {
                 Export as a file
               </Button>
             )}
-            {doc &&
-              (editing ? (
-                <Button size="sm" variant="outline" asChild>
-                  <Link to="/factory/policy" search={here} data-testid="edit-done">
-                    Done
-                  </Link>
-                </Button>
-              ) : (
-                <Button size="sm" asChild>
-                  <Link
-                    to="/factory/policy"
-                    search={{ ...here, edit: true }}
-                    data-testid="edit-policy"
-                  >
-                    Edit policy
-                  </Link>
-                </Button>
-              ))}
+            {doc && (
+              <EditToggle
+                from="/factory/policy"
+                projectId={project?.id}
+                editing={editing}
+                label="Edit policy"
+              />
+            )}
           </>
         }
       />
@@ -150,7 +141,7 @@ function PolicyPage() {
         ))
       )}
       {!editing && project && config.data?.current && (
-        <ConfigFooter config={config.data} projectId={project.id} page="settings" />
+        <ConfigFooter config={config.data} projectId={project.id} />
       )}
     </PageArea>
   );
