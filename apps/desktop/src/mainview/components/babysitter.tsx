@@ -218,7 +218,7 @@ export function MainRedCard({ red, projectName }: { red: MainRed; projectName: s
         </div>
         {repo && <Culprit r={repo} />}
       </Panel>
-      {repo && repo.main && repo.main.suspects.length > 0 && (
+      {repo?.main && repo.main.suspects.length > 0 && (
         <Panel>
           <span className="font-medium">Landed since it was green</span>
           <ul className="m-0 flex list-none flex-col gap-1 p-0">
