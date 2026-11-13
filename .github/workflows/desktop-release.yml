@@ -249,10 +249,19 @@ jobs:
           work=$(mktemp -d)
           mkdir "$work/zip" "$work/tar"
           ditto -x -k "artifacts/$CHANNEL-macos-arm64-Software-Factory.zip" "$work/zip"
-          tar -xf artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst -C "$work/tar"
-          for form in zip tar; do
-            sh scripts/check-keys-helper.sh "$(ls -d "$work/$form"/*.app)" "$TEAM_ID" "$SF_KEYS_PROFILE"
-          done
+          installed=$(cd "$work/zip" && ls -d -- *.app)
+          # The update archive as the updater stages it (update-verify.ts, stagedBundle): unpacked
+          # into `<App>.app.prepared-<hash>/`, holding exactly one bundle under the installed app's
+          # name. The rebuilt archive must keep that layout.
+          tops=$(zstd -q -dc artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst | tar -tf - | cut -d/ -f1 | sort -u)
+          if [ "$tops" != "$installed" ]; then
+            echo "::error::the update archive holds [$tops], not one bundle named $installed"; exit 1
+          fi
+          staged="$work/tar/$installed.prepared-check"
+          mkdir -p "$staged"
+          tar -xf artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst -C "$staged"
+          sh scripts/check-keys-helper.sh "$work/zip/$installed" "$TEAM_ID" "$SF_KEYS_PROFILE"
+          sh scripts/check-keys-helper.sh "$staged/$installed" "$TEAM_ID" "$SF_KEYS_PROFILE"
           # The rebuilt update archive is the one its manifest names: the updater checks both.
           archive=$(ls artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst)
           zstd -dc "$archive" > "$work/app.tar"
