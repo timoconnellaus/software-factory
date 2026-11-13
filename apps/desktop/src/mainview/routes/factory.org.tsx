@@ -44,13 +44,22 @@ import { Reads } from "../components/read-state.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
 import { useOrgScope } from "../components/shell-sidebar.tsx";
 import {
+  type Agent,
+  type AgentEdit,
+  conflicts,
+  keepOn,
+  latestOf,
+  openAgent,
+  typeIn,
+} from "../lib/agent-edit.ts";
+import {
   orgConfigQuery,
   orgWorkflowQuery,
   orgWorkflowsQuery,
   stageTypesQuery,
 } from "../lib/factory-queries.ts";
 import { op, read } from "../lib/op.ts";
-import { agentDiff, type DiffRow, workflowDiff } from "../lib/org-diff.ts";
+import { agentDiff, type DiffRow, unreadable, workflowDiff } from "../lib/org-diff.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
@@ -400,11 +409,10 @@ export function cannotApproveOrg(p: Pending, version: number): string | null {
   if (p.operation !== "orgConfig.rollback" && !p.proposal)
     return "This change can't be shown: what it would save isn't readable. Reject it.";
   // The engine says it changes something, but no difference can be shown: nothing to approve blind.
-  if (
-    p.impact.changes.length > 0 &&
-    p.operation !== "orgConfig.rollback" &&
-    differenceOf(p).length === 0
-  )
+  const rows = differenceOf(p);
+  if (p.operation !== "orgConfig.rollback" && unreadable(rows))
+    return "Part of this change can't be shown here (the two sides read the same). Reject it, and look at it again.";
+  if (p.impact.changes.length > 0 && p.operation !== "orgConfig.rollback" && rows.length === 0)
     return "The engine sees a change here that this screen can't show. Reject it, and look at it again.";
   return null;
 }
@@ -491,7 +499,6 @@ function OrgDifference({ change }: { change: Pending }) {
   return <DiffRows rows={differenceOf(change)} testId="org-pending-diff" />;
 }
 
-type Agent = { name: string; role: string; tier?: string; instructions?: string };
 const ROLES = ["triage", "implement", "review", "summarise"].map((r) => ({ value: r, label: r }));
 
 /** The org's agents: change one (Touch ID); changing one that judges work waits for an org admin. */
@@ -503,20 +510,13 @@ function OrgAgents({
   config: OpOutput<"orgConfig.get"> | undefined;
 }) {
   const agents = (Array.isArray(config?.config.agents) ? config.config.agents : []) as Agent[];
-  const [editing, setEditingState] = useState<Agent | null>(null);
-  const [original, setOriginal] = useState<Agent | null>(null);
-  // The org config version the edit started from: the save names it, so a newer save by someone
-  // else is refused (conflict) instead of silently replaced (review of #159).
-  const [editBase, setEditBase] = useState<number | null>(null);
-  const setEditing = (a: Agent | null) => {
-    setEditingState(a);
-    if (a === null || original === null || a.name !== original.name || editing === null) {
-      setOriginal(a ? { ...a } : null);
-      setEditBase(a ? (config?.version ?? 0) : null);
-    }
-  };
-  const latest = agents.find((x) => x.name === original?.name) ?? null;
-  const agentMoved = editing !== null && editBase !== null && editBase !== (config?.version ?? 0);
+  // The edit and the version it is based on (lib/agent-edit.ts): typing never re-bases it.
+  const [edit, setEdit] = useState<AgentEdit | null>(null);
+  const editing = edit?.draft ?? null;
+  const version = config?.version ?? 0;
+  const latest = edit ? latestOf(agents, edit) : null;
+  const agentMoved = edit !== null && edit.base !== version;
+  const type = (patch: Partial<Agent>) => setEdit((e) => (e ? typeIn(e, patch) : e));
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
   return (
@@ -534,7 +534,9 @@ function OrgAgents({
           variant="outline"
           disabled={!canDecide}
           onClick={() =>
-            setEditing({ name: "", role: "review", tier: "standard", instructions: "" })
+            setEdit(
+              openAgent({ name: "", role: "review", tier: "standard", instructions: "" }, version),
+            )
           }
         >
           Add an agent
@@ -553,7 +555,7 @@ function OrgAgents({
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => setEditing({ ...a })}
+                  onClick={() => setEdit(openAgent(a, version))}
                   disabled={!canDecide}
                 >
                   Edit
@@ -564,7 +566,7 @@ function OrgAgents({
         </TablePanel>
       )}
       <LeaveGuard
-        dirty={editing !== null && JSON.stringify(editing) !== JSON.stringify(original)}
+        dirty={edit !== null && JSON.stringify(edit.draft) !== JSON.stringify(edit.original)}
       />
       {editing && (
         <Panel className="gap-2" data-testid="org-agent-form">
@@ -574,9 +576,9 @@ function OrgAgents({
               aria-label="Agent name"
               placeholder="Name"
               value={editing.name}
-              onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+              onChange={(e) => type({ name: e.target.value })}
             />
-            <Select value={editing.role} onValueChange={(role) => setEditing({ ...editing, role })}>
+            <Select value={editing.role} onValueChange={(role) => type({ role })}>
               <SelectTrigger size="sm" className="w-[150px]" aria-label="Role">
                 <SelectValue />
               </SelectTrigger>
@@ -592,7 +594,7 @@ function OrgAgents({
               label="Tier"
               options={["standard", "light"]}
               value={editing.tier ?? "standard"}
-              onChange={(tier) => setEditing({ ...editing, tier })}
+              onChange={(tier) => type({ tier })}
             />
           </div>
           <Textarea
@@ -600,27 +602,30 @@ function OrgAgents({
             aria-label="Instructions"
             placeholder="Standing instructions, added to every job this agent runs"
             value={editing.instructions ?? ""}
-            onChange={(e) => setEditing({ ...editing, instructions: e.target.value })}
+            onChange={(e) => type({ instructions: e.target.value })}
           />
           <CharCount value={editing.instructions ?? ""} />
           {agentMoved && (
             <div className="flex flex-col gap-2 text-[13px]" data-testid="org-agent-moved">
               <span>
-                The org's workflows changed while you were editing (v{editBase} → v{config?.version}
-                ). What changed in this agent since you opened it:
+                The org's workflows changed while you were editing (v{edit?.base} → v{version}).
+                What changed in this agent since you opened it:
               </span>
-              <DiffRows rows={agentDiff(original, latest)} />
-              {agentDiff(original, latest).length === 0 && (
+              <DiffRows rows={agentDiff(edit?.original, latest)} />
+              {agentDiff(edit?.original, latest).length === 0 && (
                 <span className="text-ink-3 text-xs">Nothing in this agent.</span>
+              )}
+              {edit && conflicts(edit, latest).length > 0 && (
+                <span className="text-xs">
+                  Keeping your changes replaces theirs in: {conflicts(edit, latest).join(", ")}. The
+                  rest of their change stays.
+                </span>
               )}
               <Button
                 size="sm"
                 variant="outline"
                 className="w-fit"
-                onClick={() => {
-                  setOriginal(latest ? { ...latest } : original);
-                  setEditBase(config?.version ?? 0);
-                }}
+                onClick={() => setEdit((e) => (e ? keepOn(e, latest, version) : e))}
               >
                 Keep my changes on v{config?.version}
               </Button>
@@ -635,17 +640,17 @@ function OrgAgents({
                   "agent.save",
                   {
                     orgId,
-                    baseVersion: editBase ?? 0,
+                    baseVersion: edit?.base ?? version,
                     agent: { ...editing, name: editing.name.trim() },
                   },
                   `Saved ${editing.name.trim()}`,
                 );
-                if (out) setEditing(null);
+                if (out) setEdit(null);
               }}
             >
               Save agent
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+            <Button size="sm" variant="ghost" onClick={() => setEdit(null)}>
               Cancel
             </Button>
           </div>
