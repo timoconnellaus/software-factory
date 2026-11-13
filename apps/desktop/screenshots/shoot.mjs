@@ -209,6 +209,27 @@ export const SCREENS = [
     design: "FactoryPolicy.html",
     scrollTo: "history",
   },
+  // Review of #145: the rollback's classification and difference before confirming; a project on an
+  // org workflow; a Mac with a software key (every released build before the key helper).
+  {
+    name: "policy-rollback",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+    clicks: ['[data-testid="history"] button'],
+  },
+  {
+    name: "policy-org-workflow",
+    path: "/factory/policy?project=prj_site&edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "override-retryLimit",
+  },
+  {
+    name: "policy-software-key",
+    path: "/factory/policy",
+    query: "?key=software",
+    design: "FactoryPolicy.html",
+  },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
   {

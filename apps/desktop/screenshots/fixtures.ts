@@ -300,6 +300,13 @@ export const POLICY_DOC = {
   workflow: "Software",
 };
 
+/** A project on the org's Software workflow, with one override of the org's value (spec 52). */
+export const ON_ORG_WORKFLOW = {
+  ...POLICY_DOC,
+  workflow: "wf_software",
+  workflowOverrides: { build: { retryLimit: 3 } },
+};
+
 /** The Factory project's config versions, newest first, as `config.get` lists them. */
 export const CONFIG_HISTORY = [
   {
@@ -322,7 +329,7 @@ export const CONFIG_HISTORY = [
     createdAt: ago(60 * 24 * 4),
     valid: true,
     impact: "neutral" as const,
-    policy: POLICY_DOC,
+    policy: { ...POLICY_DOC, wipLimit: 5 },
   },
   {
     version: 10,
@@ -1661,8 +1668,13 @@ export const ANSWERS: Answers = {
   }),
   "config.get": (input) => ({
     projectId: input.projectId,
-    current: CONFIG_HISTORY[0] ?? null,
+    // The Website runs the org's Software workflow, overriding its retry limit (PR #121).
+    current:
+      input.projectId === SITE
+        ? { ...(CONFIG_HISTORY[0] as (typeof CONFIG_HISTORY)[0]), policy: ON_ORG_WORKFLOW }
+        : (CONFIG_HISTORY[0] ?? null),
     error: null,
+    pendingMore: false,
     history: CONFIG_HISTORY,
     pending:
       input.projectId === FACTORY
@@ -1670,7 +1682,7 @@ export const ANSWERS: Answers = {
             {
               pendingActionId: "pa_cfg_1",
               operation: "config.save",
-              note: "Retries per item, 2 to 3",
+              note: "One more retry for flaky builds",
               by: "owner",
               createdAt: ago(30),
               baseVersion: 12,
@@ -1735,6 +1747,35 @@ export const ANSWERS: Answers = {
         candidateVersion: 11,
       },
     ],
+  }),
+  "workflow.get": (input) => ({
+    version: 4,
+    workflow: {
+      schema: 1,
+      id: input.workflowId,
+      name: "Software",
+      description: "",
+      stages: [
+        {
+          id: "build",
+          type: "build",
+          typeVersion: 1,
+          name: "Build",
+          phase: "delivery",
+          settings: { retryLimit: 2 },
+        },
+        {
+          id: "verify",
+          type: "checks",
+          typeVersion: 1,
+          name: "Verify",
+          phase: "delivery",
+          settings: { requiredChecks: ["ci", "typecheck"] },
+        },
+      ],
+    },
+    builtIn: null,
+    shipped: null,
   }),
   "adjudicator.stats": () => ({
     spec: {

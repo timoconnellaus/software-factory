@@ -10,7 +10,14 @@ const PENDING = 'data-testid="read-pending"';
 const ERROR = 'data-testid="read-error"';
 const failed = { error: "the factory isn't reachable" };
 const noConfig = {
-  result: { projectId: "prj_factory", current: null, error: null, history: [], pending: [] },
+  result: {
+    projectId: "prj_factory",
+    current: null,
+    error: null,
+    history: [],
+    pending: [],
+    pendingMore: false,
+  },
 };
 
 describe.each([
@@ -76,16 +83,18 @@ describe("Policy: changing it in the app (ADR 0610)", () => {
     expect(textOf(html)).not.toContain("on the website");
   });
 
-  it("shows a waiting change with Approve and Reject", async () => {
+  it("shows a waiting change, with Approve only once the engine has classified it", async () => {
     const html = await renderPage("/factory/policy");
     const text = textOf(html);
     expect(text).toContain("1 change is waiting for an approver");
-    expect(text).toContain("Save: Retries per item, 2 to 3");
-    expect(html).toContain('data-testid="pending-approve"');
+    expect(text).toContain("Save: One more retry for flaky builds");
+    // Before the classification is on screen there is nothing to approve yet.
+    expect(text).toContain("Classifying the change…");
+    expect(html).not.toContain('data-testid="pending-approve"');
     expect(html).toContain('data-testid="pending-reject"');
   });
 
-  it("offers only Discard for a change drafted against an older version", async () => {
+  it("offers only Reject for a change drafted against an older version", async () => {
     const stale = {
       result: {
         projectId: "prj_factory",
@@ -96,7 +105,7 @@ describe("Policy: changing it in the app (ADR 0610)", () => {
           {
             pendingActionId: "pa_old",
             operation: "config.save",
-            note: "Retries per item, 2 to 3",
+            note: "One more retry for flaky builds",
             by: "owner",
             createdAt: new Date().toISOString(),
             baseVersion: 12,
@@ -104,12 +113,13 @@ describe("Policy: changing it in the app (ADR 0610)", () => {
             toVersion: null,
           },
         ],
+        pendingMore: false,
       },
     };
     const html = await renderPage("/factory/policy", { answers: { "config.get": stale } });
     expect(textOf(html)).toContain("drafted against v12; the config is now v13");
     expect(html).not.toContain('data-testid="pending-approve"');
-    expect(textOf(html)).toContain("Discard");
+    expect(html).toContain('data-testid="pending-reject"');
   });
 
   it("edits the whole config as a form, with History and roll back", async () => {
@@ -127,7 +137,7 @@ describe("Policy: changing it in the app (ADR 0610)", () => {
       "History",
     ])
       expect(text).toContain(section);
-    expect(text).toContain("Roll back to this");
+    expect(text).toContain("Roll back");
     expect(html).toContain('data-testid="edit-json"');
     expect(html).toContain('data-testid="edit-done"');
   });
@@ -144,3 +154,14 @@ const CURRENT = {
   impact: null,
   policy: { version: 1, autonomyPolicy: "balanced" },
 };
+
+describe("Policy on an org workflow (spec 52, PR #121)", () => {
+  it("marks the settings the org's workflow sets, with the org's value and the override", async () => {
+    const text = textOf(await renderPage("/factory/policy?project=prj_site&edit=1"));
+    expect(text).toContain("Software sets 2. Overridden here");
+    expect(text).toContain(
+      "A looser value than the org's applies only once an org admin approves it",
+    );
+    expect(text).toContain("Software sets ci, typecheck. This project uses the org's value.");
+  });
+});

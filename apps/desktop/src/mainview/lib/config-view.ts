@@ -191,7 +191,7 @@ export function policySections(doc: Doc): { title: string; rows: PolicyRow[] }[]
         },
         {
           key: "retry",
-          label: "Retries per item",
+          label: "Retry limit",
           value: String(num(doc.retryLimit, POLICY_DEFAULTS.retryLimit)),
           note: "Automatic retries of a failed build or verify, then the item fails.",
         },

@@ -4,10 +4,12 @@
 // that tightens or is neutral applies at once; one that loosens waits for an approver, judged under
 // the current version (ADR 0370). Loosening policy is a person's decision: the approval goes
 // through `decide()` with a presence proof, never `op()`.
+
+import type { ConfigView } from "@software-factory/client/ops";
 import { Button } from "@software-factory/ui/components/button";
 import { createRoute, Link } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { SaveBar, useConfigDraft } from "../components/config-editor.tsx";
+import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
 import {
   ConfigFooter,
   ConfigState,
@@ -21,8 +23,15 @@ import { History, PolicyForm } from "../components/policy-form.tsx";
 import { PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
 import { policySections } from "../lib/config-view.ts";
 import { saveFile } from "../lib/external.tsx";
-import { adjudicatorQuery, configQuery, trialsQuery } from "../lib/factory-queries.ts";
+import {
+  adjudicatorQuery,
+  configQuery,
+  orgWorkflowOf,
+  orgWorkflowQuery,
+  trialsQuery,
+} from "../lib/factory-queries.ts";
 import { read } from "../lib/op.ts";
+import { projectsQuery } from "../lib/queries.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
@@ -42,13 +51,24 @@ export const Route = createRoute({
     const id = await configProjectId(context, deps.project);
     if (!id) return;
     const q = context.queryClient;
-    await Promise.all([
+    const config = await Promise.all([
       q.ensureQueryData(configQuery(id)),
       // The edit form's trials and the adjudicator's record, only when editing.
       ...(deps.edit
         ? [q.ensureQueryData(trialsQuery(id)), q.ensureQueryData(adjudicatorQuery(id))]
         : []),
-    ]).catch(() => null);
+    ])
+      .then(([c]) => c as Awaited<ReturnType<typeof q.ensureQueryData<ConfigView>>>)
+      .catch(() => null);
+    // A project on an org workflow: the org's values its overrides are shown against.
+    const workflowId = orgWorkflowOf(config?.current?.policy);
+    const project = (
+      await context.queryClient
+        .ensureQueryData(projectsQuery(context.session.orgs.map((o) => o.id)))
+        .catch(() => [])
+    ).find((p) => p.id === id);
+    if (deps.edit && workflowId && project)
+      await q.ensureQueryData(orgWorkflowQuery(project.orgId, workflowId)).catch(() => null);
   },
   component: PolicyPage,
 });
@@ -69,7 +89,6 @@ async function exportConfig(projectId: string, slug: string) {
 function PolicyPage() {
   const search = Route.useSearch();
   const { projects, project, projectsRead, config } = useProjectConfig(search.project);
-  const editor = useConfigDraft(project?.id ?? "");
   const doc = config.data?.current?.policy ?? null;
   const editing = !!search.edit && !!doc;
   const here = project ? { project: project.id } : {};
@@ -115,12 +134,9 @@ function PolicyPage() {
       />
       <ConfigState projectsRead={projectsRead} project={project} config={config} />
       {project && config.data && <PendingChanges config={config.data} projectId={project.id} />}
-      {editing ? (
-        <>
-          <PolicyForm editor={editor} />
-          <SaveBar editor={editor} />
-          <History editor={editor} />
-        </>
+      {editing && project ? (
+        // Keyed by the project: another project's page starts with no draft (review of #145).
+        <PolicyEditing key={project.id} projectId={project.id} orgId={project.orgId} />
       ) : (
         doc &&
         policySections(doc).map((section) => (
@@ -153,5 +169,18 @@ function PolicyPage() {
         <ConfigFooter config={config.data} projectId={project.id} page="settings" />
       )}
     </PageArea>
+  );
+}
+
+/** Edit mode: the draft, the form, the save bar, History, and the guard on unsaved changes. */
+function PolicyEditing({ projectId, orgId }: { projectId: string; orgId: string }) {
+  const editor = useConfigDraft(projectId);
+  return (
+    <>
+      <UnsavedGuard editor={editor} />
+      <PolicyForm editor={editor} orgId={orgId} />
+      <SaveBar editor={editor} />
+      <History editor={editor} />
+    </>
   );
 }
