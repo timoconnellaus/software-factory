@@ -1356,6 +1356,25 @@ screen needs).
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.
+   **As built (f1, server side):** `core_skill_versions` (migration 0283; kept like config versions,
+   at most 500 a skill); `packages/core/src/skills/` (the draft schema, the built-in skills, with the
+   reviewer's `checks` skill protected, and `resolveSkills`, pure). The org config holds `skills`
+   (each skill's current version and the built-in it extends or replaces) and `agentSkills`; stages
+   carry `skills` with conditions. Validation: attachments resolve, names are unique, a protected
+   built-in is never replaced. Impact: practice, except where a judge follows the skill (a stage that
+   judges the work, a judging agent, an extension of the protected built-in): loosens, so an org
+   admin decides. Operations: `skill.list`, `skill.get`, `skill.save`, `skill.attach`,
+   `skill.detach`, `skill.archive` (through the org config version), `skill.propose` (the factory's,
+   scoped to the project the evidence came from), `skill.accept`, `skill.reject`, and `skill.forJob`
+   on the runner channel (the job's own runner, fenced by the lease). `job.enqueue` resolves the
+   skills of an item on an org workflow, at the org version it pinned, into the job's context as
+   references. Q17: `config.trial.start` of an instruction edit is `self-modify`, so the improver's
+   edit waits for a person, and approving it starts the trial. Deviations: agent attachments live in
+   the org config's `agentSkills` (by agent name) rather than on the agent, so the agent schema
+   project configs share is unchanged; skill files (R2) aren't built, only the body; an accepted or
+   saved skill applies at once, without ADR 0373's trial (trialling one needs per-item version
+   choice in the job builder); `skill.trials` isn't built. The projection into the harness (writing
+   `<slug>/SKILL.md` in the run's settings directory) is the hosts' change, not made here.
 8. **(g) Autopilots** (migration **0284**: `core_autopilot_runs`, the `autopilot` kind and actor). As
    in "Autopilots", with the per-autopilot limits (Q19).
 9. **Later, in this order:** the generic review packet (ADR 0512); Preview on the reconciler with

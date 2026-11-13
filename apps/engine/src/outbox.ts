@@ -140,6 +140,14 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
         { actor: BABYSITTER, origin: { surface: "cron", step: "verify.recheck" } },
       );
       return;
+    case "github.comment":
+      // After the call that asked for it committed (spec 53, the reland's note on the original PR).
+      await invokeDeps(env).services.github.commentOnPullRequest(
+        message.payload.repo,
+        message.payload.number,
+        message.payload.body,
+      );
+      return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);

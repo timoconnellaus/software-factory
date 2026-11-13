@@ -16,6 +16,7 @@ import {
   type ProjectPolicy,
   parseProjectPolicy,
 } from "../policy/project-policy.ts";
+import { BUILTIN_BY_ID } from "../skills/builtin.ts";
 import { BUILT_IN_WORKFLOWS, WORKFLOW_TEMPLATES } from "../stages/builtins.ts";
 import { summarise, workflowImpact } from "../stages/impact.ts";
 import {
@@ -49,7 +50,17 @@ const listed = (items: string[]) =>
     : `${items.slice(0, NOTIFY_ITEMS).join("; ")}; and ${items.length - NOTIFY_ITEMS} more`;
 
 /** The org config operations whose loosening calls wait for an org admin. */
-export const ORG_CONFIG_WRITES = ["workflow.save", "orgConfig.rollback", "agent.save"] as const;
+export const ORG_CONFIG_WRITES = [
+  "workflow.save",
+  "orgConfig.rollback",
+  "agent.save",
+  // Skills (ADR 0513): through the org config version and its impact check.
+  "skill.save",
+  "skill.attach",
+  "skill.detach",
+  "skill.archive",
+  "skill.accept",
+] as const;
 
 const orgId = z.string().min(1);
 const baseVersion = z.number().int().nonnegative();
@@ -138,6 +149,7 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
     for (const c of workflowImpact(b, builtIn(after, kind)).changes)
       changes.push({ ...c, path: `${b.id}.${c.path}` });
   }
+  changes.push(...skillsImpact(before, after));
   // Agents are practice, except one that judges the work (an agent check's): a different prompt
   // there may pass what the old one sent back, so changing or removing it loosens (Q16).
   const judging = new Set([...judgingAgents(before), ...judgingAgents(after)]);
@@ -160,6 +172,56 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
   return summarise(changes);
 }
 
+/**
+ * Skills (ADR 0513): a version change, a new skill or a removed one is practice, except where a
+ * judge follows it (Q16): attached to a stage that judges the work, to a judging agent, or extending
+ * a protected built-in. Then it is policy: loosens, so a person decides.
+ */
+function skillsImpact(before: OrgConfig, after: OrgConfig): ImpactChange[] {
+  const out: ImpactChange[] = [];
+  const judged = new Set<string>();
+  const judges = new Set([...judgingAgents(before), ...judgingAgents(after)]);
+  for (const c of [before, after]) {
+    for (const w of [...c.workflows, ...Object.values(c.builtIns)])
+      for (const s of w?.stages ?? [])
+        if (stageType(s.type)?.judges) for (const a of s.skills ?? []) judged.add(a.skill);
+    for (const [agent, ids] of Object.entries(c.agentSkills))
+      if (judges.has(agent.toLowerCase())) for (const id of ids) judged.add(id);
+    for (const [id, s] of Object.entries(c.skills))
+      if (s.overrides && BUILTIN_BY_ID.get(s.overrides.builtin)?.protected) judged.add(id);
+  }
+  for (const id of new Set([...Object.keys(before.skills), ...Object.keys(after.skills)])) {
+    const was = before.skills[id];
+    const now = after.skills[id];
+    if (JSON.stringify(was) === JSON.stringify(now)) continue;
+    const what = !was ? "added" : !now ? "removed" : `v${was.version} → v${now.version}`;
+    out.push(
+      judged.has(id)
+        ? {
+            path: `skills.${id}`,
+            class: "loosens",
+            summary: `A skill a judge follows changed (${id}, ${what}).`,
+          }
+        : { path: `skills.${id}`, class: "neutral", summary: `The skill ${id}: ${what}.` },
+    );
+  }
+  const agents = new Set([...Object.keys(before.agentSkills), ...Object.keys(after.agentSkills)]);
+  for (const agent of agents) {
+    const was = JSON.stringify(before.agentSkills[agent] ?? []);
+    if (was === JSON.stringify(after.agentSkills[agent] ?? [])) continue;
+    out.push(
+      judges.has(agent.toLowerCase())
+        ? {
+            path: `agentSkills.${agent}`,
+            class: "loosens",
+            summary: `${agent} judges work: the skills it follows changed.`,
+          }
+        : { path: `agentSkills.${agent}`, class: "neutral", summary: `${agent}'s skills changed.` },
+    );
+  }
+  return out;
+}
+
 /** The agents (lower-cased names) that judge work in any of the document's workflows. */
 function judgingAgents(config: OrgConfig): string[] {
   const out: string[] = [];
@@ -169,7 +231,7 @@ function judgingAgents(config: OrgConfig): string[] {
   return out;
 }
 
-function requireBase(version: number, base: number) {
+export function requireBase(version: number, base: number) {
   if (version !== base) {
     throw new OperationError(
       "conflict",
@@ -179,7 +241,7 @@ function requireBase(version: number, base: number) {
   }
 }
 
-function validated(doc: unknown): OrgConfig {
+export function validated(doc: unknown): OrgConfig {
   const parsed = parseOrgConfig(doc);
   if (!parsed.ok) {
     throw new OperationError(
@@ -923,13 +985,23 @@ async function rollbackOrgConfig(
  * the approver's call: an org-level pending action has no Workflow to re-run it. The proposer stays
  * its author. Refuses, deciding nothing, when the config moved on or no longer validates.
  */
+/** The skill operations' writes, applied when an org admin approves a loosening one (ADR 0513). */
+export type SkillWrite = (
+  ctx: HandlerContext,
+  input: unknown,
+  createdBy?: string,
+) => Promise<{ version: number }>;
+export const SKILL_WRITES: Record<string, SkillWrite> = {};
+
 export async function applyApprovedOrgConfig(
   ctx: HandlerContext,
   pa: { id: string; operation: string; input: string; actor_id: string },
 ): Promise<{ version: number }> {
   const input = JSON.parse(pa.input);
-  const written =
-    pa.operation === "orgConfig.rollback"
+  const skill = SKILL_WRITES[pa.operation];
+  const written = skill
+    ? await skill(ctx, input, pa.actor_id)
+    : pa.operation === "orgConfig.rollback"
       ? await rollbackOrgConfig(ctx, input, pa.actor_id)
       : pa.operation === "agent.save"
         ? await saveAgent(ctx, input, pa.actor_id)

@@ -15,6 +15,7 @@ import { backupOwnerId } from "../scope.ts";
 import { childrenOf, createSplitChildren } from "../splits.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, applyOverrideApproval, CONFIG_WRITES } from "./config.ts";
+import { startTrial } from "./improve.ts";
 import { openIncident } from "./incidents.ts";
 import {
   pendingActionId,
@@ -308,6 +309,21 @@ export const approvalDecide = defineOperation({
       pa.operation === "override.approve"
     ) {
       await applyOverrideApproval(ctx, JSON.parse(pa.input));
+      ctx.writePendingStatus(
+        "apply",
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({ status: "applied" })
+          .where("id", "=", pa.id),
+      );
+    }
+    // The improver's proposed instruction edit (Q17): accepted, its trial starts.
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      pa.operation === "config.trial.start"
+    ) {
+      await startTrial(ctx, JSON.parse(pa.input), pa.actor_id);
       ctx.writePendingStatus(
         "apply",
         ctx.db
