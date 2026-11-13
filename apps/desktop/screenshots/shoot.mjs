@@ -364,6 +364,8 @@ export const SCREENS = [
     query: "?check=not-installed",
     design: "SettingsDevices.html",
   },
+  // The app's error screen (an error no page handles; fake-bridge.ts `?crash=1`). No design file.
+  { name: "app-error", path: "/", query: "?crash=1" },
   {
     name: "this-mac-update-off",
     path: "/settings",
@@ -477,7 +479,7 @@ try {
     }
   }
   if (withDesign) {
-    const designs = [...new Set(screens.map((s) => s.design))];
+    const designs = [...new Set(screens.map((s) => s.design).filter(Boolean))];
     for (const d of designs) {
       const url = `file://${resolve(repo, "docs/design/factory-ui", d)}`;
       await shoot(cdp, url, resolve(out, "design", d.replace(".html", ".png")), "light");

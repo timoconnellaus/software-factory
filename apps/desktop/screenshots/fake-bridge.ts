@@ -66,6 +66,40 @@ if (KEY_FIXTURE === "signing-in")
     keyFingerprint: "3f2a-91c0-77be-d41e",
   });
 if (KEY_FIXTURE === "upgrade") Object.assign(session, { keyStorage: "software", keyUpgrade: true });
+
+/**
+ * Signing in and out as the main process does it (the behaviour tests): `?session=out` starts
+ * signed out, and every read answers "signed out" as the main process's door does then.
+ * `window.__sfSignIn()` completes a sign-in (the device approved in the browser) and
+ * `window.__sfRevoke()` ends the token mid-session (the device replaced): each pushes the session.
+ * `?crash=1` makes the shell's first read fail with an unexpected error (the root error screen).
+ */
+const SESSION_FIXTURE = new URLSearchParams(location.search).get("session");
+const CRASH = new URLSearchParams(location.search).get("crash") === "1";
+const SIGNED_IN = { ...session };
+const SIGNED_OUT_SESSION = {
+  signedIn: false,
+  login: null,
+  deviceId: null,
+  signingIn: false,
+  keyFingerprint: null,
+};
+if (SESSION_FIXTURE === "out") Object.assign(session, SIGNED_OUT_SESSION);
+const sessionListeners = new Set<(s: Session) => void>();
+const pushSession = () => {
+  for (const l of sessionListeners) l({ ...session });
+};
+Object.assign(window, {
+  __sfSignIn: () => {
+    Object.assign(session, SIGNED_IN);
+    pushSession();
+  },
+  __sfRevoke: () => {
+    Object.assign(session, SIGNED_OUT_SESSION);
+    pushSession();
+  },
+});
+const SIGNED_OUT: CallResult = { ok: false, code: "unauthenticated", error: "signed out" };
 // The open item's merge (#13), worded as the engine writes it (describeDecision).
 const TOUCH_ID_SUMMARY =
   'Merge 3f2a91c into main of example/software-factory: "Guard the tests in verify"';
@@ -169,6 +203,9 @@ function checkState(): Pick<
 }
 
 function answer(op: string, input: unknown): CallResult {
+  if (!session.signedIn) return SIGNED_OUT;
+  if (CRASH && op === "org.list")
+    return { ok: false, code: "unavailable", error: "the door answered 502 Bad Gateway" };
   const f = ANSWERS[op as OpName] as ((i: unknown) => unknown) | undefined;
   if (!f) return { ok: false, code: "unavailable", error: `no fixture for ${op}` };
   try {
@@ -190,8 +227,8 @@ async function write(p: { op: string; input: unknown }): Promise<CallResult> {
 }
 
 export const bun = {
-  session: async () => session,
-  signIn: async () => session,
+  session: async () => ({ ...session }),
+  signIn: async () => ({ ...session }),
   signOut: async () => session,
   signInAgain: async () => session,
   cancelTouchId: async () => ({ cancelled: true }),
@@ -296,7 +333,12 @@ export const onTerminal = (l: (e: TerminalEvent) => void) => {
     terminalListeners.delete(l);
   };
 };
-export const onSession = none;
+export const onSession = (l: (s: Session) => void) => {
+  sessionListeners.add(l);
+  return () => {
+    sessionListeners.delete(l);
+  };
+};
 export const onRunner = none;
 export const onInbox = none;
 export const onPlanningChanged = none;
