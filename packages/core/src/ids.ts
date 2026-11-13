@@ -33,6 +33,7 @@ export const ID_PREFIXES = {
   adjudication: "adj",
   runSteer: "st",
   terminalAttach: "ta",
+  flake: "flk",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
