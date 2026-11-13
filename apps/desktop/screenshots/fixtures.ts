@@ -1736,11 +1736,11 @@ export const ANSWERS: Answers = {
             {
               pendingActionId: "pa_cfg_1",
               operation: "config.save",
-              note: "One more retry for flaky builds",
+              note: "Let agents spend and reach outside",
               by: "owner",
               createdAt: ago(30),
               baseVersion: 12,
-              policy: { ...POLICY_DOC, retryLimit: 3 },
+              policy: { ...POLICY_DOC, autonomyPolicy: "autonomous" },
               toVersion: null,
             },
           ]
@@ -1761,7 +1761,8 @@ export const ANSWERS: Answers = {
       if (typeof after === "number" && after !== before)
         changes.push({
           path: key,
-          class: after > before ? "loosens" : "tightens",
+          // As policyImpact: a retry limit is neutral; a lower WIP limit tightens, a higher is neutral.
+          class: key === "wipLimit" && after < before ? "tightens" : "neutral",
           summary: `${label} ${before} → ${after}`,
         });
     }
@@ -1810,6 +1811,14 @@ export const ANSWERS: Answers = {
       name: "Software",
       description: "",
       stages: [
+        {
+          id: "plan",
+          type: "interview-planning",
+          typeVersion: 1,
+          name: "Planning",
+          phase: "shaping",
+          settings: { requiredFrom: "medium" },
+        },
         {
           id: "build",
           type: "build",

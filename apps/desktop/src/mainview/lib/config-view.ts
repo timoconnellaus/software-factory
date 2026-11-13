@@ -173,7 +173,7 @@ export function policySections(doc: Doc): { title: string; rows: PolicyRow[] }[]
       rows: [
         {
           key: "wip",
-          label: "Waiting on you",
+          label: "WIP limit",
           value: `At most ${plural(num(doc.wipLimit, POLICY_DEFAULTS.wipLimit), "item")}`,
           note: "When full, new builds stop until a gate is decided.",
         },
