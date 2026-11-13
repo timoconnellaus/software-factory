@@ -70,7 +70,30 @@ export function workflowDiff(before: unknown, after: unknown): DiffRow[] {
 
 /** Every field of an agent that differs (whatever fields it has). */
 /** The org config's top-level keys this diff shows (a test pins them to the schema's). */
-export const ORG_CONFIG_KEYS = ["version", "workflows", "builtIns", "archived", "agents"] as const;
+export const ORG_CONFIG_KEYS = [
+  "version",
+  "workflows",
+  "builtIns",
+  "archived",
+  "agents",
+  "skills",
+  "agentSkills",
+] as const;
+
+/** A keyed part of the config (skills by id, an agent's attached skills): one row per entry that differs. */
+function recordDiff(was: unknown, now: unknown, prefix: string): DiffRow[] {
+  const b = rec(was) ?? {};
+  const a = rec(now) ?? {};
+  const rows: DiffRow[] = [];
+  for (const k of new Set([...Object.keys(b), ...Object.keys(a)]))
+    if (differ(b[k], a[k]))
+      rows.push({
+        label: `${prefix}${k}`,
+        was: k in b ? text(b[k]) : "none",
+        now: k in a ? text(a[k]) : "removed",
+      });
+  return rows;
+}
 
 /** Workflows keyed by id: every field of each, those added or removed in full. */
 function workflowsDiff(was: Rec[], now: Rec[], prefix: string): DiffRow[] {
@@ -120,6 +143,9 @@ export function orgConfigDiff(before: unknown, after: unknown): DiffRow[] {
     for (const r of agentDiff(was ?? {}, now ?? {}))
       rows.push({ ...r, label: `${label}: ${r.label}` });
   }
+  // Skills (ADR 0513): each skill by id, and the skills attached to each agent, in full.
+  rows.push(...recordDiff(b.skills, a.skills, "Skill "));
+  rows.push(...recordDiff(b.agentSkills, a.agentSkills, "Skills attached to agent "));
   // A key the schema gains later and this diff doesn't know yet: shown whole, never hidden.
   for (const k of new Set([...Object.keys(b), ...Object.keys(a)]))
     if (!(ORG_CONFIG_KEYS as readonly string[]).includes(k) && differ(b[k], a[k]))
