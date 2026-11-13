@@ -668,6 +668,7 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         // Spec 24: #13 was split off #9's plan, so lists show it under #9.
         parentWorkItemId: i.id === "wi_13" ? "wi_9" : null,
         waitsFor,
+        waitingOn: null,
         ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
       };
@@ -2284,6 +2285,7 @@ export const ANSWERS: Answers = {
                   driver: "babysitter" as const,
                   headSha: "a1b2c3d4e5",
                   enqueuedAt: ago(9),
+                  step: "ci" as const,
                 },
                 {
                   workItemId: "wi_44",
@@ -2295,6 +2297,7 @@ export const ANSWERS: Answers = {
                   driver: "babysitter" as const,
                   headSha: "9c41e07d2b",
                   enqueuedAt: ago(12),
+                  step: null,
                 },
               ]
             : [
@@ -2308,6 +2311,7 @@ export const ANSWERS: Answers = {
                   driver: "babysitter" as const,
                   headSha: "9c41e07d2b",
                   enqueuedAt: ago(12),
+                  step: "ci" as const,
                 },
               ],
         },
