@@ -227,8 +227,9 @@ export async function repairRedMain(env: Env, now = new Date(), limit = 10): Pro
     // Claim, take the lease, then ask GitHub with it: each committed before the next.
     let step = await act("mainRed.revert", r.id);
     if (step?.status === "claimed") step = await act("mainRed.revert", r.id);
-    if (step?.status === "calling" && step.attempt) {
-      await act("mainRed.revert", r.id, { attempt: step.attempt });
+    // With the lease: GitHub's answer is committed first, then the item is made from it.
+    for (let k = 0; k < 2 && step?.status === "calling" && step.attempt; k++) {
+      step = await act("mainRed.revert", r.id, { attempt: step.attempt });
     }
   }
   for (const r of m) await act("mainRed.reland", r.id);
