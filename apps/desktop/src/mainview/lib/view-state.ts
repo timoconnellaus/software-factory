@@ -24,7 +24,9 @@ export interface ViewState {
   focus: string | null;
 }
 
-const KEY = "sf:view-state:v1";
+/** Where it is kept: one account's (lib/account.ts forgets it when the account changes). */
+export const VIEW_STATE_KEY = "sf:view-state:v1";
+const KEY = VIEW_STATE_KEY;
 let nextId = 1;
 const newTabId = () => `tab-${Date.now().toString(36)}-${nextId++}`;
 
@@ -156,6 +158,17 @@ export function updateViewState(f: (s: ViewState) => ViewState): void {
   state = next;
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
+  } catch {
+    // ignore: see load()
+  }
+  for (const l of listeners) l();
+}
+
+/** Back to a fresh window's state, in memory and in storage (another account signed in). */
+export function resetViewState(): void {
+  state = initialState();
+  try {
+    localStorage.removeItem(KEY);
   } catch {
     // ignore: see load()
   }
