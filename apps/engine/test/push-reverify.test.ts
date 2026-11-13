@@ -1,4 +1,4 @@
-// A person's push to the branch of a factory-built work item (ADR 0587, Workflow v13): from verify
+// A person's push to the branch of a factory-built work item (ADR 0587, Workflow v14): from verify
 // on, the item verifies the newest head again, without a build. The push arrives as GitHub sends
 // it (the `push` webhook, then `pull_request` `synchronize`), through the real Workflow.
 import { introspectWorkflow } from "cloudflare:test";
@@ -145,7 +145,7 @@ const approve = async (w: World, id: string) =>
     w.human,
   );
 
-describe("a person's push to a factory-built item's branch (ADR 0587, v13)", () => {
+describe("a person's push to a factory-built item's branch (ADR 0587, v14)", () => {
   it("#61: the gate is open, a person pushes, approving the old head is refused; the item verifies the new head and asks again", async () => {
     const w = await world();
     const { item, gate } = await toMergeGate(w, "Name the container runtime");
@@ -347,7 +347,7 @@ describe("a person's push to an item on an older Workflow (ADR 0587)", () => {
     });
   }
 
-  it("v12 at its merge gate: the stale gate is withdrawn and the new head verified, as v13", async () => {
+  it("v12 at its merge gate: the stale gate is withdrawn and the new head verified, as v14", async () => {
     await onVersion(12);
     const w = await world();
     const { item, gate } = await toMergeGate(w, "v12 pushed at the gate");

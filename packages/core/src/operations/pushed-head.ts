@@ -19,7 +19,7 @@ export interface PushedHead {
  * Records a person's push of `headSha` to `item`'s branch (the caller checked the branch's head on
  * GitHub is `headSha`, so a late delivery for an older push can't move the item back).
  *
- * - Workflow v13 ("reverify-on-push"): the item's head becomes `headSha`. An open merge gate is
+ * - Workflow v14 ("reverify-on-push"): the item's head becomes `headSha`. An open merge gate is
  *   withdrawn (its Inbox card goes); an approval the babysitter holds is closed and its delivery
  *   ends `withdrawn`; either way the Workflow verifies the new head without a build. In verify,
  *   the run finishing on the old head opens no gate (the Workflow reads the head after it), and a

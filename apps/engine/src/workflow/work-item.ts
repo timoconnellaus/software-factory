@@ -137,7 +137,7 @@ export type WorkItemOutcome =
  * updates, CIs and merges it. v11 has every feature of v10 (triage readiness and the spec critic). An incident's check-only auto-merge still lands itself, as v7.
  */
 /*
- * v13 (ADR 0587): a person's push to the item's branch, from verify on ("reverify-on-push").
+ * v14 (ADR 0587): a person's push to the item's branch, from verify on ("reverify-on-push").
  * push.observe records the new head and withdraws an open merge gate (or the approval the
  * babysitter holds); the withdrawal sends the item back to verify the head, without a build, as
  * v12's withdrawal at delivery does. A verify run that finishes on a head that is no longer the
@@ -150,8 +150,8 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 13;
-/** v13: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
+export const WORKFLOW_VERSION = 14;
+/** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
     ? `the pull request's head moved past ${was.slice(0, 7)}: verifying again`
@@ -540,7 +540,7 @@ class ItemFlow {
         meta = await this.refreshMeta();
       // v6: the workflow is fixed from here on (a person could change it until now), and its
       // afterSpec steps run once, before the build.
-      const plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
+      let plan = has(version, "workflow-plan") ? await this.workflowPlan() : null;
       let slotNote: string | null = null;
       if (plan) {
         const after = await this.runSlot(meta, plan, "afterSpec", 0, {
@@ -702,6 +702,9 @@ class ItemFlow {
             }
           }
 
+          // v13: a tightened org workflow reaches the item here, before verify (spec 52, Q3).
+          if (plan && has(version, "repin-tightening"))
+            plan = await this.repin(`verify #${b}`, plan);
           if (plan) {
             const before = await this.runSlot(meta, plan, "beforeVerify", b, {
               criteria,
@@ -745,7 +748,7 @@ class ItemFlow {
             ...(reverify !== null && has(version, "host-checks") ? { runChecks: true } : {}),
           },
         );
-        // v13: a person pushed while verify ran: whatever it found is about a stale head. Verify
+        // v14: a person pushed while verify ran: whatever it found is about a stale head. Verify
         // the newest head, without a build and without counting a failure.
         const movedAfterRun = await this.headMoved(
           `verify #${b}: head after run`,
@@ -805,7 +808,7 @@ class ItemFlow {
           reviewer: r.reviewer ? { ...r.reviewer, sameModelAsImplementer: false } : null,
           riskFlags: r.riskFlags,
         });
-        // v13: a push between CI settling and the packet: the packet is the old head's record only.
+        // v14: a push between CI settling and the packet: the packet is the old head's record only.
         const movedAfterPacket = await this.headMoved(
           `verify #${b}: head after packet`,
           headSha,
@@ -841,6 +844,8 @@ class ItemFlow {
           continue;
         }
 
+        // v13: and here, before the merge gate (spec 52, Q3).
+        if (plan && has(version, "repin-tightening")) plan = await this.repin(`merge #${b}`, plan);
         if (plan) {
           const after = await this.runSlot(meta, plan, "afterVerify", b, {
             criteria,
@@ -1153,8 +1158,8 @@ class ItemFlow {
   }
 
   /**
-   * v13: why the item goes back to verify when its head is no longer `headSha` (a person pushed
-   * while verify ran on it, ADR 0587), or null when it hasn't moved. One step; nothing before v13.
+   * v14: why the item goes back to verify when its head is no longer `headSha` (a person pushed
+   * while verify ran on it, ADR 0587), or null when it hasn't moved. One step; nothing before v14.
    */
   private async headMoved(name: string, headSha: string, version: number): Promise<string | null> {
     if (!has(version, "reverify-on-push")) return null;
@@ -1162,7 +1167,7 @@ class ItemFlow {
     return now === headSha ? null : movedNote(headSha, now);
   }
 
-  /** The reason for a head the PR says moved (v13's `stale` CI read), from the item's head. */
+  /** The reason for a head the PR says moved (v14's `stale` CI read), from the item's head. */
   private async movedReason(name: string, headSha: string): Promise<string> {
     return movedNote(headSha, await this.head(name));
   }
@@ -1415,7 +1420,7 @@ class ItemFlow {
         headSha,
       });
       if (ci.status !== "ok") return "unreadable"; // the packet records why and fails
-      // v13: the PR's head is no longer this SHA and the item has recorded the push (ADR 0587):
+      // v14: the PR's head is no longer this SHA and the item has recorded the push (ADR 0587):
       // its CI decides nothing. Not recorded yet: wait on, the push's webhook wakes this wait.
       if (
         has(version, "reverify-on-push") &&
@@ -2103,8 +2108,8 @@ class ItemFlow {
    * The item's workflow, fixed before the build: its steps per slot with their agents resolved and
    * conditions decided (from triage's size and domains), and the build agent. Journaled once.
    */
-  async workflowPlan(): Promise<WorkflowPlan> {
-    const text = await this.step.do("workflow: plan", async () => {
+  async workflowPlan(name = "workflow: plan"): Promise<WorkflowPlan> {
+    const text = await this.step.do(name, async () => {
       const row = await this.env.DB.prepare(
         "SELECT workflow, size, domains FROM core_work_items WHERE id = ?",
       )
@@ -2120,6 +2125,20 @@ class ItemFlow {
       return JSON.stringify(plan);
     });
     return JSON.parse(text) as WorkflowPlan;
+  }
+
+  /**
+   * v13 (spec 52, Q3): at a stage boundary, moves the item onto the org's current workflow version
+   * when it only tightens, and plans the stages ahead from it. The stages already run keep what they
+   * did; a slot already past isn't run again. Unchanged when the item stays where it is.
+   */
+  async repin(name: string, plan: WorkflowPlan): Promise<WorkflowPlan> {
+    const moved = await this.act(`${name}: repin`, "workItem.repinWorkflow", {
+      workItemId: this.workItemId,
+      at: name,
+    });
+    if (moved.repinned !== true) return plan;
+    return this.workflowPlan(`${name}: workflow plan`);
   }
 
   /**

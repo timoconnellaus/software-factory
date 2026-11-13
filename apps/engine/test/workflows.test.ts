@@ -271,4 +271,75 @@ describe("the default builder", () => {
     );
     expect(row).toEqual({ workflow: "wf_ship_it", org_config_version: 2 });
   });
+  it("a tightened org workflow reaches a running item at its next boundary (spec 52, Q3)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    await ok(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 0,
+        agent: {
+          name: "Security",
+          role: "review",
+          tier: "light",
+          instructions: "Org: check auth.",
+        },
+      },
+      w.human,
+    );
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 1, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    // While it builds, the org adds a check before verify: a tightening, saved with no approval.
+    await runStage(w, item.workItemId, "build", async () => {
+      const saved = await ok<{ version: number }>(
+        "workflow.save",
+        {
+          orgId: w.orgId,
+          baseVersion: 2,
+          workflow: {
+            ...plain,
+            stages: [
+              ...SOFTWARE.stages.slice(0, 3),
+              {
+                id: "security",
+                type: "agent-check",
+                typeVersion: 1,
+                name: "Security review",
+                phase: "delivery",
+                settings: { instructions: "Look at the token handling." },
+                agent: "Security",
+              },
+              ...SOFTWARE.stages.slice(3),
+            ],
+          },
+        },
+        w.human,
+      );
+      expect(saved.version).toBe(3);
+      return build();
+    });
+    // At the boundary before verify the item moves onto v3, and the check ahead of it runs.
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toMatchObject({ id: "security" });
+      return { result: { verdict: "pass", summary: "Fine" } };
+    });
+    const row = await first<{ org_config_version: number }>(
+      "SELECT org_config_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row?.org_config_version).toBe(3);
+    const journal = await all<{ diff: string }>(
+      "SELECT diff FROM core_audit WHERE work_item_id = ? AND operation = 'workItem.repinWorkflow'",
+      item.workItemId,
+    );
+    expect(journal).toHaveLength(1);
+    expect(journal[0]?.diff).toMatch(/"workflow":"repinned"/);
+  });
 });

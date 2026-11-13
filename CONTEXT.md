@@ -103,7 +103,7 @@ are skipped, and the factory never pushes to its branch. Verify runs on the PR's
 opens the merge gate. A failure or send-back waits for a push, a push withdraws a pending merge
 gate, and closing the PR cancels the item (spec 05, ADR 0290). A person's push to a factory-built item's
 branch, from verify on, also withdraws its merge gate and verifies the new head without a build
-(Workflow v13, ADR 0587).
+(Workflow v14, ADR 0587).
 _Avoid_: imported PR, adopted PR, external work item
 
 **Attachment**

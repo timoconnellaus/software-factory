@@ -1,7 +1,7 @@
 # ADR 0587: A person's push to a factory branch re-verifies the new head
 
 Status: accepted, 2026-11-13. Extends [ADR 0037](0037-factory-verify-pinned-and-sha-bound.md) and
-[ADR 0290](0290-an-outside-pr-is-attached-and-verified.md) to factory-built items; Workflow v13.
+[ADR 0290](0290-an-outside-pr-is-attached-and-verified.md) to factory-built items; Workflow v14.
 
 ## Context
 Work item #61 (factory-built, PR #135) was at its merge gate for `b0cb9a5` when a person pushed
@@ -18,7 +18,7 @@ factory-built item did not, because its branch was assumed to move only by the f
    a factory item's own branch (`factory/<n>-<slug>`, never a run branch), while the item is in
    verify or at merge, is a person's push. `push.observe` handles it, after checking on GitHub that
    the branch's head is the pushed commit, so a late delivery of an older push changes nothing.
-2. **Workflow v13 (`reverify-on-push`):** the item's head becomes the pushed commit. An open merge
+2. **Workflow v14 (`reverify-on-push`):** the item's head becomes the pushed commit. An open merge
    gate for the old head is withdrawn ("a new commit was pushed by `<login>`"), and an approval the
    babysitter holds is closed and its delivery ends `withdrawn`. The item goes back to **verify**,
    not build: a fresh verify run on the new head with the project's checks run there, a new review
@@ -32,7 +32,7 @@ factory-built item did not, because its branch was assumed to move only by the f
 4. **Earlier versions.** An open merge gate is withdrawn the same way at any version, and the
    Workflow verifies the new head (a withdrawal never reached a factory item's gate before, so no
    running instance changes what it did). A babysitter's approval is closed too; v12 re-verifies,
-   v11 treats it as a failed delivery. With nothing open to withdraw (verify running on v12 or
+   v11 treats it as a failed delivery. With nothing open to withdraw (verify running on v13 or
    earlier), the item keeps the head it verifies and the push is recorded on its activity: the gate
    that opens is for the old head, and Send back verifies the new one.
 5. **The person sees it.** The item's activity says "`<login>` pushed `<sha>`: verifying again";
