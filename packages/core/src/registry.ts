@@ -239,6 +239,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   terminal.runTerminalAttach,
   terminal.runTerminalDetach,
   terminal.runTerminalHost,
+  terminal.runTerminalCloseStale,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

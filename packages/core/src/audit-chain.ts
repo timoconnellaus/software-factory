@@ -26,7 +26,7 @@ export const AUDIT_ARCHIVE_AFTER_DAYS = 90;
  * The routine operations whose machine rows are archived: the list in migration 0366's delete
  * trigger, which a test keeps equal to this one. Leases, heartbeats, claims, steers, run events,
  * artifacts, hand-backs, stage moves, entering, leaving and holding the merge queue, the first push
- * of a branch, deliveries of news, and the intake's routine observations. Never anything that issues a credential (a
+ * of a branch, deliveries of news, and the intake's connector events. Never anything that issues a credential (a
  * job token, a runner key or CLI token from a device login, a sign-in), records what reached main
  * (`mergeQueue.merging`, `branch.advance`, a merge), a PR, a spec, a triage, a question, planning
  * content, a gate, an incident, a config or policy change, or an item created or released:
@@ -58,7 +58,6 @@ export const AUDIT_ARCHIVE_OPERATIONS = [
   "mergeQueue.hold",
   "queue.pull",
   "connector.receive",
-  "main.observe",
 ] as const;
 
 /**
@@ -84,6 +83,9 @@ export const NEVER_ARCHIVED = [
   "verify.refresh",
   "push.observe",
   "mergeQueue.update",
+  // Main's history (round 3): its head moving (a push that bypassed the factory included) and red
+  // episodes; core_main_health keeps one row per repository, so the journal is the only record.
+  "main.observe",
 ] as const;
 
 const ARCHIVED_OPS: ReadonlySet<string> = new Set(AUDIT_ARCHIVE_OPERATIONS);

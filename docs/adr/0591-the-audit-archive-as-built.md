@@ -17,7 +17,7 @@ the proposal left open.
    - written by a runner, the scheduler, an intake connector, or the foreman (`agent`/`foreman`).
      Never a person's row, another agent's or `self-improve`'s;
    - `decision = 'allow'` and `outcome = 'ok'`, with no `pending_action_id` and no `approval_id`;
-   - one of 26 routine operations: leases, heartbeats, claims, steers, run events, artifacts,
+   - one of 25 routine operations: leases, heartbeats, claims, steers, run events, artifacts,
      hand-backs, stage moves, merge-queue moves short of merging, a branch's first push, news
      deliveries and the intake's observations.
 
@@ -162,3 +162,15 @@ the proposal left open.
   scheduler and audited. Only an org admin sees why the archiver stopped.
 - **The timeline's totals** count every page, and the D1 entries a call read are never dropped to
   make room for archived ones.
+
+## Changed in review, round 3, 2026-11-13 (#170)
+- **`main.observe` stays in D1.** It writes a row only when main's head moved (a push that bypassed
+  the factory included) or a red episode opened or closed. `core_main_health` keeps one row per
+  repository, so the journal is main's only history. The list is now 25 operations.
+- **The drain counts what it really wrote.** It uses D1's own `rows_written`: the deletes, chunk
+  records, work-item index rows and leases. It sizes ticks at 4.3 rows written per archived row,
+  and waits until its credit covers a whole chunk before it takes a lease or reads a page.
+- **`audit.archiveHealth` runs only on transitions:** the tick that reaches three stops, and the
+  first that archives after.
+- **The delete trigger seeks.** It finds the row's chunk on `core_audit_archive_chunks_range_idx
+  (day, last_at)` instead of reading every chunk of the day.

@@ -14,8 +14,9 @@
 -- - one of the routine operations listed in the trigger below (and in AUDIT_ARCHIVE_OPERATIONS in
 --   packages/core/src/audit-chain.ts, which a test keeps equal to this list): leases, heartbeats,
 --   claims, steers, run events, artifacts, hand-backs, stage moves, entering, leaving and holding
---   the merge queue, a branch's first push, deliveries of news, and the intake's routine
---   observations (connector events, main's health). Never a security event: what verifies a head
+--   the merge queue, a branch's first push, deliveries of news, and the intake's connector events.
+--   Never main's history (`main.observe`: main's head moving, a push that bypassed the factory, a
+--   red episode; core_main_health keeps only the latest). Never a security event: what verifies a head
 --   or sees a PR merged outside the factory (`verify.refresh`), a push to a factory branch
 --   (`push.observe`: confinement, withdrawn approvals), carrying an approval to a new head
 --   (`mergeQueue.update`). Never what
@@ -71,6 +72,11 @@ CREATE TABLE core_audit_archive_items (
   PRIMARY KEY (work_item_id, day, seq)
 );
 
+-- Read by the delete trigger below, once per archived row's delete: the chunks of the row's day
+-- whose range ends at or after it (`WHERE day = ? AND last_at >= ?`), a seek instead of reading
+-- every chunk of a backlog day. Written once per chunk, at archive time only.
+CREATE INDEX core_audit_archive_chunks_range_idx ON core_audit_archive_chunks (day, last_at);
+
 -- The archiver's single-writer lease, one row per day being archived: an overlapping tick that
 -- can't take it skips the day instead of racing. Every chunk's batch checks the lease and renews
 -- it. Retention: deleted when the day is recorded or the tick stops; a tick that dies leaves one
@@ -104,12 +110,12 @@ WHEN NOT (
     'branch.ensure',
     'workItem.enterStage', 'workItem.awaitHead', 'workItem.awaitQuestions',
     'mergeQueue.enter', 'mergeQueue.leave', 'mergeQueue.hold', 'queue.pull',
-    'connector.receive', 'main.observe'
+    'connector.receive'
   )
   AND OLD.at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 days')
   AND EXISTS (
     SELECT 1 FROM core_audit_archive_chunks c
-    WHERE c.day = substr(OLD.at, 1, 10)
+    WHERE c.day = substr(OLD.at, 1, 10) AND c.last_at >= OLD.at
       AND (OLD.at > c.first_at OR (OLD.at = c.first_at AND OLD.id >= c.first_id))
       AND (OLD.at < c.last_at OR (OLD.at = c.last_at AND OLD.id <= c.last_id))
   )

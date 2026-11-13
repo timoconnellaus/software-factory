@@ -15,6 +15,8 @@ const LATE_BLOCKS: [number, number][] = [
   // The audit archive's migration (block AQ, ADR 0591) lands after 0390: it only adds tables and
   // replaces core_audit's delete trigger, which nothing later rebuilds.
   [366, 366],
+  // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
+  [367, 367],
 ];
 
 const late = (name: string) => {

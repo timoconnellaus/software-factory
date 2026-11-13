@@ -55,10 +55,12 @@ export const AUDIT_ARCHIVE = {
   /** D1 queries one tick may make (it runs every five minutes, beside the run archive). */
   maxQueriesPerTick: 60,
   /**
-   * D1 rows written for each archived row: its delete touches the table, its two unique
-   * autoindexes (`id`, `idempotency_key`) and core_audit_item_idx.
+   * D1 rows written for each archived row, to size the drain: its delete touches the table, its
+   * two unique autoindexes (`id`, `idempotency_key`) and core_audit_item_idx (4), plus its share of
+   * the chunk's record (2 per 1,000) and work-item index rows (2 per item, about 1 in 10 rows). What
+   * a tick spends is counted from D1's own rows_written, not from this estimate.
    */
-  writesPerRow: 4,
+  writesPerRow: 4.3,
   /** Ticks a day (every five minutes). */
   ticksPerDay: 288,
   /**
@@ -174,7 +176,9 @@ export async function archiveAudit(
       if (tick.mode === "drain" && opts.rows === undefined && !drain) {
         drain = await drainBudget(env.DB, now, m);
         budget = drain.rows;
-        if (budget <= 0) break;
+        // Whole objects only: wait (the credit carries) until a chunk's worth is covered, before
+        // taking the lease or reading a page.
+        if (budget < ARCHIVE_CHUNK_ROWS) break;
       }
       // The day's lease: taken when free or expired. Another tick holds it: skip, don't race.
       if (held !== day) {
@@ -246,7 +250,8 @@ export async function archiveAudit(
       const state: DrainState = {
         ...drain.state,
         credit: Math.max(0, drain.state.credit - spent),
-        drainWrites: drain.state.drainWrites + spent * AUDIT_ARCHIVE.writesPerRow,
+        // What the tick really wrote (deletes, chunk records, index rows, leases), as D1 counted.
+        drainWrites: drain.state.drainWrites + m.rowsWritten,
       };
       const r = await env.DB.prepare(
         "INSERT INTO core_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -325,7 +330,9 @@ async function recordHealth(
   }
   // The incident goes through its operation, as the scheduler, so it is audited like any other.
   const report =
-    stopped && next.stops >= STOPS_BEFORE_INCIDENT
+    // Only on the transitions: the tick that reaches the threshold, and the first that archives
+    // after it.
+    stopped && next.stops === STOPS_BEFORE_INCIDENT
       ? {
           stopped: true,
           reason: `The audit archive has stopped ${next.stops} ticks in a row since ${next.since}: ${stopped}`,
