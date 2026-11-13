@@ -33,6 +33,8 @@ const ORDINARY: [string, string][] = [
   ["Remove the old v1 API", "Nothing has called it since March."],
   ["Fix the typo in the README header", ""],
   ["Make the sidebar collapsible", "Like Linear's."],
+  ["Crash on save", "## What happened\nIt closes on save.\n- [x] I searched existing issues"],
+  ["Logo", "Use the new one: [the logo](https://example.com/logo.svg)"],
 ];
 
 /** Nothing to act on: every one parks. */
@@ -43,6 +45,14 @@ const EMPTY: [string, string][] = [
   ["New feature request", "<!-- Describe the feature -->\n## Description\n- [ ] \n"],
   ["See this", "https://example.com/thread/123"],
   ["Customer issue", "<https://support.example.com/t/42>"],
+  // A template's checklist with its labels, and image-only bodies (review of #117).
+  [
+    "Bug report",
+    "## Checklist\n- [ ] I searched existing issues\n- [x] I read the docs\n* [ ] I can reproduce it",
+  ],
+  ["Screenshot", "![screenshot](https://example.com/s.png)"],
+  ["Look", '<img src="https://example.com/s.png" alt="the bug" width="400">'],
+  ["Crash", "## Screenshots\n![](https://example.com/a.png) ![b](https://example.com/b.png)"],
 ];
 
 type W = Awaited<ReturnType<typeof world>>;

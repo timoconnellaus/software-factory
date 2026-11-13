@@ -289,8 +289,16 @@ const content = (text: string) => text.replace(/^([-*+]|\d{1,9}[.)])\s+/, "").tr
  * the person (`mentions`), not refused.
  */
 function exactly(blocks: PlanBlock[], section: string, text: string): number {
-  return blocks.filter((b) => b.section === section && b.text === text).length;
+  const said = sayingOf(text);
+  return blocks.filter((b) => b.section === section && sayingOf(b.text) === said).length;
 }
+
+/**
+ * What a removed block says, for keeping it out (review of #85): case, spacing and the list marker
+ * aside, so "- mysql" or "* MySQL" can't bring back a removed "- MySQL". A fence compares exactly.
+ */
+const sayingOf = (text: string) =>
+  /^\s*(```|~~~)/.test(text) ? text : foldSpace(content(text)).toLowerCase();
 
 /** How many times each block (section, parent and text) appears in a plan. */
 export function planCounts(md: string): Map<string, number> {
@@ -494,7 +502,11 @@ export function changedSpan(before: string, after: string, tag: string): string 
 export function editAnswer(span: string | null, options: string[]): string | null {
   if (!span || !plain(span)) return null;
   if (options.length === 0) return span.trim().replace(/^[,;:\s]+|[,;:\s]+$/g, "");
-  return options.find((o) => plain(o) === plain(span)) ?? null;
+  const matches = options.filter((o) => plain(o) === plain(span));
+  if (matches.length <= 1) return matches[0] ?? null;
+  // Options that differ only by punctuation or case ("C", "C#"; "Go", "Go!") need the span to be
+  // one of them exactly, after trimming; otherwise nothing is picked and the person is asked.
+  return matches.find((o) => o.trim() === span.trim()) ?? null;
 }
 
 /**

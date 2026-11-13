@@ -207,6 +207,10 @@ describe("third review of #85", () => {
     const back = `${e.result}\n- Use MySQL`;
     expect(droppedEdits(back, [e])).toEqual([e]);
     expect(whyNotKept(back, e.footprint)).toContain("is back in Stack");
+    // Case, spacing and the list marker don't bring it back either (review of #85).
+    for (const again of ["- use mysql", "* Use  MySQL", "1. USE MYSQL"]) {
+      expect(droppedEdits(`${e.result}\n${again}`, [e])).toEqual([e]);
+    }
     const tbd = edit("## Stack\n- TBD", 1, 1, "- Postgres");
     expect(droppedEdits(`${tbd.result}\n- Auth: TBD`, [tbd])).toEqual([]);
   });
@@ -257,6 +261,16 @@ describe("third review of #85", () => {
     }
     expect(editAnswer(span("- Database: postgres. [Q3]"), options)).toBe("Postgres");
     expect(editAnswer(span("- Database: SQLite on disk [Q3]"), [])).toBe("SQLite on disk");
+  });
+
+  it("needs an exact match when options differ only by punctuation or case (review of #85)", () => {
+    const span = (after: string) => changedSpan("- Language: TBD [Q4]", after, "[Q4]");
+    const options = ["C", "C#", "C++"];
+    expect(editAnswer(span("- Language: C# [Q4]"), options)).toBe("C#");
+    expect(editAnswer(span("- Language: C++ [Q4]"), options)).toBe("C++");
+    expect(editAnswer(span("- Language: C [Q4]"), options)).toBe("C");
+    expect(editAnswer(span("- Language: c# [Q4]"), options)).toBeNull();
+    expect(editAnswer(span("- Language: C. [Q4]"), options)).toBeNull();
   });
 
   it("accepts an edit of a fence inside a 10. item (7)", () => {

@@ -1,7 +1,8 @@
 // The readiness pre-check and parking (spec 23, ADR 0304 as amended 2026-11-12). The pre-check is a
 // floor for emptiness, not a judgement of clarity: code can't tell whether a request is clear, and
 // triage (an agent stage) asks what it needs. It parks only an item with nothing to act on (no body
-// and a title of under four words, or a body that is only a template's headings or only a link) or
+// and a title of under four words, or a body that is only a template's headings and checklist,
+// images, or only a link) or
 // an exact duplicate of an open item from the same source, and only when no person released it
 // (intake, MCP, the foreman, autopilots, the improver). A person on the app, the desktop, the phone
 // or the sf CLI is never parked; they get the result as a hint. A parked item stays in the Backlog
@@ -61,23 +62,30 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
   );
 }
 
-/** What's left of a body without template headings, HTML comments, empty checkboxes and links. */
+/**
+ * What's left of a body without template headings, HTML comments, checkbox lines (the box and its
+ * label: a template's checklist, review of #117), images and links.
+ */
 function substance(body: string): string {
   return body
     .replace(/<!--[\s\S]*?-->/g, " ")
     .split("\n")
     .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
-    .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s*(\[[ xX]?\]\s*)?/, ""))
+    .filter((l) => !/^\s*([-*+]|\d+[.)])\s*\[[ xX]?\]/.test(l))
+    .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s*/, ""))
     .join(" ")
-    .replace(/<?https?:\/\/\S+>?/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/<img\b[^>]*>/gi, " ")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<?https?:\/\/\S+>?/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 /**
  * The pre-check (spec 23): only what code can know for certain. Nothing to act on is no body and a
- * title of fewer than four words, or a body that is nothing but a template's headings or a link.
+ * title of fewer than four words, or a body that is nothing but a template's headings and checklist,
+ * images or a link.
  * A parent item stands in for a body (a split of approved work). Answers count as body.
  */
 export function precheck(item: {
