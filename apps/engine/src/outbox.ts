@@ -150,9 +150,14 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await planningHub(env, message.payload.workItemId).notify();
       await notifyPlanningViewers(env, message.payload.workItemId);
       // Last, and only a wake: the planning job's line, when its runner keeps one (spec 44 part B).
-      // A failed push never holds up the rest; the host's safety poll covers it.
-      const planningJob = await activeJob(env, message.payload.workItemId, "planning");
-      if (planningJob) await pushLine(env, planningJob, "planning");
+      // Nothing here may fail the delivery after the notifications went out (a retry would send
+      // them again): a failed lookup or push is logged, and the host's safety poll covers it.
+      try {
+        const planningJob = await activeJob(env, message.payload.workItemId, "planning");
+        if (planningJob) await pushLine(env, planningJob, "planning");
+      } catch (error) {
+        console.warn(`job line lookup for ${message.payload.workItemId} failed: ${String(error)}`);
+      }
       return;
     }
     case "run.steered": {

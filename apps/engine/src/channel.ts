@@ -345,10 +345,12 @@ async function steerReply(
         if (!reply.status || reply.status === 200) ack = [];
         return reply;
       }
-      if (attempt >= 3) return { body: { runId: "", workItemId: "", steers: [] } };
+      // Still racing after a few tries: end this hold with nothing (the host calls again).
+      if (attempt >= 3) return { exhausted: true as const, body: { steers: [] } };
     }
   };
   const first = await take();
+  if ("exhausted" in first) return { body: first.body };
   if (first.status && first.status !== 200) return first;
   const { runId, steers } = first.body as { runId: string; steers: unknown[] };
   if (steers.length > 0 || timeout <= 0) return { body: { steers } };
@@ -369,6 +371,7 @@ async function steerReply(
       .first();
     if (!queued) continue;
     const reply = await take();
+    if ("exhausted" in reply) return { body: reply.body };
     // Any refusal (fenced, killed, the run ended) ends the hold: no re-take every 3 s.
     if (reply.status && reply.status !== 200) return reply;
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };

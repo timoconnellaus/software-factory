@@ -890,6 +890,28 @@ describe("the job line (spec 44 part B, ADR 0592)", () => {
     second.ws.close();
   });
 
+  it("a replaced host pushes no viewer, and the session's end closes the line", async () => {
+    const w = await world();
+    const capabilities = [...MANIFEST.capabilities, "terminal", "steer", "job-line"] as const;
+    const { c, job, item, runId } = await running(w, [...capabilities]);
+    const fence = job.lease.fencingToken;
+    const l = await line((await c.line?.(job.jobId, { fencingToken: fence }))?.connect.url ?? "");
+    const viewer = await view(item.workItemId, runId, w.human);
+    await l.until("the viewer push", (e) => e.texts.some((m) => m.t === "viewer"));
+    // Two tickets before either host connects, then both: the second replaces the first.
+    const first = await c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 0 });
+    const second = await c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 0 });
+    const h1 = await host(first?.connect?.url ?? "");
+    const h2 = await host(second?.connect?.url ?? "");
+    await h1.until("the first host replaced", (e) => e.closed !== null);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(l.texts.filter((m) => m.t === "viewer")).toHaveLength(1);
+    // The session ends: viewers are told, and the job line closes too.
+    h2.ws.send(JSON.stringify({ t: "ended", reason: "done" }));
+    await l.until("the line closed", (e) => e.closed !== null);
+    viewer.end.ws.close();
+  });
+
   it("pushes planning changes to the planning job's line", async () => {
     const w = await world();
     const item = await ok<{ workItemId: string }>(
