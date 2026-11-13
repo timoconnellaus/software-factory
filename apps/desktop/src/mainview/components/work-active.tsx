@@ -334,7 +334,13 @@ function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string>
         <span className="font-mono text-[11.5px] text-ink-muted">#{item.number}</span>
         {item.kind !== "change" && (
           <span className="text-ink-muted text-xs">
-            {item.kind === "incident" ? "incident" : "attached PR"}
+            {item.kind === "incident"
+              ? "incident"
+              : item.kind === "attached"
+                ? "attached PR"
+                : item.kind === "autopilot"
+                  ? "autopilot run"
+                  : item.kind}
           </span>
         )}
         <Chip tone={state.tone} className="ml-auto">

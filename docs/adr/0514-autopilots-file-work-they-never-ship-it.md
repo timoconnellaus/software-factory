@@ -80,5 +80,9 @@ reference. The risk is an agent that creates and ships its own work.
 > refuses comparing it, and a test fails on a raw SQL read of it. A run is left out of the Work
 > lists, the board and the active limit, and shown in its autopilot's history
 > (`core_autopilot_runs`, kept 90 days). Until runners support autopilots (g2b) a run ends at once,
-> saying so; `autopilot.fire` exists for the cron and events (g2c) but nothing calls it yet.
+> saying so, with no work item (only a run that starts a job gets one); `autopilot.fire` exists for
+> the cron and events (g2c) but nothing calls it yet. Review of #203: run-now and fire are scoped by
+> the org and refuse a project that isn't the org's; the daily cap is counted in SQL over runs that
+> ran and enforced in the insert itself; a kill switch on the org or the project stops a run, a
+> person's too; a person's run now while off, capped or killed is refused and writes nothing.
 

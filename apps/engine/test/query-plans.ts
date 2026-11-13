@@ -104,7 +104,7 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   },
   {
     match:
-      /from "core_work_items" where "org_id" in .* and "status" in \(\?, \?, \?\) order by "updated_at"/,
+      /from "core_work_items" where "org_id" in .* and "status" in \(\?, \?, \?\)(?: and "item_kind" != \?)? order by "updated_at"/,
     why: "active items only (core_work_items_org_idx on org and status), capped by the active limit",
   },
   {

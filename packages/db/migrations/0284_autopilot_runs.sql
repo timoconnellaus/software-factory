@@ -1,6 +1,7 @@
 -- Spec 52 (g2), ADR 0514 as amended: autopilot runs.
 --
--- A run is a work item the factory starts on its own. Its kind has ONE source of truth, the
+-- A run that needs the work-item machinery (a job, g2b) is a work item; one that is skipped or ends at
+-- once is only its row below. A run item's kind has ONE source of truth, the
 -- virtual generated column `item_kind`: 'autopilot' when the item is an autopilot run, else the
 -- stored `kind`. No rebuild of core_work_items for one more kind (its CHECK can't be altered, and a
 -- rebuild copying a column list would drop columns other branches add): every read that branches or
@@ -10,9 +11,8 @@ ALTER TABLE core_work_items ADD COLUMN item_kind TEXT
   GENERATED ALWAYS AS (CASE WHEN autopilot_run_id IS NOT NULL THEN 'autopilot' ELSE kind END) VIRTUAL;
 
 -- Each firing of an autopilot: what fired it (its dedupe key: one occurrence fires once), the org
--- config version it ran under, the work item that is the run, and what it produced.
--- Retention: 90 days, pruned in batches by the hourly cron (pruneAutopilotRuns); a run's work item
--- keeps its own history.
+-- config version it ran under, its work item when it has one, and what it produced.
+-- Retention: 90 days, pruned in batches by the hourly cron (retention.ts PRUNES).
 CREATE TABLE core_autopilot_runs (
   id TEXT PRIMARY KEY NOT NULL,
   org_id TEXT NOT NULL REFERENCES core_organization (id),

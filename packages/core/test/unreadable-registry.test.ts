@@ -27,6 +27,8 @@ const BY_JOB = [
   "planning.yield",
   "planning.ready",
 ];
+/** Scoped by the org: start a new autopilot run, never work on an existing item (ADR 0514). */
+const BY_ORG = ["autopilot.fire"];
 /** Find the item by repository or head and write `factory/verify` only through `postVerify`. */
 const THROUGH_POST_VERIFY = ["verify.refresh", "main.observe"];
 /** Do no work for an item: what they record or withdraw leaves its next step to the stop. */
@@ -59,7 +61,6 @@ const NO_ITEM = {
   "connector.receive": "an intake event that creates or routes items",
   "github.installation": "the App's installation",
   "audit.archiveHealth": "the audit archive's health",
-  "autopilot.fire": "starts a new autopilot run (a new item), never works on an existing one",
 };
 const ITEM_KEYS = ["workItemId", "jobId", "pendingActionId", "questionId"];
 
@@ -74,7 +75,9 @@ describe("every non-read operation an agent, runner or intake can call is stoppe
     )
       .map((o) => o.name)
       .sort();
-    expect(custom).toEqual([...BY_JOB, ...THROUGH_POST_VERIFY, ...Object.keys(NO_WORK)].sort());
+    expect(custom).toEqual(
+      [...BY_JOB, ...BY_ORG, ...THROUGH_POST_VERIFY, ...Object.keys(NO_WORK)].sort(),
+    );
   });
 
   it("default-scoped operations that name no item are reviewed too", () => {

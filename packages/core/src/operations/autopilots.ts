@@ -1,13 +1,14 @@
 // Autopilots in the org config (ADR 0514, spec 52 build step (g), first part): read them, and add,
 // change, turn on or off one through the org config version, like any org config save. Firing and
 // runs (migration 0284, the cron and events, the runner channel's outputs) come next.
+import { sql } from "kysely";
 import { z } from "zod";
 import { type AutopilotConfig, autopilotSchema } from "../autopilots/schema.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { activeKillSwitch } from "../scope.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
-import { createWorkItem } from "./shared.ts";
 // workflows.ts imports this file (to apply an approved save), so only its functions are used here,
 // at call time; the input schemas are this file's own.
 import {
@@ -125,6 +126,10 @@ export async function startAutopilotRun(
   const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
   const a = config.autopilots.find((x) => x.id === input.autopilotId);
   if (!a) throw new OperationError("not_found", `the org has no autopilot ${input.autopilotId}`);
+  // A project named must be the org's, and in the autopilot's scope (review of #203).
+  const projects = (await orgProjects(ctx.db, input.orgId)).map((p) => p.id);
+  if (input.projectId && !projects.includes(input.projectId))
+    throw new OperationError("invalid_input", "that project isn't one of the org's");
   // One occurrence fires once: the same key finds the run it started (UNIQUE (org_id, dedupe_key)).
   const seen = await ctx.db
     .selectFrom("core_autopilot_runs")
@@ -141,12 +146,12 @@ export async function startAutopilotRun(
       duplicate: true,
     };
   const runId = newId("autopilotRun");
-  const record = (
-    status: "skipped" | "failed",
-    reason: string,
-    workItemId: string | null,
-    projectId: string | null,
-  ) => {
+  const manual = input.trigger === "manual";
+  // Why it doesn't run. A person's run now is answered, and nothing is written (review of #203:
+  // repeated calls can't grow the history); a firing records one skipped row for its occurrence,
+  // bounded by its trigger (at most hourly, and one per event).
+  const skip = (reason: string, projectId: string | null) => {
+    if (manual) throw new OperationError("conflict", `it doesn't run: ${reason}`);
     ctx.write(
       ctx.db.insertInto("core_autopilot_runs").values({
         id: runId,
@@ -156,8 +161,8 @@ export async function startAutopilotRun(
         trigger: input.trigger,
         dedupe_key: input.dedupeKey,
         project_id: projectId,
-        work_item_id: workItemId,
-        status,
+        work_item_id: null,
+        status: "skipped",
         reason,
         created_by: ctx.actor.id,
         created_at: ctx.now,
@@ -167,66 +172,80 @@ export async function startAutopilotRun(
     ctx.change({
       entity: "autopilot_run",
       id: runId,
-      after: { autopilot: a.id, trigger: input.trigger, status, reason, workItemId },
+      after: { autopilot: a.id, status: "skipped", reason },
     });
-    return { runId, status, reason, workItemId, duplicate: false };
+    return { runId, status: "skipped", reason, workItemId: null, duplicate: false };
   };
-  if (!a.enabled) return record("skipped", "the autopilot is off", null, null);
-  // Its daily cap (UTC), counting the day's runs that ran (core_autopilot_runs_autopilot_idx).
-  const day = `${ctx.now.slice(0, 10)}T00:00:00.000Z`;
-  const today = await ctx.db
-    .selectFrom("core_autopilot_runs")
-    .select(["id", "status"])
-    .where("org_id", "=", input.orgId)
-    .where("autopilot_id", "=", a.id)
-    .where("created_at", ">=", day)
-    .limit(a.limits.runsPerDay + 30)
-    .execute();
-  if (today.filter((r) => r.status !== "skipped").length >= a.limits.runsPerDay)
-    return record(
-      "skipped",
-      `it already ran ${a.limits.runsPerDay} times today (its daily cap)`,
-      null,
-      null,
-    );
+  if (!a.enabled) return skip("the autopilot is off", null);
   // The project its run belongs to: the one it was fired for, else the first in its scope.
-  const projects = (await orgProjects(ctx.db, input.orgId)).map((p) => p.id);
   const inScope =
     a.scope.projects === "all" ? projects : a.scope.projects.filter((p) => projects.includes(p));
   const projectId = input.projectId ?? inScope[0] ?? null;
   if (!projectId || !inScope.includes(projectId))
-    return record("skipped", "no project in its scope to run for", null, projectId);
-  const project = await ctx.db
-    .selectFrom("core_projects")
-    .selectAll()
-    .where("id", "=", projectId)
-    .executeTakeFirstOrThrow();
-  const item = createWorkItem(ctx, {
-    project,
-    repositoryId: null,
-    title: `Autopilot: ${a.name}`,
-    body: a.instructions,
-    source: `autopilot:${a.id}`,
-    requesterUserId: input.requesterUserId,
-    number: project.next_number,
-    state: "queued",
-  });
-  // The run is the factory's own job, not work: it ends at once until runners support it (g2b).
+    return skip("no project in its scope to run for", projectId);
+  // A kill switch on the org or the project stops a run, for a person's run now too (review of #203).
+  const kill = await activeKillSwitch(ctx.db, input.orgId, projectId);
+  if (kill) return skip(`the ${kill.scope} kill switch is on`, projectId);
+  // Its daily cap (UTC), counted in SQL over the day's runs that ran: skipped ones never fill it
+  // (review of #203). core_autopilot_runs_autopilot_idx: this autopilot's runs today, a few dozen.
+  const day = `${ctx.now.slice(0, 10)}T00:00:00.000Z`;
+  const ran = await ctx.db
+    .selectFrom("core_autopilot_runs")
+    .select(sql<number>`count(*)`.as("n"))
+    .where("org_id", "=", input.orgId)
+    .where("autopilot_id", "=", a.id)
+    .where("created_at", ">=", day)
+    .where("status", "!=", "skipped")
+    .executeTakeFirst();
+  if (Number(ran?.n ?? 0) >= a.limits.runsPerDay)
+    return skip(`it already ran ${a.limits.runsPerDay} times today (its daily cap)`, projectId);
+  // The run, written only while the day's count is still under the cap (two at once can't pass it).
+  // Until runners support autopilots (g2b) it ends at once, with no work item: nothing to hold.
   ctx.write(
-    ctx.db
-      .updateTable("core_work_items")
-      .set({
-        autopilot_run_id: runId,
-        status: "failed",
-        status_reason: NO_AUTOPILOT_RUNNER,
-        released_at: null,
-        released_by: null,
-        closed_at: ctx.now,
-        updated_at: ctx.now,
-      })
-      .where("id", "=", item.id),
+    ctx.d1
+      .prepare(
+        `INSERT INTO core_autopilot_runs (id, org_id, autopilot_id, org_config_version, trigger,
+           dedupe_key, project_id, work_item_id, status, reason, created_by, created_at, ended_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, NULL, 'failed', ?, ?, ?, ?
+         WHERE (SELECT count(*) FROM core_autopilot_runs WHERE org_id = ? AND autopilot_id = ?
+                AND created_at >= ? AND status != 'skipped') < ?`,
+      )
+      .bind(
+        runId,
+        input.orgId,
+        a.id,
+        version,
+        input.trigger,
+        input.dedupeKey,
+        projectId,
+        NO_AUTOPILOT_RUNNER,
+        ctx.actor.id,
+        ctx.now,
+        ctx.now,
+        input.orgId,
+        a.id,
+        day,
+        a.limits.runsPerDay,
+      ),
   );
-  return record("failed", NO_AUTOPILOT_RUNNER, item.id, projectId);
+  ctx.guardChanged("the autopilot's daily cap");
+  ctx.change({
+    entity: "autopilot_run",
+    id: runId,
+    after: {
+      autopilot: a.id,
+      trigger: input.trigger,
+      status: "failed",
+      reason: NO_AUTOPILOT_RUNNER,
+    },
+  });
+  return {
+    runId,
+    status: "failed",
+    reason: NO_AUTOPILOT_RUNNER,
+    workItemId: null,
+    duplicate: false,
+  };
 }
 
 export function withAutopilot(config: OrgConfig, autopilot: AutopilotConfig): OrgConfig {
@@ -441,6 +460,9 @@ export const autopilotRunNow = defineOperation({
   actors: ["human"],
   permission: "member",
   input: z.object({ orgId, autopilotId, projectId: z.string().min(1).max(64).optional() }),
+  // Scoped by the org (review of #203): the member check is the org's; the project is checked to
+  // be the org's in the handler.
+  scope: async (input) => ({ orgId: input.orgId }),
   output: runResult,
   async handler(input, ctx) {
     return startAutopilotRun(ctx, {
@@ -469,6 +491,7 @@ export const autopilotFire = defineOperation({
     projectId: z.string().min(1).max(64).optional(),
     requesterUserId: z.string().min(1).max(64),
   }),
+  scope: async (input) => ({ orgId: input.orgId }),
   output: runResult,
   async handler(input, ctx) {
     return startAutopilotRun(ctx, input);

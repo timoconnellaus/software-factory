@@ -1717,6 +1717,8 @@ export const inboxList = defineOperation({
         .selectAll()
         .where("org_id", "in", myOrgs)
         .where("status", "in", ["running", "waiting", "paused"])
+        // Autopilot runs are shown on their autopilot's page (ADR 0514).
+        .where("item_kind", "!=", "autopilot")
         .orderBy("updated_at", "desc")
         .limit(100),
       ctx.db

@@ -28,6 +28,9 @@ const LATE_BLOCKS: [number, number][] = [
   // The merge queue's own merge commit (block AT, #190 review) lands after 0400–0402: 0394 only adds
   // a column to core_merge_queue, which nothing later rebuilds.
   [394, 394],
+  // Autopilot runs (block AI, spec 52 (g2a)) land after 0390+: 0284 only adds two columns to
+  // core_work_items (one virtual) and creates core_autopilot_runs; nothing after it rebuilds them.
+  [284, 284],
 ];
 
 const late = (name: string) => {

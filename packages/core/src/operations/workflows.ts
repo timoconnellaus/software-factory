@@ -1332,7 +1332,12 @@ async function autopilotUses(
     .filter((x) => !Object.hasOwn(config.skills, x))
     .flatMap((x) => {
       const b = BUILTIN_BY_ID.get(x);
-      return b ? [{ id: x, version: 0, name: b.name, description: null, body: b.body }] : [];
+      // One the org doesn't have and no built-in is: shown with no text, so the desktop refuses it.
+      return [
+        b
+          ? { id: x, version: 0, name: b.name, description: null, body: b.body }
+          : { id: x, version: 0, name: null, description: null, body: null },
+      ];
     });
   // Each skill's current version, by primary key (org, skill, version): at most 40 keys, in
   // chunks of 15 key pairs a query (D1's bound-parameter limit), so at most three queries.
