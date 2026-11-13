@@ -53,6 +53,22 @@ async function sha256(text: string): Promise<string> {
 const newSkillId = () => `sk_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
 
 /** The highest version a skill has, or 0 (by the primary key's prefix). */
+/**
+ * Whether a skill has reached its version ceiling, counting only versions not rejected (review of
+ * #155: rejected proposals never block a person's save). Reads at most the ceiling + 1 rows.
+ */
+async function atCeiling(db: Db, org: string, skill: string): Promise<boolean> {
+  const kept = await db
+    .selectFrom("core_skill_versions")
+    .select("version")
+    .where("org_id", "=", org)
+    .where("skill_id", "=", skill)
+    .where("status", "!=", "rejected")
+    .limit(MAX_SKILL_VERSIONS + 1)
+    .execute();
+  return kept.length >= MAX_SKILL_VERSIONS;
+}
+
 async function latestVersion(db: Db, org: string, skill: string): Promise<number> {
   const row = await db
     .selectFrom("core_skill_versions")
@@ -190,7 +206,7 @@ async function saveSkill(ctx: HandlerContext, input: SaveInput, createdBy?: stri
   requireBase(version, input.baseVersion);
   const id = input.skillId ?? newSkillId();
   const latest = await latestVersion(ctx.db, input.orgId, id);
-  if (latest >= MAX_SKILL_VERSIONS)
+  if (await atCeiling(ctx.db, input.orgId, id))
     throw new OperationError(
       "invalid_input",
       `a skill keeps at most ${MAX_SKILL_VERSIONS} versions`,
@@ -354,7 +370,7 @@ type AcceptInput = {
   baseVersion: number;
   skillId: string;
   version: number;
-  sha256: string;
+  acceptHash: string;
   note?: string;
 };
 async function acceptSkill(ctx: HandlerContext, input: AcceptInput, createdBy?: string) {
@@ -362,17 +378,24 @@ async function acceptSkill(ctx: HandlerContext, input: AcceptInput, createdBy?: 
   requireBase(version, input.baseVersion);
   const row = await ctx.db
     .selectFrom("core_skill_versions")
-    .select(["status", "overrides", "name", "parent_version", "sha256"])
+    .select(["status", "overrides", "name", "description", "body", "parent_version"])
     .where("org_id", "=", input.orgId)
     .where("skill_id", "=", input.skillId)
     .where("version", "=", input.version)
     .executeTakeFirst();
   if (!row || row.status !== "proposed")
     throw new OperationError("not_found", "no such proposal waiting for a decision");
-  if (row.sha256 !== input.sha256)
+  const hash = await acceptHashOf({
+    name: row.name,
+    description: row.description,
+    body: row.body,
+    overrides: row.overrides ? JSON.parse(row.overrides) : null,
+    attachedTo: attachments(config, input.skillId),
+  });
+  if (hash !== input.acceptHash)
     throw new OperationError(
       "conflict",
-      "the proposal's text isn't the text you read: read it again (skill.get with its version) before accepting",
+      "what accepting this applies isn't what you read (its text, name, description, override or attachments changed): read it again (skill.get with its version) before accepting",
     );
   // A proposal made against an older version would quietly replace a later save (review of #155).
   if ((row.parent_version ?? null) !== (config.skills[input.skillId]?.version ?? null))
@@ -506,15 +529,36 @@ export const skillList = defineOperation({
   },
 });
 
+/** Lines either side of a diff at most (the LCS table is their product). */
+export const MAX_DIFF_LINES = 400;
+
+/**
+ * The hash a person's acceptance carries (review of #155): everything accepting the version applies,
+ * its name, description, text, the built-in it overrides and where the skill is attached now.
+ */
+async function acceptHashOf(x: {
+  name: string;
+  description: string;
+  body: string;
+  overrides: unknown;
+  attachedTo: string[];
+}): Promise<string> {
+  return sha256(
+    JSON.stringify([x.name, x.description, x.body, x.overrides ?? null, [...x.attachedTo].sort()]),
+  );
+}
+
 /** A line diff (LCS), for a person to read a proposal against the current text. */
 export function lineDiff(
   before: string,
   after: string,
-): { op: "same" | "add" | "remove"; line: string }[] {
+): { op: "same" | "add" | "remove"; line: string }[] | null {
   const a = before ? before.split("\n") : [];
   const b = after.split("\n");
   const n = a.length;
   const m = b.length;
+  // Bounded (review of #155): past this the table is too big to build per request.
+  if (n > MAX_DIFF_LINES || m > MAX_DIFF_LINES) return null;
   const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
@@ -568,11 +612,22 @@ export const skillGet = defineOperation({
         body: z.string(),
         sha256: z.string(),
         overrides: z.object({ builtin: z.string(), mode: z.string() }).nullable(),
-        diff: z.array(z.object({ op: z.enum(["same", "add", "remove"]), line: z.string() })),
+        /** Null when either text is too long to diff here: read both in full instead. */
+        diff: z
+          .array(z.object({ op: z.enum(["same", "add", "remove"]), line: z.string() }))
+          .nullable(),
+        /** What `skill.accept` must carry: the hash of everything accepting it applies. */
+        acceptHash: z.string(),
       })
       .nullable(),
     current: z
-      .object({ version: z.number(), name: z.string(), description: z.string(), body: z.string() })
+      .object({
+        version: z.number(),
+        name: z.string(),
+        description: z.string(),
+        body: z.string(),
+        overrides: z.object({ builtin: z.string(), mode: z.string() }).nullable(),
+      })
       .nullable(),
     versions: z.array(
       z.object({
@@ -597,6 +652,7 @@ export const skillGet = defineOperation({
           name: builtin.name,
           description: builtin.description,
           body: builtin.body,
+          overrides: null,
         },
         versions: [],
         attachedTo: attachments(config, builtin.id),
@@ -637,6 +693,13 @@ export const skillGet = defineOperation({
             sha256: asked.sha256,
             overrides: asked.overrides,
             diff: lineDiff(current?.body ?? "", asked.body),
+            acceptHash: await acceptHashOf({
+              name: asked.name,
+              description: asked.description,
+              body: asked.body,
+              overrides: asked.overrides,
+              attachedTo: attachments(config, input.skillId),
+            }),
           }
         : null,
       current: current
@@ -645,6 +708,7 @@ export const skillGet = defineOperation({
             name: current.name,
             description: current.description,
             body: current.body,
+            overrides: current.overrides,
           }
         : null,
       versions: versions.map((v) => ({
@@ -774,7 +838,7 @@ export const skillPropose = defineOperation({
       throw new OperationError("not_found", `the org has no skill ${input.skillId}`);
     const id = input.skillId ?? newSkillId();
     const latest = await latestVersion(ctx.db, input.orgId, id);
-    if (latest >= MAX_SKILL_VERSIONS)
+    if (await atCeiling(ctx.db, input.orgId, id))
       throw new OperationError(
         "invalid_input",
         `a skill keeps at most ${MAX_SKILL_VERSIONS} versions`,
@@ -873,7 +937,7 @@ export const skillPropose = defineOperation({
 export const skillAccept = defineOperation({
   name: "skill.accept",
   description:
-    "Accept a proposed skill version (ADR 0513): it becomes the skill's current version in a new org config version. Carry the `sha256` of the text you read (`skill.get` with the version): a mismatch is refused, so nobody accepts text they didn't see. A person's decision, in the app; one a judge follows is policy and waits for an org admin. Org admins only.",
+    "Accept a proposed skill version (ADR 0513): it becomes the skill's current version in a new org config version. Carry the `acceptHash` from `skill.get` with the version (it covers the text, name, description, override and attachments): a mismatch is refused, so nobody accepts what they didn't see. A person's decision, in the app; one a judge follows is policy and waits for an org admin. Org admins only.",
   risk: "write",
   // Judged by the proposal being accepted: its own overrides (review of #155), so a proposal that
   // extends the reviewer's protected skill is the loosening it is.
@@ -901,8 +965,8 @@ export const skillAccept = defineOperation({
     baseVersion,
     skillId: skillIdSchema,
     version: z.number().int().positive(),
-    /** The sha256 of the text the person read (`skill.get`): what they accept, exactly. */
-    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    /** `skill.get`'s `acceptHash` for the version: everything the person read, exactly. */
+    acceptHash: z.string().regex(/^[0-9a-f]{64}$/),
     note,
   }),
   output: z.object({ version: z.number() }),
@@ -998,10 +1062,10 @@ export async function jobSkills(
   // A judge's own attachments were approved as loosenings; triage's aren't (its type doesn't judge
   // by policy yet), so it takes none. Others take what's attached.
   const stageSkills = judging && !type?.judges ? [] : (inst.skills ?? []);
+  // A judging job never takes its agent's skills (review of #155): an agent's attachments are
+  // practice, and a new judging stage naming that agent mustn't hand them to the judge.
   const agentSkills =
-    inst.agent && (!judging || type?.judges === "agent")
-      ? (org.agentSkills[inst.agent.toLowerCase()] ?? [])
-      : [];
+    inst.agent && !judging ? (org.agentSkills[inst.agent.toLowerCase()] ?? []) : [];
   const builtins = new Set(BUILTIN_SKILLS.filter((b) => b.type === inst.type).map((b) => b.id));
   const overriding = Object.entries(org.skills)
     .filter(([, s]) => s.overrides && builtins.has(s.overrides.builtin))

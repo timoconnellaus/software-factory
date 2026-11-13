@@ -78,13 +78,28 @@ async function skillsScenario(e: Env) {
     skillId,
     target: { agent: "Builder" },
   });
+  // A second skill on the same agent: the enqueue reads two keys in one OR (review of #155).
+  await out("skill.save", {
+    orgId: o.orgId,
+    baseVersion: 3,
+    skill: { name: "Name the index", description: "d", body: "b" },
+  });
+  const second = (
+    await out<{ skills: { id: string; builtin: boolean }[] }>("skill.list", { orgId: o.orgId })
+  ).skills.find((x) => !x.builtin && x.id !== skillId)?.id as string;
+  await out("skill.attach", {
+    orgId: o.orgId,
+    baseVersion: 4,
+    skillId: second,
+    target: { agent: "Builder" },
+  });
   const ship = {
     ...SOFTWARE,
     id: "wf_ship",
     name: "Ship",
     stages: SOFTWARE.stages.map((x) => (x.id === "build" ? { ...x, agent: "Builder" } : x)),
   };
-  await out("workflow.save", { orgId: o.orgId, baseVersion: 3, workflow: ship });
+  await out("workflow.save", { orgId: o.orgId, baseVersion: 5, workflow: ship });
   const cfg = await out<{
     current: { version: number; policy: Record<string, unknown> | null } | null;
   }>("config.get", { projectId: o.projectId });
@@ -98,7 +113,7 @@ async function skillsScenario(e: Env) {
     projectId: o.projectId,
     title: "Skilled",
   });
-  await e.DB.prepare("UPDATE core_work_items SET org_config_version = 4 WHERE id = ?")
+  await e.DB.prepare("UPDATE core_work_items SET org_config_version = 6 WHERE id = ?")
     .bind(item.workItemId)
     .run();
   await out(
@@ -117,17 +132,17 @@ async function skillsScenario(e: Env) {
     { type: "self-improve", id: "improver" } as never,
   );
   await out("skill.list", { orgId: o.orgId });
-  const read = await out<{ version: { sha256: string } }>("skill.get", {
+  const read = await out<{ version: { acceptHash: string } }>("skill.get", {
     orgId: o.orgId,
     skillId,
     version: 2,
   });
   await out("skill.accept", {
     orgId: o.orgId,
-    baseVersion: 4,
+    baseVersion: 6,
     skillId,
     version: 2,
-    sha256: read.version.sha256,
+    acceptHash: read.version.acceptHash,
   });
   // The runner reads the job's skill: its run and lease, as a claim leaves them.
   const reg = await out<{ runnerId: string }>("runner.register", { name: "M5" });

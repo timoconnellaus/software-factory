@@ -1,6 +1,8 @@
 // Skills (spec 52 build step (f), ADR 0513): org-owned, versioned, attached to agents and stages;
 // a judge's skills are policy (Q16); the factory proposes, a person accepts (Q17); a job carries the
 // skills it follows and its runner reads them, fenced by its lease.
+
+import { env } from "cloudflare:workers";
 import {
   type CapabilityManifest,
   CONTRACT_VERSION,
@@ -15,6 +17,7 @@ import {
   type OrgSkill,
   resolveSkills,
 } from "../src/index.ts";
+import { lineDiff } from "../src/operations/skills.ts";
 import { parseOrgConfig, SOFTWARE, type WorkflowDefinition } from "../src/stages/index.ts";
 import {
   call,
@@ -201,15 +204,15 @@ async function save(w: W, draft: Record<string, unknown> = DRAFT, skillId?: stri
   );
 }
 
-/** The sha256 of a version's text, as a person reads it before accepting (`skill.get`). */
+/** What a person carries to accept a version: `skill.get`'s `acceptHash` for it. */
 const shaOf = async (w: W, skillId: string, version: number) =>
   (
-    await ok<{ version: { sha256: string } }>(
+    await ok<{ version: { acceptHash: string } }>(
       "skill.get",
       { orgId: w.orgId, skillId, version },
       w.human,
     )
-  ).version.sha256;
+  ).version.acceptHash;
 
 const listed = (w: W) =>
   ok<{
@@ -320,7 +323,7 @@ describe("skills through the operations", () => {
           baseVersion: await orgVersion(w),
           skillId: proposed.skillId,
           version: 1,
-          sha256: await shaOf(w, proposed.skillId, 1),
+          acceptHash: await shaOf(w, proposed.skillId, 1),
         },
         IMPROVER,
       ),
@@ -333,7 +336,7 @@ describe("skills through the operations", () => {
         baseVersion: await orgVersion(w),
         skillId: proposed.skillId,
         version: 1,
-        sha256: await shaOf(w, proposed.skillId, 1),
+        acceptHash: await shaOf(w, proposed.skillId, 1),
       },
       w.human,
     );
@@ -533,7 +536,7 @@ describe("skills, review of #155", () => {
         baseVersion: await orgVersion(w),
         skillId: proposed.skillId,
         version: 1,
-        sha256: await shaOf(w, proposed.skillId, 1),
+        acceptHash: await shaOf(w, proposed.skillId, 1),
       },
       w.human,
     );
@@ -692,7 +695,7 @@ describe("skills, review of #155", () => {
           baseVersion: await orgVersion(w),
           skillId: id,
           version: 2,
-          sha256: await shaOf(w, id, 2),
+          acceptHash: await shaOf(w, id, 2),
         },
         w.human,
       ),
@@ -718,7 +721,7 @@ describe("skills, review of #155", () => {
       ["skill.archive", { orgId: w.orgId, baseVersion: base, skillId: id }],
       [
         "skill.accept",
-        { orgId: w.orgId, baseVersion: base, skillId: id, version: 1, sha256: "0".repeat(64) },
+        { orgId: w.orgId, baseVersion: base, skillId: id, version: 1, acceptHash: "0".repeat(64) },
       ],
     ];
     for (const [op, input] of inputs) {
@@ -802,12 +805,12 @@ describe("skills, second review of #155", () => {
           baseVersion: await orgVersion(w),
           skillId: id,
           version: 2,
-          sha256: "a".repeat(64),
+          acceptHash: "a".repeat(64),
         },
         w.human,
       ),
     );
-    expect(wrong.message).toMatch(/isn't the text you read/);
+    expect(wrong.message).toMatch(/isn't what you read/);
   });
 
   it("the runner never gets a proposed version", async () => {
@@ -959,5 +962,104 @@ describe("skills, second review of #155", () => {
       w.human,
     );
     expect(r.status).toBe("pending");
+  });
+});
+
+describe("skills, third review of #155", () => {
+  it("a judging job never takes its agent's skills", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    // Security judges (the agent check): its agent skills are attached as a loosening, still not used.
+    await decide(
+      w,
+      await call(
+        "skill.attach",
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: id,
+          target: { agent: "Security" },
+        },
+        w.human,
+      ),
+    );
+    const job = await enqueued(w, "verify", "review", { step: { id: "security" } });
+    expect(job.context.skills).toBeUndefined();
+  });
+
+  it("refuses every invisible character by category; a name or description takes no newline or tab", async () => {
+    const w = await world();
+    for (const ch of [
+      "\u061C",
+      "\u180E",
+      "\u206A",
+      "\u034F",
+      "\u3164",
+      "\uFFA0",
+      "\uFFF9",
+      "\u2800",
+    ])
+      expect(
+        (await refusal(save(w, { ...DRAFT, body: `a${ch}b` }))).code,
+        ch.codePointAt(0)?.toString(16),
+      ).toBe("invalid_input");
+    expect((await refusal(save(w, { ...DRAFT, name: "Two\tparts" }))).code).toBe("invalid_input");
+    expect((await save(w, { ...DRAFT, body: "line one\n\tline two" })).status).toBe("ok");
+  });
+
+  it("a diff too long to build is left out, and the hash covers what accepting applies", async () => {
+    expect(lineDiff("a", Array.from({ length: 500 }, (_, i) => `l${i}`).join("\n"))).toBeNull();
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    await ok(
+      "skill.propose",
+      { projectId: w.projectId, skillId: id, skill: { ...DRAFT, body: "changed" } },
+      IMPROVER,
+    );
+    const hash = await shaOf(w, id, 2);
+    // Attached somewhere after the person read it: what accepting applies changed.
+    await ok(
+      "skill.attach",
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: id,
+        target: { agent: "Builder" },
+      },
+      w.human,
+    );
+    const stale = await refusal(
+      call(
+        "skill.accept",
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: id,
+          version: 2,
+          acceptHash: hash,
+        },
+        w.human,
+      ),
+    );
+    expect(stale.message).toMatch(/isn't what you read/);
+  });
+
+  it("rejected proposals never block a person's save", async () => {
+    const w = await world();
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    const now = new Date().toISOString();
+    const stmts = Array.from({ length: 500 }, (_, i) =>
+      env.DB.prepare(
+        `INSERT INTO core_skill_versions (org_id, skill_id, version, name, description, body, sha256, status, source, created_at)
+         VALUES (?, ?, ?, 'x', 'd', 'b', 'x', 'rejected', 'agent', ?)`,
+      ).bind(w.orgId, id, i + 2, now),
+    );
+    await env.DB.batch(stmts);
+    expect((await save(w, { ...DRAFT, body: "still saves" }, id)).status).toBe("ok");
   });
 });

@@ -21,25 +21,20 @@ export const MAX_OPEN_PROPOSALS = 50;
 export const MAX_PROPOSALS_A_DAY = 10;
 
 /**
- * Text a person can't see doesn't go in (review of #155): C0 and C1 controls (not newline or tab),
- * the soft hyphen, line and paragraph separators, zero-width and bidi marks, overrides and isolates,
- * word joiners, variation selectors and tag characters.
+ * Text a person can't see doesn't go in (reviews of #155): every format, control, line and
+ * paragraph separator character, by Unicode category rather than a list of ranges, and the
+ * fillers and joiners that render as nothing. A body may keep newlines and tabs; a name or a
+ * description may not.
  */
-export function hasHidden(text: string): boolean {
-  for (const ch of text) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c === 9 || c === 10 || c === 13) continue;
-    if (c < 32 || (c >= 0x7f && c <= 0x9f) || c === 0xad) return true;
-    if ((c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e)) return true;
-    if ((c >= 0x2060 && c <= 0x2064) || (c >= 0x2066 && c <= 0x2069) || c === 0xfeff) return true;
-    if ((c >= 0xfe00 && c <= 0xfe0f) || (c >= 0xe0000 && c <= 0xe01ef)) return true;
-  }
-  return false;
+const INVISIBLE =
+  /\p{Cf}|\p{Cc}|\p{Zl}|\p{Zp}|\u034F|\u115F|\u1160|\u180B|\u180C|\u180D|\u180E|\u180F|\u2800|\u3164|\uFFA0|\p{Variation_Selector}/u;
+export function hasHidden(text: string, allowLines = false): boolean {
+  return INVISIBLE.test(allowLines ? text.replace(/[\n\t]/g, "") : text);
 }
-const visible = (what: string) =>
+const visible = (what: string, allowLines = false) =>
   [
-    (t: string) => !hasHidden(t),
-    `no control or invisible format characters in the ${what}`,
+    (t: string) => !hasHidden(t, allowLines),
+    `no control or invisible characters in the ${what}`,
   ] as const;
 
 /** When a stage's attached skill applies to an item (spec 52, Skills). Absent: always. */
@@ -77,7 +72,7 @@ export const skillDraftSchema = z
       .string()
       .min(1)
       .max(MAX_SKILL_BODY)
-      .refine(...visible("instructions")),
+      .refine(...visible("instructions", true)),
     /** It changes a stage type's built-in skill: appended to it, or in its place. */
     overrides: z
       .object({ builtin: builtinSkillIdSchema, mode: z.enum(["extend", "replace"]) })

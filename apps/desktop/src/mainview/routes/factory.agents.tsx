@@ -2,7 +2,8 @@
 // model role and tier with standing instructions, never a model or a harness; then each model role
 // with the model the owner configured for it (config, shown as set; ADR 0018: code asks for a role),
 // from `config.get`. Edit agents (`?edit=1`) edits them in the app (ADR 0610), saved with the config.
-// The design's skills (spec 52) and per-agent usage have no operation yet, so they aren't here.
+// The design's skills (spec 52: `skill.list`, `skill.attach`) aren't shown here yet, and per-agent
+// usage has no operation, so neither is here.
 import { cn } from "@software-factory/ui/lib/utils";
 import { createRoute, Link } from "@tanstack/react-router";
 import { SaveBar, UnsavedGuard, useConfigDraft } from "../components/config-editor.tsx";
