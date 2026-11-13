@@ -99,6 +99,12 @@ export const CAPABILITIES = [
    */
   "checks",
   "cloud-sandbox",
+  /**
+   * The runner host runs a `babysit` job (spec 53 §4, ADR 0620): it prepares, merges the default
+   * branch into and pushes a conflict job's run branch (`pushesRunBranch`). A babysit job is placed
+   * only on a runner that declares it: an older host would read the stage as unknown.
+   */
+  "babysit",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -114,7 +120,8 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
  * Stages that run on a runner. `spec` is V1's one-shot spec run (Workflow v1–v4); `planning` is the
  * live, resumable planning session (ADR 0300, Workflow v5).
  */
-export const JOB_STAGES = ["triage", "spec", "planning", "build", "verify"] as const;
+/** `babysit` (spec 53, ADR 0583): the babysitter's judgement job, woken by the deliverer. */
+export const JOB_STAGES = ["triage", "spec", "planning", "build", "verify", "babysit"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
 /** Runner capacity pools (ADR 0301): heavy runs the test suite, light mostly reads and waits. */
@@ -448,6 +455,21 @@ export function canRun(
  * The run branch for run `runNo` of a work item whose branch is `itemBranch` (ADR 0035):
  * `factory/<n>-<slug>` → `factory/<n>-<slug>-run-<k>`.
  */
+/**
+ * Whether the runner host commits, checks for an unresolved merge of the default branch and pushes
+ * the run branch at the end of the job: a build, and a `babysit` job sent to resolve a conflict
+ * (spec 53 §4: it merges the default branch in on its run branch, never a rebase or force push).
+ */
+export function pushesRunBranch(job: {
+  stage: JobStage;
+  context?: Record<string, unknown> | undefined;
+}): boolean {
+  if (job.stage === "build") return true;
+  if (job.stage !== "babysit") return false;
+  const reason = job.context?.reason as { kind?: unknown } | undefined;
+  return reason?.kind === "conflict";
+}
+
 export function runBranch(itemBranch: string, runNo: number): string {
   return `${itemBranch}-run-${runNo}`;
 }

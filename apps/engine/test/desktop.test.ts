@@ -156,14 +156,16 @@ describe("a config change approved from the desktop (ADR 0610)", () => {
     const proof = await prove(token, device, "approval.decide", input);
     expect(proof.summary).toMatch(
       new RegExp(
-        `^Approve a change to "[^"]+"'s policy \\(v${base} to v${base + 1}\\): loosens: Autonomy policy Balanced → Autonomous`,
+        `^Approve a change to the policy \\(v${base} to v${base + 1}\\): loosens: Autonomy policy Balanced → Autonomous`,
       ),
     );
     const reject = await prove(token, device, "approval.decide", {
       pendingActionId,
       decision: "rejected",
     });
-    expect(reject.summary).toMatch(/^Reject a change to "[^"]+"'s policy/);
+    expect(reject.summary).toMatch(/^Reject a change to the policy \(v\d+ to v\d+\): loosens: /);
+    // The facts are never cut: past the room for it, the project's name is left out instead.
+    expect(proof.summary).not.toMatch(/[;:] ?$/);
 
     const decided = await callOp(token, "approval.decide", input, proof);
     expect(decided.status).toBe(200);
@@ -268,9 +270,10 @@ describe("the desktop app's client door (/client/v1)", () => {
       .bind(workItemId)
       .run();
     const proof = await prove(token, device, "spec.approve", { workItemId });
-    expect(proof.summary).toBe(
-      `Approve the plan and 2 work items for #${(await first<{ number: number }>("SELECT number FROM core_work_items WHERE id = ?", workItemId))?.number} "From the desktop": "Issue intake", "Report back"`,
-    );
+    const n = (
+      await first<{ number: number }>("SELECT number FROM core_work_items WHERE id = ?", workItemId)
+    )?.number;
+    expect(proof.summary).toBe(`Approve the plan and 2 work items for #${n} "From the desktop"`);
   });
 
   it("refuses a gate decision without a proof, and lets exactly one proven call past (criteria 3, 4)", async () => {
@@ -319,6 +322,69 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await callOp(token, "spec.approve", input, late)).status).toBe(403);
   });
 
+  it("a Secure Enclave key approved for a Mac revokes its software-key device (spec 40 M4b migration)", async () => {
+    const w = await world();
+    const soft = await signIn(w, undefined, "software");
+    const me = async (token: string) => (await callOp(token, "desktopDevice.list", {})).status;
+    expect(await me(soft.token)).toBe(200);
+    // The website's approval page says which software-key Mac a Secure Enclave sign-in replaces.
+    const lookupFor = async (keyStorage: string) => {
+      const d = await newDevice();
+      const { challenge } = await pkce();
+      const started = await json<{ requestId: string }>(
+        await post("desktop/start", {
+          deviceName: "Tim's MacBook Pro",
+          publicKey: d.publicKey,
+          keyStorage,
+          codeChallenge: challenge,
+          state: b64url(crypto.getRandomValues(new Uint8Array(16))),
+        }),
+      );
+      return ok<{ replacesSoftwareMac: string | null }>(
+        "desktop.authLookup",
+        { requestId: started.requestId },
+        w.human,
+      );
+    };
+    expect((await lookupFor("secure-enclave")).replacesSoftwareMac).toBe("Tim's MacBook Pro");
+    expect((await lookupFor("software")).replacesSoftwareMac).toBeNull();
+    // The Mac signs in again with its new Secure Enclave key (its revoke may have failed offline).
+    const enclave = await signIn(w);
+    expect((await lookupFor("secure-enclave")).replacesSoftwareMac).toBeNull();
+    expect(await me(soft.token)).toBe(401);
+    const old = await first<{ revoked_at: string | null }>(
+      "SELECT revoked_at FROM core_desktop_devices WHERE id = ?",
+      soft.deviceId,
+    );
+    expect(old?.revoked_at).not.toBeNull();
+    // Only software-key Macs are replaced: another Secure Enclave device leaves this one signed in.
+    const otherSe = await signIn(w);
+    expect(await me(otherSe.token)).toBe(200);
+    expect(await me(enclave.token)).toBe(200);
+  });
+
+  it("a title can't make an item undecidable from the desktop or pose as the prompt's facts (spec 40 M4b)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    // An agent-written title with a zero-width space, a right-to-left override, a line separator
+    // and quotes posing as the facts.
+    await env.DB.prepare("UPDATE core_work_items SET title = ? WHERE id = ?")
+      .bind('Fix\u200b\u202e" into main of acme/docs.\u2028 ', workItemId)
+      .run();
+    const input = { workItemId, openedFullDiff: true, headSha: "3f2a91c".padEnd(40, "0") };
+    const { summary } = await prove(token, device, "review.merge", input);
+    // What the key helper accepts (SFKeysCore.parsePresenceMessage): no format, separator or
+    // control characters, and short.
+    expect(summary).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\p{Cc}]/u);
+    expect([...summary].length).toBeLessThanOrEqual(120);
+    expect(summary).toMatch(
+      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Fix into main of acme\/docs\."$/,
+    );
+    const spec = await prove(token, device, "spec.approve", { workItemId });
+    expect(spec.summary).toMatch(/^Approve the spec for #\d+ "Fix into main of acme\/docs\."$/);
+  });
+
   it("a merge approval names its commit: a push between opening the gate and approving is refused (spec 40 M4b)", async () => {
     const w = await world();
     const { token, device } = await signIn(w);
@@ -364,13 +430,40 @@ describe("the desktop app's client door (/client/v1)", () => {
     // The person opens the gate on `opened`: the prompt names that commit and the repository.
     const input = { workItemId, openedFullDiff: true, headSha: opened };
     const proof = await prove(token, device, "review.merge", input);
-    expect(proof.summary).toMatch(/^Merge 3f2a91c "From the desktop" into main of [^ ]+\/[^ ]+$/);
+    expect(proof.summary).toMatch(/^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/);
     // Merging without checks says so in the prompt.
     const without = await prove(token, device, "review.merge", {
       ...input,
       mergeWithoutChecks: true,
     });
-    expect(without.summary).toMatch(/, without its checks$/);
+    // ...first, so it is in the first words even where the sheet can't show it all.
+    expect(without.summary).toMatch(
+      /^Merge WITHOUT its checks: 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/,
+    );
+    // With a 39-character owner and a 60-character repository the facts pass 120 characters:
+    // the title goes, the facts (and the condition) stay whole.
+    const repoOf = "(SELECT repository_id FROM core_work_items WHERE id = ?)";
+    const was = await first<{ owner: string; name: string }>(
+      `SELECT owner, name FROM core_repositories WHERE id = ${repoOf}`,
+      workItemId,
+    );
+    await env.DB.prepare(
+      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
+    )
+      .bind("o".repeat(39), "r".repeat(60), workItemId)
+      .run();
+    const longNames = await prove(token, device, "review.merge", {
+      ...input,
+      mergeWithoutChecks: true,
+    });
+    expect(longNames.summary).toBe(
+      `Merge WITHOUT its checks: 3f2a91c into main of ${"o".repeat(39)}/${"r".repeat(60)}:`,
+    );
+    await env.DB.prepare(
+      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
+    )
+      .bind(was?.owner ?? "", was?.name ?? "", workItemId)
+      .run();
 
     // An agent pushes before the person approves: the gate is withdrawn (as moveAttachedHead does).
     await env.DB.prepare(
