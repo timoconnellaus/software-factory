@@ -22,9 +22,14 @@ import { OpError, op, submitKey } from "../lib/op.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { CannotApproveYet, useCanDecide } from "./cannot-approve.tsx";
 import { Cell, Row, TablePanel, WIDE } from "./data-table.tsx";
+import { Reads } from "./read-state.tsx";
 import { Chip, SectionTitle } from "./shell-list.tsx";
 
-type Target = { scope: "org" | "project"; id: string; name: string; on: boolean };
+type Target = { scope: "org" | "project"; id: string; name: string; on: boolean; epoch: number };
+
+/** How a switch changes: on is a plain call; off lets work resume, a decision with Touch ID. */
+export const killSwitchPath = (turningOn: boolean): "call" | "decide" =>
+  turningOn ? "call" : "decide";
 
 export function KillSwitches({
   orgId,
@@ -49,6 +54,7 @@ export function KillSwitches({
       name: `${orgName} (every project)`,
       on: !!switches.data?.org?.on,
       reason: switches.data?.org?.reason ?? null,
+      epoch: switches.data?.org?.epoch ?? 0,
     },
     ...projects.map((p) => ({
       scope: "project" as const,
@@ -56,6 +62,7 @@ export function KillSwitches({
       name: p.name,
       on: !!of(p.id)?.on,
       reason: of(p.id)?.reason ?? null,
+      epoch: of(p.id)?.epoch ?? 0,
     })),
   ];
   const anyOn = rows.some((r) => r.on);
@@ -78,32 +85,43 @@ export function KillSwitches({
       <SectionTitle note="On, the covered work pauses and its runs stop; people can still decide gates.">
         Kill switches
       </SectionTitle>
-      {anyOn && <CannotApproveYet />}
-      <TablePanel head={["Where", "State", { label: "Why", className: WIDE }, ""]}>
-        {rows.map((r) => (
-          <Row key={`${r.scope}:${r.id}`}>
-            <Cell className="font-medium">{r.name}</Cell>
-            <Cell>
-              {r.on ? <Chip tone="amber">On</Chip> : <span className="text-ink-3">Off</span>}
-            </Cell>
-            <Cell className={`whitespace-normal text-ink-3 ${WIDE}`}>{r.reason ?? ""}</Cell>
-            <Cell className="text-right">
-              <Button
-                size="sm"
-                variant={r.on ? "default" : "outline"}
-                className="h-7"
-                disabled={pending !== null || (r.on && !canDecide)}
-                onClick={() => {
-                  setReason("");
-                  setTarget(r);
-                }}
-              >
-                {r.on ? "Turn off" : "Turn on"}
-              </Button>
-            </Cell>
-          </Row>
-        ))}
-      </TablePanel>
+      <Reads queries={[switches]} what="the kill switches">
+        {() => (
+          <>
+            {anyOn && <CannotApproveYet />}
+            {switches.data?.more && (
+              <div className="text-ink-3 text-xs">
+                More projects have switches than are shown here (the first 200).
+              </div>
+            )}
+            <TablePanel head={["Where", "State", { label: "Why", className: WIDE }, ""]}>
+              {rows.map((r) => (
+                <Row key={`${r.scope}:${r.id}`}>
+                  <Cell className="font-medium">{r.name}</Cell>
+                  <Cell>
+                    {r.on ? <Chip tone="amber">On</Chip> : <span className="text-ink-3">Off</span>}
+                  </Cell>
+                  <Cell className={`whitespace-normal text-ink-3 ${WIDE}`}>{r.reason ?? ""}</Cell>
+                  <Cell className="text-right">
+                    <Button
+                      size="sm"
+                      variant={r.on ? "default" : "outline"}
+                      className="h-7"
+                      disabled={pending !== null || (r.on && !canDecide)}
+                      onClick={() => {
+                        setReason("");
+                        setTarget(r);
+                      }}
+                    >
+                      {r.on ? "Turn off" : "Turn on"}
+                    </Button>
+                  </Cell>
+                </Row>
+              ))}
+            </TablePanel>
+          </>
+        )}
+      </Reads>
       <AlertDialog open={target !== null} onOpenChange={(o) => !o && setTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -131,10 +149,11 @@ export function KillSwitches({
                 const t = target;
                 setTarget(null);
                 if (!t) return;
-                if (t.on) {
+                if (killSwitchPath(!t.on) === "decide") {
                   await run(
                     "killSwitch.set",
-                    { scope: t.scope, id: t.id, on: false },
+                    // The epoch seen: an off decided against an old reason is refused (conflict).
+                    { scope: t.scope, id: t.id, on: false, epoch: t.epoch },
                     `Resumed: ${t.name}`,
                   );
                   await queryClient.invalidateQueries({ queryKey: ["killSwitches"] });

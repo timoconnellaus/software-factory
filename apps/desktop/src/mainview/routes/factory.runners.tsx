@@ -16,6 +16,7 @@ import { PageArea, PageHeader, Panel } from "../components/shell-list.tsx";
 import { type RunnerRow, runnerRows } from "../lib/factory.ts";
 import { OpError, op, submitKey } from "../lib/op.ts";
 import { inboxQuery, runnersQuery } from "../lib/queries.ts";
+import { useSession } from "../lib/session.ts";
 import { factoryLayout } from "./_factory.tsx";
 
 interface Search {
@@ -179,12 +180,15 @@ function Accounts({ r }: { r: RunnerRow }) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const accounts = r.accounts;
+  const me = useSession().user.id;
   if (!accounts) return null;
+  // Only the runner's owner switches its accounts (the engine refuses anyone else).
+  const mine = r.ownerUserId === me;
   return (
     <span className="flex flex-wrap items-center gap-1.5" data-testid="runner-accounts">
       <span>{accounts.active}</span>
       {accounts.names
-        .filter((n) => n !== accounts.active)
+        .filter((n) => mine && n !== accounts.active)
         .map((name) => (
           <Button
             key={name}

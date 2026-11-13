@@ -2060,8 +2060,15 @@ export const ANSWERS: Answers = {
   "killSwitch.list": () => ({
     org: null,
     projects: [
-      { projectId: SITE, on: true, reason: "Deploys are failing on the host", changedAt: ago(45) },
+      {
+        projectId: SITE,
+        on: true,
+        reason: "Deploys are failing on the host",
+        changedAt: ago(45),
+        epoch: 2,
+      },
     ],
+    more: false,
   }),
   "orgConfig.previewRollback": () => ({
     impact: {

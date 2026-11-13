@@ -272,6 +272,8 @@ describe("2c: the last website-only decisions, in the app (ADR 0610)", () => {
     expect(repairShown(true, false)).toBe(true);
     expect(repairShown(false, true)).toBe(true);
     expect(repairShown(false, false)).toBe(false);
+    // Only approvers decide repairs.
+    expect(repairShown(true, false, false)).toBe(false);
   });
 
   it("switches a runner's Claude account from the Runners page", async () => {
@@ -309,5 +311,40 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     expect(cannotApproveOrg(base, 5)).toMatch(/drafted on v4/);
     expect(cannotApproveOrg({ ...base, impact: null }, 4)).toMatch(/couldn't classify/);
     expect(cannotApproveOrg({ ...base, proposal: null }, 4)).toMatch(/can't be shown/);
+  });
+});
+
+describe("2c fixes (review of #165)", () => {
+  it("says the kill switches couldn't be read, never 'all off'", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { error: "the factory isn't reachable" } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Couldn't load the kill switches.");
+    expect(text).not.toContain("Turn on");
+  });
+
+  it("turns a switch on with a call, and off only through a decision", async () => {
+    const { killSwitchPath } = await import("../src/mainview/components/kill-switches.tsx");
+    expect(killSwitchPath(true)).toBe("call");
+    expect(killSwitchPath(false)).toBe("decide");
+    const { DECISION_OPS, DECIDE_OPS } = await import("../src/shared/decisions.ts");
+    // Off goes through decide (Touch ID); on stays a plain call.
+    expect(DECIDE_OPS.has("killSwitch.set")).toBe(true);
+    expect(DECISION_OPS.has("killSwitch.set")).toBe(false);
+  });
+
+  it("offers a runner's accounts only to its owner", async () => {
+    const { ANSWERS } = await import("../screenshots/fixtures.ts");
+    const runners = (
+      ANSWERS["runner.list"] as (i: unknown) => { runners: Record<string, unknown>[] }
+    )({});
+    const theirs = {
+      runners: runners.runners.map((r) => ({ ...r, ownerUserId: "usr_someone_else" })),
+    };
+    const html = await renderPage("/factory/runners", {
+      answers: { "runner.list": { result: theirs } },
+    });
+    expect(textOf(html)).not.toContain("Use personal");
   });
 });

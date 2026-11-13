@@ -29,6 +29,7 @@ import {
   describeKillSwitchOff,
   describeOrgConfigDecision,
   describeOverrideApprove,
+  titled,
 } from "./policy-summary.ts";
 import { ORG_CONFIG_WRITES } from "./workflows.ts";
 
@@ -248,6 +249,24 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "orgConfig.rollback":
     case "orgConfig.adoptProjectWorkflows":
       return (await describeOrgConfigDecision(ctx.db, op, input)) ?? `Decide ${op}`;
+    case "workItem.markRepair": {
+      // The red main it repairs, the item, then its title (review of #165).
+      const w =
+        typeof input.workItemId === "string"
+          ? await ctx.db
+              .selectFrom("core_work_items as w")
+              .leftJoin("core_repositories as r", "r.id", "w.repository_id")
+              .select(["w.number", "w.title", "r.owner", "r.name"])
+              .where("w.id", "=", input.workItemId)
+              .executeTakeFirst()
+          : undefined;
+      const repo = w?.owner ? ` ${w.owner}/${w.name}` : "";
+      const facts =
+        input.repair === false
+          ? `No longer a repair of red main${repo}: #${w?.number ?? "?"}`
+          : `Mark as a repair of red main${repo}: #${w?.number ?? "?"}`;
+      return titled(facts, w?.title);
+    }
     case "killSwitch.set":
       return (await describeKillSwitchOff(ctx.db, input)) ?? `Decide ${op}`;
     case "override.approve":

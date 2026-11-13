@@ -939,7 +939,12 @@ export const killSwitchList = defineOperation({
   input: z.object({ orgId: z.string().min(1) }),
   output: z.object({
     org: z
-      .object({ on: z.boolean(), reason: z.string().nullable(), changedAt: z.string() })
+      .object({
+        on: z.boolean(),
+        reason: z.string().nullable(),
+        changedAt: z.string(),
+        epoch: z.number(),
+      })
       .nullable(),
     projects: z.array(
       z.object({
@@ -947,8 +952,11 @@ export const killSwitchList = defineOperation({
         on: z.boolean(),
         reason: z.string().nullable(),
         changedAt: z.string(),
+        epoch: z.number(),
       }),
     ),
+    /** More of the org's projects have switches than are listed (the first 200). */
+    more: z.boolean(),
   }),
   scope: async (input) => ({ orgId: input.orgId }),
   async handler(input, ctx) {
@@ -957,7 +965,7 @@ export const killSwitchList = defineOperation({
     const [org, projects] = await Promise.all([
       ctx.db
         .selectFrom("core_kill_switches")
-        .select(["is_on", "reason", "changed_at"])
+        .select(["is_on", "reason", "changed_at", "epoch"])
         .where("scope", "=", "org")
         .where("scope_id", "=", input.orgId)
         .executeTakeFirst(),
@@ -966,19 +974,23 @@ export const killSwitchList = defineOperation({
         .innerJoin("core_kill_switches as k", (j) =>
           j.onRef("k.scope_id", "=", "p.id").on("k.scope", "=", "project"),
         )
-        .select(["p.id", "k.is_on", "k.reason", "k.changed_at"])
+        .select(["p.id", "k.is_on", "k.reason", "k.changed_at", "k.epoch"])
         .where("p.org_id", "=", input.orgId)
-        .limit(200)
+        .limit(201)
         .execute(),
     ]);
     return {
-      org: org ? { on: !!org.is_on, reason: org.reason, changedAt: org.changed_at } : null,
-      projects: projects.map((r) => ({
+      org: org
+        ? { on: !!org.is_on, reason: org.reason, changedAt: org.changed_at, epoch: org.epoch }
+        : null,
+      projects: projects.slice(0, 200).map((r) => ({
         projectId: r.id,
         on: !!r.is_on,
         reason: r.reason,
         changedAt: r.changed_at,
+        epoch: r.epoch,
       })),
+      more: projects.length > 200,
     };
   },
 });
@@ -1000,6 +1012,12 @@ export const killSwitchSet = defineOperation({
     id: z.string().min(1),
     on: z.boolean(),
     reason: z.string().max(500).optional(),
+    /**
+     * The switch's epoch the person saw (killSwitch.list): turning it off is refused if it was
+     * turned on again since, so an off decided against an old reason can't apply (review of #165).
+     * Required from the desktop.
+     */
+    epoch: z.number().int().nonnegative().optional(),
   }),
   output: z.object({
     on: z.boolean(),
@@ -1027,6 +1045,13 @@ export const killSwitchSet = defineOperation({
       .where("scope_id", "=", input.id)
       .executeTakeFirst();
     const wasOn = current?.is_on === 1;
+    if (!input.on && input.epoch === undefined && ctx.origin.surface === "desktop")
+      throw new OperationError("invalid_input", "say which switch you saw: send its epoch");
+    if (!input.on && input.epoch !== undefined && input.epoch !== (current?.epoch ?? 0))
+      throw new OperationError(
+        "conflict",
+        "the switch was turned on again since you looked: look at its reason again before turning it off",
+      );
     const epoch = (current?.epoch ?? 0) + (input.on && !wasOn ? 1 : 0);
     if (wasOn === input.on) return { on: input.on, epoch, workItems: 0, changed: false };
 

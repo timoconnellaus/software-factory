@@ -500,6 +500,8 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
         {active && (
           <RepairToggle
             workItemId={item.id}
+            number={item.number}
+            approver={detail.viewer.isApprover}
             repairs={item.repairsMain}
             red={!!inbox.data?.mainRed.some((r) => r.projectId === item.projectId)}
           />

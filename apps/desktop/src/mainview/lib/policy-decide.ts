@@ -59,6 +59,8 @@ export function usePolicyDecide() {
         queryClient.invalidateQueries({ queryKey: ["workflow"] }),
         queryClient.invalidateQueries({ queryKey: ["config"] }),
         queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+        // A repair marked or unmarked shows on the item at once.
+        queryClient.invalidateQueries({ queryKey: ["workItem"] }),
       ]);
     }
   }
