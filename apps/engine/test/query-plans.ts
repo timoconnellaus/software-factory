@@ -73,6 +73,16 @@ function tableAliases(sql: string): Map<string, string> {
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
+    match:
+      /from "core_work_items" where "repository_id" = \? and "head_sha" = \? order by "updated_at"/,
+    why: "the items with one head SHA in one repository (core_work_items_repository_head_idx): one or two",
+  },
+  {
+    match:
+      /FROM core_merge_queue q JOIN core_work_items w ON w\.id = q\.work_item_id\s+WHERE q\.project_id = \?1 AND q\.status = 'queued'/,
+    why: "the deliverer's head: one project's open queue entries (core_merge_queue_project_idx), a handful",
+  },
+  {
     match: /FROM core_outbox WHERE next_at <= \?/,
     why: "due outbox rows only (core_outbox_next_idx); a delivered row is deleted",
   },
