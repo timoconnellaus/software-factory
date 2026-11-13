@@ -503,7 +503,8 @@ function Header({ detail, inPanel = false }: { detail: WorkItemDetail; inPanel?:
             number={item.number}
             approver={detail.viewer.isApprover}
             repairs={item.repairsMain}
-            red={!!inbox.data?.mainRed.some((r) => r.projectId === item.projectId)}
+            // The engine stops the line per repository, not per project.
+            red={!!inbox.data?.mainRed.some((r) => r.repositoryId === item.repositoryId)}
           />
         )}
         {(active || pre) && (detail.viewer.isRequester || detail.viewer.isApprover) && (

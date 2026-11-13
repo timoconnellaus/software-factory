@@ -1,7 +1,7 @@
 // killSwitch.list and turning a switch off against what was seen (ADR 0610, review of #165).
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { invoke } from "../src/index.ts";
+import { inputDigest, invoke } from "../src/index.ts";
 import { call, deps, newItem, ok, world } from "./helpers.ts";
 
 type Listed = {
@@ -86,7 +86,18 @@ describe("turning a switch off against the switch seen", () => {
       { scope: "project", id: w.projectId, on: false },
       { actor: w.human, origin: { surface: "desktop", deviceId, presence: undefined } },
     ).catch((e: { code: string }) => e);
-    // Without a proof it's refused as browser-only first; the epoch rule is checked in the handler.
+    // Without a proof it's refused as browser-only first.
     expect((r as { code: string }).code).toBe("forbidden");
+    // With a proof for exactly this call (as the door sets it), the handler asks for the epoch.
+    const input = { scope: "project", id: w.projectId, on: false };
+    const proven = await invoke(deps, "killSwitch.set", input, {
+      actor: w.human,
+      origin: {
+        surface: "desktop",
+        deviceId,
+        presence: { op: "killSwitch.set", inputDigest: await inputDigest(input) },
+      },
+    }).catch((e: { code: string }) => e);
+    expect((proven as { code: string }).code).toBe("invalid_input");
   });
 });

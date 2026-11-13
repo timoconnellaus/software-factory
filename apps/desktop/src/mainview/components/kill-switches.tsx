@@ -47,7 +47,7 @@ export function KillSwitches({
   const canDecide = useCanDecide();
   const queryClient = useQueryClient();
   const of = (id: string) => switches.data?.projects.find((p) => p.projectId === id);
-  const rows: (Target & { reason: string | null })[] = [
+  const rows: (Target & { reason: string | null; unknown?: boolean })[] = [
     {
       scope: "org",
       id: orgId,
@@ -63,6 +63,8 @@ export function KillSwitches({
       on: !!of(p.id)?.on,
       reason: of(p.id)?.reason ?? null,
       epoch: of(p.id)?.epoch ?? 0,
+      // Past the list's cap a project's switch wasn't read: never shown as Off with Turn on.
+      unknown: !!switches.data?.more && !of(p.id),
     })),
   ];
   const anyOn = rows.some((r) => r.on);
@@ -99,22 +101,30 @@ export function KillSwitches({
                 <Row key={`${r.scope}:${r.id}`}>
                   <Cell className="font-medium">{r.name}</Cell>
                   <Cell>
-                    {r.on ? <Chip tone="amber">On</Chip> : <span className="text-ink-3">Off</span>}
+                    {r.unknown ? (
+                      <span className="text-ink-3">Not loaded</span>
+                    ) : r.on ? (
+                      <Chip tone="amber">On</Chip>
+                    ) : (
+                      <span className="text-ink-3">Off</span>
+                    )}
                   </Cell>
                   <Cell className={`whitespace-normal text-ink-3 ${WIDE}`}>{r.reason ?? ""}</Cell>
                   <Cell className="text-right">
-                    <Button
-                      size="sm"
-                      variant={r.on ? "default" : "outline"}
-                      className="h-7"
-                      disabled={pending !== null || (r.on && !canDecide)}
-                      onClick={() => {
-                        setReason("");
-                        setTarget(r);
-                      }}
-                    >
-                      {r.on ? "Turn off" : "Turn on"}
-                    </Button>
+                    {!r.unknown && (
+                      <Button
+                        size="sm"
+                        variant={r.on ? "default" : "outline"}
+                        className="h-7"
+                        disabled={pending !== null || (r.on && !canDecide)}
+                        onClick={() => {
+                          setReason("");
+                          setTarget(r);
+                        }}
+                      >
+                        {r.on ? "Turn off" : "Turn on"}
+                      </Button>
+                    )}
                   </Cell>
                 </Row>
               ))}

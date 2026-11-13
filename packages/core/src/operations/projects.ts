@@ -976,6 +976,8 @@ export const killSwitchList = defineOperation({
         )
         .select(["p.id", "k.is_on", "k.reason", "k.changed_at", "k.epoch"])
         .where("p.org_id", "=", input.orgId)
+        // A stable order (the projects' index is (org_id, slug)): "more" means the same ones are past it.
+        .orderBy("p.slug")
         .limit(201)
         .execute(),
     ]);

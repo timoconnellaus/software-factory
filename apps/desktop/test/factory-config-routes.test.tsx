@@ -348,3 +348,14 @@ describe("2c fixes (review of #165)", () => {
     expect(textOf(html)).not.toContain("Use personal");
   });
 });
+
+describe("2c round two (review of #165)", () => {
+  it("shows a project past the list's cap as not loaded, with no Turn on", async () => {
+    const html = await renderPage("/factory", {
+      answers: { "killSwitch.list": { result: { org: null, projects: [], more: true } } },
+    });
+    const text = textOf(html);
+    expect(text).toContain("Website Not loaded");
+    expect(text).toContain("More projects have switches than are shown here");
+  });
+});
