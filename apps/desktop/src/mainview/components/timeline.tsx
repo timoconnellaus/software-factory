@@ -59,6 +59,7 @@ export function Timeline({
                 · {actor} · {clock(e.at)}
                 {gateTime ? ` · gate time ${gateTime}` : ""}
                 {outcome ? ` · ${outcome}` : ""}
+                {e.archived ? " · from the archive" : ""}
               </span>
               {(detail || note) && (
                 <div className="text-muted-foreground">
