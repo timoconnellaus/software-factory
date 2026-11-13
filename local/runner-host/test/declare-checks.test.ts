@@ -72,7 +72,7 @@ describe("declaring `checks` (fifth review)", () => {
       const manifest = cloud.heartbeats[0]?.manifest;
       expect(manifest?.capabilities).toContain("checks");
       expect(manifest?.checksNote).toBe(
-        "not run here: this Mac runner has no container runtime (neither Docker Desktop nor OrbStack is answering): start one, or set checks.weakerMacSandbox",
+        "not run here: this Mac runner has no container runtime; no container runtime is answering (Docker Desktop or OrbStack): start it, or set checks.weakerMacSandbox",
       );
       const handback = cloud.handbacks.get(j.jobId) as {
         outcome: string;

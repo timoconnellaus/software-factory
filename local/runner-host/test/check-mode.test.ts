@@ -183,7 +183,7 @@ describe("where a sandbox runner's checks run (ADR 0501, fourth review)", () => 
     const r = await checkReadiness(base, paths(), dead, "darwin");
     expect(r).toMatchObject({ mode: "none", ok: false, why: NO_MAC_CONTAINER_LINE });
     expect(checkLine(r)).toBe(
-      "not run here: this Mac runner has no container runtime (neither Docker Desktop nor OrbStack is answering): start one, or set checks.weakerMacSandbox",
+      "not run here: this Mac runner has no container runtime; no container runtime is answering (Docker Desktop or OrbStack): start it, or set checks.weakerMacSandbox",
     );
   });
 
