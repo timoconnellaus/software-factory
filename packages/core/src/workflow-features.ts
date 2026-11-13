@@ -56,6 +56,12 @@ export const WORKFLOW_FEATURES = [
    * opens no gate.
    */
   "reverify-on-push",
+  /**
+   * v15: triage names the declared check that proves each criterion it writes (`criterionChecks`), from the names `checks.provable` gives it;
+   * `workItem.triage` keeps only declared names, and an item without a spec is proven against
+   * those ties, recorded before any check ran (the owner's decision, 2026-11-13).
+   */
+  "triage-ties",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -73,6 +79,7 @@ const v11 = [...v10, "babysitter-delivery"] as const;
 const v12 = [...v11, "reverify-on-withdrawal"] as const;
 const v13 = [...v12, "repin-tightening"] as const;
 const v14 = [...v13, "reverify-on-push"] as const;
+const v15 = [...v14, "triage-ties"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -90,6 +97,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   12: new Set(v12),
   13: new Set(v13),
   14: new Set(v14),
+  15: new Set(v15),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

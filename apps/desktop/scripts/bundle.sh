@@ -16,7 +16,10 @@ rm -rf "vendor/SF Keys.app"
 if [ -n "${SF_KEYS_PROFILE:-}" ]; then
   helper="vendor/SF Keys.app/Contents"
   mkdir -p "$helper/MacOS"
-  swiftc -O -o "$helper/MacOS/sf-keys" native/sf-keys-app/probe.swift
+  # Built for macOS 14, the helper's LSMinimumSystemVersion (not the build machine's macOS), and
+  # arm64 only, as the app ships.
+  swift build -c release --package-path native/sf-keys-app --triple arm64-apple-macosx14.0
+  cp "$(swift build -c release --package-path native/sf-keys-app --triple arm64-apple-macosx14.0 --show-bin-path)/sf-keys" "$helper/MacOS/sf-keys"
   cp native/sf-keys-app/Info.plist "$helper/Info.plist"
   cp "$SF_KEYS_PROFILE" "$helper/embedded.provisionprofile"
   echo "bundle: key helper built (vendor/SF Keys.app)"

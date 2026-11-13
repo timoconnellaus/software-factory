@@ -122,6 +122,14 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: "criteria",
   },
+  // Both kinds of tie: Proven (a person-approved spec) and passed the check triage named.
+  {
+    name: "item-review-proof-triage",
+    path: "/work/wi_13?tab=review&fixture=triage",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  { name: "inbox-merge-triage", path: "/?item=wi_13&fixture=triage", design: "InboxMerge.html" },
   {
     name: "inbox-merge-no-checks",
     path: "/?item=wi_13&fixture=nochecks",
