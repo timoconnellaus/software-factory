@@ -192,7 +192,27 @@ export const configTrialStart = defineOperation({
     policy: z.record(z.string(), z.unknown()),
   }),
   output: z.object({ trialId: z.string(), candidateVersion: z.number() }),
+  // An instruction edit is a proposal (spec 52 Q17, ADR 0513): a person accepts it in the inbox
+  // before its trial starts. A tier change stays the improver's own practice.
+  riskOf: (input) => (input.kind === "instructions" ? "self-modify" : "write"),
   async handler(input, ctx) {
+    return startTrial(ctx, input);
+  },
+});
+
+/** Starts a trial (also when a person accepts the improver's proposed instruction edit). */
+export async function startTrial(
+  ctx: HandlerContext,
+  input: {
+    baseVersion: number;
+    kind: "instructions" | "tier";
+    summary: string;
+    evidence: Record<string, unknown>;
+    policy: Record<string, unknown>;
+  },
+  createdBy?: string,
+): Promise<{ trialId: string; candidateVersion: number }> {
+  {
     const project = requireProject(ctx);
     // The config as saved: a trial changes the document, not the resolved org workflow.
     const policy = ctx.scope.rawPolicy;
@@ -230,7 +250,7 @@ export const configTrialStart = defineOperation({
         received_at: ctx.now,
         version,
         source: "improver",
-        created_by: ctx.actor.id,
+        created_by: createdBy ?? ctx.actor.id,
         note: `Trial: ${input.summary}`,
         parent_version: input.baseVersion,
       }),
@@ -245,7 +265,7 @@ export const configTrialStart = defineOperation({
         summary: input.summary,
         evidence: JSON.stringify(input.evidence),
         target_items: policy.improve.trialSize,
-        created_by: ctx.actor.id,
+        created_by: createdBy ?? ctx.actor.id,
         created_at: ctx.now,
       }),
     );
@@ -259,8 +279,8 @@ export const configTrialStart = defineOperation({
       },
     });
     return { trialId: id, candidateVersion: version };
-  },
-});
+  }
+}
 
 export const configTrialResolve = defineOperation({
   name: "config.trial.resolve",
