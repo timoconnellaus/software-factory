@@ -17,6 +17,7 @@ import {
   planningWaitInputSchema,
   rekeyFootprint,
   sameFootprint,
+  specChildSchema,
   specReviseInputSchema,
   structureMoves,
   whyNotKept,
@@ -52,6 +53,7 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { childrenOf } from "../splits.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -1536,6 +1538,8 @@ const specView = z.object({
   assumptions: z.array(z.string()),
   coverage: z.array(z.record(z.string(), z.unknown())),
   clarifications: z.array(z.record(z.string(), z.unknown())),
+  /** Spec 24: the work items this version splits into, approved with it. */
+  children: z.array(specChildSchema).default([]),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1765,6 +1769,7 @@ export const planningGet = defineOperation({
       assumptions: parseJson<string[]>(s.assumptions, []),
       coverage: parseJson<Record<string, unknown>[]>(s.coverage, []),
       clarifications: parseJson<Record<string, unknown>[]>(s.clarifications, []),
+      children: childrenOf(s.children),
       summary: s.summary,
       status: s.status,
       createdAt: s.created_at,

@@ -72,12 +72,14 @@ import { op, submitKey } from "../lib/op.ts";
 import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
+import { splitApproveLabel } from "../lib/splits.ts";
 import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 import { SystemPane } from "./planning-system.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
+import { SplitList } from "./split-list.tsx";
 import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */
@@ -1248,6 +1250,7 @@ function Spec({
               </ul>
             </div>
           )}
+          <SplitList items={spec.children ?? []} />
           {spec.clarifications.length > 0 && (
             <div data-testid="clarifications">
               <b>Clarifications</b>
@@ -1690,7 +1693,8 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
             onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
             data-testid="approve-spec"
           >
-            {approveLabel(writeBack?.kimCount)}
+            {splitApproveLabel(view.spec?.children?.length ?? 0, writeBack?.kimCount) ??
+              approveLabel(writeBack?.kimCount)}
           </Button>
         </>
       ) : (

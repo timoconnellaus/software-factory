@@ -13,7 +13,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
-import { childEnded } from "../splits.ts";
+import { childEnded, SPLIT_MAX } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -105,6 +105,8 @@ const itemSummary = z.object({
   priority: priority.optional(),
   repositoryId: z.string().nullable().optional(),
   releasedAt: z.string().nullable().optional(),
+  /** Spec 24: the item whose plan split this one off (null when not split off a plan). */
+  parentWorkItemId: z.string().nullable().optional(),
 });
 
 type ItemRow = NonNullable<HandlerContext["scope"]["workItem"]>;
@@ -128,6 +130,7 @@ const summarise = (w: ItemRow): z.input<typeof itemSummary> => ({
   priority: priorityOf(w.priority),
   repositoryId: w.repository_id,
   releasedAt: w.released_at,
+  parentWorkItemId: w.source === "planning" ? w.parent_work_item_id : null,
 });
 
 export const workItemCreate = defineOperation({
@@ -419,6 +422,27 @@ export const workItemGet = defineOperation({
       .optional(),
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
+    /**
+     * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
+     * plan split into (`children`), each with where it is.
+     */
+    split: z
+      .object({
+        parent: z
+          .object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() })
+          .nullable(),
+        children: z.array(
+          z.object({
+            id: z.string(),
+            number: z.number(),
+            title: z.string(),
+            status: z.string(),
+            stage: z.string(),
+            size: z.string().nullable(),
+          }),
+        ),
+      })
+      .optional(),
     stages: z.array(stageView),
     spec: z
       .object({
@@ -537,7 +561,19 @@ export const workItemGet = defineOperation({
     // The item's own rows go to D1 as one batch (ADR 0241), alongside the approver lookup.
     const [
       { ids: approverUserIds, users: approverUsers },
-      [stages, specRows, questions, gates, runs, packetRows, queue, waitsForRows, waitedOnRows],
+      [
+        stages,
+        specRows,
+        questions,
+        gates,
+        runs,
+        packetRows,
+        queue,
+        waitsForRows,
+        waitedOnRows,
+        parentRows,
+        childRows,
+      ],
     ] = await Promise.all([
       approversLookup,
       readBatch(ctx.d1, [
@@ -584,6 +620,18 @@ export const workItemGet = defineOperation({
           .innerJoin("core_work_items as t", "t.id", "l.work_item_id")
           .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
           .where("l.waits_for_id", "=", w.id),
+        // Spec 24: the parent by primary key; the children by core_work_items_parent_idx (≤ 8).
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "number", "title", "status"])
+          .where("id", "=", w.source === "planning" ? (w.parent_work_item_id ?? "") : ""),
+        ctx.db
+          .selectFrom("core_work_items")
+          .select(["id", "number", "title", "status", "stage", "size"])
+          .where("parent_work_item_id", "=", w.id)
+          .where("source", "=", "planning")
+          .orderBy("number")
+          .limit(SPLIT_MAX),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
@@ -625,6 +673,10 @@ export const workItemGet = defineOperation({
         : null,
       waitsFor: waitsForRows.map(toLink),
       waitedOnBy: waitedOnRows.map(toLink),
+      split: {
+        parent: parentRows[0] ?? null,
+        children: childRows.map((c) => ({ ...c, size: c.size ?? null })),
+      },
       stages: stages.map((s) => ({
         stage: s.stage,
         attempt: s.attempt,

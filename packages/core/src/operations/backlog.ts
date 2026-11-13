@@ -1452,6 +1452,8 @@ const boardItem = z.object({
   releasedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Spec 24: the item whose plan split this one off; lists show it under its parent. */
+  parentWorkItemId: z.string().nullable().optional(),
   waitsFor: z.array(
     z.object({
       id: z.string(),
@@ -1578,6 +1580,7 @@ export const workItemBoard = defineOperation({
           repositoryId: w.repository_id,
           requesterUserId: w.requester_user_id,
           releasedAt: w.released_at,
+          parentWorkItemId: w.source === "planning" ? w.parent_work_item_id : null,
           createdAt: w.created_at,
           updatedAt: w.updated_at,
           waitsFor,

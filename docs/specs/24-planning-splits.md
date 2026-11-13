@@ -62,7 +62,15 @@ decision.
 - Tests: `core/test/splits.test.ts`, `engine/test/split-flow.test.ts`, the query-plan guard (the
   parent's read of its children), `engine/test/workflow-versions.test.ts`.
 
-### Part B (next): the app
-The gate's "Approve spec + N work items", the children under their parent in the inbox and the
-work list, and the parent showing its children's stages.
-
+### Part B: the app (desktop)
+- Under the plan, "Splits into · N work items, approved together", one row per child with its size
+  and order ("Small · builds first", "Small · waits for the first"), as in PlanFocus.
+  `planning.get`'s spec carries `children`.
+- The gate's button reads "Approve the plan and N work items" (and the `.kim/` file count).
+- A parent's Overview lists the work items its plan split into, each with its stage. A child's
+  Overview links to the plan it was split off. `workItem.get` returns `split { parent, children }`
+  (the parent by primary key, the children by `core_work_items_parent_idx`, ≤ 8).
+- The work list puts a child under its parent when both are listed (`parentWorkItemId` on
+  `workItem.board` and `workItem.list` items).
+- Not built: grouping in the Inbox. Its cards are gates and questions, not items, and
+  `inbox.list` doesn't say which item a card's item was split off.
