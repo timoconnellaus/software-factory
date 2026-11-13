@@ -43,6 +43,8 @@ export interface DeclaredCheck {
   name: string;
   /** When given, a stored result that ran another command is ignored (third review, 5). */
   run?: string | undefined;
+  /** Whether a pass can prove a criterion (`checkProves`); omitted: decided by name and command. */
+  proves?: boolean | undefined;
 }
 
 /** The declared checks against what ran on the SHA. */
@@ -153,9 +155,21 @@ export interface CriterionInput {
 
 export interface CriterionProof {
   criterion: string;
+  /**
+   * Proven: a check a person tied it to (the approved spec) passed on the SHA. Only this counts as
+   * proven anywhere: the gate's count, `factory/verify` and auto-approval (ADR 0515).
+   */
   proven: boolean;
   /** The linked checks that passed on the SHA and count as proof. */
   provenBy: string[];
+  /**
+   * The checks triage (an agent) tied it to that passed on the SHA: "Passed `tests`, the check
+   * triage named (not checked by a person)". Never Proven, and counted apart (amended 2026-11-13):
+   * triage tying every criterion to the whole suite would otherwise prove each one.
+   */
+  passedTriageCheck?: string[];
+  /** The criterion comes from triage's list (an item without a spec), not a person-approved spec. */
+  fromTriage?: boolean;
   /** Linked names that didn't pass or don't exist on the SHA. */
   unproven: string[];
   /**
@@ -164,8 +178,16 @@ export interface CriterionProof {
    * (only the approved spec's links prove, ADR 0501).
    */
   notCounted: string[];
-  /** Who linked the checks: the human-approved spec, or the reviewer agent (ADR 0501). */
-  linkedBy: "spec" | "reviewer";
+  /**
+   * Who linked the checks: the human-approved spec, triage's validated ties for an item without a
+   * spec (the Workflow's `triage-ties` feature, recorded before any check ran), or the reviewer agent (ADR 0501).
+   */
+  linkedBy: "spec" | "triage" | "reviewer";
+  /**
+   * The spec or triage said no declared check can prove this criterion (`[checks: none]`): an
+   * honest answer, shown as "not covered by a check", never forced onto a check.
+   */
+  uncovered?: boolean;
   /**
    * The tests-intact guard (ADR 0500) found gate-file edits on this SHA: what the checks run, or
    * how, changed, so a pass proves less. Shown as weakened, never hidden.
@@ -192,21 +214,115 @@ export function isStaticCheck(name: string, command = ""): boolean {
   );
 }
 
+/** Checks that set up the tree (install, build): a pass says the code installs, not that it works. */
+const SETUP_CHECK =
+  /\b(install|build|compile|bundle|setup|bootstrap|deps|dependencies|prepare|codegen|generate)\b/i;
+/** A package manager's install (`pnpm install`, `npm ci`, `yarn`): setup, whatever the name. */
+const INSTALL_COMMAND = /^\s*(pnpm|npm|yarn|bun)(\s+(install|i|ci|add)\b|\s*$)/i;
+/** Checks that run tests: the only ones that prove a criterion by default. */
+const TEST_CHECK =
+  /\b(tests?|specs?|e2e|integration|acceptance|smoke|vitest|jest|pytest|playwright|cypress|mocha|ava|tap|rspec|phpunit|cargo\s+test|go\s+test)\b/i;
+const bare = (command: string) => command.replace(/^\s*(pnpm|npm|yarn|bun)\s+(run\s+)?/, "");
+
+/** A setup check (install, build) by its name or its command. Never proves a criterion. */
+export function isSetupCheck(name: string, command = ""): boolean {
+  return (
+    SETUP_CHECK.test(name) ||
+    INSTALL_COMMAND.test(command) ||
+    (!TEST_CHECK.test(bare(command)) && SETUP_CHECK.test(bare(command)))
+  );
+}
+
+/**
+ * Whether a green required CI check run can prove a criterion: not a static or setup one by name
+ * (a CI job's command isn't known). The config names which CI checks are required.
+ */
+export const ciCheckProves = (name: string): boolean => !isStaticCheck(name) && !isSetupCheck(name);
+
+/**
+ * Whether a pass of a declared check can prove an acceptance criterion (ADR 0501, amended
+ * 2026-11-13). A static check (lint, typecheck, format) never does. The config's `proves` decides
+ * otherwise; without it only a check that runs tests does, and never a setup check (install, build)
+ * by name: "Admin can revoke tokens [checks: install]" is not proven by an install that passed.
+ */
+export function checkProves(name: string, command = "", proves?: boolean | undefined): boolean {
+  if (isStaticCheck(name, command)) return false;
+  if (proves !== undefined) return proves;
+  if (isSetupCheck(name, command)) return false;
+  return TEST_CHECK.test(name) || TEST_CHECK.test(bare(command));
+}
+
 /**
  * The criterion-to-check links an approved spec carries: a criterion that ends with
  * `[checks: tests, e2e]` (a person approved that). Returns the criterion without the tag, and the
  * names; no tag: null.
  */
-export function specCheckLinks(criterion: string): { text: string; checks: string[] } | null {
+export function specCheckLinks(
+  criterion: string,
+): { text: string; checks: string[]; uncovered?: boolean } | null {
   const m = /\s*\[(?:checks?|proven by)\s*:\s*([^\]]*)\]\s*$/i.exec(criterion);
   if (!m) return null;
+  const text = criterion.slice(0, m.index).trim();
+  // `[checks: none]`: no declared check can prove it (an allowed, visible answer).
+  if ((m[1] ?? "").trim().toLowerCase() === NO_CHECK) return { text, checks: [], uncovered: true };
   return {
-    text: criterion.slice(0, m.index).trim(),
+    text,
     checks: (m[1] ?? "")
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean),
   };
+}
+
+/** The tag word for "no declared check can prove this": `[checks: none]`. Never a check's name. */
+export const NO_CHECK = "none";
+
+/**
+ * Triage's ties for an item without a spec (Workflow feature `triage-ties`), validated in code: each
+ * criterion gets the checks triage named that are in `allowed` (the project's declared checks and
+ * required CI checks, by their declared spelling); any other name is dropped, so a criterion tied
+ * only to unknown names is untied and Not proven. An empty list triage gave says no check can prove
+ * it (`[checks: none]`). A tag triage wrote into a criterion's text is stripped: only this field ties.
+ * Returns the criteria with canonical tags, and the names dropped.
+ */
+export function tieCriteria(
+  criteria: readonly string[],
+  ties: readonly { criterion: string; checks: readonly string[] }[],
+  allowed: readonly string[],
+): { criteria: string[]; dropped: string[] } {
+  const norm = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/[.;:]$/, "");
+  const canonical = new Map<string, string>();
+  for (const a of allowed) {
+    const k = a.trim().toLowerCase();
+    if (k && k !== NO_CHECK && k !== "factory/verify" && !canonical.has(k))
+      canonical.set(k, a.trim());
+  }
+  const byText = new Map<string, readonly string[]>();
+  for (const t of ties) {
+    const k = norm(specCheckLinks(t.criterion)?.text ?? t.criterion);
+    if (!byText.has(k)) byText.set(k, t.checks);
+  }
+  const dropped: string[] = [];
+  const out = criteria.map((c) => {
+    const text = specCheckLinks(c)?.text ?? c.trim();
+    const named = byText.get(norm(text));
+    if (!named) return text;
+    if (named.length === 0) return `${text} [checks: ${NO_CHECK}]`;
+    const kept: string[] = [];
+    for (const n of named) {
+      const k = canonical.get(n.trim().toLowerCase());
+      if (k) {
+        if (!kept.includes(k)) kept.push(k);
+      } else dropped.push(n);
+    }
+    return kept.length ? `${text} [checks: ${kept.join(", ")}]` : text;
+  });
+  return { criteria: out, dropped };
 }
 
 export interface ProofOptions {
@@ -219,12 +335,23 @@ export interface ProofOptions {
   requiredCi?: readonly string[] | undefined;
   /** The tests-intact guard found gate-file edits on this SHA. */
   gateFilesChanged?: boolean | undefined;
+  /**
+   * The declared checks with the config's `proves`, so a check that may not prove (setup, or
+   * `proves: false`) never does; a check not listed is judged by its name and command.
+   */
+  declared?: readonly (string | DeclaredCheck)[] | undefined;
+  /**
+   * Who wrote `specCriteria`'s links: the approved spec (a person), or triage for an item without a
+   * spec (the Workflow's `triage-ties` feature), whose names `workItem.triage` validated before any check ran.
+   */
+  linksFrom?: "spec" | "triage" | undefined;
 }
 
 /**
  * Marks each criterion Proven or Not proven (ADR 0501, amended 2026-11-12 three times). The criteria
  * are the approved spec's when there is one (a criterion the reviewer left out is Not proven, one it
- * repeated counts once); the reviewer's own, de-duplicated, only where there is no spec. Only links
+ * repeated counts once); for an item without a spec with the Workflow's `triage-ties` feature, triage's validated criteria
+ * (`linksFrom: "triage"`); the reviewer's own, de-duplicated, only where there is neither. Only links
  * a person approved prove: the approved spec's `[checks: …]` tag on that criterion. A spec link
  * counts when it is one of the factory's checks that passed on the SHA (never one not run), or a
  * green CI check run the project's config requires, and isn't a static check. The reviewer's own
@@ -244,6 +371,10 @@ export function proveCriteria(
       .replace(/[.;:]$/, "");
   const factory = new Map<string, CheckOutcome>();
   for (const r of [...executed.results, ...executed.extra]) if (r) factory.set(key(r.name), r);
+  const says = new Map<string, boolean | undefined>();
+  for (const d of options.declared ?? []) {
+    if (typeof d !== "string") says.set(key(d.name), d.proves);
+  }
   const required = new Set(
     (options.requiredCi ?? []).map(key).filter((n) => n !== "factory/verify"),
   );
@@ -260,24 +391,44 @@ export function proveCriteria(
     if (!byText.has(t)) byText.set(t, c);
   }
   const spec = (options.specCriteria ?? []).map(
-    (c) => specCheckLinks(c) ?? { text: c, checks: null },
+    (c): { text: string; checks: string[] | null; uncovered?: boolean } =>
+      specCheckLinks(c) ?? { text: c, checks: null },
   );
-  const rows: { criterion: string; specLinks: string[] | null; reviewer: CriterionInput | null }[] =
-    [];
+  const from = options.linksFrom ?? "spec";
+  const rows: {
+    criterion: string;
+    specLinks: string[] | null;
+    uncovered: boolean;
+    /** From the spec's (or triage's) list, not the reviewer's own. */
+    listed: boolean;
+    reviewer: CriterionInput | null;
+  }[] = [];
   if (spec.length > 0) {
     const seen = new Set<string>();
     for (const s of spec) {
       const t = norm(s.text);
       if (seen.has(t)) continue;
       seen.add(t);
-      rows.push({ criterion: s.text, specLinks: s.checks, reviewer: byText.get(t) ?? null });
+      rows.push({
+        criterion: s.text,
+        specLinks: s.checks,
+        uncovered: s.uncovered === true,
+        listed: true,
+        reviewer: byText.get(t) ?? null,
+      });
     }
   } else {
     for (const c of byText.values())
-      rows.push({ criterion: c.criterion, specLinks: null, reviewer: c });
+      rows.push({
+        criterion: c.criterion,
+        specLinks: null,
+        uncovered: false,
+        listed: false,
+        reviewer: c,
+      });
   }
-  return rows.map(({ criterion, specLinks, reviewer }) => {
-    const linkedBy = specLinks ? "spec" : "reviewer";
+  return rows.map(({ criterion, specLinks, uncovered, listed, reviewer }) => {
+    const linkedBy = specLinks ? from : "reviewer";
     const linked = [
       ...new Set((specLinks ?? reviewer?.checks ?? []).map((n) => n.trim()).filter(Boolean)),
     ];
@@ -288,23 +439,29 @@ export function proveCriteria(
       const r = factory.get(key(n));
       if (r) {
         if (!r.passed) unproven.push(n);
-        else if (linkedBy === "spec" && !isStaticCheck(n, r.command)) provenBy.push(n);
+        else if (linkedBy !== "reviewer" && checkProves(n, r.command, says.get(key(n))))
+          provenBy.push(n);
         else notCounted.push(n);
       } else if (ciGreen.has(key(n))) {
-        if (linkedBy === "spec" && !isStaticCheck(n)) provenBy.push(n);
+        if (linkedBy !== "reviewer" && ciCheckProves(n)) provenBy.push(n);
         else notCounted.push(n);
       } else if (ciOther.has(key(n))) {
         // Green, but not a check the project requires: any job the PR added could be called this.
         notCounted.push(n);
       } else unproven.push(n);
     }
+    // Triage is an agent: what its ties passed is said, never called Proven (amended 2026-11-13).
+    const byTriage = linkedBy === "triage";
     return {
       criterion,
-      proven: provenBy.length > 0,
-      provenBy,
+      proven: !byTriage && provenBy.length > 0,
+      provenBy: byTriage ? [] : provenBy,
+      ...(byTriage && provenBy.length ? { passedTriageCheck: provenBy } : {}),
+      ...(from === "triage" && listed ? { fromTriage: true } : {}),
       unproven,
       notCounted,
       linkedBy,
+      ...(uncovered ? { uncovered: true } : {}),
       weakened: provenBy.length > 0 && !!options.gateFilesChanged,
       reviewerMet: reviewer?.met ?? false,
       opinion: reviewer ? reviewer.evidence : "The reviewer did not address this criterion.",
@@ -339,16 +496,66 @@ export function checksSetUp(
 
 /** Why a criterion is Not proven, in a few words, for the gate. Empty when it is Proven. */
 export function whyNotProven(
-  p: Pick<CriterionProof, "proven" | "provenBy" | "unproven" | "notCounted" | "linkedBy">,
+  p: Pick<
+    CriterionProof,
+    | "proven"
+    | "provenBy"
+    | "unproven"
+    | "notCounted"
+    | "linkedBy"
+    | "uncovered"
+    | "passedTriageCheck"
+  >,
 ): string {
   if (p.proven) return "";
+  if (p.passedTriageCheck?.length) {
+    return `passed ${p.passedTriageCheck.join(", ")}, the check triage named (not checked by a person)`;
+  }
+  if (p.uncovered) return "not covered by a check";
   const named = [...p.unproven, ...p.notCounted];
   if (named.length === 0) return "no check is named for this";
   if (p.linkedBy === "reviewer") {
     return `only the reviewer named ${named.join(", ")}, and a reviewer's link proves nothing`;
   }
   if (p.unproven.length > 0) return `${p.unproven.join(", ")} didn't pass on this commit`;
-  return `${p.notCounted.join(", ")} can't prove a criterion (a static check, or a CI job the config doesn't require)`;
+  return `${p.notCounted.join(", ")} can't prove a criterion (a setup or static check, or a CI job the config doesn't require)`;
+}
+
+/**
+ * The packet's counts (amended 2026-11-13): `proven` of `total` are criteria a person tied to a
+ * check (the approved spec); `triage` counts, apart, criteria from triage's list that passed the
+ * check triage named. A triage tie is never counted as proven.
+ */
+export function proofCounts(proof: readonly CriterionProof[]): {
+  proven: number;
+  total: number;
+  triage?: { passed: number; total: number };
+} {
+  const person = proof.filter((p) => !p.fromTriage);
+  const triage = proof.filter((p) => p.fromTriage);
+  return {
+    proven: person.filter((p) => p.proven).length,
+    total: person.length,
+    ...(triage.length
+      ? {
+          triage: {
+            passed: triage.filter((p) => (p.passedTriageCheck?.length ?? 0) > 0).length,
+            total: triage.length,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * ADR 0515's condition "every acceptance criterion is proven by a check that ran on the head SHA",
+ * for auto-approval (dark factory mode) to read when it is built: only a tie a person approved (the
+ * spec's) counts. A criterion that passed the check triage named is NOT proven for this: triage is an
+ * agent, and an agent's tie can't let a merge skip a person (amended 2026-11-13). No criteria, or
+ * any criterion from triage's list, is false.
+ */
+export function everyCriterionProven(proof: readonly CriterionProof[]): boolean {
+  return proof.length > 0 && proof.every((p) => p.proven && !p.fromTriage);
 }
 
 /** One line per executed check, for `factory/verify`'s summary. */

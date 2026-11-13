@@ -199,6 +199,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,
+  verify.checksProvable,
   verify.verifyRefresh,
   verify.prAutoMerge,
   verify.projectCheckGitHub,
