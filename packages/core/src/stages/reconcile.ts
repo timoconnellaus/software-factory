@@ -58,6 +58,12 @@ export interface Observations {
   merged?: boolean;
   /** The PR's head SHA now. A merge approval for another head doesn't hold (as today). */
   headSha?: string;
+  /**
+   * An approval the babysitter carried to `headSha` (spec 53, ADR 0581/0582): it proved the approved
+   * change unchanged across a clean merge of the default branch (and, from Workflow v12, the new
+   * head passed its own verification). It holds for that head as the person's own approval would.
+   */
+  carriedApproval?: { headSha: string };
 }
 
 export interface ItemSnapshot {
