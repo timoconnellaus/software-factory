@@ -70,11 +70,13 @@ proves how the commit was made, not that the change the person approved is the c
 > - **What is given up.** After a bound update, a file both sides changed holds content **no person
 >   looked at**: GitHub's textual merge, in which the default branch's change can land next to, or
 >   inside the context of, the PR's hunk. The safeguards are only these: the binding above; the full
->   verify stage on the new head (Workflow v12), which the approval waits for; and `factory/verify`
->   on that exact head. Traced for this amendment: `pr.merge` doesn't check `factory/verify` itself.
->   It merges with `sha` = the head it was given, and GitHub refuses that merge unless the org
->   ruleset's required `factory/verify` from the App is green on it (no bypass, ADR 0037). Where that
->   ruleset is missing, the verify stage passing is the only check.
+>   verify stage on the new head (Workflow v12), which the approval waits for; and the factory's own
+>   proof that this exact head was verified, checked by `pr.merge` before GitHub is asked
+>   (`requireVerifiedHead`): a review packet for that SHA with verdict `pass` and the factory's
+>   `factory/verify` for that SHA completed with `success`, read from D1, never from GitHub alone.
+>   That check was added with this amendment: tracing it showed `pr.merge` had relied on GitHub's
+>   ruleset requiring `factory/verify`, and that ruleset may be off (it was off on this repository
+>   on 2026-11-13) or absent on a customer's. GitHub's required check, where it is on, is a second guard.
 > - **The new head's digest becomes the approval's** (`approved_digest`), so `mergeQueue.enter` takes
 >   the approval back only for that change. The timeline says, in words, that the default branch was
 >   merged in cleanly, the approval carried, and on which head it was verified again.

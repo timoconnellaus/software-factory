@@ -941,16 +941,18 @@ async function repeatedWithdrawal(
 
 /**
  * Whether the merge base of the approved head and the default branch's head is ambiguous (a
- * criss-cross history): then "the side that changed a path" isn't defined, and it fails closed.
+ * criss-cross history, #175's `mergeBaseAmbiguous`): then "the side that changed a path" isn't
+ * defined. It fails closed: no merge base, or GitHub can't tell (null), counts as ambiguous.
  */
 async function mergeBaseAmbiguous(
-  _ctx: HandlerContext,
-  _repo: RepoRef,
-  _at: string,
-  _main: string,
+  ctx: HandlerContext,
+  repo: RepoRef,
+  at: string,
+  main: string,
   mergeBase: string | null,
 ): Promise<boolean> {
-  return mergeBase === null; // MERGE-BASE-AMBIGUITY: replaced once #175 is on main
+  if (mergeBase === null) return true;
+  return (await ctx.services.github.mergeBaseAmbiguous(repo, at, main)) !== false;
 }
 
 /**

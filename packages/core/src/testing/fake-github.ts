@@ -71,6 +71,8 @@ interface RepoState {
   times?: Record<string, string>;
   /** Commits GitHub itself made and signed (update-branch merges), for `commitInfo`. */
   byGitHub?: Record<string, true>;
+  /** `setMergeBaseAmbiguous`: the answer `mergeBaseAmbiguous` gives, whatever the graph. */
+  ambiguousOverride?: boolean | null;
   /** Of those, the ones a person made in GitHub's web conflict editor (authored by them). */
   webEditor?: Record<string, true>;
   /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
@@ -159,6 +161,11 @@ export interface FakeGitHub extends GitHubService {
   ): Promise<string>;
   /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
   truncateTree(repo: RepoRef, at: string): Promise<void>;
+  /**
+   * Overrides `mergeBaseAmbiguous` for the repo (undefined: judged from the graph again), for a
+   * caller's fail-closed test where a real criss-cross can't be built around a fixed head.
+   */
+  setMergeBaseAmbiguous(repo: RepoRef, answer: boolean | null | undefined): Promise<void>;
   /** Points a branch at an existing commit, as a force-push does. */
   forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
   /** Sets a commit's committer date, as whoever pushed it chose (past or future). */
@@ -621,6 +628,7 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       // As GitHub answers: one merge base, the same both ways (even for a criss-cross), and each
       // side's commits since it with their parents; the judgement is the client's.
       const state = await load(r);
+      if (state.ambiguousOverride !== undefined) return state.ambiguousOverride;
       const x = state.refs[a] ?? a;
       const y = state.refs[b] ?? b;
       const base = mergeBaseOf(state, x, y);
@@ -673,6 +681,12 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.refs[branch] = next;
       await save(r, state);
       return next;
+    },
+    async setMergeBaseAmbiguous(r, answer) {
+      const state = await load(r);
+      if (answer === undefined) delete state.ambiguousOverride;
+      else state.ambiguousOverride = answer;
+      await save(r, state);
     },
     async truncateTree(r, at) {
       const state = await load(r);

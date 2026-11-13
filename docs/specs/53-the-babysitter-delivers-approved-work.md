@@ -240,8 +240,9 @@ approval is actually about: the change.
     a path only main changed must be main's (`oneSidedMismatches`); an ambiguous merge base withdraws.
     A path both changed is GitHub's three-way result, which **no person looked at**: main's change can
     sit next to or inside the PR's hunk. It is covered only by the binding, the full verify stage on
-    the new head, and `factory/verify` on that head, which GitHub's ruleset requires for the merge
-    (`pr.merge` itself doesn't check it). With no path changed on both sides the change must also be
+    the new head, and `pr.merge`'s own check that this exact head was verified (a `pass` packet
+    and the factory's `factory/verify` success for that SHA, from D1: `requireVerifiedHead`), which
+    holds even with GitHub's ruleset off. With no path changed on both sides the change must also be
     identical by the strict digest. The new head's digest then becomes the approval's. This reverses
     the "a file both sides changed withdraws" rule above for bound updates only.
   - **The loop guard:** after two withdrawals in a row at an update for the same reason (with no

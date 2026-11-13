@@ -313,6 +313,17 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     await env.DB.prepare("UPDATE core_work_items SET stage = 'verify' WHERE id = ?")
       .bind(created.workItemId)
       .run();
+    // The factory verified this head (pr.merge requires it, #190 review): a pass packet and
+    // factory/verify a success for that SHA.
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES ('rp_race', ?, ?, 'pass', ?)",
+      ).bind(created.workItemId, pr.headSha, now),
+      env.DB.prepare(
+        "INSERT OR REPLACE INTO core_verify_checks (project_id, head_sha, work_item_id, pr_number, status, conclusion, title, review_packet_id, updated_at) SELECT project_id, ?, id, ?, 'completed', 'success', 'Verified by the factory', 'rp_race', ? FROM core_work_items WHERE id = ?",
+      ).bind(pr.headSha, pr.number, now, created.workItemId),
+    ]);
     const input = {
       workItemId: created.workItemId,
       headSha: pr.headSha,

@@ -912,6 +912,83 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     expect(ended.end_reason).toMatch(/its files couldn't be read in full/);
   });
 
+  // #190 review (3): an ambiguous merge base (a criss-cross) leaves "the side that changed a path"
+  // undefined: withdrawn, as is "can't tell". The judgement itself is #175's (merge-base.test.ts,
+  // from a recorded GitHub compare); here only that the update fails closed on it.
+  for (const answer of [true, null] as const) {
+    it(`withdraws an update whose merge base is ${answer ? "ambiguous" : "unknown"}`, async () => {
+      const w = await world();
+      const a = await toMergeGateWith(w, `Criss-cross ${answer}`, files("src/a.ts"));
+      await github.push(w.repo, "main", undefined, ["README.md"]);
+      await github.setMergeBaseAmbiguous(w.repo, answer);
+      try {
+        await approve(w, a);
+        const ended = await expectWithdrawn(w, a);
+        expect(ended.end_reason).toMatch(/merge base is ambiguous/);
+      } finally {
+        await github.setMergeBaseAmbiguous(w.repo, undefined);
+      }
+    });
+  }
+
+  // #190 review: nothing merges on a head the factory hasn't verified, whatever the ruleset says.
+  it("a carried approval doesn't merge while the new head's verification is pending, nor with no packet or a failing one", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Pending re-verify", files("src/a.ts"));
+    await github.setCiDefault(w.repo, CI(null));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{ head_sha: string; pending_action_id: string }>(
+        "SELECT head_sha, pending_action_id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
+    );
+    const merge = () =>
+      call(
+        "pr.merge",
+        { workItemId: a, headSha: ended.head_sha, touchesFactoryConfig: false },
+        BABYSITTER,
+        { approvalId: ended.pending_action_id },
+      ).catch((e: unknown) => e);
+    // While the re-verify is pending the entry has left the queue: pr.merge refuses (queue head).
+    expect(await merge()).toMatchObject({ message: expect.stringMatching(/not in the/) });
+    // Put back in the queue before verify ran (mergeQueue.enter doesn't check verification):
+    // pr.merge itself refuses a head the factory hasn't verified, whatever GitHub's ruleset says.
+    await call(
+      "mergeQueue.enter",
+      {
+        workItemId: a,
+        headSha: ended.head_sha,
+        pendingActionId: ended.pending_action_id,
+        driver: "babysitter",
+      },
+      BABYSITTER,
+    );
+    expect(await merge()).toMatchObject({
+      message: expect.stringMatching(/hasn't verified .* \(no review packet for this commit\)/),
+      details: { mergeRefused: "unverified" },
+    });
+    // A failing packet for that head refuses it too.
+    await env.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES ('rp_fail', ?, ?, 'fail', ?)",
+    )
+      .bind(a, ended.head_sha, new Date().toISOString())
+      .run();
+    expect(await merge()).toMatchObject({ message: expect.stringMatching(/verify failed on/) });
+    // A pass packet with factory/verify still waiting: refused as pending.
+    await env.DB.prepare(
+      "UPDATE core_review_packets SET verdict = 'pass' WHERE id = 'rp_fail'",
+    ).run();
+    expect(await merge()).toMatchObject({
+      message: expect.stringMatching(/factory\/verify isn't a success/),
+      details: { mergeRefused: "unverified" },
+    });
+    expect(await merges(a)).toHaveLength(0);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
+    await github.setCiDefault(w.repo, null);
+  });
+
   // Work item #61 (2026-11-13): both sides changed one file in different hunks, GitHub's
   // update-branch merged it cleanly (its content is neither side's), and the approval was
   // withdrawn every time, in a loop. The PR's own change is identical, so it survives: the new
