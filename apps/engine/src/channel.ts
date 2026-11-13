@@ -7,8 +7,10 @@ import {
   type AttachmentView,
   DEVICE_LOGIN_ACTOR,
   invoke,
+  OPEN_SESSION,
   OperationError,
   type RefusalCode,
+  USER_EVENTS,
 } from "@software-factory/core";
 import {
   type AttachmentMeta,
@@ -76,7 +78,7 @@ export async function handleChannel(request: Request, env: Env): Promise<Respons
     request,
     { keyFor, store: d1IdempotencyStore(env.DB), unstoredPath: isUnstoredPath },
     ({ runner, path, body, signedAt }) =>
-      route(env, runner, path, body, new URL(request.url).origin, signedAt),
+      route(env, runner, path, body, new URL(request.url).origin, signedAt, request.signal),
   );
 }
 
@@ -87,6 +89,8 @@ async function route(
   body: unknown,
   origin: string,
   signedAt?: number,
+  /** The request's: a held call stops when the host has gone, so nothing is taken for nobody. */
+  signal?: AbortSignal,
 ): Promise<ChannelReply> {
   const record = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
   let op: string;
@@ -110,9 +114,12 @@ async function route(
     if (job.call === "attachments" || job.call === "attachment") {
       return attachmentReply(env, runner, job.call, input as Record<string, unknown>);
     }
-    if (job.call === "planning") return planningReply(env, runner, job.jobId, record);
-    if (job.call === "steer") return steerReply(env, runner, job.jobId, record);
-    if (job.call === "terminal") return terminalReply(env, runner, job.jobId, record, origin);
+    if (job.call === "planning") return planningReply(env, runner, job.jobId, record, signal);
+    if (job.call === "steer") return steerReply(env, runner, job.jobId, record, signal);
+    if (job.call === "terminal") {
+      return terminalReply(env, runner, job.jobId, record, origin, signal);
+    }
+    if (job.call === "line") return lineReply(env, runner, job.jobId, record, origin);
     op = {
       token: "run.issueToken",
       events: "run.reportEvents",
@@ -196,6 +203,7 @@ async function planningReply(
   runner: string,
   jobId: string,
   record: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ChannelReply> {
   const parsed = planningCallRequestSchema.safeParse(record);
   if (!parsed.success) {
@@ -214,22 +222,46 @@ async function planningReply(
     PLANNING_WAIT_MAX_MS,
   );
   const deadline = Date.now() + timeout;
-  type Waited = { due: boolean; yield: boolean; ended: boolean; recheckAt: string | null };
-  // planning.wait (fenced) first. While nothing is due, the wait is in the Worker: every
-  // HELD_POLL_MS it calls planning.peek (a read: no write) with the same idleMs, and evaluates
-  // planning.wait again only when news falls due, the session must yield or has ended, the first
-  // evaluation's recheckAt passes, or the hold ends (spec 44 part A3). No Durable Object is held.
+  type Waited = {
+    workItemId: string;
+    cursor: number;
+    due: boolean;
+    yield: boolean;
+    ended: boolean;
+    recheckAt: string | null;
+  };
+  // planning.wait (fenced) first. While nothing is due, the wait is in the Worker (spec 44 part
+  // A3): every HELD_POLL_MS one raw read says whether anything is pending for the agent (a
+  // person's news after the cursor) and whether the session must yield or has ended. Only on a
+  // new pending event does it call planning.peek (fenced) for when that news falls due; it calls
+  // planning.wait again once it is due, the session must yield or has ended, or the hold ends.
   let reply = await invokeReply(env, op, input, actor);
   for (;;) {
     if (reply.status && reply.status !== 200) return reply;
     const body = reply.body as Waited;
     if (body.due || body.yield || body.ended || Date.now() >= deadline) return reply;
     let recheck = body.recheckAt ? Date.parse(body.recheckAt) : Number.POSITIVE_INFINITY;
+    let peeked = 0;
     for (;;) {
       const left = deadline - Date.now();
-      if (left <= 0) break;
+      if (left <= 0 || signal?.aborted) break;
       await pause(Math.min(HELD_POLL_MS, left, Math.max(0, recheck - Date.now())));
-      if (Date.now() >= recheck) break;
+      if (signal?.aborted) return { body: { ...body, due: false } };
+      if (Date.now() >= recheck || Date.now() >= deadline) break;
+      const state = await env.DB.prepare(
+        `SELECT s.status, s.yield_requested_at,
+           (SELECT max(e.id) FROM core_planning_events e
+            WHERE e.work_item_id = s.work_item_id AND e.id > max(?, s.delivered_cursor)
+              AND e.type IN (${USER_EVENTS.map(() => "?").join(", ")})) AS pending
+         FROM core_planning_sessions s
+         WHERE s.work_item_id = ? AND s.status NOT IN ('ended', 'moved') LIMIT 1`,
+      )
+        .bind(body.cursor ?? 0, ...USER_EVENTS, body.workItemId)
+        .first<{ status: string; yield_requested_at: string | null; pending: number | null }>();
+      if (!state || state.yield_requested_at || !OPEN_SESSION.includes(state.status)) break;
+      if (!state.pending || state.pending <= peeked) continue;
+      // A new event a person made: when does the batch fall due?
+      peeked = state.pending;
       const peek = await invokeReply(
         env,
         "planning.peek",
@@ -244,11 +276,10 @@ async function planningReply(
       if (peek.status && peek.status !== 200) return peek;
       const p = peek.body as { dueAt: string | null; yield: boolean; ended: boolean };
       if (p.yield || p.ended) break;
-      if (p.dueAt) {
-        recheck = Math.min(recheck, Date.parse(p.dueAt));
-        if (Date.now() >= recheck) break;
-      }
+      if (p.dueAt) recheck = Math.min(recheck, Date.parse(p.dueAt));
+      if (Date.now() >= recheck) break;
     }
+    if (signal?.aborted) return reply;
     reply = await invokeReply(env, op, input, actor);
     const again = reply.body as Waited | undefined;
     if (reply.status && reply.status !== 200) return reply;
@@ -278,6 +309,7 @@ async function steerReply(
   runner: string,
   jobId: string,
   record: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ChannelReply> {
   const parsed = steersRequestSchema.safeParse(record);
   if (!parsed.success) {
@@ -290,13 +322,24 @@ async function steerReply(
   const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
   const deadline = Date.now() + timeout;
   const actor: Actor = { type: "runner", id: runner };
-  const take = () => invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+  // A take that lost a race to another (two calls read the same queued steer; the guard lets one
+  // hand it over) is tried again: the host never sees that 409, which it would take as "this job
+  // can't be steered" and stop asking (review of #179).
+  const take = async () => {
+    for (let attempt = 0; ; attempt++) {
+      const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+      if (!(reply.body as { raced?: boolean } | undefined)?.raced) return reply;
+      if (attempt >= 3) return { body: { runId: "", workItemId: "", steers: [] } };
+    }
+  };
   const first = await take();
   if (first.status && first.status !== 200) return first;
   const { runId, steers } = first.body as { runId: string; steers: unknown[] };
   if (steers.length > 0 || timeout <= 0) return { body: { steers } };
   while (Date.now() < deadline) {
     await pause(Math.min(HELD_POLL_MS, deadline - Date.now()));
+    // The host has gone: stop, so nothing is taken (marked delivered) for nobody.
+    if (signal?.aborted) return { body: { steers: [] } };
     const queued = await env.DB.prepare(
       "SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL LIMIT 1",
     )
@@ -304,6 +347,7 @@ async function steerReply(
       .first();
     if (!queued) continue;
     const reply = await take();
+    // Any refusal (fenced, killed, the run ended) ends the hold: no re-take every 3 s.
     if (reply.status && reply.status !== 200) return reply;
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
   }
@@ -326,6 +370,7 @@ async function terminalReply(
   jobId: string,
   record: Record<string, unknown>,
   origin: string,
+  signal?: AbortSignal,
 ): Promise<ChannelReply> {
   const parsed = terminalCallRequestSchema.safeParse(record);
   if (!parsed.success) {
@@ -354,7 +399,8 @@ async function terminalReply(
         url.searchParams.set("ticket", ticket);
         return { body: { connect: { url: url.toString() } } };
       }
-      const staleBefore = new Date(Date.now() - TERMINAL_TICKET_TTL_MS).toISOString();
+      // Twice a ticket's life: an admitted viewer connects well within it.
+      const staleBefore = new Date(Date.now() - 2 * TERMINAL_TICKET_TTL_MS).toISOString();
       if (viewers === 0 && open.opened_at < staleBefore) {
         // The relay has no viewer for an attach older than any ticket: left by a deploy or crash.
         const closed = await invokeReply(
@@ -367,9 +413,43 @@ async function terminalReply(
       }
     }
     const left = deadline - Date.now();
-    if (left <= 0) return { body: { connect: null } };
+    if (left <= 0 || signal?.aborted) return { body: { connect: null } };
     await pause(Math.min(HELD_POLL_MS, left));
+    if (signal?.aborted) return { body: { connect: null } };
   }
+}
+
+/**
+ * The runner host's job line (spec 44 part B, ADR 0592): `run.terminal.host` as the runner (fenced:
+ * its own live job), then a one-use socket URL for the job's relay. The relay pushes
+ * `{ t: "steer" | "viewer" | "planning" }` down it; the host answers each with its own fenced call.
+ * Answered at once; never stored.
+ */
+async function lineReply(
+  env: Env,
+  runner: string,
+  jobId: string,
+  record: Record<string, unknown>,
+  origin: string,
+): Promise<ChannelReply> {
+  const parsed = terminalCallRequestSchema.safeParse(record);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: { error: parsed.error.message, code: "invalid_input", details: parsed.error.issues },
+    };
+  }
+  const check = await invokeReply(
+    env,
+    "run.terminal.host",
+    { jobId, fencingToken: parsed.data.fencingToken },
+    { type: "runner", id: runner },
+  );
+  if (check.status && check.status !== 200) return check;
+  const ticket = await terminalRelay(env, jobId).lineTicket();
+  const url = new URL(TERMINAL_PATHS.line(jobId), origin.replace(/^http/, "ws"));
+  url.searchParams.set("ticket", ticket);
+  return { body: { connect: { url: url.toString() } } };
 }
 
 /**
@@ -415,6 +495,8 @@ async function invokeReply(
           error: error.message,
           code: error.code,
           ...(error.code === "invalid_input" ? { details: error.details } : {}),
+          // A lost race (a batch guard or unique key), which a retry may win.
+          ...(error.details?.raced === true ? { raced: true } : {}),
         },
       };
     }
