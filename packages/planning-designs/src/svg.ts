@@ -6,6 +6,9 @@ import { DRAWN_BY } from "@software-factory/runner-contract";
 /** Escapes text for an SVG text node or attribute. */
 export const esc = (text: string) =>
   text
+    // Control characters have no place in XML text (follow-up review of #163).
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: finding control characters is the point.
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\ufffe\uffff]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

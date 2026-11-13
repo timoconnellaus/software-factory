@@ -38,6 +38,9 @@ const ORDINARY: [string, string][] = [
   // Review of #160: a ticked item is a request, and `[x](url)` is a link with its text.
   ["Bug", "- [x] Crashes when saving a 2GB file"],
   ["Docs", "- [x](https://example.com/docs) is broken"],
+  // Follow-up review: an unticked task is a task, and a reference-shaped line with words is text.
+  ["Theme", "- [ ] Add dark mode\n- [ ] Follow the system setting"],
+  ["API", "[note]: we should drop the v1 API"],
 ];
 
 /** Nothing to act on: every one parks. */

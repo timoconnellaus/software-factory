@@ -63,6 +63,23 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
 }
 
 /**
+ * An unticked box that is a template's, not a task (follow-up review of #160): empty, or a
+ * filer's attestation ("I searched existing issues", "I have read the docs", "This is not a
+ * duplicate"). `- [ ] Add dark mode` is a task and keeps its words.
+ */
+function templateBox(line: string): boolean {
+  const m = /^\s*([-*+]|\d+[.)])\s+\[ ?\](?:\s+(.*))?$/.exec(line);
+  if (!m) return false;
+  const label = (m[2] ?? "").trim();
+  return (
+    label === "" ||
+    /^(i|i've|i'm|i am|i have|we|we've|my|this (is|isn't|is not|pr|issue)|the (issue|bug|problem) (is|has)|(have|did) you|(yes|confirmed?|agreed?|checked|searched|read)\b)/i.test(
+      label,
+    )
+  );
+}
+
+/**
  * What's left of a body without template headings, HTML comments, a template's unticked checklist
  * (`- [ ] I searched existing issues`, box and label: review of #117), checkbox markers, images and
  * links. A ticked item keeps its words (`- [x] Crashes when saving a 2GB file` is a request), and
@@ -74,9 +91,11 @@ function substance(body: string): string {
       .replace(/<!--[\s\S]*?-->/g, " ")
       .split("\n")
       .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
-      .filter((l) => !/^\s*([-*+]|\d+[.)])\s+\[ ?\](\s|$)/.test(l))
+      .filter((l) => !templateBox(l))
       // Reference definitions (`[1]: https://…`) are links.
-      .filter((l) => !/^\s*\[[^\]]+\]:\s*\S+/.test(l))
+      .filter(
+        (l) => !/^\s*\[[^\]]+\]:\s*(<?https?:\/\/\S+>?|<?\/\S*>?|#\S*)(\s+["'(].*)?\s*$/.test(l),
+      )
       .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s+(\[[xX]\](?=\s|$))?/, ""))
       .join(" ")
       // Images, inline (a URL may hold balanced parentheses) or by reference, and HTML images.
