@@ -2,9 +2,10 @@
 // and Workflow: the deliverer wakes it only for what code can't decide, the job judges (and for a
 // conflict resolves it on its run branch), and everything after that is code with its own floor.
 import { env } from "cloudflare:workers";
-import { BABYSITTER, FOREMAN, NO_BABYSIT_RUNNER } from "@software-factory/core";
+import { BABYSITTER, FOREMAN, invoke, NO_BABYSIT_RUNNER } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { deliverRepository } from "../src/deliver/deliverer.ts";
+import { invokeDeps } from "../src/deps.ts";
 import { pruneBabysit } from "../src/index.ts";
 import {
   all,
@@ -278,6 +279,16 @@ describe("the babysit job (spec 53 §4)", () => {
     );
     expect(gone).toMatchObject({ babysitResolution: null, resolutionExpected: true });
     expect(await mergeWithout()).toMatchObject({ details: { fullDiffRequired: true } });
+    // The website's Review page (sign-in only, due for removal) never approves a resolved head,
+    // whatever opened flag it sends.
+    expect(
+      await invoke(
+        invokeDeps(env),
+        "review.merge",
+        { workItemId: a.id, openedFullDiff: true, headSha: await gateHead(a.id) },
+        { actor: w.human, origin: { surface: "app" } },
+      ).catch((e: unknown) => e),
+    ).toMatchObject({ code: "conflict", message: expect.stringMatching(/desktop app/) });
     // Having opened the full diff, the person merges.
     await approve(w, a.id);
     await itemStatus(a.id, "done");
@@ -911,14 +922,21 @@ async function directResolution(title: string) {
   };
   const record = async (resolution: string) => {
     approved = (await github.commitParents(w.repo, resolution))[0] ?? approved;
+    // As branch.advance and the reopened gate leave it: the resolution is the item's head, and the
+    // pending merge gate is for it (babysit.resolution records only the item's own head).
+    await env.DB.prepare("UPDATE core_work_items SET head_sha = ? WHERE id = ?")
+      .bind(resolution, a.id)
+      .run();
+    await env.DB.prepare(
+      "UPDATE core_pending_actions SET input = json_set(input, '$.headSha', ?) WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending'",
+    )
+      .bind(resolution, a.id)
+      .run();
     await ok(
       "babysit.resolution",
       { workItemId: a.id, headSha: resolution, approvedHead: approved, deliveryFence: 1 },
       BABYSITTER,
     );
-    await env.DB.prepare("UPDATE core_work_items SET head_sha = ? WHERE id = ?")
-      .bind(resolution, a.id)
-      .run();
     return (
       await ok<{ babysitResolution: ResolutionView | null }>(
         "workItem.get",
