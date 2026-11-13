@@ -97,6 +97,20 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
     match: /from "core_work_items" where .*"status" in .* order by \+updated_at/,
     why: "workItem.list with a status filter reads and sorts only that project's rows in those statuses (core_work_items_status_idx). Only the CLI's `sf list` filters by status, on demand, asking for the live statuses (bounded by the active limit); a status that grows (done) would sort them all, and nothing polls with a status",
   },
+  {
+    match: /^select \* from "core_questions" where "work_item_id" = \? order by "created_at"$/,
+    why: "workItem.get: one item's questions (a few per planning round), by the item's index",
+  },
+  {
+    match:
+      /^select \* from "core_pending_actions" where "work_item_id" = \? order by "created_at"$/,
+    why: "workItem.get: one item's gates (one per gate it reached), by the item's index",
+  },
+  {
+    match:
+      /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" = \? and "w"\."repository_id" = \? and "q"\."status" = \?/,
+    why: "workItem.get at the merge stage: one repository's queued merges (the merge queue's depth, a handful)",
+  },
 ];
 
 export interface Scan {

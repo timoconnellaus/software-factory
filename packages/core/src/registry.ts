@@ -213,6 +213,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   connector.pushObserve,
   connector.githubInstallation,
   incidents.incidentOpen,
+  incidents.incidentListArchiveMissing,
+  incidents.incidentResolve,
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,

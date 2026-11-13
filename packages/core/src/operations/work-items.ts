@@ -483,6 +483,13 @@ export const workItemGet = defineOperation({
         takeover: z.object({ label: z.string(), hint: z.string() }).nullable(),
         startedAt: z.string(),
         endedAt: z.string().nullable(),
+        /**
+         * Where the run's log is (AGENTS.md "Cloudflare cost"): `kept` in D1; `archived` to R2 (30
+         * days after the run ended; read back from there); `missing`, an archived object is lost
+         * and recorded as an incident for a person (`archiveIncident`).
+         */
+        log: z.enum(["kept", "archived", "missing"]),
+        archiveIncident: z.object({ id: z.string(), resolvedAt: z.string().nullable() }).nullable(),
       }),
     ),
     reviewPacket: z
@@ -567,11 +574,22 @@ export const workItemGet = defineOperation({
           .selectAll()
           .where("work_item_id", "=", w.id)
           .orderBy("created_at"),
+        // Each run's archive incident, if its archived log lost an object (one per run, on
+        // core_incidents_run_idx): a point lookup per run, in the same query.
         ctx.db
           .selectFrom("core_runs")
-          .selectAll()
-          .where("work_item_id", "=", w.id)
-          .orderBy("run_no"),
+          .leftJoin("core_incidents", (j) =>
+            j
+              .onRef("core_incidents.run_id", "=", "core_runs.id")
+              .on("core_incidents.kind", "=", "archive_missing"),
+          )
+          .selectAll("core_runs")
+          .select([
+            "core_incidents.id as archive_incident_id",
+            "core_incidents.resolved_at as archive_incident_resolved_at",
+          ])
+          .where("core_runs.work_item_id", "=", w.id)
+          .orderBy("core_runs.run_no"),
         ctx.db
           .selectFrom("core_review_packets")
           .selectAll()
@@ -692,6 +710,14 @@ export const workItemGet = defineOperation({
         takeover: parseJson<{ label: string; hint: string } | null>(r.takeover, null),
         startedAt: r.started_at,
         endedAt: r.ended_at,
+        log: r.archive_incident_id
+          ? ("missing" as const)
+          : r.events_archived_at
+            ? ("archived" as const)
+            : ("kept" as const),
+        archiveIncident: r.archive_incident_id
+          ? { id: r.archive_incident_id, resolvedAt: r.archive_incident_resolved_at }
+          : null,
       })),
       reviewPacket: packet
         ? {
