@@ -6,12 +6,13 @@ import { STAGE_LABEL } from "@software-factory/client/format";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
+import { BabysitterSection } from "../components/babysitter.tsx";
 import { Cell, Empty, Row, Stat, TablePanel, When, WIDE } from "../components/data-table.tsx";
 import { Reads, StatSkeleton } from "../components/read-state.tsx";
 import { PageArea, PageHeader, SectionTitle } from "../components/shell-list.tsx";
 import { useOrgScope, useScopedInbox } from "../components/shell-sidebar.tsx";
 import { incidentRows, queued, runnersOnline, runningNow } from "../lib/factory.ts";
-import { mergeQueuesQuery } from "../lib/factory-queries.ts";
+import { deliveryStatusQuery, mergeQueuesQuery } from "../lib/factory-queries.ts";
 import { openItem } from "../lib/places.ts";
 import { projectsQuery, workListsQuery } from "../lib/queries.ts";
 import { waitingCount } from "../lib/scope.ts";
@@ -30,6 +31,8 @@ export const Route = createRoute({
     return Promise.all([
       queryClient.ensureQueryData(workListsQuery(orgIds)),
       queryClient.ensureQueryData(mergeQueuesQuery(projects.map((p) => p.id))),
+      // The Babysitter line (spec 53), one read per project.
+      ...projects.map((p) => queryClient.ensureQueryData(deliveryStatusQuery(p.id))),
     ]).catch(() => null);
   },
   component: OverviewPage,
@@ -182,6 +185,8 @@ function OverviewPage() {
           )
         }
       </Reads>
+
+      <BabysitterSection projects={scopedProjects} />
 
       <SectionTitle note="Approved work lands one at a time per repository.">
         Merge queue

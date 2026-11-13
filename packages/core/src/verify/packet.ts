@@ -66,6 +66,14 @@ export interface PacketInput {
   specCriteria?: readonly string[] | null | undefined;
   /** Who wrote `specCriteria`'s links: the approved spec, or triage (the Workflow's `triage-ties` feature). */
   linksFrom?: "spec" | "triage" | undefined;
+  /**
+   * A split parent's PR (spec 24): the only files it may add or change, the first being the spec.
+   * The verdict is then decided in code from the diff and CI: any other path, or a file removed or
+   * renamed, fails it, so this path can't carry code to main without criteria being judged.
+   */
+  splitFiles?: readonly { path: string; sha256: string }[] | null | undefined;
+  /** Each of `splitFiles`' content hash at the head SHA (null: not there). */
+  splitAtHead?: Readonly<Record<string, string | null>> | undefined;
 }
 
 export interface AssembledPacket {
@@ -100,11 +108,38 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   const reasons: string[] = [];
   const warnings: string[] = [];
 
-  if (evidence.criteria.length === 0) missing.push("no acceptance criteria were checked");
-  for (const c of evidence.criteria) {
-    if (!c.evidence.trim()) missing.push(`no evidence for "${c.criterion}"`);
+  const split = input.splitFiles ?? null;
+  if (split) {
+    // Spec 24 (review of #171): exactly the files spec.commit wrote, with the content it wrote, and
+    // nothing else; any other path, a removal or a rename, or a changed byte fails it.
+    const expected = new Map(split.map((f) => [f.path, f.sha256]));
+    if (expected.size === 0) missing.push("what the plan's commit wrote isn't recorded");
+    for (const f of input.files ?? []) {
+      if (!expected.has(f.path)) reasons.push(`not one of the approved plan's files: ${f.path}`);
+      else if (f.status !== "added" && f.status !== "modified")
+        reasons.push(`the approved plan's file was ${f.status}: ${f.path}`);
+      if (f.previousPath && !expected.has(f.previousPath))
+        reasons.push(`not one of the approved plan's files: ${f.previousPath}`);
+    }
+    // Judged on the tree at the head, not the diff (review of #171): a file identical to main
+    // isn't in the diff but is still there with the approved content.
+    for (const [path, sha256] of expected) {
+      const at = input.splitAtHead?.[path];
+      if (at === undefined || at === null) {
+        reasons.push(`the approved plan's file isn't at the head: ${path}`);
+      } else if (at.startsWith("mode:")) {
+        reasons.push(`the approved plan's file is a link or not a plain file (${at}): ${path}`);
+      } else if (at !== sha256) {
+        reasons.push(`the approved plan's file was changed after approval: ${path}`);
+      }
+    }
+  } else {
+    if (evidence.criteria.length === 0) missing.push("no acceptance criteria were checked");
+    for (const c of evidence.criteria) {
+      if (!c.evidence.trim()) missing.push(`no evidence for "${c.criterion}"`);
+    }
+    if (!evidence.reviewer) missing.push("no independent reviewer verdict");
   }
-  if (!evidence.reviewer) missing.push("no independent reviewer verdict");
   if (input.files === null) missing.push("the diff couldn't be read from GitHub");
 
   for (const c of evidence.criteria) if (!c.met) reasons.push(`unmet: ${c.criterion}`);
