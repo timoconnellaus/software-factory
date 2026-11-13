@@ -570,7 +570,6 @@ function counting() {
     });
   const e = {
     ...recordingEnv(env, seen),
-    PLANNING_HUB: counted(env.PLANNING_HUB as never, "PlanningHub"),
     TERMINAL_RELAY: counted(env.TERMINAL_RELAY as never, "TerminalRelay"),
   } as Env;
   const fetchVia: typeof fetch = async (input, init) => worker.fetch(new Request(input, init), e);
@@ -752,6 +751,43 @@ describe("held calls wait in the Worker, not in a Durable Object (spec 44 part A
     expect(open.results.map((r) => r.id)).not.toContain(old);
   });
 
+  it("an acking host gets a steer once it acks; a take nobody received is offered again", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const fence = job.lease.fencingToken;
+    const take = (ack: string[]) => c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0, ack });
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "lost in transit" }, w.human);
+    // A take whose answer never reached the host (an orphaned call): offered, not delivered.
+    const lost = await take([]);
+    expect(lost?.steers.map((s) => s.text)).toEqual(["lost in transit"]);
+    const id = lost?.steers[0]?.id as string;
+    // While the offer stands, no one else gets it.
+    expect(await take([])).toEqual({ steers: [] });
+    const row = () =>
+      env.DB.prepare("SELECT delivered_at FROM core_run_steers WHERE id = ?")
+        .bind(id)
+        .first<{ delivered_at: string | null }>();
+    expect(await row()).toEqual({ delivered_at: null });
+    // The offer lapses (60 s): it is offered again, and delivered only when the host acks it.
+    await env.DB.prepare("UPDATE core_run_steers SET offered_until = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), id)
+      .run();
+    expect((await take([]))?.steers.map((s) => s.id)).toEqual([id]);
+    expect(await take([id])).toEqual({ steers: [] });
+    expect((await row())?.delivered_at).not.toBeNull();
+    // A host that doesn't ack is handed steers as before: delivered at the take.
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "old host" }, w.human);
+    const old = await c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 });
+    const oldRow = await env.DB.prepare("SELECT delivered_at FROM core_run_steers WHERE id = ?")
+      .bind(old?.steers[0]?.id)
+      .first<{ delivered_at: string | null }>();
+    expect(oldRow?.delivered_at).not.toBeNull();
+  });
+
   it("refuses a stale fencing token on both holds before any wait", async () => {
     const w = await world();
     const { job } = await running(w, [...MANIFEST.capabilities, "terminal", "steer"]);
@@ -851,6 +887,28 @@ describe("the job line (spec 44 part B, ADR 0592)", () => {
     await l.until("the old line closed", (e) => e.closed !== null);
     expect(l.closed?.code).toBe(4000);
     second.ws.close();
+  });
+
+  it("a replaced host pushes no viewer, and the session's end closes the line", async () => {
+    const w = await world();
+    const capabilities = [...MANIFEST.capabilities, "terminal", "steer", "job-line"] as const;
+    const { c, job, item, runId } = await running(w, [...capabilities]);
+    const fence = job.lease.fencingToken;
+    const l = await line((await c.line?.(job.jobId, { fencingToken: fence }))?.connect.url ?? "");
+    const viewer = await view(item.workItemId, runId, w.human);
+    await l.until("the viewer push", (e) => e.texts.some((m) => m.t === "viewer"));
+    // Two tickets before either host connects, then both: the second replaces the first.
+    const first = await c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 0 });
+    const second = await c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 0 });
+    const h1 = await host(first?.connect?.url ?? "");
+    const h2 = await host(second?.connect?.url ?? "");
+    await h1.until("the first host replaced", (e) => e.closed !== null);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(l.texts.filter((m) => m.t === "viewer")).toHaveLength(1);
+    // The session ends: viewers are told, and the job line closes too.
+    h2.ws.send(JSON.stringify({ t: "ended", reason: "done" }));
+    await l.until("the line closed", (e) => e.closed !== null);
+    viewer.end.ws.close();
   });
 
   it("pushes planning changes to the planning job's line", async () => {

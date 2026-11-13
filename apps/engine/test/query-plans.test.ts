@@ -278,6 +278,18 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 host ack: an acking host's held steer call, whose poll also skips steers on offer.
+    name: "the held steer call's poll, for a host that acks (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+        ack: [],
+      });
+    },
+  },
+  {
     // Spec 44 part A: the held terminal call reads whether the run has an open attach
     // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
     name: "the held terminal call's poll (spec 44)",
@@ -480,6 +492,42 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       // Green again: the release.
       await github.setChecks(w.repo, main, ci("success"));
       await invoke(invokeDeps(e), "main.observe", { repo, headSha: main, trigger: "ci" }, github_);
+    },
+  },
+  {
+    // Spec 53 §5: the engine's revert of a named culprit (claim, lease, ask GitHub: refused here,
+    // so the give-up path too), then the reland and close lookups (refused: not a revert).
+    name: "mainRed.revert, mainRed.reland and mainRed.closeRevert",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { projectId: w.projectId, title: "A culprit" },
+        w.human,
+      );
+      const id = item.workItemId;
+      const row = await e.DB.prepare("SELECT repository_id FROM core_work_items WHERE id = ?")
+        .bind(id)
+        .first<{ repository_id: string }>();
+      const at = new Date(Date.now() - 3_600_000).toISOString();
+      await e.DB.batch([
+        e.DB.prepare(
+          "UPDATE core_work_items SET status = 'done', merge_sha = ?, pr_number = 9999 WHERE id = ?",
+        ).bind("c".repeat(40), id),
+        e.DB.prepare(
+          `INSERT OR REPLACE INTO core_main_health (repository_id, project_id, head_sha, state,
+             checked_at, red_since, first_red_sha, culprit_work_item_id, attributed_by)
+           VALUES (?, ?, ?, 'red', ?, ?, ?, ?, 'person')`,
+        ).bind(row?.repository_id, w.projectId, "c".repeat(40), at, at, "c".repeat(40), id),
+      ]);
+      const step = (extra: Record<string, unknown> = {}) =>
+        as(e, "mainRed.revert", { workItemId: id, ...extra }, w.human).catch(() => null);
+      await step();
+      const lease = (await step()) as { status: string; output?: { attempt?: number } } | null;
+      await step({ attempt: lease?.output?.attempt ?? 1 });
+      await as(e, "mainRed.reland", { workItemId: id }, w.human).catch(() => null);
+      await e.DB.prepare("UPDATE core_main_health SET red_since = NULL WHERE repository_id = ?")
+        .bind(row?.repository_id)
+        .run();
     },
   },
   {

@@ -14,7 +14,6 @@ import {
 } from "@software-factory/core";
 import { parseTerminalPath } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
-import { planningHub } from "./planning-hub.ts";
 import { attachTerminal, type TerminalAttachResult } from "./terminal-attach.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 
@@ -48,24 +47,6 @@ export class EngineApi extends WorkerEntrypoint<Env> {
       if (isOperationError(error)) return { ok: false, error: toRefusal(error), ms: ms() };
       throw error;
     }
-  }
-
-  /**
-   * A work item's planning changes as Server-Sent Events (spec 20, ADR 0350), for the Planning tab:
-   * one `changed` event per change, then the app re-reads `planning.get`. Only for a person who may
-   * read the planning view (checked with `planning.get`).
-   */
-  async planningStream(
-    workItemId: string,
-    options: EngineInvokeOptions,
-  ): Promise<{ ok: true; stream: ReadableStream<Uint8Array> } | { ok: false; error: Refusal }> {
-    try {
-      await invoke(invokeDeps(this.env), "planning.get", { workItemId }, options);
-    } catch (error) {
-      if (isOperationError(error)) return { ok: false, error: toRefusal(error) };
-      throw error;
-    }
-    return { ok: true, stream: await planningHub(this.env, workItemId).stream() };
   }
 
   /**

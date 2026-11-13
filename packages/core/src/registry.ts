@@ -30,6 +30,7 @@ import * as projects from "./operations/projects.ts";
 import * as protection from "./operations/protection.ts";
 import * as questions from "./operations/questions.ts";
 import * as reconcile from "./operations/reconcile.ts";
+import * as revert from "./operations/revert.ts";
 import * as runners from "./operations/runners.ts";
 import * as skills from "./operations/skills.ts";
 import * as specs from "./operations/specs.ts";
@@ -209,6 +210,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.workItemMarkRepair,
   delivery.deliveryStatus,
   delivery.mainRedAttribute,
+  revert.mainRedRevert,
+  revert.mainRedReland,
+  revert.mainRedCloseRevert,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
   babysit.babysitWake,

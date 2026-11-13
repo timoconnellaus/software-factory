@@ -26,6 +26,7 @@ export * from "./projects.ts";
 export * from "./protection.ts";
 export * from "./questions.ts";
 export * from "./reconcile.ts";
+export * from "./revert.ts";
 export * from "./runners.ts";
 export * from "./skills.ts";
 export * from "./specs.ts";
