@@ -204,7 +204,9 @@ jobs:
       # The helper's parser and allowlist (spec 40 M4b), before it is built into a release.
       - name: Key helper unit tests
         if: steps.secrets.outputs.ready == 'true' && env.SF_KEYS_PROFILE != ''
-        run: swift test --package-path apps/desktop/native/sf-keys-app
+        run: |
+          swift test --package-path apps/desktop/native/sf-keys-app
+          node apps/desktop/scripts/check-profile.ts --self-test apps/desktop/test/fixtures/sf-keys-profile.plist
 
       - name: Build, sign and notarize
         if: steps.secrets.outputs.ready == 'true'
