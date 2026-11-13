@@ -345,6 +345,8 @@ export interface CoreWorkItemsTable {
   shaped_base_sha: string | null;
   /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
   repairs_main: Generated<number>;
+  /** 0392: what the babysitter's conflict resolution changed (JSON), for the reopened gate. */
+  babysit_resolution: string | null;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */

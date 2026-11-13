@@ -149,6 +149,19 @@ describe("the babysit job (spec 53 §4)", () => {
       return verifyPass;
     });
     expect((await itemRow(a.id)).head).toBe(resolution);
+    // The reopened gate shows only the resolution: the conflicted file, nothing outside it.
+    const got = await ok<{
+      babysitResolution: {
+        sha: string;
+        files: { path: string; conflicted: boolean }[];
+        outside: string[];
+      } | null;
+    }>("workItem.get", { workItemId: a.id }, w.human);
+    expect(got.babysitResolution).toMatchObject({
+      sha: resolution,
+      files: [{ path: "src/a.ts", conflicted: true }],
+      outside: [],
+    });
     // No build: the resolution is verified, not rebuilt.
     expect(
       await all("SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build'", a.id),
@@ -184,6 +197,40 @@ describe("the babysit job (spec 53 §4)", () => {
     ).toBeNull();
     await approve(w, a.id);
     await itemStatus(a.id, "done");
+  });
+
+  it("a resolution that edits a file outside the conflict is flagged at the reopened gate", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Resolves too much", "src/a.ts");
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await github.setMergeable(w.repo, a.pr, false);
+    await approve(w, a.id);
+    await babysitJob(a.id);
+    await runStage(w, a.id, "babysit", async (claimed) => {
+      await github.createBranch(w.repo, claimed.branch, a.head);
+      const merged = await github.craftMerge(w.repo, claimed.branch, "main", {
+        tree: {
+          set: {
+            "src/a.ts": { mode: "100644", sha: "a-resolved" },
+            "src/unrelated.ts": { mode: "100644", sha: "sneaked-in" },
+          },
+        },
+      });
+      return { headSha: merged, result: { verdict: "resolved", note: "and tidied a file" } };
+    });
+    await github.setMergeable(w.repo, a.pr, true);
+    await runStage(w, a.id, "verify", () => verifyPass);
+    const got = await ok<{
+      babysitResolution: { files: { path: string; conflicted: boolean }[]; outside: string[] };
+    }>("workItem.get", { workItemId: a.id }, w.human);
+    expect(got.babysitResolution.outside).toEqual(["src/unrelated.ts"]);
+    expect(got.babysitResolution.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "src/a.ts", conflicted: true }),
+        expect.objectContaining({ path: "src/unrelated.ts", conflicted: false }),
+      ]),
+    );
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 
   it("a check failed after approval: one job, judged a flake, rerun once (a second rerun is refused), passes, recorded, lands", async () => {

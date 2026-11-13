@@ -16,6 +16,7 @@ import { desiredRunnerVersion } from "../services.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
+import { resolutionSchema } from "./babysit.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -418,6 +419,11 @@ export const workItemGet = defineOperation({
       .optional(),
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
+    /**
+     * What the babysitter's conflict resolution changed (spec 53 decision 1): the reopened merge
+     * gate shows only this, and flags `outside` (files beyond the conflict).
+     */
+    babysitResolution: resolutionSchema.nullable().optional(),
     stages: z.array(stageView),
     spec: z
       .object({
@@ -587,7 +593,10 @@ export const workItemGet = defineOperation({
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
     const packet = packetRows[0];
+    const resolution = resolutionSchema.safeParse(parseJson(w.babysit_resolution, null));
     return {
+      babysitResolution:
+        resolution.success && resolution.data.sha === w.head_sha ? resolution.data : null,
       item: {
         ...summarise(w),
         body: w.body,

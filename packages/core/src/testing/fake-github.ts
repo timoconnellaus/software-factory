@@ -602,6 +602,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
       if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
       if (opts.tree) {
+        // The paths it sets differ from the merged-in side: the compare lists them, as GitHub's does.
+        state.touched = {
+          ...(state.touched ?? {}),
+          [next]: [...(state.touched?.[next] ?? []), ...Object.keys(opts.tree.set ?? {})],
+        };
         const tree = { ...treeAt(state, next), ...opts.tree.set };
         for (const p of opts.tree.remove ?? []) delete tree[p];
         state.trees = { ...(state.trees ?? {}), [next]: tree };

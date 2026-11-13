@@ -198,6 +198,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   mergeQueue.mergeQueueHold,
   babysit.babysitWake,
   babysit.babysitNext,
+  babysit.babysitResolution,
   babysit.ciRerun,
   babysit.flakeRecord,
   verify.reviewPacketRecord,

@@ -426,6 +426,85 @@ export const flakeRecord = defineOperation({
   },
 });
 
+/** Most characters of one file's patch kept for the reopened gate. */
+const RESOLUTION_PATCH_MAX = 4_000;
+/** Most files a resolution records. */
+const RESOLUTION_FILES_MAX = 50;
+
+export const resolutionSchema = z.object({
+  sha,
+  itemHead: sha,
+  main: sha,
+  files: z.array(
+    z.object({ path: z.string(), conflicted: z.boolean(), patch: z.string().nullable() }),
+  ),
+  /** Files the resolution changed that only one side had touched: beyond the conflict. */
+  outside: z.array(z.string()),
+});
+export type Resolution = z.infer<typeof resolutionSchema>;
+
+export const babysitResolution = defineOperation({
+  name: "babysit.resolution",
+  description:
+    "Record what the babysitter's conflict resolution changed (spec 53 decision 1: the person sees only the resolution). From the resolution's merge commit and its two parents (the item's head and the default branch): the files whose content is neither side's, which of them both sides had changed (the conflict), each one's patch against the item's head, and the files outside the conflict, which the reopened gate flags. Carries the babysit job's delivery fence. The babysitter only.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, headSha: sha, deliveryFence }),
+  output: z.object({ files: z.number(), outside: z.array(z.string()) }),
+  async handler(input, ctx) {
+    onlyBabysitter(ctx);
+    const w = requireWorkItem(ctx);
+    await requireFence(ctx, w, input.deliveryFence);
+    const repo = await repoRef(ctx, requireRepository(ctx));
+    const github = ctx.services.github;
+    const [itemHead, main] = await github.commitParents(repo, input.headSha);
+    if (!itemHead || !main) {
+      throw new OperationError("conflict", `${input.headSha.slice(0, 7)} is not a merge commit`);
+    }
+    // What each side changed since their merge base: both = the conflict's candidates.
+    const [ours, theirs, touched] = await Promise.all([
+      github.changedPaths(repo, main, itemHead),
+      github.changedPaths(repo, itemHead, main),
+      github.compareFiles(repo, itemHead, input.headSha),
+    ]);
+    const both = new Set(ours.paths.filter((p) => theirs.paths.includes(p)));
+    // Every path either side changed, or the compare lists: the resolution's own are those whose
+    // content in the merge commit is neither parent's (a clean merge takes one side's for each).
+    const patches = new Map(touched.map((f) => [f.path, f.patch ?? null]));
+    const paths = [...new Set([...ours.paths, ...theirs.paths, ...patches.keys()])].slice(0, 300);
+    const [atR, atItem, atMain] = await Promise.all([
+      github.pathEntries(repo, input.headSha, paths),
+      github.pathEntries(repo, itemHead, paths),
+      github.pathEntries(repo, main, paths),
+    ]);
+    const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    const own = paths
+      .filter((p) => !same(atR[p], atItem[p]) && !same(atR[p], atMain[p]))
+      .map((path) => ({ path }));
+    const files = own.slice(0, RESOLUTION_FILES_MAX).map((f) => ({
+      path: f.path,
+      conflicted: both.has(f.path),
+      patch: patches.get(f.path)?.slice(0, RESOLUTION_PATCH_MAX) ?? null,
+    }));
+    const outside = own.filter((f) => !both.has(f.path)).map((f) => f.path);
+    const resolution: Resolution = { sha: input.headSha, itemHead, main, files, outside };
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ babysit_resolution: JSON.stringify(resolution) })
+        .where("id", "=", w.id),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      after: { resolution: input.headSha, files: files.length, outside },
+    });
+    return { files: files.length, outside };
+  },
+});
+
 /** Parses a finished `babysit` run's result; null when it has none that parses. */
 export function babysitResult(text: string | null) {
   if (!text) return null;
