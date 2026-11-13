@@ -226,6 +226,16 @@ export function OrgWorkflowForm({
                     })
                   }
                 />
+              </div>
+              <SettingsBox
+                key={s.id}
+                initial={settings}
+                onApply={(v) =>
+                  stage(i, (x) => {
+                    x.settings = v;
+                  })
+                }
+              >
                 <span className="grow" />
                 <Button
                   size="icon"
@@ -249,6 +259,7 @@ export function OrgWorkflowForm({
                   size="sm"
                   variant="ghost"
                   className="h-7"
+                  data-testid="remove-stage"
                   onClick={() =>
                     edit((w) => {
                       w.stages.splice(i, 1);
@@ -257,16 +268,7 @@ export function OrgWorkflowForm({
                 >
                   Remove
                 </Button>
-              </div>
-              <SettingsBox
-                key={s.id}
-                initial={settings}
-                onApply={(v) =>
-                  stage(i, (x) => {
-                    x.settings = v;
-                  })
-                }
-              />
+              </SettingsBox>
               {errors.map((e) => (
                 <div key={`${e.rule}-${e.message}`} className="text-chip-amber-ink text-xs">
                   {e.rule}: {e.message}
@@ -315,7 +317,11 @@ export function OrgWorkflowForm({
       </EditSection>
 
       {dirty && (
-        <Panel needsYou className="sticky bottom-3 z-10 gap-2.5 shadow-lg" data-testid="org-save-bar">
+        <Panel
+          needsYou
+          className="sticky bottom-3 z-10 gap-2.5 shadow-lg"
+          data-testid="org-save-bar"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-[13px] max-[899px]:hidden">Unsaved changes</span>
             {loosens && <Chip tone="amber">Loosens: an org admin approves</Chip>}
@@ -365,7 +371,16 @@ export function OrgWorkflowForm({
 }
 
 /** A stage's settings as JSON: edited as text, applied to the draft when it parses. */
-function SettingsBox({ initial, onApply }: { initial: string; onApply: (v: unknown) => void }) {
+function SettingsBox({
+  initial,
+  onApply,
+  children,
+}: {
+  initial: string;
+  onApply: (v: unknown) => void;
+  /** The stage's move and remove controls, on the counter's line. */
+  children?: React.ReactNode;
+}) {
   const [text, setText] = useState(initial);
   let bad = false;
   try {
@@ -390,8 +405,8 @@ function SettingsBox({ initial, onApply }: { initial: string; onApply: (v: unkno
       />
       <div className="flex items-center gap-2 text-[11px]">
         {bad && <span className="text-chip-amber-ink">Not valid JSON yet: not applied.</span>}
-        <span className="grow" />
         <CharCount value={text} max={16_000} />
+        {children}
       </div>
     </div>
   );

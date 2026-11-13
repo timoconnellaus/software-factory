@@ -16,7 +16,6 @@ import {
 } from "@software-factory/ui/components/alert-dialog";
 import { Button } from "@software-factory/ui/components/button";
 import { Input } from "@software-factory/ui/components/input";
-import { ToggleGroup, ToggleGroupItem } from "@software-factory/ui/components/toggle-group";
 import { cn } from "@software-factory/ui/lib/utils";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
@@ -25,7 +24,10 @@ import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { configQuery } from "../lib/factory-queries.ts";
 import { OpError, op, read, submitKey } from "../lib/op.ts";
+import { CharCount, ImpactChip, INSTRUCTIONS_MAX, Segmented } from "./config-fields.tsx";
 import { Chip, Panel, SectionTitle } from "./shell-list.tsx";
+
+export { CharCount, ImpactChip, INSTRUCTIONS_MAX, Segmented };
 
 export type Doc = Record<string, unknown>;
 
@@ -84,30 +86,6 @@ export function useDebounced<T>(value: T, ms: number): T {
     return () => clearTimeout(t);
   }, [value, ms]);
   return settled;
-}
-
-/** The cap on any instructions text (project and org agents and steps: the schemas' max). */
-export const INSTRUCTIONS_MAX = 4_000;
-
-/** "1,234 / 4,000" under an instructions box, amber near the cap, so it is seen before the error. */
-export function CharCount({ value, max = INSTRUCTIONS_MAX }: { value: string; max?: number }) {
-  const n = value.length;
-  return (
-    <span
-      className={cn(
-        "self-end text-[11px] tabular-nums",
-        n > max
-          ? "font-medium text-chip-amber-ink"
-          : n > max * 0.9
-            ? "text-chip-amber-ink"
-            : "text-ink-muted",
-      )}
-      data-testid="char-count"
-    >
-      {n.toLocaleString("en")} / {max.toLocaleString("en")}
-      {n > max ? ": too long to save" : ""}
-    </span>
-  );
 }
 
 /** A draft of the project's config over its current version, and how to save it. */
@@ -219,18 +197,6 @@ export type ConfigEditor = ReturnType<typeof useConfigDraft>;
 export function changedPaths(editor: ConfigEditor): Set<string> {
   return new Set(
     (editor.preview.data?.impact?.changes ?? []).map((c) => c.path.split(".")[0] ?? ""),
-  );
-}
-
-/** How a change moves the config, as the engine classified it. */
-export function ImpactChip({ value }: { value: string }) {
-  return (
-    <Chip
-      tone={value === "loosens" ? "amber" : value === "tightens" ? "green" : "neutral"}
-      data-impact={value}
-    >
-      {value}
-    </Chip>
   );
 }
 
@@ -530,40 +496,6 @@ export function NumberInput({
       />
       {suffix && <span className="text-ink-3 text-xs">{suffix}</span>}
     </>
-  );
-}
-
-/** One of a few: a ToggleGroup that can't be cleared. */
-export function Segmented({
-  options,
-  value,
-  label,
-  onChange,
-}: {
-  options: readonly string[];
-  value: string;
-  label: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <ToggleGroup
-      type="single"
-      variant="outline"
-      size="sm"
-      aria-label={label}
-      value={value}
-      onValueChange={(v) => v && onChange(v)}
-    >
-      {options.map((o) => (
-        <ToggleGroupItem
-          key={o}
-          value={o}
-          className="px-3 capitalize data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
-        >
-          {o}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
   );
 }
 

@@ -30,8 +30,8 @@ import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { CannotApproveYet, useCanDecide } from "../components/cannot-approve.tsx";
-import { CharCount, ImpactChip, Segmented } from "../components/config-editor.tsx";
-import { Cell, Empty, Row, TablePanel, When } from "../components/data-table.tsx";
+import { CharCount, ImpactChip, Segmented } from "../components/config-fields.tsx";
+import { Cell, Empty, Row, TablePanel, WIDE, When } from "../components/data-table.tsx";
 import { type OrgWorkflow, OrgWorkflowForm } from "../components/org-workflow-form.tsx";
 import { Reads } from "../components/read-state.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
@@ -144,7 +144,11 @@ function WorkflowTable({ workflows, shown }: { workflows: Listed[]; shown: Liste
           className={cn(w.id === shown?.id && "bg-selected/60")}
         >
           <Cell className="font-medium">
-            <Link to="/factory/org-workflows" search={{ workflow: w.id }} className="hover:underline">
+            <Link
+              to="/factory/org-workflows"
+              search={{ workflow: w.id }}
+              className="hover:underline"
+            >
               {w.name}
             </Link>
           </Cell>
@@ -174,11 +178,20 @@ function WorkflowStages({
   return (
     <section className="flex flex-col gap-2" data-testid="org-workflow-stages">
       <div className="flex flex-wrap items-center gap-2">
-        <SectionTitle note={workflow.description || undefined}>{workflow.name}: stages</SectionTitle>
-        <span className="grow" />
+        <SectionTitle
+          className="min-w-[min(100%,300px)] flex-1"
+          note={workflow.description || undefined}
+        >
+          {workflow.name}: stages
+        </SectionTitle>
         {!workflow.builtIn && (
           <>
-            <Button size="sm" variant="ghost" onClick={() => setArchiving(true)} disabled={!canDecide}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setArchiving(true)}
+              disabled={!canDecide}
+            >
               Archive
             </Button>
             <Button size="sm" asChild>
@@ -212,8 +225,8 @@ function WorkflowStages({
           <AlertDialogHeader>
             <AlertDialogTitle>Archive {workflow.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              It leaves the org's workflows as a new version; a rollback brings it back. A
-              workflow a project runs can't be archived.
+              It leaves the org's workflows as a new version; a rollback brings it back. A workflow
+              a project runs can't be archived.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -359,6 +372,15 @@ function NewFromTemplate({
   );
 }
 
+/** A waiting org change's operation, in words. */
+const OPERATION_WORDS: Record<string, string> = {
+  "workflow.save": "Save a workflow",
+  "agent.save": "Save an agent",
+  "workflow.archive": "Archive a workflow",
+  "workflow.createFromTemplate": "Add a workflow",
+  "orgConfig.rollback": "Roll back",
+};
+
 /** Org changes waiting for an org admin: Approve or Reject, each with Touch ID. */
 function PendingOrgChanges({ pending }: { pending: OpOutput<"orgConfig.get">["pending"] }) {
   const { run, pending: busy } = usePolicyDecide();
@@ -375,8 +397,9 @@ function PendingOrgChanges({ pending }: { pending: OpOutput<"orgConfig.get">["pe
       {pending.map((p) => (
         <Panel key={p.pendingActionId} needsYou className="flex-row flex-wrap items-center gap-2">
           <span className="min-w-[min(100%,280px)] flex-1 text-[13px]">
-            <span className="font-medium">{p.operation}</span>
-            {p.note ? `: ${p.note}` : ""}
+            <span className="font-medium">
+              {`${OPERATION_WORDS[p.operation] ?? p.operation}${p.note ? `: ${p.note}` : ""}`}
+            </span>
             <span className="text-ink-3 text-xs">{p.by ? ` · by ${p.by}` : ""}</span>
           </span>
           {(["approved", "rejected"] as const).map((decision) => (
@@ -407,21 +430,34 @@ type Agent = { name: string; role: string; tier?: string; instructions?: string 
 const ROLES = ["triage", "implement", "review", "summarise"].map((r) => ({ value: r, label: r }));
 
 /** The org's agents: change one (Touch ID); changing one that judges work waits for an org admin. */
-function OrgAgents({ orgId, config }: { orgId: string; config: OpOutput<"orgConfig.get"> | undefined }) {
+function OrgAgents({
+  orgId,
+  config,
+}: {
+  orgId: string;
+  config: OpOutput<"orgConfig.get"> | undefined;
+}) {
   const agents = (Array.isArray(config?.config.agents) ? config.config.agents : []) as Agent[];
   const [editing, setEditing] = useState<Agent | null>(null);
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
   return (
     <section className="flex flex-col gap-2" data-testid="org-agents">
-      <div className="flex items-center gap-2">
-        <SectionTitle note="Stages hand to them by name.">Org agents</SectionTitle>
+      <div className="flex flex-wrap items-center gap-2">
+        <SectionTitle
+          className="min-w-[min(100%,300px)] flex-1"
+          note="Stages hand to them by name."
+        >
+          Org agents
+        </SectionTitle>
         <span className="grow" />
         <Button
           size="sm"
           variant="outline"
           disabled={!canDecide}
-          onClick={() => setEditing({ name: "", role: "review", tier: "standard", instructions: "" })}
+          onClick={() =>
+            setEditing({ name: "", role: "review", tier: "standard", instructions: "" })
+          }
         >
           Add an agent
         </Button>
@@ -429,14 +465,19 @@ function OrgAgents({ orgId, config }: { orgId: string; config: OpOutput<"orgConf
       {agents.length === 0 ? (
         <Empty>No org agents yet: stages use their types' built-in ones.</Empty>
       ) : (
-        <TablePanel head={["Agent", "Role", "Tier", ""]}>
+        <TablePanel head={["Agent", "Role", { label: "Tier", className: WIDE }, ""]}>
           {agents.map((a) => (
             <Row key={a.name}>
               <Cell className="font-medium">{a.name}</Cell>
               <Cell>{a.role}</Cell>
-              <Cell>{a.tier ?? "standard"}</Cell>
+              <Cell className={WIDE}>{a.tier ?? "standard"}</Cell>
               <Cell className="text-right">
-                <Button size="sm" variant="ghost" onClick={() => setEditing({ ...a })} disabled={!canDecide}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setEditing({ ...a })}
+                  disabled={!canDecide}
+                >
                   Edit
                 </Button>
               </Cell>
@@ -488,7 +529,11 @@ function OrgAgents({ orgId, config }: { orgId: string; config: OpOutput<"orgConf
               onClick={async () => {
                 const out = await run(
                   "agent.save",
-                  { orgId, baseVersion: config?.version ?? 0, agent: { ...editing, name: editing.name.trim() } },
+                  {
+                    orgId,
+                    baseVersion: config?.version ?? 0,
+                    agent: { ...editing, name: editing.name.trim() },
+                  },
                   `Saved ${editing.name.trim()}`,
                 );
                 if (out) setEditing(null);
@@ -517,8 +562,11 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
   const canDecide = useCanDecide();
   return (
     <section className="flex flex-col gap-2" data-testid="org-adopt">
-      <div className="flex items-center gap-2">
-        <SectionTitle note="Nothing an item does changes; a project whose move wouldn't be neutral stays as it is.">
+      <div className="flex flex-wrap items-center gap-2">
+        <SectionTitle
+          className="min-w-[min(100%,300px)] flex-1"
+          note="Nothing an item does changes; a project whose move wouldn't be neutral stays as it is."
+        >
           Projects on their own workflows
         </SectionTitle>
         <span className="grow" />
@@ -530,7 +578,9 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
             setChecking(true);
             setError(null);
             try {
-              setPlan(await op("orgConfig.adoptProjectWorkflows", { orgId, baseVersion, dryRun: true }));
+              setPlan(
+                await op("orgConfig.adoptProjectWorkflows", { orgId, baseVersion, dryRun: true }),
+              );
             } catch (e) {
               setError(e instanceof Error ? e.message : String(e));
             } finally {
@@ -545,14 +595,18 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
       {plan && (
         <Panel className="gap-2" data-testid="adopt-plan">
           {plan.projects.length === 0 ? (
-            <span className="text-[13px]">Nothing to move: every project is on an org workflow.</span>
+            <span className="text-[13px]">
+              Nothing to move: every project is on an org workflow.
+            </span>
           ) : (
             <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px]">
               {plan.projects.map((p) => (
                 <li key={p.projectId}>
                   <span className="font-medium">{p.name}</span>: {p.from ?? "the stages alone"} →{" "}
                   {p.workflow}
-                  {p.approved.length ? ` (looser overrides approved: ${p.approved.join(", ")})` : ""}
+                  {p.approved.length
+                    ? ` (looser overrides approved: ${p.approved.join(", ")})`
+                    : ""}
                 </li>
               ))}
             </ul>
@@ -576,7 +630,10 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
                   if (out) setPlan(null);
                 }}
               >
-                Move {plan.projects.length === 1 ? "this project" : `these ${plan.projects.length} projects`}
+                Move{" "}
+                {plan.projects.length === 1
+                  ? "this project"
+                  : `these ${plan.projects.length} projects`}
               </Button>
             </div>
           )}
@@ -587,7 +644,13 @@ function AdoptProjects({ orgId, baseVersion }: { orgId: string; baseVersion: num
 }
 
 /** The org's versions: what each loosened or tightened, and a rollback (Touch ID). */
-function OrgHistory({ orgId, config }: { orgId: string; config: OpOutput<"orgConfig.get"> | undefined }) {
+function OrgHistory({
+  orgId,
+  config,
+}: {
+  orgId: string;
+  config: OpOutput<"orgConfig.get"> | undefined;
+}) {
   const [confirm, setConfirm] = useState<number | null>(null);
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
@@ -600,11 +663,11 @@ function OrgHistory({ orgId, config }: { orgId: string; config: OpOutput<"orgCon
         {history.map((h) => (
           <div
             key={h.version}
-            className="flex flex-wrap items-center gap-2 border-line-soft border-b py-2 text-[13px] last:border-b-0"
+            className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-line-soft border-b py-2 text-[13px] last:border-b-0"
           >
             <span className="font-mono text-xs">v{h.version}</span>
             {h.impact && h.impact !== "neutral" && <ImpactChip value={h.impact} />}
-            <span className="min-w-0 flex-1 text-ink-3 text-xs">{h.note ?? h.source}</span>
+            <span className="grow" />
             <When iso={h.createdAt} className="text-ink-muted text-xs" />
             {h.version === config?.version ? (
               <Chip>current</Chip>
@@ -619,6 +682,7 @@ function OrgHistory({ orgId, config }: { orgId: string; config: OpOutput<"orgCon
                 Roll back
               </Button>
             )}
+            <span className="basis-full text-ink-3 text-xs">{h.note ?? h.source}</span>
           </div>
         ))}
       </Panel>

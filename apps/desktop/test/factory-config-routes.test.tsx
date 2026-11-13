@@ -218,3 +218,38 @@ describe("Policy: follow-ups from the review of #145", () => {
     expect(text).toContain("Spec approval Needed from");
   });
 });
+
+describe("Org workflows (spec 52, ADR 0610)", () => {
+  it("lists the org's workflows, a workflow's stages, waiting changes, agents and history", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-workflows"');
+    expect(text).toContain("Release notes");
+    expect(text).toContain("1 change is waiting for an org admin");
+    expect(text).toContain("Save a workflow: Skip the reviewer for docs");
+    expect(html).toContain('data-testid="org-agents"');
+    expect(html).toContain('data-testid="org-adopt"');
+    expect(html).toContain('data-testid="org-history"');
+    expect(html).toContain('data-testid="edit-org-workflow"');
+  });
+
+  it("edits a workflow's stages, with every decision behind Touch ID", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_software&edit=1");
+    expect(html).toContain('data-testid="org-workflow-form"');
+    expect(html).toContain('data-testid="org-stage-review"');
+    expect(textOf(html)).toContain("Add a stage");
+  });
+
+  it("leaves a built-in workflow uneditable here", async () => {
+    const html = await renderPage("/factory/org-workflows?workflow=wf_incident");
+    expect(html).not.toContain('data-testid="edit-org-workflow"');
+    expect(textOf(html)).toContain("Built in");
+  });
+
+  it("on a software key, offers no live org decision", async () => {
+    const html = await renderPage("/factory/org-workflows", {
+      session: { keyStorage: "software" },
+    });
+    expect(textOf(html)).toContain("This Mac can't approve yet");
+  });
+});

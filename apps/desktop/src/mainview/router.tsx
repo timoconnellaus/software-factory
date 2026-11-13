@@ -12,6 +12,7 @@ import { Route as attach } from "./routes/attach.tsx";
 import { Route as factoryAgents } from "./routes/factory.agents.tsx";
 import { Route as factoryIncidents } from "./routes/factory.incidents.tsx";
 import { Route as factoryOverview } from "./routes/factory.index.tsx";
+import { Route as factoryOrg } from "./routes/factory.org.tsx";
 import { Route as factoryPolicy } from "./routes/factory.policy.tsx";
 import { Route as factoryRunners } from "./routes/factory.runners.tsx";
 import { Route as factoryWorkflows } from "./routes/factory.workflows.tsx";
@@ -33,6 +34,7 @@ export const routeTree = rootRoute.addChildren([
     workLayout.addChildren([newWork, attach, workList, workItem, review]),
     factoryLayout.addChildren([
       factoryOverview,
+      factoryOrg,
       factoryRunners,
       factoryIncidents,
       factoryPolicy,
