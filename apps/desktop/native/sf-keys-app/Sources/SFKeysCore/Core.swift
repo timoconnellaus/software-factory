@@ -84,15 +84,20 @@ public func parsePresenceMessage(_ data: Data) -> Result<PresenceMessage, Refusa
   }
   guard !summary.trimmingCharacters(in: .whitespaces).isEmpty else { return .failure(Refusal("empty summary")) }
   guard summary.count <= maxSummaryCharacters else { return .failure(Refusal("summary too long")) }
-  guard !summary.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-    return .failure(Refusal("control characters in the summary"))
-  }
+  // Control characters (Cc), and what renders as a line break or hides or reorders text in the
+  // sheet: line and paragraph separators (Zl, Zp; CharacterSet.controlCharacters has neither) and
+  // format characters (Cf: zero-width, bidi controls). The engine strips them from titles.
+  let refusedCategories: Set<Unicode.GeneralCategory> = [
+    .control, .format, .lineSeparator, .paragraphSeparator,
+  ]
+  guard !summary.unicodeScalars.contains(where: { refusedCategories.contains($0.properties.generalCategory) })
+  else { return .failure(Refusal("control, format or separator characters in the summary")) }
   return .success(PresenceMessage(nonce: nonce, op: op, digest: digest, summary: summary))
 }
 
 /// The Touch ID sheet's reason, completing macOS's sentence "SF Keys is trying to …": the
-/// summary with its first letter lowercased ("merge 3f2a91c "Fix the inbox count" into main of
-/// acme/widgets"). Nothing else is added: the words are the engine's.
+/// summary with its first letter lowercased ("merge 3f2a91c into main of acme/widgets: "Fix the
+/// inbox count""). Nothing else is added: the words are the engine's.
 public func promptReason(_ summary: String) -> String {
   guard let first = summary.first else { return summary }
   return first.lowercased() + summary.dropFirst()
