@@ -116,21 +116,45 @@ const SVG_ATTRIBUTES = new Set([
 ]);
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+/** A character XML 1.0 allows (Char production). */
+const xmlChar = (c: number) =>
+  c === 0x9 ||
+  c === 0xa ||
+  c === 0xd ||
+  (c >= 0x20 && c <= 0xd7ff) ||
+  (c >= 0xe000 && c <= 0xfffd) ||
+  (c >= 0x10000 && c <= 0x10ffff);
+
+/** Whether text holds a control character (other than tab and line ends) or U+FFFE / U+FFFF. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: finding control characters is the point.
+const badChars = (t: string) => /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/.test(t);
+
 /** Why an SVG can't be stored and shown, or null: a tokeniser over an allow-list. */
 export function unsafeSvg(svg: string): string | null {
   const text = svg.trim();
   if (!text.startsWith("<svg")) return "it doesn't start with <svg";
   const tag = /<(\/?)([^\s/>]+)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
   const attr = /\s+([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  const open: string[] = [];
   let i = 0;
-  let depth = 0;
   let roots = 0;
   while (i < text.length) {
     const lt = text.indexOf("<", i);
     const chunk = text.slice(i, lt === -1 ? text.length : lt);
-    // Text holds only escaped characters: entities are the five named ones and numeric ones.
-    if (/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/i.test(chunk)) return "its text has a bare &";
+    // Text holds only escaped characters: the five named entities (exactly) and numeric ones
+    // naming a character XML allows.
+    if (/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/.test(chunk))
+      return "its text has a bare & or an unknown entity";
+    for (const m of chunk.matchAll(/&#(x[0-9a-fA-F]+|\d+);/g)) {
+      const code = m[1]?.startsWith("x") ? Number.parseInt(m[1].slice(1), 16) : Number(m[1]);
+      if (!xmlChar(code)) return "its text names a character XML doesn't allow";
+    }
+    if (badChars(chunk)) return "its text has control or non-characters";
+    if (chunk.includes("]]>")) return "its text has ]]>";
+    // Nothing but white space after the root (review of #169).
+    if (open.length === 0 && roots > 0 && chunk.trim() !== "") return "it has text after its root";
     if (lt === -1) break;
+    if (open.length === 0 && roots > 0) return "it has something after its root";
     tag.lastIndex = lt;
     const m = tag.exec(text);
     if (!m) return "it holds markup that isn't a plain element (a comment, CDATA, a doctype…)";
@@ -138,25 +162,35 @@ export function unsafeSvg(svg: string): string | null {
     if (name.includes(":")) return `it has a prefixed element <${name}>`;
     if (!SVG_ELEMENTS.has(name)) return `it has a <${name}> element`;
     if (close) {
-      depth--;
+      if (attrs || self) return `its closing </${name}> has attributes`;
+      if (open.pop() !== name) return `</${name}> closes an element it didn't open`;
     } else {
-      if (depth === 0 && ++roots > 1) return "it has more than one root";
+      if (open.length === 0) {
+        if (++roots > 1) return "it has more than one root";
+        if (name !== "svg") return "its root isn't <svg>";
+      }
+      const seen = new Set<string>();
       for (const a of attrs.matchAll(attr)) {
         const key = a[1] ?? "";
         const value = a[2] ?? a[3] ?? "";
         if (key.includes(":")) return `it has a prefixed attribute ${key}`;
         if (!SVG_ATTRIBUTES.has(key)) return `it has a ${key} attribute`;
+        if (seen.has(key)) return `it repeats the ${key} attribute`;
+        seen.add(key);
+        // No entity or escape can spell something else inside a value (`&#117;rl(`, `\75 rl(`).
+        if (/[&\\<]/.test(value)) return "an attribute holds an entity, an escape or markup";
+        if (badChars(value)) return "an attribute holds control or non-characters";
         if (key === "xmlns" && value !== SVG_NS) return "it declares another namespace";
-        if (/url\(/i.test(value) && !/^url\(#[\w-]+\)$/.test(value))
+        if (/url\s*\(/i.test(value) && !/^url\(#[\w-]+\)$/.test(value))
           return "it refers to something outside itself";
-        if (value.includes("<")) return "an attribute holds markup";
       }
-      if (!self) depth++;
+      if (open.length === 0 && !seen.has("xmlns"))
+        return "its root doesn't declare the SVG namespace";
+      if (!self) open.push(name);
     }
-    if (depth < 0) return "its elements don't nest";
     i = lt + whole.length;
   }
-  return depth === 0 ? null : "its elements don't close";
+  return open.length === 0 ? null : "its elements don't close";
 }
 
 export const designPreviewSchema = z.object({

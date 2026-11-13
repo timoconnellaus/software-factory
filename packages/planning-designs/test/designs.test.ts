@@ -167,10 +167,29 @@ describe("the design checks (spec 22 part B)", () => {
       "<svg><text>a & b</text></svg>",
       "<svg><rect></svg>",
     ];
+    // Follow-up review: escapes in values, invalid XML, a missing namespace.
+    refused.push(
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="&#117;rl(https://x)"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="\\75 rl(https://x)"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect></text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>x</text x="1"></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>&AMP;</text></svg>',
+      '<svg width="1"/>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>a\u0001b</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" x="1" x="2"/>',
+      // Review of #169: what XML itself refuses.
+      '<svg xmlns="http://www.w3.org/2000/svg"></svg>trailing',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>a ]]> b</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>&#0;</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>&#xFFFFFFFF;</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="a\u0001"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><text>\ufffe</text></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url (https://x)"/></svg>',
+    );
     for (const svg of refused) expect(unsafeSvg(svg), svg).not.toBeNull();
     expect(
       unsafeSvg(
-        '<svg width="1"><rect fill="url(#a)" x="0"/><text>&lt;b&gt; &#39;x&#39;</text></svg>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1"><rect fill="url(#a)" x="0"/><text>&lt;b&gt; &#39;x&#39;</text></svg>',
       ),
     ).toBeNull();
   });
@@ -191,7 +210,24 @@ describe("the design checks (spec 22 part B)", () => {
   it("cuts long part ids, saves a too-big drawing without it, and refuses a too-big design", async () => {
     const long = "t".repeat(400);
     const cutIds = must(await checkDesign("data-model", `Table ${long} {\n  id int\n}\n`));
-    expect(cutIds.parts[0]?.id.length).toBe(300);
+    expect(cutIds.parts[0]?.id.length).toBeLessThanOrEqual(300);
+    // Two long names sharing their first 300 characters stay two parts (follow-up review).
+    const twins = must(
+      await checkDesign(
+        "data-model",
+        `Table ${long}a {\n  id int\n}\nTable ${long}b {\n  id int\n}\n`,
+      ),
+    );
+    const ids = twins.parts.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // A layout warning about long names still saves the drawing.
+    const crossing = ["a", "b", "c"]
+      .flatMap((x) => ["x", "y", "z"].map((y) => `${x}${long} -> ${y}${long}`))
+      .join("\n");
+    const named = await checkDesign("architecture", crossing);
+    expect(named.ok && named.preview !== null).toBe(true);
+    // Control characters in a label don't reach the drawing.
+    expect(must(await checkDesign("architecture", 'a: "x\u0001y"\n')).svg).not.toContain("\u0001");
     const tables = Array.from(
       { length: 600 },
       (_, i) => `Table t${i} {\n  id int [pk]\n  name text\n  created_at timestamp\n}`,

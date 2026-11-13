@@ -72,12 +72,14 @@ import { op, submitKey } from "../lib/op.ts";
 import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
+import { splitApproveLabel } from "../lib/splits.ts";
 import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 import { SystemPane } from "./planning-system.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
+import { SplitList } from "./split-list.tsx";
 import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */
@@ -1249,6 +1251,7 @@ function Spec({
               </ul>
             </div>
           )}
+          <SplitList items={spec.children ?? []} unreadable={spec.childrenUnreadable === true} />
           {spec.clarifications.length > 0 && (
             <div data-testid="clarifications">
               <b>Clarifications</b>
@@ -1686,12 +1689,36 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
           </Button>
           <Button
             size="sm"
-            disabled={!canApprove || pending !== null || !writeBack}
-            title={canApprove ? undefined : "Only an approver on this project can approve the spec"}
-            onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
+            disabled={
+              !canApprove ||
+              pending !== null ||
+              !writeBack ||
+              !view.spec ||
+              view.spec.childrenUnreadable === true ||
+              ((view.spec.children?.length ?? 0) > 0 && !view.spec.splitDigest)
+            }
+            title={
+              !canApprove
+                ? "Only an approver on this project can approve the spec"
+                : view.spec?.childrenUnreadable
+                  ? "This plan's split can't be read: request changes so the planner revises it"
+                  : undefined
+            }
+            onClick={() =>
+              // A split is approved as shown (review of #173): the version and the digest the
+              // server sent with the plan this screen shows; nothing is hashed here.
+              decide({
+                kind: "spec.approve",
+                workItemId: item.id,
+                ...(view.spec?.children?.length && view.spec.splitDigest
+                  ? { specVersion: view.spec.version, splitDigest: view.spec.splitDigest }
+                  : {}),
+              })
+            }
             data-testid="approve-spec"
           >
-            {approveLabel(writeBack?.kimCount)}
+            {splitApproveLabel(view.spec?.children?.length ?? 0, writeBack?.kimCount) ??
+              approveLabel(writeBack?.kimCount)}
           </Button>
         </>
       ) : (

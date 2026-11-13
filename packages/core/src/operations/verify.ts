@@ -15,7 +15,13 @@ import {
 } from "../operation.ts";
 import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
-import { childEnded, releaseSplitChildren, splitFiles } from "../splits.ts";
+import {
+  childEnded,
+  isSplitParent,
+  PLAN_MERGED_OUTSIDE,
+  releaseSplitChildren,
+  splitFiles,
+} from "../splits.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -252,8 +258,9 @@ export const reviewPacketRecord = defineOperation({
       : {};
     for (const f of split ?? []) {
       const mode = modes[f.path]?.mode;
-      if (mode && mode !== "100644" && mode !== "100755") {
-        splitAtHead[f.path] = `mode:${mode}`;
+      // A missing mode fails closed (review of #169): not known to be a plain file.
+      if (mode !== "100644" && mode !== "100755") {
+        splitAtHead[f.path] = `mode:${mode ?? "missing"}`;
         continue;
       }
       const content = await ctx.services.github.readFile(repo, f.path, input.headSha);
@@ -698,10 +705,21 @@ export const verifyRefresh = defineOperation({
         ? `merged outside the factory by ${by}`
         : "the pull request was closed without merging";
       await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
-      endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
-      // A split's child or parent ended here too (review of #171): siblings and parent hear now,
-      // and a parent whose plan merged this way still releases the children it held.
-      if (input.merged) await releaseSplitChildren(ctx, item);
+      // A split parent whose plan merged this way (review of #169): its children are released and
+      // it waits for them, closed when the last one ends, not done now.
+      if (input.merged && (await isSplitParent(ctx, item))) {
+        await releaseSplitChildren(ctx, item);
+        endWorkItem(ctx, item, reason, "done");
+        ctx.write(
+          ctx.db
+            .updateTable("core_work_items")
+            .set({ status: "waiting", status_reason: PLAN_MERGED_OUTSIDE, closed_at: null })
+            .where("id", "=", item.id),
+        );
+      } else {
+        endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
+      }
+      // A split's child ended here too (review of #171): its siblings and parent hear now.
       await childEnded(ctx, item, input.merged ? "done" : "cancelled");
       if (input.merged) {
         ctx.change({

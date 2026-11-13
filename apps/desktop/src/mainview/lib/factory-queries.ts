@@ -17,6 +17,24 @@ export const mergeQueuesQuery = (projectIds: string[]) =>
     refetchInterval: 30_000,
   });
 
+/**
+ * The babysitter's line for a project (spec 53): each repository's main (green or red, since when,
+ * the failing checks, the episode's suspects and culprit) and its deliveries in order, each
+ * merging, waiting or held.
+ */
+export const deliveryStatusQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["delivery", projectId],
+    queryFn: () => read("delivery.status", { projectId }),
+    staleTime: 15_000,
+    // Polled only while there is something to watch: a red main or work in delivery. Otherwise a
+    // decision (useRefreshAfterDecision) or the next visit reads it again.
+    refetchInterval: (q) =>
+      q.state.data?.repositories.some((r) => r.main?.redSince || r.deliveries.length > 0)
+        ? 30_000
+        : false,
+  });
+
 /** A project's config (ADR 0370): the current version's document, history and pending saves. */
 export const configQuery = (projectId: string) =>
   queryOptions({

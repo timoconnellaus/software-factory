@@ -3,10 +3,12 @@
 // factory or Done; `project` alone is the project's page, and with a view it filters that view. In
 // the factory is, for one project, its board by stage (or a list), and across projects a list by
 // who each item waits on.
+
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { ActiveAll, DoneList, type Layout, ProjectBoard } from "../components/work-active.tsx";
 import { BacklogPage, PlanningPage, ReadyPage } from "../components/work-backlog.tsx";
 import { ProjectPage } from "../components/work-project.tsx";
+import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { boardsQuery, configQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import type { WorkView } from "../lib/work-board.ts";
 import { workLayout } from "./_work.tsx";
@@ -67,6 +69,14 @@ export const Route = createRoute({
             ),
           )
         : Promise.resolve(null),
+      // The Held badge (spec 53): the babysitter's line, only for projects with work at merge.
+      board.then((b) =>
+        Promise.all(
+          [...new Set(b.items.filter((i) => i.stage === "merge").map((i) => i.projectId))].map(
+            (id) => queryClient.ensureQueryData(deliveryStatusQuery(id)).catch(() => null),
+          ),
+        ),
+      ),
     ]).catch(() => null);
   },
   component: WorkRoute,

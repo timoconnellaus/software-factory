@@ -17,7 +17,9 @@ import {
   planningWaitInputSchema,
   rekeyFootprint,
   sameFootprint,
+  specChildSchema,
   specReviseInputSchema,
+  splitDigest,
   structureMoves,
   whyNotKept,
 } from "@software-factory/runner-contract";
@@ -54,6 +56,7 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { childrenOf } from "../splits.ts";
 import { has } from "../workflow-features.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
@@ -1561,6 +1564,12 @@ const specView = z.object({
   assumptions: z.array(z.string()),
   coverage: z.array(z.record(z.string(), z.unknown())),
   clarifications: z.array(z.record(z.string(), z.unknown())),
+  /** Spec 24: the work items this version splits into, approved with it. */
+  children: z.array(specChildSchema).default([]),
+  /** The stored split can't be read: approving is refused until the planner revises it. */
+  childrenUnreadable: z.boolean().default(false),
+  /** Spec 24: the digest of `children`, sent back with the approval. Null: no split. */
+  splitDigest: z.string().nullable().optional(),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1790,6 +1799,14 @@ export const planningGet = defineOperation({
       assumptions: parseJson<string[]>(s.assumptions, []),
       coverage: parseJson<Record<string, unknown>[]>(s.coverage, []),
       clarifications: parseJson<Record<string, unknown>[]>(s.clarifications, []),
+      ...(() => {
+        // An unreadable split is said, not shown as no split (review of #173).
+        try {
+          return { children: childrenOf(s.children), childrenUnreadable: false };
+        } catch {
+          return { children: [], childrenUnreadable: true };
+        }
+      })(),
       summary: s.summary,
       status: s.status,
       createdAt: s.created_at,
@@ -1882,7 +1899,17 @@ export const planningGet = defineOperation({
         escalated: q.escalated_at !== null,
         planning: q.planning_session_id !== null,
       })),
-      spec: current ? toSpec(current) : null,
+      spec: current
+        ? await (async () => {
+            const out = toSpec(current);
+            // The digest the plan's screen sends back with its approval (review of #173): the app
+            // hashes nothing, it returns what it was given with what it showed.
+            return {
+              ...out,
+              splitDigest: out.children.length ? await splitDigest(out.children) : null,
+            };
+          })()
+        : null,
       previousSpec: previous ? toSpec(previous) : null,
       messages: messages.map((m) => ({
         id: m.id,

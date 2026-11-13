@@ -19,7 +19,13 @@ import { decide as decideOp, OpError, submitKey } from "./op.ts";
 import { useRefreshAfterDecision } from "./queries.ts";
 
 export type Decision =
-  | { kind: "spec.approve"; workItemId: string }
+  | {
+      kind: "spec.approve";
+      workItemId: string;
+      /** Spec 24: for a split, the version and work items the person saw (review of #173). */
+      specVersion?: number;
+      splitDigest?: string;
+    }
   | { kind: "spec.requestChanges"; workItemId: string; note: string }
   | {
       kind: "review.merge";
@@ -58,7 +64,8 @@ export type Decision =
       workItemId?: string;
       pendingActionId: string;
       decision: "approved" | "rejected";
-    };
+    }
+  | { kind: "workItem.markRepair"; workItemId: string; repair: boolean };
 
 const DONE: Record<Decision["kind"], string> = {
   "spec.approve": "Spec approved",
@@ -69,13 +76,22 @@ const DONE: Record<Decision["kind"], string> = {
   "question.acceptDefaults": "Accepted the remaining defaults",
   "planning.answer": "Answered",
   "approval.decide": "Decided",
+  "workItem.markRepair": "Marked as a repair",
 };
 
 export async function run(d: Decision): Promise<string> {
   const key = { idempotencyKey: submitKey() };
   switch (d.kind) {
     case "spec.approve": {
-      const r = await decideOp("spec.approve", { workItemId: d.workItemId }, key);
+      const r = await decideOp(
+        "spec.approve",
+        {
+          workItemId: d.workItemId,
+          ...(d.specVersion !== undefined ? { specVersion: d.specVersion } : {}),
+          ...(d.splitDigest !== undefined ? { splitDigest: d.splitDigest } : {}),
+        },
+        key,
+      );
       return r.alreadyDecided ? "Already decided" : DONE[d.kind];
     }
     case "spec.requestChanges": {
@@ -135,6 +151,14 @@ export async function run(d: Decision): Promise<string> {
       return r.skipped.length
         ? `Accepted ${r.accepted.length}; ${r.skipped.length} must be answered one by one`
         : `Accepted ${r.accepted.length} default${r.accepted.length === 1 ? "" : "s"}`;
+    }
+    case "workItem.markRepair": {
+      const r = await decideOp(
+        "workItem.markRepair",
+        { workItemId: d.workItemId, repair: d.repair },
+        key,
+      );
+      return r.repair ? DONE[d.kind] : "No longer a repair";
     }
     case "approval.decide": {
       const r = await decideOp(
