@@ -1,5 +1,6 @@
 // A workflow is data that only chooses stage types, orders them and configures them (ADR 0510).
 import { z } from "zod";
+import { stageSkillSchema } from "../skills/schema.ts";
 import { PHASES } from "./contract.ts";
 import { conditionSchema } from "./settings.ts";
 
@@ -25,6 +26,8 @@ export const stageInstanceSchema = z
     when: conditionSchema.optional(),
     /** The org agent its agent steps hand to (ADR 0372). Absent: the type's built-in agent. */
     agent: z.string().trim().min(1).max(60).optional(),
+    /** Skills attached here (ADR 0513), each optionally under a condition. */
+    skills: z.array(stageSkillSchema).max(20).optional(),
   })
   .strict();
 export type StageInstance = z.infer<typeof stageInstanceSchema>;

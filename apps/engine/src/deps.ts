@@ -141,5 +141,8 @@ function unavailableGitHub(): FactoryServices["github"] {
     userInstallationIds: no,
     rerequestCheckRun: no,
     checkRunDetail: no,
+    revertPullRequest: no,
+    commentOnPullRequest: no,
+    closePullRequest: no,
   };
 }

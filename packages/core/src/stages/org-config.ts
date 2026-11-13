@@ -3,6 +3,13 @@
 // `core_org_configs` (migration 0280) and written only through the `workflow.*` operations.
 import { z } from "zod";
 import { type AgentConfig, agentSchema } from "../policy/project-policy.ts";
+import { BUILTIN_BY_ID } from "../skills/builtin.ts";
+import {
+  anySkillIdSchema,
+  builtinSkillIdSchema,
+  MAX_ORG_SKILLS,
+  skillIdSchema,
+} from "../skills/schema.ts";
 import {
   ATTACHED_PR,
   BUILT_IN_WORKFLOWS,
@@ -51,6 +58,26 @@ export const orgConfigSchema = z
      * same id is compared against it, so archiving and re-adding can't drop a gate unnoticed.
      */
     archived: z.array(workflowDefinitionSchema).max(MAX_ARCHIVED).default([]),
+    /**
+     * The org's skills (ADR 0513): each one's current version (`core_skill_versions`), and the
+     * built-in skill it extends or replaces, if any. A pinned org config version pins its skills.
+     */
+    skills: z
+      .record(
+        skillIdSchema,
+        z
+          .object({
+            version: z.number().int().positive(),
+            overrides: z
+              .object({ builtin: builtinSkillIdSchema, mode: z.enum(["extend", "replace"]) })
+              .strict()
+              .optional(),
+          })
+          .strict(),
+      )
+      .default({}),
+    /** Skills attached to org agents, by the agent's name (lower-cased): always loaded. */
+    agentSkills: z.record(z.string(), z.array(anySkillIdSchema).max(20)).default({}),
   })
   .strict();
 export type OrgConfig = z.infer<typeof orgConfigSchema>;
@@ -61,6 +88,8 @@ export const EMPTY_ORG_CONFIG: OrgConfig = {
   workflows: [],
   builtIns: {},
   archived: [],
+  skills: {},
+  agentSkills: {},
 };
 
 /**
@@ -149,6 +178,34 @@ export function parseOrgConfig(input: unknown): OrgConfigParse {
     if (agentNames.has(a.name.toLowerCase())) doc(`two agents are called "${a.name}"`);
     agentNames.add(a.name.toLowerCase());
   }
+  // Skills (ADR 0513): every attachment names a skill the org has or a built-in; a protected
+  // built-in (one that judges the work) can be added to, never replaced (Q16).
+  const known = (id: string) => Object.hasOwn(config.skills, id) || BUILTIN_BY_ID.has(id);
+  if (Object.keys(config.skills).length > MAX_ORG_SKILLS)
+    doc(`an org can have at most ${MAX_ORG_SKILLS} skills: archive one first`);
+  for (const [id, s] of Object.entries(config.skills)) {
+    const builtin = s.overrides ? BUILTIN_BY_ID.get(s.overrides.builtin) : undefined;
+    if (s.overrides && !builtin)
+      doc(`skill ${id} overrides an unknown built-in, ${s.overrides.builtin}`);
+    if (builtin?.protected && s.overrides?.mode === "replace")
+      doc(
+        `skill ${id} can't replace ${builtin.name}: it judges the work, so it can only be added to`,
+      );
+  }
+  for (const [agent, ids] of Object.entries(config.agentSkills)) {
+    if (!agentNames.has(agent.toLowerCase()))
+      doc(`skills are attached to "${agent}", which isn't an agent`);
+    for (const id of ids)
+      if (!known(id)) doc(`"${agent}" has the skill ${id}, which the org doesn't have`);
+  }
+  for (const w of [...config.workflows, ...Object.values(config.builtIns)])
+    for (const s of w?.stages ?? [])
+      for (const a of s.skills ?? [])
+        if (!known(a.skill))
+          doc(
+            `${w?.name} → ${s.name} has the skill ${a.skill}, which the org doesn't have`,
+            w?.id ?? null,
+          );
   const reserved = new Set([...BUILT_IN_BY_ID.keys(), ...WORKFLOW_TEMPLATES.map((t) => t.id)]);
   const ids = new Set<string>();
   const names = new Set<string>();
