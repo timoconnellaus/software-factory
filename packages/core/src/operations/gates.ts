@@ -229,6 +229,13 @@ export const approvalDecide = defineOperation({
       .where("id", "=", input.pendingActionId)
       .executeTakeFirst();
     if (!pa) throw new OperationError("not_found", "no such pending action");
+    if (pa.operation === "autoApprove.review") {
+      // Its "no" holds the project's auto-approved merges: decided with its own operation.
+      throw new OperationError(
+        "forbidden",
+        "review an auto-approved merge with autoApprove.review",
+      );
+    }
     if (pa.kind === "merge" && input.decision === "approved") {
       // Merge is decided on the review packet (ADR 0041), which records whether the diff was opened.
       throw new OperationError("forbidden", "approve a merge with review.merge");

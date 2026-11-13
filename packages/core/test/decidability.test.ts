@@ -75,6 +75,10 @@ describe("device decidability (ADR 0541 decision 5)", () => {
           "desktop": "proof",
           "mobile": "one tap",
         },
+        "autoApprove.review": {
+          "desktop": "refused",
+          "mobile": "refused",
+        },
         "chat.send {"interrupt":true}": {
           "desktop": "one tap",
           "mobile": "one tap",

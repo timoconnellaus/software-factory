@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  AUTO_APPROVE_OFF,
+  autoApproveImpact,
+  autoApproveSettings,
+} from "../../policy/auto-approve.ts";
 import type { ImpactChange } from "../../policy/impact.ts";
 import { same } from "../../policy/impact.ts";
 import type { StageType } from "../contract.ts";
@@ -23,6 +28,11 @@ const settings = z
       .strict()
       .default({ waitHours: 1, updateReads: 8 }),
     decider: deciderSchema.default("approvers"),
+    /**
+     * Dark factory mode (ADR 0515): the merge gate is approved with no person when every condition
+     * holds (`autoApproveVerdict`). Off by default; a setting of the workflow, never an override.
+     */
+    autoApprove: autoApproveSettings.default(AUTO_APPROVE_OFF),
   })
   .strict();
 
@@ -57,7 +67,8 @@ export const publish: StageType<typeof settings> = {
     outcomes: ["approve", "sendBack", "reject"],
     operation: "pr.merge",
     risk: "merge",
-    // `autoApprove` (ADR 0515) is added with dark factory mode, build plan PR (e).
+    // With `autoApprove` on, the gate is still a pending `merge` action; the factory decides it only
+    // under ADR 0515's conditions, in code (`autoApproveVerdict`), never a delegate.
     delegable: [],
     // `merge` is in ALWAYS_REVIEW (ADR 0008); `autoApprove` decides only under ADR 0515's conditions.
     alwaysReview: true,
@@ -118,6 +129,7 @@ export const publish: StageType<typeof settings> = {
   },
   impact: (before, after, stageId) => {
     const out: ImpactChange[] = deciderImpact(`${stageId}.decider`, before.decider, after.decider);
+    out.push(...autoApproveImpact(before.autoApprove, after.autoApprove, `${stageId}.autoApprove`));
     if (before.via !== after.via)
       out.push({
         path: `${stageId}.via`,

@@ -142,3 +142,9 @@ just a config option. Nothing special."
 > hold merges, `SELF_MODIFY_PATHS` in code in every workflow, an org admin lifts the hold, a Preview
 > approval carries to Publish only where `autoApprove` is on, a built-in may be un-tightened back to
 > the shipped version as a loosening an org admin approves). They are decided.
+
+> Amended 2026-11-13 (built, spec 52 (e1)): the `auto-approve` decision is taken when the
+> adjudicator's approval of the merge gate's commit is recorded, not by a separate Workflow step;
+> it is recorded as the decider `auto-approve` under the `self-improve` actor type. The adjudicator's
+> precision on merges counts only people's decisions (gates people decided, and reviews after a
+> sampled merge), never its own auto-approved merges.

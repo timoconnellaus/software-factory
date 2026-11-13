@@ -4,7 +4,13 @@
 // `{ type: "intake", id: "github" }`; it writes nothing itself.
 import { sql } from "kysely";
 import { z } from "zod";
-import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
+import {
+  defineOperation,
+  type HandlerContext,
+  type ProjectRow,
+  type WorkItemRow,
+} from "../operation.ts";
+import { AUTO_APPROVE, holdAutoApproval } from "./auto-approve.ts";
 import { POLICY_PR_BRANCH } from "./onboarding.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
 import { requireProject, requireRepository } from "./shared.ts";
@@ -82,6 +88,16 @@ export const pushObserve = defineOperation({
     after: z.string().regex(/^[0-9a-f]{40}$/),
     pusher: z.string().max(200),
     pusherIsApp: z.boolean(),
+    /** Merges the push reverts (the connector reads its commit messages): ADR 0515 §7. */
+    reverts: z
+      .array(
+        z.object({
+          sha: z.string().max(40).nullable(),
+          pr: z.number().int().positive().nullable(),
+        }),
+      )
+      .max(20)
+      .default([]),
   }),
   output: z.object({
     outcome: z.enum(["policy", "ok", "violation", "ignored"]),
@@ -104,10 +120,15 @@ export const pushObserve = defineOperation({
     }
 
     if (branch === requireRepository(ctx).default_branch) {
+      // A revert of a merge dark factory mode approved holds it on the project (ADR 0515 §7). By the
+      // repository's PR index, then the item's gates; at most five reverted PRs a push.
+      const held = await holdOnRevert(ctx, project, requireRepository(ctx).id, input.reverts);
       // Config lives in the app (ADR 0370): a push to the default branch never changes it.
       return {
         outcome: "ok" as const,
-        detail: "default branch: config lives in the app, nothing to sync",
+        detail: held
+          ? "default branch: a revert of an auto-approved merge; auto-approval is held on the project"
+          : "default branch: config lives in the app, nothing to sync",
         ...none,
       };
     }
@@ -336,3 +357,32 @@ export const githubInstallation = defineOperation({
     return { projects: n, record: record?.id ?? null };
   },
 });
+
+/** Whether a reverted PR's merge was auto-approved; if so, hold the project (ADR 0515 §7). */
+async function holdOnRevert(
+  ctx: HandlerContext,
+  project: ProjectRow,
+  repositoryId: string,
+  reverts: readonly { sha: string | null; pr: number | null }[],
+): Promise<boolean> {
+  const prs = [...new Set(reverts.flatMap((r) => (r.pr ? [r.pr] : [])))].slice(0, 5);
+  if (prs.length === 0) return false;
+  // core_work_items_repository_idx (repository_id, pr_number), then core_pending_actions_item_idx.
+  const auto = await ctx.db
+    .selectFrom("core_work_items as w")
+    .innerJoin("core_pending_actions as pa", "pa.work_item_id", "w.id")
+    .select(["w.number", "w.pr_number"])
+    .where("w.repository_id", "=", repositoryId)
+    .where("w.pr_number", "in", prs)
+    .where("pa.kind", "=", "merge")
+    .where("pa.decided_by", "=", AUTO_APPROVE.id)
+    .limit(1)
+    .executeTakeFirst();
+  if (!auto) return false;
+  return holdAutoApproval(
+    ctx,
+    project,
+    `the auto-approved merge of #${auto.number} (PR #${auto.pr_number}) was reverted`,
+    [`PR #${auto.pr_number}`],
+  );
+}

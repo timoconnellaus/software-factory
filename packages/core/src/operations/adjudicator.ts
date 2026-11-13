@@ -10,8 +10,9 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { ALWAYS_REVIEW } from "../policy/gate.ts";
+import { autoApproveMerge } from "./auto-approve.ts";
 import { formatPolicy, versionOf, writeVersion } from "./config.ts";
-import { approvingSpecGate, decidePending } from "./gates.ts";
+import { approvingSpecGate, decidePending, mergeGateHead } from "./gates.ts";
 import { pendingActionId, projectId, requireProject } from "./shared.ts";
 
 export const ADJUDICATOR_MIN_DECISIONS = 20;
@@ -19,10 +20,13 @@ export const ADJUDICATOR_PRECISION = 0.95;
 /** In active mode, every Nth approval verdict is still left to a person, to keep it measured. */
 export const ADJUDICATOR_SAMPLE_EVERY = 5;
 
-export type AdjudicatorKind = "spec" | "step";
+export type AdjudicatorKind = "spec" | "step" | "merge";
 
 /** Which kind of gate a pending action is for the adjudicator, or null if it's never its call. */
 export function adjudicatorKind(pa: Pick<PendingActionRow, "kind" | "operation" | "risk">) {
+  // A merge gate: it shadows it, and its approval is one of dark factory mode's conditions; it
+  // never decides it (ADR 0515). `adjudicator.record` handles this kind apart.
+  if (pa.kind === "merge" && pa.operation === "pr.merge") return "merge" as const;
   if ((ALWAYS_REVIEW as readonly string[]).includes(pa.risk) || pa.kind === "merge") return null;
   if (pa.kind === "spec" && pa.operation === "spec.accept") return "spec" as const;
   if (pa.operation === "workflow.gate") return "step" as const;
@@ -54,6 +58,11 @@ export async function adjudicatorStats(
     .where("a.verdict", "is not", null)
     .where("a.acted", "=", 0)
     .where("pa.decision", "is not", null)
+    // A merge it approved and the factory then auto-approved isn't a person agreeing with it (ADR
+    // 0515): only people's decisions measure it, including their reviews after a sampled merge.
+    .where((eb) =>
+      eb.or([eb("pa.decided_by", "is", null), eb("pa.decided_by", "!=", "auto-approve")]),
+    )
     .orderBy("a.created_at", "desc")
     .limit(ADJUDICATOR_MIN_DECISIONS)
     .execute();
@@ -72,12 +81,12 @@ export async function adjudicatorStats(
 /** Refuses switching a kind to active before the adjudicator has earned it (ADR 0374). */
 export async function requireAdjudicatorEarned(
   ctx: Pick<HandlerContext, "db" | "scope">,
-  next: { adjudicator?: { spec?: string; step?: string } },
+  next: { adjudicator?: { spec?: string; step?: string; merge?: string } },
 ) {
   const project = ctx.scope.project;
   const current = ctx.scope.policy?.adjudicator;
   if (!project) return;
-  for (const kind of ["spec", "step"] as const) {
+  for (const kind of ["spec", "step", "merge"] as const) {
     if (next.adjudicator?.[kind] !== "active" || current?.[kind] === "active") continue;
     const stats = await adjudicatorStats(ctx, project.id, kind);
     if (!stats.eligible) {
@@ -119,7 +128,7 @@ function prompt(
 export const adjudicatorRequest = defineOperation({
   name: "adjudicator.request",
   description:
-    "Ask the adjudicator about an open gate (ADR 0374): queue a read-only review job for a spec gate or a workflow gate step, in a project that enables the adjudicator for that kind. Never for merge, deploy or self-modify. Idempotent per gate.",
+    "Ask the adjudicator about an open gate (ADR 0374): queue a read-only review job for a spec gate, a workflow gate step or a merge gate, in a project that enables the adjudicator for that kind. On a merge gate it never decides: its approval is one condition of dark factory mode (ADR 0515). Never for deploy or self-modify. Idempotent per gate.",
   risk: "write",
   actors: ["self-improve"],
   permission: "signed-in",
@@ -161,6 +170,9 @@ export const adjudicatorRequest = defineOperation({
             .executeTakeFirst()
         : undefined;
       detail = `The spec:\n\n${spec?.body_md ?? "(no spec text recorded)"}`;
+    } else if (kind === "merge") {
+      const head = mergeGateHead(pa);
+      detail = `The merge gate on commit ${head ?? "(unknown)"}: whether this change, as it stands, belongs in the default branch. Approve only what you would merge yourself; defer anything you are unsure of.`;
     } else {
       const step = JSON.parse(pa.input) as { name?: string; instructions?: string };
       detail = `The gate step "${step.name ?? "gate"}". What the person should check: ${step.instructions || "(no instructions)"}`;
@@ -270,7 +282,32 @@ export const adjudicatorRecord = defineOperation({
       .where("mode", "=", "active")
       .where("verdict", "=", "approve")
       .executeTakeFirst();
-    const sampled = ((priorApprovals?.n ?? 0) + 1) % ADJUDICATOR_SAMPLE_EVERY === 0;
+    const sampled =
+      kind !== "merge" && ((priorApprovals?.n ?? 0) + 1) % ADJUDICATOR_SAMPLE_EVERY === 0;
+    // A merge gate is never the adjudicator's to decide: its approval is one condition of dark
+    // factory mode, which decides it in code (ADR 0515) when every condition holds.
+    if (kind === "merge") {
+      ctx.write(
+        ctx.db
+          .updateTable("core_adjudications")
+          .set({ verdict, reason, acted: 0, decided_at: ctx.now })
+          .where("id", "=", row.id)
+          .where("verdict", "is", null),
+      );
+      ctx.change({ entity: "adjudication", id: row.id, after: { verdict, reason, mode } });
+      const auto =
+        verdict === "approve" && pa.status === "pending"
+          ? await autoApproveMerge(ctx, pa, {
+              active: mode === "active",
+              eligible: stats.eligible,
+              approved: true,
+              jobId: row.job_id,
+            })
+          : null;
+      if (mode === "active" && !stats.eligible && stats.decisions >= ADJUDICATOR_MIN_DECISIONS)
+        await fallBackToShadow(ctx, kind, stats);
+      return { status: auto?.approve ? ("approved" as const) : ("recorded" as const), verdict };
+    }
     let act =
       mode === "active" &&
       stats.eligible &&
@@ -376,16 +413,23 @@ export const adjudicatorStatsOp = defineOperation({
   actors: ["human"],
   permission: "member",
   input: z.object({ projectId }),
-  output: z.object({ spec: statsView, step: statsView, configVersion: z.number() }),
+  output: z.object({
+    spec: statsView,
+    step: statsView,
+    merge: statsView,
+    configVersion: z.number(),
+  }),
   async handler(_input, ctx) {
     const project = requireProject(ctx);
-    const modes = ctx.scope.policy?.adjudicator ?? { spec: "off", step: "off" };
-    const [spec, step] = await Promise.all([
+    const modes = ctx.scope.policy?.adjudicator ?? { spec: "off", step: "off", merge: "off" };
+    const [spec, step, merge] = await Promise.all([
       adjudicatorStats(ctx, project.id, "spec"),
       adjudicatorStats(ctx, project.id, "step"),
+      adjudicatorStats(ctx, project.id, "merge"),
     ]);
     return {
       spec: { mode: modes.spec, ...spec },
+      merge: { mode: modes.merge, ...merge },
       step: { mode: modes.step, ...step },
       configVersion: versionOf(project.policy_sha) ?? 0,
     };

@@ -63,6 +63,7 @@ const KNOWN = new Set([
   "workflows",
   "improve",
   "adjudicator",
+  "autoApproveHold",
   "checks",
 ]);
 
@@ -294,15 +295,28 @@ export function policyImpact(
 
   // The adjudicator (ADR 0374): letting it approve gates loosens; shadow only watches.
   const RANKED = { off: 0, shadow: 0, active: 1 } as const;
-  for (const kind of ["spec", "step"] as const) {
+  for (const kind of ["spec", "step", "merge"] as const) {
     const was = before.adjudicator[kind];
     const now = after.adjudicator[kind];
     if (was === now) continue;
     add(
       `adjudicator.${kind}`,
       RANKED[now] > RANKED[was] ? "loosens" : RANKED[now] < RANKED[was] ? "tightens" : "neutral",
-      `Adjudicator for ${kind === "spec" ? "spec gates" : "gate steps"}: ${was} → ${now}.`,
+      `Adjudicator for ${kind === "spec" ? "spec gates" : kind === "step" ? "gate steps" : "merges (a condition of auto-approval)"}: ${was} → ${now}.`,
     );
+  }
+
+  // Dark factory mode's per-project hold (ADR 0515 §7): setting it tightens, lifting it loosens.
+  if (!same(before.autoApproveHold, after.autoApproveHold)) {
+    if (!after.autoApproveHold)
+      add("autoApproveHold", "loosens", "Lifts the hold on auto-approved merges.");
+    else if (!before.autoApproveHold)
+      add(
+        "autoApproveHold",
+        "tightens",
+        `Holds auto-approved merges: ${after.autoApproveHold.reason}`,
+      );
+    else add("autoApproveHold", "neutral", "The hold's reason changed.");
   }
 
   // The factory's own checks (ADR 0501): dropping or changing one lowers the bar; adding raises it.

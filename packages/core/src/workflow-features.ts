@@ -49,6 +49,12 @@ export const WORKFLOW_FEATURES = [
    * from the new version's plan. A loosened version never moves a running item.
    */
   "repin-tightening",
+  /**
+   * v14 (provisional: the next number above main's at merge; spec 52 (e), ADR 0515): an incident's
+   * fix no longer calls `pr.autoMerge` (ADR 0230 superseded); it takes the merge gate like any
+   * change, which dark factory mode approves with no person only when every condition holds.
+   */
+  "dark-factory",
 ] as const;
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 
@@ -65,6 +71,7 @@ const v10 = [...v9, "spec-critic"] as const;
 const v11 = [...v10, "babysitter-delivery"] as const;
 const v12 = [...v11, "reverify-on-withdrawal"] as const;
 const v13 = [...v12, "repin-tightening"] as const;
+const v14 = [...v13, "dark-factory"] as const;
 
 /** Each version's features. Immutable once merged: add a row, never edit one. */
 export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<WorkflowFeature>>> = {
@@ -81,6 +88,7 @@ export const WORKFLOW_VERSION_FEATURES: Readonly<Record<number, ReadonlySet<Work
   11: new Set(v11),
   12: new Set(v12),
   13: new Set(v13),
+  14: new Set(v14),
 };
 
 /** Whether an instance of Workflow `version` has `feature` (an unknown version has none). */

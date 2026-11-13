@@ -229,7 +229,7 @@ export interface CoreAdjudicationsTable {
   pending_action_id: string;
   project_id: string;
   work_item_id: string;
-  kind: "spec" | "step";
+  kind: "spec" | "step" | "merge";
   mode: "shadow" | "active";
   job_id: string;
   verdict: "approve" | "defer" | null;

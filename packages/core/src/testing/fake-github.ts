@@ -21,6 +21,8 @@ type Touch =
       status: ChangedFile["status"];
       previousPath?: string;
       patch?: string;
+      /** Lines added plus removed, as GitHub's compare counts them. */
+      changes?: number;
       /** The file's mode after this commit (default `100644`). */
       mode?: string;
     };
@@ -391,6 +393,7 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         out.set(t.path, {
           ...(t.previousPath ? { previousPath: t.previousPath } : {}),
           ...(t.patch !== undefined ? { patch: t.patch } : {}),
+          ...(t.changes !== undefined ? { changes: t.changes } : {}),
         });
       }
     }

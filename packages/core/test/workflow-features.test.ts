@@ -5,9 +5,10 @@ import { has, WORKFLOW_FEATURES, WORKFLOW_VERSION_FEATURES } from "../src/index.
 describe("Workflow features per version", () => {
   it("has a row for every version, each adding to the one before, and nothing for an unknown one", () => {
     const versions = Object.keys(WORKFLOW_VERSION_FEATURES).map(Number);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect([...(WORKFLOW_VERSION_FEATURES[1] ?? [])]).toEqual([]);
-    expect([...(WORKFLOW_VERSION_FEATURES[13] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect([...(WORKFLOW_VERSION_FEATURES[14] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect(has(13, "dark-factory")).toBe(false);
     // v13 is v12 and the tightening re-pin (spec 52, Q3).
     expect(has(13, "reverify-on-withdrawal")).toBe(true);
     expect(has(12, "repin-tightening")).toBe(false);
@@ -45,6 +46,7 @@ describe("Workflow features per version", () => {
       "babysitter-delivery": 11,
       "reverify-on-withdrawal": 12,
       "repin-tightening": 13,
+      "dark-factory": 14,
     } as const;
     const older = WORKFLOW_FEATURES.filter((f): f is keyof typeof since => f in since);
     expect(older.sort()).toEqual(Object.keys(since).sort());

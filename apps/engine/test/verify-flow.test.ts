@@ -217,7 +217,7 @@ describe("verify in the v2 Workflow", () => {
     });
   });
 
-  it("auto-merges an opted-in incident's check-only fix, and sends anything else to the merge gate", async () => {
+  it("an incident's check-only fix takes the merge gate like any change: ADR 0230 is superseded (v14, ADR 0515)", async () => {
     const w = await world({
       ...BALANCED,
       overrides: { agent: { outbound: "allow", "check-merge": "allow" } },
@@ -235,6 +235,7 @@ describe("verify in the v2 Workflow", () => {
       await ok("workItem.release", { workItemId: item.workItemId }, w.human);
       return item;
     };
+    // Even opted in to `check-merge`, a check-only fix waits for a person (or dark factory mode).
     const checkOnly = await make("Factory incident: add a check");
     await runStage(w, checkOnly.workItemId, "triage", () => triage("small"));
     await runStage(w, checkOnly.workItemId, "build", () =>
@@ -244,17 +245,22 @@ describe("verify in the v2 Workflow", () => {
       ]),
     );
     await runStage(w, checkOnly.workItemId, "verify", () => verifyPass);
-    await itemStatus(checkOnly.workItemId, "done");
-    const done = await first<{ status_reason: string }>(
-      "SELECT status_reason FROM core_work_items WHERE id = ?",
-      checkOnly.workItemId,
-    );
-    expect(done?.status_reason).toMatch(/auto-merged/);
+    await gateOpen(checkOnly.workItemId, "merge");
     expect(
-      await all("SELECT id FROM core_pending_actions WHERE work_item_id = ?", checkOnly.workItemId),
-    ).toHaveLength(0);
-    expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
+      await first<{ operation: string }>(
+        "SELECT operation FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending'",
+        checkOnly.workItemId,
+      ),
+    ).toMatchObject({ operation: "pr.merge" });
+    // pr.autoMerge is never called.
+    expect(
+      await all(
+        "SELECT id FROM core_audit WHERE work_item_id = ? AND operation = 'pr.autoMerge'",
+        checkOnly.workItemId,
+      ),
+    ).toEqual([]);
 
+    // One that touches the policy is still self-modify at its gate.
     const touchesPolicy = await make("Factory incident: loosen the policy");
     await runStage(w, touchesPolicy.workItemId, "triage", () => triage("small"));
     await runStage(w, touchesPolicy.workItemId, "build", () =>
@@ -270,35 +276,6 @@ describe("verify in the v2 Workflow", () => {
       touchesPolicy.workItemId,
     );
     expect(gate).toMatchObject({ operation: "pr.merge", risk: "self-modify" });
-
-    // A check-only fix that adds a skipped regression test: the tests-intact guard finds it, so
-    // the auto-merge is refused and the item waits at the human merge gate (ADR 0500).
-    const skipped = await make("Factory incident: a regression case that skips");
-    await runStage(w, skipped.workItemId, "triage", () => triage("small"));
-    await runStage(w, skipped.workItemId, "build", () =>
-      build([
-        { path: ".factory/checks/no-skip.json", status: "added" },
-        {
-          path: "evals/regressions/inc_3.test.ts",
-          status: "added",
-          patch: '@@ -0,0 +1,1 @@\n+it.skip("catches the slip", () => {});',
-        },
-      ]),
-    );
-    await runStage(w, skipped.workItemId, "verify", () => verifyPass);
-    await gateOpen(skipped.workItemId, "merge");
-    expect(
-      await first<{ operation: string }>(
-        "SELECT operation FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND status = 'pending'",
-        skipped.workItemId,
-      ),
-    ).toMatchObject({ operation: "pr.merge" });
-    const refused = await first<{ outcome: string; reason: string | null }>(
-      "SELECT outcome, reason FROM core_audit WHERE work_item_id = ? AND operation = 'pr.autoMerge'",
-      skipped.workItemId,
-    );
-    expect(refused?.outcome).not.toBe("ok");
-    expect(JSON.stringify(refused)).toMatch(/tests aren't intact/);
   });
 });
 

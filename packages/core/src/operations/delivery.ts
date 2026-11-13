@@ -11,6 +11,7 @@ import { defineOperation, type HandlerContext } from "../operation.ts";
 import { approverIds } from "../scope.ts";
 import type { CheckRunInfo } from "../services.ts";
 import { summarizeCi } from "../verify/ci.ts";
+import { autoApprovedKey, holdAutoApproval } from "./auto-approve.ts";
 import { queuedEntries } from "./merge-queue.ts";
 import {
   projectId,
@@ -230,6 +231,24 @@ export const mainObserve = defineOperation({
       after: { state, sha: head, failing: ci.failing },
     });
     const where = `${repository.owner}/${repository.name}`;
+    // Dark factory mode (ADR 0515 §7): red after an auto-approved merge since main was last green
+    // holds the project; green ends that window. A point read and write by key, on a change only.
+    if (opens || closes) {
+      const key = autoApprovedKey(project.id);
+      const since = await ctx.db
+        .selectFrom("core_meta")
+        .select("value")
+        .where("key", "=", key)
+        .executeTakeFirst();
+      if (since && opens)
+        await holdAutoApproval(
+          ctx,
+          project,
+          `${repository.default_branch} went red on ${where} after an auto-approved merge`,
+          [head],
+        );
+      if (since) ctx.write(ctx.db.deleteFrom("core_meta").where("key", "=", key));
+    }
     if (opens) {
       for (const userId of audience ?? []) {
         ctx.emit({

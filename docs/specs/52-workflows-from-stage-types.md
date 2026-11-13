@@ -1313,6 +1313,29 @@ screen needs).
    (landing stays with today's merge queue until the babysitter's spec replaces it)
    (the next free Workflow version at merge time). Tests: each condition alone sends the item to a person;
    all together merge; each trigger sets the hold; an agent can't save it on.
+   **As built (e1):** `packages/core/src/policy/auto-approve.ts` holds the setting's schema (on
+   `publish` as `autoApprove`, off by default, classified by `autoApproveImpact`: on, a raised limit
+   or a dropped path loosens), `RISK_PATHS`, `SELF_MODIFY_PATHS` (no setting can remove one) and
+   `autoApproveVerdict()`. The adjudicator now shadows merge gates (`adjudicator.merge`, earned under
+   ADR 0374's bar like the other kinds) and never decides one: when it approves a merge gate's
+   commit, `adjudicator.record` calls `autoApproveMerge`, which reads the facts (the packet on that
+   commit: verdict, CI, criteria proven, tests intact; GitHub's compare; the project's hold) and
+   decides the gate as `auto-approve` only when every condition holds; otherwise the gate's reason
+   names the condition. That is the internal decision path: no operation any token can call approves
+   a merge, and the babysitter lands it as it lands a person's approval. Every fifth auto-approval
+   also opens a review-after-merge item (`autoApprove.review`, a person's), whose verdict feeds the
+   adjudicator's precision (auto-approved merges themselves never count as agreement). The hold
+   (`autoApproveHold`, written as config source `auto-approve`) is set by an incident, a revert of
+   an auto-approved PR on the default branch (the connector reads revert commit messages), red CI on
+   the default branch after an auto-approved merge before the next green, and a review's
+   `shouldNotHaveMerged`; removing it is a loosening decided by an org admin. Workflow v14
+   (`dark-factory`, provisional number) stops calling `pr.autoMerge` for incidents (ADR 0230 goes).
+   Deviations: the decision is taken when the adjudicator's verdict arrives (its cron) rather than by
+   a Workflow step, since its approval is a condition anyway; the `auto-approve` actor is recorded as
+   the decider (`decided_by`) under the `self-improve` actor type rather than a new actor type, which
+   would have changed every autonomy table. Not built: deploy approvals (no deploy stage yet) and a
+   desktop card for the hold (the desktop stays read-only on policy decisions until the presence
+   helper covers them).
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

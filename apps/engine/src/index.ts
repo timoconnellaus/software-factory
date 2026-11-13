@@ -288,7 +288,8 @@ export async function runImprover(env: Env, _now?: Date): Promise<number> {
 }
 
 /**
- * The adjudicator's minute (ADR 0374, spec 09 M4): ask it about new open spec gates and gate steps
+ * The adjudicator's minute (ADR 0374, spec 09 M4): ask it about new open spec gates, gate steps and
+ * merge gates (ADR 0515: its approval is one condition of dark factory mode)
  * in projects that enable it, then record the verdicts of its finished jobs (approving, in active
  * mode, when it has earned it). A few of each per tick.
  */
@@ -301,7 +302,8 @@ export async function runAdjudicator(env: Env, limit = 10): Promise<number> {
      JOIN core_project_policies pp ON pp.project_id = p.id AND pp.sha = p.policy_sha
      LEFT JOIN core_adjudications a ON a.pending_action_id = pa.id
      WHERE pa.status = 'pending' AND a.id IS NULL AND pa.work_item_id IS NOT NULL
-       AND ((pa.kind = 'spec' AND pa.operation = 'spec.accept') OR pa.operation = 'workflow.gate')
+       AND ((pa.kind = 'spec' AND pa.operation = 'spec.accept') OR pa.operation = 'workflow.gate'
+         OR (pa.kind = 'merge' AND pa.operation = 'pr.merge'))
        AND pp.raw LIKE '%"adjudicator"%'
      ORDER BY pa.created_at LIMIT ?`,
   )

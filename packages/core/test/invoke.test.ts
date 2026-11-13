@@ -96,6 +96,7 @@ describe("a pending action's status (ADR 0541, third review of PR 1a)", () => {
     ).toEqual([
       "adjudicator.record",
       "approval.decide",
+      "autoApprove.review",
       "review.merge",
       "review.sendBack",
       "spec.approve",
