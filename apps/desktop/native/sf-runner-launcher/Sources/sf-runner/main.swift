@@ -14,6 +14,22 @@ import ServiceManagement
 
 let scriptFd: Int32 = 4
 let lifelineFd: Int32 = 5
+/// Node's working directory (spec 45 §1, step 6): fixed, never the caller's.
+let childDirectory = "/"
+
+// A write to the script pipe after Node has gone must fail with EPIPE, not kill the launcher
+// (exit 141 instead of 78 or the child's own status).
+signal(SIGPIPE, SIG_IGN)
+
+// The signals it forwards to Node are blocked from the first instruction, in this thread and so in
+// every thread it starts: one that arrives during the checks or the spawn stays pending, and the
+// forwarding thread (after the spawn) takes it with sigwait and passes it on, so a stop during
+// startup is never dropped. Node gets an empty mask and default dispositions (the spawn attributes).
+let forwarded: [Int32] = [SIGTERM, SIGINT, SIGUSR2, SIGHUP]
+var forwardedSet = sigset_t()
+sigemptyset(&forwardedSet)
+for sig in forwarded { sigaddset(&forwardedSet, sig) }
+pthread_sigmask(SIG_BLOCK, &forwardedSet, nil)
 
 func say(_ line: String) {
   FileHandle.standardError.write(Data("sf-runner launcher: \(line)\n".utf8))
@@ -164,13 +180,24 @@ guard let directory = info["ResourceDirectory"] as? [String: Any] else { refuse(
 if let why = checkScript(bytes, relative: relative, resourceDirectory: directory) { refuse(why, bundle: bundle) }
 
 // MARK: 6. Spawn Node with exactly those bytes on a pipe, and stay its parent.
+/// A pipe whose two ends sit above every descriptor the child is given (0–5), close-on-exec. Left
+/// where pipe() puts them, an end could already be fd 3, 4 or 5 when the caller has descriptors
+/// open: dup2 onto itself keeps close-on-exec, so Node would find fd 4 closed, open one of its own
+/// there and read that (found by the extra-descriptors test: a hang), or a dup2 would overwrite
+/// the other pipe's end before it is copied.
 func pipePair() -> (r: Int32, w: Int32) {
   var p: [Int32] = [0, 0]
-  guard pipe(&p) == 0 else { say("pipe failed"); exit(71) }
-  _ = fcntl(p[0], F_SETFD, FD_CLOEXEC)
-  _ = fcntl(p[1], F_SETFD, FD_CLOEXEC)
-  return (p[0], p[1])
+  guard pipe(&p) == 0 else { refuse("can't make a pipe: \(String(cString: strerror(errno)))", bundle: bundle) }
+  func above(_ fd: Int32) -> Int32 {
+    let moved = fcntl(fd, F_DUPFD_CLOEXEC, firstFreeFd)
+    if moved < 0 { refuse("can't move a pipe: \(String(cString: strerror(errno)))", bundle: bundle) }
+    close(fd)
+    return moved
+  }
+  return (above(p[0]), above(p[1]))
 }
+/// The lowest descriptor a pipe end may take: above stdin–stderr, fd 3, the script and the lifeline.
+let firstFreeFd: Int32 = 10
 let scriptPipe = pipePair()
 let lifeline = pipePair()
 
@@ -181,6 +208,8 @@ for keep in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] + (choice.entry.fd3 ? [
 }
 posix_spawn_file_actions_adddup2(&actions, scriptPipe.r, scriptFd)
 posix_spawn_file_actions_adddup2(&actions, lifeline.r, lifelineFd)
+// Not the caller's working directory: launchd's, a shell's or the app's would each differ.
+posix_spawn_file_actions_addchdir_np(&actions, childDirectory)
 
 var attrs: posix_spawnattr_t?
 posix_spawnattr_init(&attrs)
@@ -193,20 +222,17 @@ var empty = sigset_t()
 sigemptyset(&empty)
 posix_spawnattr_setsigmask(&attrs, &empty)
 
-let forwarded: [Int32] = [SIGTERM, SIGINT, SIGUSR2, SIGHUP]
-for sig in forwarded { signal(sig, SIG_IGN) }
+var child: pid_t = 0
 
 let argv = [nodePath, "--disable-sigusr1", "--no-addons", "/dev/fd/\(scriptFd)"] + choice.scriptArgs
 let cArgv = argv.map { strdup($0) } + [nil]
 let cEnv = env.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
-var child: pid_t = 0
 let spawned = posix_spawn(&child, nodePath, &actions, &attrs, cArgv, cEnv)
 close(scriptPipe.r)
 close(lifeline.r)
 if spawned != 0 {
   // A refused launch constraint shows up here or as SIGKILL; either way Node didn't run.
-  say("can't start Contents/Helpers/node: \(String(cString: strerror(spawned)))")
-  exit(LauncherExit.refused.rawValue)
+  refuse("can't start Contents/Helpers/node: \(String(cString: strerror(spawned)))", bundle: bundle)
 }
 
 // The child's running code must be the Node just checked (spec 45 §1, step 6).
@@ -234,6 +260,7 @@ let writer = Thread {
     var off = 0
     while off < raw.count {
       let n = write(scriptPipe.w, raw.baseAddress! + off, raw.count - off)
+      // EPIPE: Node stopped reading (it exited, or failed); its status is what the launcher reports.
       if n < 0 { if errno == EINTR { continue } else { break } }
       off += n
     }
@@ -242,13 +269,15 @@ let writer = Thread {
 }
 writer.start()
 
-var sources: [DispatchSourceSignal] = []
-for sig in forwarded {
-  let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-  source.setEventHandler { kill(child, sig) }
-  source.resume()
-  sources.append(source)
+// Forward what arrives (and what arrived during startup, still pending) to Node.
+let forwarder = Thread {
+  var set = forwardedSet
+  while true {
+    var sig: Int32 = 0
+    if sigwait(&set, &sig) == 0 { kill(child, sig) }
+  }
 }
+forwarder.start()
 
 let exitSource = DispatchSource.makeProcessSource(identifier: child, eventMask: .exit, queue: .main)
 exitSource.setEventHandler {

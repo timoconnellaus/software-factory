@@ -87,7 +87,9 @@ public struct Choice: Equatable {
 }
 
 public let maxArgumentBytes = 2048
-let namePattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9._-]{1,64}$")
+// `\A` and `\z`, not `^` and `$`: NSRegularExpression's `$` also matches before a final newline, so
+// `"m5\n"` would pass here while the CLI's pattern (JavaScript's `$`, no `m` flag) refuses it.
+let namePattern = try! NSRegularExpression(pattern: #"\A[A-Za-z0-9._-]{1,64}\z"#)
 
 /// Whether `value` is of the grammar's `type`: `<name>`, `<url>`, or `a|b` (one of those words).
 public func valueMatches(_ type: String, _ value: String) -> Bool {

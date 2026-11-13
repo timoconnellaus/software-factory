@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   developerIdRequirement,
   type Exec,
+  NODE_IDENTIFIER,
   RUNNER_IDENTIFIER,
   teamIdOf,
   verifyRunnerBundle,
@@ -15,12 +16,17 @@ const TEAM = "ABCDE12345";
 const APP = "/tmp/staged/SF Runner.app";
 const VERSION = { version: "0.2.0", channel: "canary", runnerSha: "a".repeat(40), runnerSeq: 120 };
 
-function fake(opts: { sig?: number; gk?: number } = {}): { exec: Exec; calls: string[][] } {
+function fake(opts: { sig?: number; node?: number; gk?: number } = {}): {
+  exec: Exec;
+  calls: string[][];
+} {
   const calls: string[][] = [];
   const exec: Exec = async (cmd, args) => {
     calls.push([cmd, ...args]);
     if (cmd.endsWith("codesign") && args[0] === "-dv")
       return { code: 0, out: `Identifier=${RUNNER_IDENTIFIER}\nTeamIdentifier=${TEAM}\n` };
+    if (cmd.endsWith("codesign") && args.at(-1)?.endsWith("/Contents/Helpers/node"))
+      return { code: opts.node ?? 0, out: "test requirement not satisfied" };
     if (cmd.endsWith("codesign"))
       return { code: opts.sig ?? 0, out: "a sealed resource is missing or invalid" };
     return { code: opts.gk ?? 0, out: "rejected" };
@@ -37,7 +43,10 @@ describe("bundle-verify (spec 45 §2, §5)", () => {
     expect(await verifyRunnerBundle(APP, TEAM, VERSION, exec, reading(VERSION))).toBeNull();
     expect(calls[0]).toContain(`-R=${developerIdRequirement(RUNNER_IDENTIFIER, TEAM)}`);
     expect(calls[0]).toContain("--deep");
-    expect(calls[1]?.[0]).toBe("/usr/sbin/spctl");
+    // The nested Node, against its own identifier and the same team.
+    expect(calls[1]).toContain(`-R=${developerIdRequirement(NODE_IDENTIFIER, TEAM)}`);
+    expect(calls[1]?.at(-1)).toBe(`${APP}/Contents/Helpers/node`);
+    expect(calls[2]?.[0]).toBe("/usr/sbin/spctl");
   });
 
   it("refuses without a Team ID of its own, a bad seal, Gatekeeper's no, or the wrong version.json", async () => {
@@ -48,6 +57,10 @@ describe("bundle-verify (spec 45 §2, §5)", () => {
     );
     expect(await verifyRunnerBundle(APP, TEAM, VERSION, fake({ sig: 1 }).exec, ok)).toMatch(
       /signature/,
+    );
+    // The outer seal checks out, but Node is another team's or another identifier.
+    expect(await verifyRunnerBundle(APP, TEAM, VERSION, fake({ node: 3 }).exec, ok)).toMatch(
+      /Contents\/Helpers\/node: its signature/,
     );
     expect(await verifyRunnerBundle(APP, TEAM, VERSION, fake({ gk: 3 }).exec, ok)).toMatch(
       /Gatekeeper/,

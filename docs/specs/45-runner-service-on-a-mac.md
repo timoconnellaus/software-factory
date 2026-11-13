@@ -207,13 +207,22 @@ else:
    else open beyond what the entry passes: stdin, stdout and stderr for every entry, and fd 3 for
    `check-child` (its report pipe, as today). A **lifeline** pipe sits at the next descriptor, named
    in `SF_RUNNER_LIFELINE_FD`, and closes when the launcher dies (Node exits as on SIGTERM when it
-   reads EOF). Arguments go after the script, so Node never reads them as its own options, and the
+   reads EOF). The launcher makes both pipes' ends at descriptor 10 or above before mapping them, so
+   descriptors the caller left open can't put an end on 3, 4 or 5 (a `dup2` onto itself keeps
+   close-on-exec). Node's working directory is **`/`**, set by the spawn, never the caller's (launchd's,
+   a shell's or the app's would each differ), so a relative path in the runner resolves the same way
+   on every start.
+   The launcher ignores SIGPIPE, so Node exiting before it has read the whole script leaves the
+   launcher to report Node's status rather than die writing the pipe. Arguments go after the script, so Node never reads them as its own options, and the
    CLI parses them again with the same grammar. It forwards SIGTERM, SIGINT, SIGUSR2 and SIGHUP to
-   the child and exits with the child's code (a signal becomes 128 + n). Spawning keeps the
+   the child and exits with the child's code (a signal becomes 128 + n). Those four are blocked from
+   the launcher's first instruction, so one that arrives during the checks or the spawn stays
+   pending and is forwarded as soon as Node runs (a stop during startup is never dropped); Node gets
+   an empty mask and default dispositions. Spawning keeps the
    launcher the responsible process, so TCC and Login Items name SF Runner; exec would turn the
    process into Node. Right after the spawn it checks the child's running code (by pid,
    `SecCodeCopyGuestWithAttributes`) against Node's requirement and kills it if it doesn't match.
-7. A failed check writes one line to the log (`refused: <reason>`) and to
+7. A failed check, or a Node that can't be started, writes one line to the log (`refused: <reason>`) and to
    `<stateDir>/service/launch-refused.json`, and exits 78 (`EX_CONFIG`). The guard and the app treat
    78 as "this version is untrustworthy" (§5).
 
@@ -1077,6 +1086,10 @@ runtime switch on a released app.
    loop), `children.json` and cleanup, the hardware binding, log rotation, the sleep assertion,
    release-first on SIGTERM, niced jobs, `last-exit`, the hooks through launcher entries
    (`nodeCommand`), and the checkout plist's new keys. Criteria 2a (the runner half), 5–12.
+   *Build note (from PR 2's review):* `check-sandbox.ts` still starts the check child as
+   `[options.node ?? process.execPath, SANDBOX_CHILD]`. Under the service `process.execPath` is
+   `Contents/Helpers/node`, which the launch constraint kills when anything but the launcher starts
+   it: the service must start the check child through the launcher's `check-child` entry.
 5. **runner-host, control:** the socket and protocol, `runnerControl`, status snapshots, the log deny
    and the sandbox behaviour test. Criteria 4, 13, 14.
 6. **Self-update:** selection, download, verification, self-test, swap, the confirm deadline,

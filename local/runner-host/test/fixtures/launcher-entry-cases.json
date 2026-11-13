@@ -74,6 +74,14 @@
       "run": null
     },
     {
+      "args": ["login", "--name", "m5\n"],
+      "run": null
+    },
+    {
+      "args": ["login", "--name", "\nm5"],
+      "run": null
+    },
+    {
       "args": ["login", "--name", "-x"],
       "run": ["sf-runner.cjs", "login", "--no-install", "--name", "-x"]
     },

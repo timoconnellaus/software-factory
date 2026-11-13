@@ -4,7 +4,9 @@
 // installing a download (§5). Pure over an injected `Exec`, so Node and Bun both run it.
 //
 // - `codesign --verify --deep --strict` against a requirement with the Team ID of the verifier's
-//   own signature, never one from a manifest or a bucket;
+//   own signature, never one from a manifest or a bucket; then the nested Node against the same
+//   requirement with its own identifier (a valid nested signature from another team, or another
+//   identifier, would pass the outer check);
 // - `spctl --assess`: Gatekeeper's verdict, which needs Apple's notarization;
 // - the bundle's own sealed `Contents/Resources/version.json`, which must say what was expected.
 import { readFileSync } from "node:fs";
@@ -21,6 +23,8 @@ export type Exec = (
 ) => Promise<{ code: number; out: string }>;
 
 export const RUNNER_IDENTIFIER = "com.software-factory.runner";
+/** Contents/Helpers/node's identifier (spec 45 §1, step 2). */
+export const NODE_IDENTIFIER = "com.software-factory.runner.node";
 
 const TEAM_ID = /^[A-Z0-9]{10}$/;
 
@@ -98,6 +102,12 @@ export async function verifyRunnerBundle(
   if (!team || !TEAM_ID.test(team)) return "this build has no Team ID to check the runner against";
   const sig = await checkSignature(staged, developerIdRequirement(RUNNER_IDENTIFIER, team), exec);
   if (sig) return sig;
+  const node = await checkSignature(
+    join(staged, "Contents", "Helpers", "node"),
+    developerIdRequirement(NODE_IDENTIFIER, team),
+    exec,
+  );
+  if (node) return `Contents/Helpers/node: ${node}`;
   const gk = await assess(staged, exec);
   if (gk) return gk;
   const v = sealedVersion(staged, read);

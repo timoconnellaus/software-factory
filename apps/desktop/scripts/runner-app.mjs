@@ -6,6 +6,9 @@
 //   node scripts/runner-app.mjs --out <dir> [--version v --channel c --sha s]
 //   SF_RUNNER_SIGN_IDENTITY="Developer ID Application: …" SF_RUNNER_TEAM=ABCDE12345 node scripts/runner-app.mjs --out <dir>
 //
+// `--launcher-team <id>` compiles a different Team ID into the launcher than the one the bundle is
+// signed with (none, ad hoc): only the tests use it, for a bundle the launcher must refuse.
+//
 // Node is signed as nested code with its own identifier, V8's two entitlements and a launch
 // constraint that only SF Runner's launcher may start it (its parent must be
 // com.software-factory.runner, of the team when there is one). The launcher is signed with the
@@ -70,8 +73,18 @@ function buildLauncher(team) {
   return join(bin, "sf-runner");
 }
 
-export function buildRunnerApp({ out, version, channel, sha, identity = "-", team = "" }) {
+export function buildRunnerApp({
+  out,
+  version,
+  channel,
+  sha,
+  identity = "-",
+  team = "",
+  launcherTeam = team,
+}) {
   if (team && !/^[A-Z0-9]{10}$/.test(team)) throw new Error("SF_RUNNER_TEAM is not a Team ID");
+  if (launcherTeam && !/^[A-Z0-9]{10}$/.test(launcherTeam))
+    throw new Error("--launcher-team is not a Team ID");
   if ((identity === "-") !== !team)
     throw new Error("a Team ID goes with a signing identity, and only then");
   const node = join(desktop, "vendor", "node");
@@ -81,7 +94,7 @@ export function buildRunnerApp({ out, version, channel, sha, identity = "-", tea
       throw new Error(
         `no ${need}: run scripts/vendor-node.mjs and scripts/bundle-runner.mjs --sealed`,
       );
-  const launcher = buildLauncher(team);
+  const launcher = buildLauncher(launcherTeam);
 
   const app = join(out, "SF Runner.app");
   rmSync(app, { recursive: true, force: true });
@@ -123,7 +136,8 @@ export function buildRunnerApp({ out, version, channel, sha, identity = "-", tea
   run("codesign", ["--force", "--sign", identity, "--options", "runtime", ...timestamp, app]);
   run("codesign", ["--verify", "--deep", "--strict", app]);
   rmSync(work, { recursive: true, force: true });
-  console.log(`runner-app: ${app} (${team ? `team ${team}` : "ad hoc"})`);
+  const mismatch = launcherTeam !== team ? `, launcher expects ${launcherTeam}` : "";
+  console.log(`runner-app: ${app} (${team ? `team ${team}` : "ad hoc"}${mismatch})`);
   return app;
 }
 
@@ -134,6 +148,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       version: { type: "string", default: "0.0.0-dev" },
       channel: { type: "string", default: "dev" },
       sha: { type: "string", default: "unknown" },
+      "launcher-team": { type: "string" },
     },
   });
   if (!values.out) throw new Error("--out <dir> is required");
@@ -144,5 +159,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     sha: values.sha,
     identity: process.env.SF_RUNNER_SIGN_IDENTITY || "-",
     team: process.env.SF_RUNNER_TEAM || "",
+    launcherTeam: values["launcher-team"] ?? (process.env.SF_RUNNER_TEAM || ""),
   });
 }

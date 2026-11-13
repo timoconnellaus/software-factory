@@ -297,15 +297,33 @@ jobs:
           echo "update archive matches its manifest ($sha, $size bytes)"
           rm -rf "$work"
 
+      # Versioned object names, uploaded before the manifests, which go last: a client never sees a
+      # manifest naming an archive that isn't there yet, nor an old archive under a new hash.
+      # The upload uses an R2 token scoped to this one bucket, held only by this environment.
+      - name: Upload to downloads.zerobsai.com/desktop
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: apps/desktop
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          node scripts/publish-release.ts upload \
+            --channel "${{ steps.channel.outputs.channel }}" \
+            --version "${{ steps.channel.outputs.version }}"
+          echo "::notice title=Desktop ${{ steps.channel.outputs.channel }} ${{ steps.channel.outputs.version }}::https://downloads.zerobsai.com/desktop/${{ steps.channel.outputs.channel }}-macos-arm64-Software-Factory.zip"
+
       # Spec 45 PR 2's prototype: SF Runner.app signed with the Developer ID (its launcher with the
       # Team ID compiled in, Node with its parent launch constraint), notarized, stapled, zipped and
       # unpacked with ditto and made read-only, as an installed version would be; then checked
       # strict, nested, all architectures, and run with the network denied (so nothing the checks do
       # can reach Apple), with the launcher's cost per start in the summary. It isn't nested in the
-      # app or published yet, and a failure here doesn't stop the release.
+      # app or published yet. It runs after the upload, so nothing here can hold up or fail a release:
+      # its own time limit is well inside the job's, and a failure only marks the step.
       - name: SF Runner.app prototype (signed, offline)
         if: steps.secrets.outputs.ready == 'true'
         continue-on-error: true
+        timeout-minutes: 20
         working-directory: apps/desktop
         env:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -321,7 +339,7 @@ jobs:
             --channel "${{ steps.channel.outputs.channel }}" --sha "$GITHUB_SHA"
           ditto -c -k --keepParent "$work/build/SF Runner.app" "$work/notarize.zip"
           xcrun notarytool submit "$work/notarize.zip" --key "$RUNNER_TEMP/notary.p8" \
-            --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait
+            --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --timeout 15m
           xcrun stapler staple "$work/build/SF Runner.app"
           ditto -c -k --keepParent "$work/build/SF Runner.app" "$work/SF-Runner.zip"
           mkdir "$work/installed"
@@ -349,25 +367,18 @@ jobs:
             echo "Developer ID, notarized, stapled, ditto, read-only, network denied: $(sw_vers -productVersion), $(sysctl -n machdep.cpu.brand_string)"
             echo "Bundle: ${size} KiB. Launcher check, 10 starts (ms, sorted): $times"
           } >> "$GITHUB_STEP_SUMMARY"
-          SF_RUNNER_APP="$app" node --test --test-reporter=spec native/sf-runner-launcher/test/launcher.test.mjs
+          # The other-team case on a real chain: the same identity signs a bundle whose launcher has
+          # another Team ID compiled in, which must refuse it (78). Not notarized: it never ships.
+          other_team=ABCDE12345
+          [ "$TEAM_ID" != "$other_team" ] || other_team=ZYXWV98765
+          SF_RUNNER_SIGN_IDENTITY="$IDENTITY" SF_RUNNER_TEAM="$TEAM_ID" node scripts/runner-app.mjs \
+            --out "$work/other" --launcher-team "$other_team"
+          # The test file also re-signs a tampered copy ad hoc as a whole and needs it refused, and
+          # fails if this release launcher logs `unsigned build`.
+          SF_RUNNER_APP="$app" SF_RUNNER_APP_OTHER_TEAM="$work/other/SF Runner.app" \
+            node --test --test-reporter=spec native/sf-runner-launcher/test/launcher.test.mjs
           chmod -R u+w "$work"
           rm -rf "$work"
-
-      # Versioned object names, uploaded before the manifests, which go last: a client never sees a
-      # manifest naming an archive that isn't there yet, nor an old archive under a new hash.
-      # The upload uses an R2 token scoped to this one bucket, held only by this environment.
-      - name: Upload to downloads.zerobsai.com/desktop
-        if: steps.secrets.outputs.ready == 'true'
-        working-directory: apps/desktop
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DESKTOP_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DESKTOP_R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-        run: |
-          node scripts/publish-release.ts upload \
-            --channel "${{ steps.channel.outputs.channel }}" \
-            --version "${{ steps.channel.outputs.version }}"
-          echo "::notice title=Desktop ${{ steps.channel.outputs.channel }} ${{ steps.channel.outputs.version }}::https://downloads.zerobsai.com/desktop/${{ steps.channel.outputs.channel }}-macos-arm64-Software-Factory.zip"
 
       - name: Clean up the keychain
         if: always()
