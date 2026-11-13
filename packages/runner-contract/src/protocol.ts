@@ -63,6 +63,12 @@ export const PATHS = {
 export const ENGINE_CAPABILITIES = ["job-line"] as const;
 export type EngineCapability = (typeof ENGINE_CAPABILITIES)[number];
 
+/**
+ * What the host sends to ping its job line, and what comes back. The relay answers exactly this
+ * text without waking (`setWebSocketAutoResponse`): any other text would wake it on every ping.
+ */
+export const LINE_PING = "ping";
+export const LINE_PONG = "pong";
 /** The host pings its job line this often; auto-responded by the relay, so never billed. */
 export const LINE_PING_MS = 30_000;
 /** A ping with no pong within this long means the line is half-open: the host treats it as down. */

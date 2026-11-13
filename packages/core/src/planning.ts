@@ -1001,8 +1001,7 @@ export async function interruptPlanning(
       created_at: ctx.now,
     }),
   );
-  // Wakes the runner host's held steer call (sf-engine: the work item's hub).
-  ctx.emit({ kind: "run.steered", payload: { workItemId: session.work_item_id } });
+  // Nothing to wake: the host's held steer call polls for it in the Worker (spec 44).
   return { interrupted: true, reason: null };
 }
 

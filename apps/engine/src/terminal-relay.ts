@@ -13,6 +13,8 @@ import { invoke, isOperationError } from "@software-factory/core";
 import {
   clampSize,
   hostToRelaySchema,
+  LINE_PING,
+  LINE_PONG,
   type LineMessage,
   parseTerminalMessage,
   parseTerminalPath,
@@ -64,7 +66,7 @@ export class TerminalRelay extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Answered by the runtime, so a page's keepalive never wakes a hibernated relay.
-    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(LINE_PING, LINE_PONG));
   }
 
   /**
@@ -297,13 +299,17 @@ export class TerminalRelay extends DurableObject<Env> {
       this.afterViewerLeft(ws);
     } else {
       this.broadcastViewers(ws);
-      // Viewers are still waiting: the line says so, and the host's next call gets a fresh ticket.
-      if (this.viewers(ws).length > 0) await this.push("viewer");
+      // Viewers are still waiting and no host replaced this one (a reconnect closes the old host
+      // after the new one is in): the line says so, and the host's next call gets a ticket.
+      if (this.viewers(ws).length > 0 && this.hosts(ws).length === 0) await this.push("viewer");
     }
   }
 
-  /** The session ended: tell the viewers, close everyone. */
+  /** The session ended: tell the viewers, close everyone, the job line too. */
   private async end(reason: string) {
+    for (const line of this.ctx.getWebSockets("line")) {
+      this.closeSocket(line, CLOSE.normal, "the session ended");
+    }
     for (const { ws, meta } of this.viewers()) {
       this.send(ws, { t: "ended", reason });
       await this.dropViewer(ws, meta, CLOSE.normal, "the session ended", false);

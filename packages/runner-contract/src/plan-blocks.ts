@@ -289,7 +289,26 @@ const content = (text: string) => text.replace(/^([-*+]|\d{1,9}[.)])\s+/, "").tr
  * the person (`mentions`), not refused.
  */
 function exactly(blocks: PlanBlock[], section: string, text: string): number {
-  return blocks.filter((b) => b.section === section && b.text === text).length;
+  const said = sayingOf(text);
+  return blocks.filter((b) => b.section === section && sayingOf(b.text) === said).length;
+}
+
+/**
+ * What a removed block says, for keeping it out (review of #85): case, spacing and the list marker
+ * aside, so "- mysql" or "* MySQL" can't bring back a removed "- MySQL". A fence compares exactly.
+ */
+const sayingOf = (text: string) =>
+  /^\s*(```|~~~)/.test(text) ? text : foldSpace(content(text)).toLowerCase();
+
+/**
+ * What an edit removed that must stay out: not what the edit itself wrote back in another case or
+ * marker ("- use postgres" → "- Use Postgres"). Footprints stored before the case-insensitive
+ * comparison (review of #160) counted `max` by exact text, so such an entry would otherwise forbid
+ * the very line the edit asks to keep.
+ */
+function standingGone(footprint: EditFootprint): EditFootprint["gone"] {
+  const own = new Set(footprint.blocks.map((b) => `${b.section}␟${sayingOf(b.text)}`));
+  return footprint.gone.filter((g) => !own.has(`${g.section}␟${sayingOf(g.text)}`));
 }
 
 /** How many times each block (section, parent and text) appears in a plan. */
@@ -313,7 +332,9 @@ export function droppedEdits<E extends { footprint: EditFootprint }>(md: string,
     const need = new Map<string, number>();
     for (const b of e.footprint.blocks) need.set(keyOf(b), (need.get(keyOf(b)) ?? 0) + 1);
     const writes = [...need].every(([k, n]) => (counts.get(k) ?? 0) - (used.get(k) ?? 0) >= n);
-    const removed = e.footprint.gone.every((g) => exactly(blocks, g.section, g.text) <= g.max);
+    const removed = standingGone(e.footprint).every(
+      (g) => exactly(blocks, g.section, g.text) <= g.max,
+    );
     if (!writes || !removed) return true;
     for (const [k, n] of need) used.set(k, (used.get(k) ?? 0) + n);
     return false;
@@ -347,7 +368,7 @@ export function whyNotKept(md: string, footprint: EditFootprint): string {
     (k) => k.section && !sections.has(k.section),
   );
   if (lost) return `its section "${lost.section}" is no longer in the plan`;
-  const back = footprint.gone.find((g) => exactly(blocks, g.section, g.text) > g.max);
+  const back = standingGone(footprint).find((g) => exactly(blocks, g.section, g.text) > g.max);
   if (back)
     return `"${content(back.text)}", which it removed, is back in ${back.section || "the plan"}`;
   const missing = footprint.blocks.find(
@@ -459,6 +480,12 @@ const plain = (t: string) =>
     .toLowerCase()
     .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
 
+/** An answer for matching an option: case and spacing aside, edge sentence punctuation dropped. */
+const looseAnswer = (t: string) =>
+  foldSpace(t)
+    .toLowerCase()
+    .replace(/^[\s"'“”‘’(«[]+|[\s.,;:!?"'“”‘’)»\]]+$/gu, "");
+
 /**
  * What an edit changed on the line carrying `tag`: the words of the new line between the words it
  * shares with the old line at the start and at the end. Null when no line carries the tag.
@@ -494,7 +521,13 @@ export function changedSpan(before: string, after: string, tag: string): string 
 export function editAnswer(span: string | null, options: string[]): string | null {
   if (!span || !plain(span)) return null;
   if (options.length === 0) return span.trim().replace(/^[,;:\s]+|[,;:\s]+$/g, "");
-  return options.find((o) => plain(o) === plain(span)) ?? null;
+  // Only sentence punctuation, quotes and brackets at the edges are loose ("postgres." is
+  // "Postgres"); a symbol that is part of a name isn't ("C#" and "C++" are not "C").
+  const matches = options.filter((o) => looseAnswer(o) === looseAnswer(span));
+  if (matches.length <= 1) return matches[0] ?? null;
+  // Options that differ only by punctuation or case ("C", "C#"; "Go", "Go!") need the span to be
+  // one of them exactly, after trimming; otherwise nothing is picked and the person is asked.
+  return matches.find((o) => o.trim() === span.trim()) ?? null;
 }
 
 /**

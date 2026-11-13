@@ -141,9 +141,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   `tmux -L software-factory attach -t sf-<jobId>`. The work item page's **Live** tab shows a run as
   it goes (spec 31, ADR 0400): `run.live` reads its events (what the agent says, from the
   transcript; its tool calls and status; the terminal), polled every 2 s. The runner's owner can
-  **steer** it: `run.steer` queues the message, and the runner host, which keeps a held `steer`
-  call open on the channel per running job (woken through the work item's hub), types it into the
-  session. A runner can instead run sessions in **stream-json** mode (`runner.json` `session`, ADR
+  **steer** it: `run.steer` queues the message, and the runner host types it into the session. The
+  host learns of it either through a held `steer` call, which waits in the Worker polling a partial
+  index (spec 44 part A), or, when both sides declare `job-line`, through a push down its **job
+  line**: one hibernatable socket per running job to the job's TerminalRelay, which wakes the host
+  to make its own fenced call (`steer`, `viewer`, `planning`; ADR 0592). A runner can instead run sessions in **stream-json** mode (`runner.json` `session`, ADR
   0450): Claude Code headless as a two-way JSON stream, the same launch script and check, the
   prompt pointer and steers as JSON user messages, and events straight from the structured output
   (tool results and turns with their token counts too). Such a runner declares `chat`, and the Live
@@ -153,7 +155,8 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   session. The Live tab's **Web terminal** (spec 35, ADR 0440) is the job's real tmux pane in the
   browser: `run.terminal.attach` records the attach and decides the mode (`type` for the runner's
   owner, `watch` for everyone else), and a **TerminalRelay** Durable Object per job in `sf-engine`
-  relays the bytes. The runner host learns of a viewer over a held `terminal` call on the channel,
+  relays the bytes. The runner host learns of a viewer over a held `terminal` call on the channel
+  (or a `viewer` push down its job line, ADR 0592),
   connects outbound to the relay with a one-use ticket, and bridges the pane with a tmux
   control-mode client while someone watches; viewers connect through `sf-app`, and the relay
   forwards keys and resizes only from the owner. Runners are owner-only unless shared through an
@@ -188,10 +191,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   off the app, so no token (the CLI's, MCP's) can approve anything.
 - **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
-  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
-  only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
-  one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
-  trampoline. A `ClientHub` Durable Object per person holds the app's live socket
+  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates,
+  and (ADR 0610) policy decisions (org workflows and agents, org config approvals and rollbacks,
+  adopting projects' workflows, a looser override, a kill switch off), only with a per-call presence
+  proof (Touch ID) the door verifies. The website (`sf-app`) shrinks to sign-in, device approval,
+  Connect GitHub and the `/open/*` trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
 - **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
@@ -223,7 +227,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20) and Live (the run as it goes, and steering, spec 31; the Web terminal over `/api/work/<id>/runs/<run>/terminal`, spec 35; a Chat view for stream-json runs with takeover by resume, spec 37), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
 | `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
 | `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
-| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (PlanningHub per work item, ClientHub per person, TerminalRelay per job for the web terminal, ADR 0440) |
+| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (PlanningHub per work item, ClientHub per person, TerminalRelay per job for the web terminal and the runner host's job line, ADR 0440, 0592; none held awake to wait, spec 44) |
 | `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, the config schema and versions (`config.*`, `policyImpact`), model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
