@@ -558,6 +558,11 @@ export interface CoreIncidentsTable {
   root_cause: string | null;
   /** 0040: the proposed `.factory/` fix, markdown. */
   proposed_fix: string | null;
+  /** 0365: when a person resolved it (incident.resolve); null while open. */
+  resolved_at: Iso | null;
+  resolved_by: string | null;
+  /** 0365: what the person did about it, in their words. */
+  resolution: string | null;
 }
 
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
