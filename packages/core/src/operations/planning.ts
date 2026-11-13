@@ -465,6 +465,13 @@ export const specRevise = defineOperation({
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
       );
     }
+    // Depth 1 (spec 24, ADR 0303): a child's plan can't split again.
+    if (input.children?.length && w.parent_work_item_id) {
+      throw new OperationError(
+        "invalid_input",
+        "this item was split off a parent's plan, and a child can't split again (depth 1): plan it as one piece of work, or ask in the chat to change the parent's plan",
+      );
+    }
     // A person's edit stays word for word (ADR 0471): the planner asks before changing it.
     const dropped = droppedEdits(input.specMd, await standingEdits(ctx, w.id));
     if (dropped.length) {
@@ -500,6 +507,7 @@ export const specRevise = defineOperation({
         coverage: json(input.coverage),
         clarifications: json(input.clarifications),
         summary: input.summary ?? null,
+        children: input.children?.length ? json(input.children) : null,
         status: "draft",
         created_by: ctx.actor.id,
         created_at: ctx.now,
@@ -1335,6 +1343,7 @@ export const specEdit = defineOperation({
         assumptions: spec.assumptions,
         coverage: spec.coverage,
         clarifications: spec.clarifications,
+        children: spec.children,
         summary: "edited by a person",
         status: "draft",
         created_by: ctx.actor.id,

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { approvedKimFiles, planPath, writeBackFiles } from "../kim.ts";
+import { childrenOf, releaseSplitChildren } from "../splits.ts";
 import { defineOperation } from "../operation.ts";
 import { guardCurrentSpec, openSession, standingEdits } from "../planning.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
@@ -129,7 +130,12 @@ export const specCommit = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId }),
-  output: z.object({ path: z.string(), commitSha: z.string() }),
+  output: z.object({
+    path: z.string(),
+    commitSha: z.string(),
+    /** How many work items the approved spec split into (spec 24): the parent then builds nothing. */
+    children: z.number().default(0),
+  }),
   async handler(_input, ctx) {
     const w = requireWorkItem(ctx);
     const spec = w.current_spec_id
@@ -140,7 +146,8 @@ export const specCommit = defineOperation({
           .executeTakeFirst()
       : undefined;
     if (spec?.status !== "approved") throw new OperationError("conflict", "no approved spec");
-    if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha };
+    const children = childrenOf(spec.children).length;
+    if (spec.commit_sha && spec.path) return { path: spec.path, commitSha: spec.commit_sha, children };
     const path = `docs/specs/wi-${w.number}-${w.slug}.md`;
     const content = specDocument(spec);
     const repo = await repoRef(ctx, requireRepository(ctx));
@@ -188,7 +195,7 @@ export const specCommit = defineOperation({
         .where("id", "=", w.id),
     );
     ctx.change({ entity: "spec", id: spec.id, after: { path, commitSha } });
-    return { path, commitSha };
+    return { path, commitSha, children };
   },
 });
 
@@ -306,3 +313,21 @@ export function specDocument(spec: {
   }
   return `${parts.join("\n\n")}\n`;
 }
+
+export const splitRelease = defineOperation({
+  name: "split.release",
+  description:
+    "The Workflow releases a split parent's children once the parent's spec-only PR has merged (spec 24): they leave Ready for the queue together, and the pull starts them as slots allow; a child that waits for a sibling starts when that sibling has merged. A person approved them with the parent's spec. Refused for an item that didn't split.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ released: z.number() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (w.status !== "running" && w.status !== "waiting") {
+      throw new OperationError("conflict", `#${w.number} isn't running`);
+    }
+    return { released: await releaseSplitChildren(ctx, w) };
+  },
+});

@@ -472,6 +472,8 @@ export interface CoreSpecsTable {
    * [{path, artifactId, revision, sha256}]; spec.commit writes exactly these. Null: none.
    */
   kim_files: string | null;
+  /** The children this version splits into (spec 24, migration 0401), JSON; null: no split. */
+  children: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";

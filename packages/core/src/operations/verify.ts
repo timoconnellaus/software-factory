@@ -4,6 +4,7 @@
 import { checkResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
+import { splitFiles } from "../splits.ts";
 import { newId } from "../ids.ts";
 import { reviewerMatchesImplementer } from "../model-roles.ts";
 import {
@@ -219,7 +220,9 @@ export const reviewPacketRecord = defineOperation({
       // The primary key (work_item_id, head_sha, name) of migration 0270; one row per check.
       .limit(CHECK_ROWS_MAX)
       .execute();
-    const hostChecks = hostChecksOn(w);
+    // Spec 24: a split parent's PR is the approved plan's files only, decided from the diff.
+    const split = await splitFiles(ctx, w);
+    const hostChecks = split ? false : hostChecksOn(w);
     // With whether each may prove a criterion (setup and static checks never do).
     const declared = hostChecks ? declaredProof(ctx.scope.policy ?? null, w.workflow) : [];
     // The approved spec's criteria: the links to checks a person approved (ADR 0501).
@@ -269,6 +272,7 @@ export const reviewPacketRecord = defineOperation({
       hostChecks,
       specCriteria,
       linksFrom,
+      splitFiles: split,
       declaredChecks: declared,
       requiredCi: ctx.scope.policy?.protection.requiredChecks ?? [],
       checksRun: ran.map(checkRunOf),

@@ -354,6 +354,43 @@ export const clarificationSchema = z.object({
 });
 
 /** The whole living spec (ADR 0302). Each revision replaces the last. */
+/**
+ * A piece of work a plan splits off (spec 24, ADR 0303): its own title, size and spec slice (Goal,
+ * Scope, Acceptance criteria, with provenance tags pointing back at the parent), and optionally
+ * the sibling it waits for (`after`: that sibling's `key`), which must merge first.
+ */
+export const specChildSchema = z.object({
+  /** A short id the siblings' `after` names, such as `api` or `ui`. */
+  key: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, "a key is lowercase letters, digits and -"),
+  title: z.string().trim().min(1).max(200),
+  size: z.enum(["small", "medium", "large"]),
+  goal: z.string().trim().min(1).max(4_000),
+  scope: z.array(z.string().trim().min(1).max(1_000)).min(1).max(30),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1_000)).min(1).max(30),
+  after: z.string().min(1).max(40).optional(),
+});
+export type SpecChild = z.output<typeof specChildSchema>;
+
+/** Why a split can't stand (keys, `after`), or null. One `after` each, so a cycle is a chain back. */
+export function splitProblem(children: readonly SpecChild[]): string | null {
+  const keys = new Set<string>();
+  for (const c of children) {
+    if (keys.has(c.key)) return `two children share the key "${c.key}"`;
+    keys.add(c.key);
+  }
+  const after = new Map(children.map((c) => [c.key, c.after]));
+  for (const c of children) {
+    if (c.after === undefined) continue;
+    if (!keys.has(c.after)) return `"${c.key}" waits for "${c.after}", which isn't one of the children`;
+    const seen = new Set([c.key]);
+    for (let k: string | undefined = c.after; k !== undefined; k = after.get(k)) {
+      if (seen.has(k)) return `"${c.key}" waits for itself through "after"`;
+      seen.add(k);
+    }
+  }
+  return null;
+}
+
 export const specReviseInputSchema = z.object({
   title: z.string().max(200).optional(),
   /**
@@ -369,6 +406,18 @@ export const specReviseInputSchema = z.object({
   clarifications: z.array(clarificationSchema).max(100).default([]),
   /** What this revision changed, in a line. */
   summary: z.string().max(500).optional(),
+  /**
+   * Spec 24: the work items this plan splits into, approved with it in one decision. Depth 1: a
+   * child's own plan can't split again.
+   */
+  children: z
+    .array(specChildSchema)
+    .max(8)
+    .superRefine((cs, c) => {
+      const why = splitProblem(cs);
+      if (why) c.addIssue({ code: "custom", message: why });
+    })
+    .optional(),
 });
 export type SpecRevision = z.input<typeof specReviseInputSchema>;
 

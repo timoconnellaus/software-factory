@@ -66,6 +66,12 @@ export interface PacketInput {
   specCriteria?: readonly string[] | null | undefined;
   /** Who wrote `specCriteria`'s links: the approved spec, or triage (the Workflow's `triage-ties` feature). */
   linksFrom?: "spec" | "triage" | undefined;
+  /**
+   * A split parent's PR (spec 24): the only files it may add or change, the first being the spec.
+   * The verdict is then decided in code from the diff and CI: any other path, or a file removed or
+   * renamed, fails it, so this path can't carry code to main without criteria being judged.
+   */
+  splitFiles?: readonly string[] | null | undefined;
 }
 
 export interface AssembledPacket {
@@ -100,11 +106,27 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   const reasons: string[] = [];
   const warnings: string[] = [];
 
-  if (evidence.criteria.length === 0) missing.push("no acceptance criteria were checked");
-  for (const c of evidence.criteria) {
-    if (!c.evidence.trim()) missing.push(`no evidence for "${c.criterion}"`);
+  const split = input.splitFiles ?? null;
+  if (split) {
+    // Spec 24: exactly the approved spec and .kim/ files, added or changed; nothing else.
+    const allowed = new Set(split);
+    for (const f of input.files ?? []) {
+      if (!allowed.has(f.path)) reasons.push(`not one of the approved plan's files: ${f.path}`);
+      else if (f.status !== "added" && f.status !== "modified")
+        reasons.push(`the approved plan's file was ${f.status}: ${f.path}`);
+      if (f.previousPath && !allowed.has(f.previousPath))
+        reasons.push(`not one of the approved plan's files: ${f.previousPath}`);
+    }
+    const spec = split[0];
+    if (spec && input.files && !input.files.some((f) => f.path === spec))
+      missing.push(`the approved spec (${spec}) isn't in the pull request`);
+  } else {
+    if (evidence.criteria.length === 0) missing.push("no acceptance criteria were checked");
+    for (const c of evidence.criteria) {
+      if (!c.evidence.trim()) missing.push(`no evidence for "${c.criterion}"`);
+    }
+    if (!evidence.reviewer) missing.push("no independent reviewer verdict");
   }
-  if (!evidence.reviewer) missing.push("no independent reviewer verdict");
   if (input.files === null) missing.push("the diff couldn't be read from GitHub");
 
   for (const c of evidence.criteria) if (!c.met) reasons.push(`unmet: ${c.criterion}`);

@@ -35,6 +35,7 @@ import {
   resolveProjectWorkflow,
   shapingStagesOf,
 } from "../stages/project-workflow.ts";
+import { childEnded } from "../splits.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
@@ -1738,6 +1739,47 @@ export async function resumeParked(
     title: change.title ?? w.title,
     body: change.body ?? w.body,
   };
+  // Spec 24: a sibling it waited for ended without merging. The owner starts it without that
+  // sibling (the link goes) or cancels it; nothing runs until they say.
+  if (marker.source === "split") {
+    const answer = change.answered?.answer ?? answers[0] ?? "";
+    if (open.length && !change.answered) return "waiting";
+    if (/^cancel/i.test(answer.trim())) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set({
+            status: "cancelled",
+            status_reason: `cancelled: ${marker.reason}`,
+            needs_info: null,
+            closed_at: ctx.now,
+            updated_at: ctx.now,
+          })
+          .where("id", "=", w.id)
+          .where("needs_info", "is not", null),
+      );
+      ctx.guardChanged("the item is still parked");
+      ctx.change({ entity: "work_item", id: w.id, after: { status: "cancelled" } });
+      await childEnded(ctx, w, "cancelled");
+      return "resumed";
+    }
+    // Started without it: the links to siblings that ended without merging go.
+    const ended = await ctx.db
+      .selectFrom("core_work_item_links as l")
+      .innerJoin("core_work_items as d", "d.id", "l.waits_for_id")
+      .select("l.waits_for_id")
+      .where("l.work_item_id", "=", w.id)
+      .where("d.status", "in", ["failed", "rejected", "cancelled"])
+      .execute();
+    for (const e of ended) {
+      ctx.write(
+        ctx.db
+          .deleteFrom("core_work_item_links")
+          .where("work_item_id", "=", w.id)
+          .where("waits_for_id", "=", e.waits_for_id),
+      );
+    }
+  }
   if (marker.source === "precheck") {
     const checked = precheck({
       title: item.title,
@@ -1758,7 +1800,7 @@ export async function resumeParked(
     }
   }
   // The answers become part of the request, so triage and the planner read them.
-  const body = answers.length
+  const body = answers.length && marker.source !== "split"
     ? `${item.body.trimEnd()}\n\n**From ${w.number ? `#${w.number}'s` : "the"} requester:**\n${answers.map((a) => `- ${a}`).join("\n")}`
     : item.body;
   for (const q of open) {

@@ -17,7 +17,7 @@ import type { HandlerContext } from "./operation.ts";
 export type Heading = "ready" | "queued" | "shaping";
 
 /** Why the pre-check parks an item. */
-export type Missing = "content" | "duplicate";
+export type Missing = "content" | "duplicate" | "dependency";
 
 /** The marker on a parked item (`core_work_items.needs_info`). */
 export interface NeedsInfo {
@@ -25,8 +25,11 @@ export interface NeedsInfo {
   waitingOn: string;
   /** Why, in a sentence. */
   reason: string;
-  /** What parked it: the pre-check (deterministic) or triage (`not_actionable`). */
-  source: "precheck" | "triage";
+  /**
+   * What parked it: the pre-check (deterministic), triage (`not_actionable`), or a split sibling it
+   * waits for ending without merging (spec 24).
+   */
+  source: "precheck" | "triage" | "split";
   missing: Missing[];
   /** The questions asked of `waitingOn`. */
   questionIds: string[];

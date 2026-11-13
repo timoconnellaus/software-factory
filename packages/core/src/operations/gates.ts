@@ -7,6 +7,7 @@ import type { CoreDatabase, GateDecisionKind } from "@software-factory/db";
 import type { ExpressionBuilder } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
+import { createSplitChildren } from "../splits.ts";
 import { bindKimApproval, kimConflicts } from "../kim.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { assertSpecGateCurrent } from "../planning.ts";
@@ -174,6 +175,8 @@ export async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRo
     .where("id", "=", pa.work_item_id)
     .executeTakeFirst();
   if (w) await bindKimApproval(ctx, w);
+  // Spec 24: the spec's children are created with this approval, in its batch.
+  if (w) await createSplitChildren(ctx, w.id);
 }
 
 /** The work item's newest pending action of a kind (open first). */
