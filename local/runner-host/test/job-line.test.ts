@@ -6,6 +6,7 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   type Job,
+  STEER_OFFER_MS,
   STEER_WAIT_MAX_MS,
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
@@ -233,6 +234,115 @@ describe("the job line (spec 44 part B)", () => {
     expect(typed).toEqual(["hello"]);
     // Every call says which it received since the last: none, then st_1, then st_1 again.
     expect(calls.map((c) => c.ack)).toEqual([[], ["st_1"], ["st_1"]]);
+  });
+
+  it("keeps its acks when a call throws, and sends them again (review of #189)", async () => {
+    const calls: string[][] = [];
+    const answers: (() => { steers: { id: string; text: string; at: string }[] })[] = [
+      () => ({ steers: [{ id: "st_1", text: "hello", at: "2026-11-13T00:00:00.000Z" }] }),
+      // The engine's take raced to exhaustion: nothing committed, so the acks must not be dropped.
+      () => {
+        throw new ChannelCallError("/steers", 503, "raced", "steers are busy");
+      },
+    ];
+    const stop = new AbortController();
+    await steerLoop({
+      adapter: {
+        steer: async () => {},
+        manifest: async () => ({ capabilities: ["steer"] }),
+      } as never,
+      cp: {
+        steers: async (_id: string, body: { ack?: string[] }) => {
+          calls.push([...(body.ack ?? [])]);
+          const next = answers.shift();
+          if (!next) {
+            stop.abort();
+            return { steers: [] };
+          }
+          return next();
+        },
+      } as unknown as ControlPlaneClient,
+      job,
+      signal: stop.signal,
+      steer: async () => {},
+      push: async () => {},
+      onStop: () => {},
+      log: () => {},
+      retryMs: 1,
+    });
+    expect(calls).toEqual([[], ["st_1"], ["st_1"]]);
+  });
+
+  it("flushes its acks when the job stops, so a restart isn't offered them again", async () => {
+    const calls: { ack: string[]; aborted: boolean }[] = [];
+    const stop = new AbortController();
+    await steerLoop({
+      adapter: {
+        steer: async () => {},
+        manifest: async () => ({ capabilities: ["steer"] }),
+      } as never,
+      cp: {
+        steers: async (_id: string, body: { ack?: string[] }, signal?: AbortSignal) => {
+          calls.push({ ack: [...(body.ack ?? [])], aborted: signal?.aborted ?? false });
+          return calls.length === 1
+            ? { steers: [{ id: "st_1", text: "hello", at: "2026-11-13T00:00:00.000Z" }] }
+            : { steers: [] };
+        },
+      } as unknown as ControlPlaneClient,
+      job,
+      signal: stop.signal,
+      // The session ends while the steer is being typed: the loop stops before its next call.
+      steer: async () => {
+        stop.abort();
+      },
+      push: async () => {},
+      onStop: () => {},
+      log: () => {},
+    });
+    // The last call carries the ack, on a signal of its own (the job's has aborted).
+    expect(calls).toEqual([
+      { ack: [], aborted: false },
+      { ack: ["st_1"], aborted: false },
+    ]);
+  });
+
+  it("after a lost answer, waits on the line only until the offer lapses", async () => {
+    const waits: (number | undefined)[] = [];
+    const stop = new AbortController();
+    let n = 0;
+    const line = {
+      up: () => true,
+      next: async (_kind: string, _signal: AbortSignal, ms?: number) => {
+        waits.push(ms);
+        if (waits.length >= 2) stop.abort();
+      },
+    };
+    await steerLoop({
+      adapter: {
+        steer: async () => {},
+        manifest: async () => ({ capabilities: ["steer"] }),
+      } as never,
+      cp: {
+        steers: async () => {
+          n++;
+          // The first call's answer is lost (it took a steer, now on offer).
+          if (n === 1) throw new ChannelCallError("/steers", 502, "unavailable", "socket hang up");
+          return { steers: [] };
+        },
+      } as unknown as ControlPlaneClient,
+      job,
+      signal: stop.signal,
+      steer: async () => {},
+      push: async () => {},
+      onStop: () => {},
+      log: () => {},
+      retryMs: 1,
+      line: line as never,
+    });
+    // The first wait ends once the offer has lapsed; the next is the usual safety poll.
+    expect(waits[0]).toBeGreaterThan(STEER_OFFER_MS - 5_000);
+    expect(waits[0]).toBeLessThanOrEqual(STEER_OFFER_MS + 1_000);
+    expect(waits[1]).toBeUndefined();
   });
 
   it("a job that ends while the line call is out opens nothing, and run() returns", async () => {

@@ -52,6 +52,18 @@ export function restoreFrame(saved: SavedFrame | null, displays: Rect[]): SavedF
   return { x, y, width, height, zoomed: saved.zoomed, fullScreen: saved.fullScreen };
 }
 
+/** The default size (no larger than `on`), centred on `on`: the frame a window opens with. */
+export function centred(on: Rect): Rect {
+  const width = Math.min(DEFAULT_SIZE.width, on.width);
+  const height = Math.min(DEFAULT_SIZE.height, on.height);
+  return {
+    x: on.x + Math.round((on.width - width) / 2),
+    y: on.y + Math.round((on.height - height) / 2),
+    width,
+    height,
+  };
+}
+
 function overlapWidth(a: { x: number; width: number }, b: { x: number; width: number }): number {
   return Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
 }
@@ -164,11 +176,10 @@ export class FrameKeeper {
       const zoomed = win.isMaximized();
       const fullScreen = win.isFullScreen();
       const frame = win.getFrame();
-      // Zoomed or full screen: keep the frame it returns to, which was read before.
-      const base =
-        (zoomed || fullScreen) && (this.pending ?? this.last)
-          ? (this.pending ?? this.last ?? frame)
-          : frame;
+      // Zoomed or full screen: keep the frame it returns to, which was read before. With none (it
+      // went full screen before it ever moved), not the full-screen frame: that covers the menu bar,
+      // so restoreFrame would refuse it and the flag would be lost. The default size centred on it.
+      const base = zoomed || fullScreen ? (this.pending ?? this.last ?? centred(frame)) : frame;
       return {
         x: Math.round(base.x),
         y: Math.round(base.y),

@@ -267,6 +267,7 @@ to the same socket.
 | 4 | `packages/runner-contract` | the `job-line` capability, `PATHS.line`, the line messages' schemas, the heartbeat's `engine.capabilities` |
 | 4 | `apps/engine` | relay line sockets and the three pushes; the `line` channel call; `run.steered` carries `jobId`, routed to the relay; an ADR (block AQ, 0591) |
 | 5 | `local/runner-host` | `job.ts` (steer loop), `terminal.ts` (held call) and `planning-relay.ts` (hook wait) use the line when both sides have it; reconnect, the ping deadline and the 5-minute safety poll |
+| host ack, follow-ups | `packages/core`, `packages/db`, `apps/engine`, `local/runner-host` | offers keep order and are capped (migration 0410, `undeliverable_at`); acks taken after the run ends and flushed when the steer loop stops; a 503, not an empty answer, when a take carrying acks keeps racing; the host re-checks a lapsed offer at `STEER_OFFER_MS`; `core_planning_messages_steer_idx` (ADR 0592, amended) |
 | — | `packages/runner-local`, `apps/desktop` | none |
 
 ## Acceptance criteria

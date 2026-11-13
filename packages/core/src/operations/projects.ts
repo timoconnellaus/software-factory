@@ -929,6 +929,74 @@ export async function recordPolicy(
   return { applied: true, valid: parsed.ok, error, version: written.sha };
 }
 
+export const killSwitchList = defineOperation({
+  name: "killSwitch.list",
+  description:
+    "An org's kill switches (ADR 0044): the org's own and each of its projects' that has ever been set, on or off, with the reason and when it changed. Members only.",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ orgId: z.string().min(1) }),
+  output: z.object({
+    org: z
+      .object({
+        on: z.boolean(),
+        reason: z.string().nullable(),
+        changedAt: z.string(),
+        epoch: z.number(),
+      })
+      .nullable(),
+    projects: z.array(
+      z.object({
+        projectId: z.string(),
+        on: z.boolean(),
+        reason: z.string().nullable(),
+        changedAt: z.string(),
+        epoch: z.number(),
+      }),
+    ),
+    /** More of the org's projects have switches than are listed (the first 200). */
+    more: z.boolean(),
+  }),
+  scope: async (input) => ({ orgId: input.orgId }),
+  async handler(input, ctx) {
+    // On a page view: the org's row by primary key, and its projects' rows through the projects'
+    // (org_id, slug) index, each joined by the switches' primary key; bounded.
+    const [org, projects] = await Promise.all([
+      ctx.db
+        .selectFrom("core_kill_switches")
+        .select(["is_on", "reason", "changed_at", "epoch"])
+        .where("scope", "=", "org")
+        .where("scope_id", "=", input.orgId)
+        .executeTakeFirst(),
+      ctx.db
+        .selectFrom("core_projects as p")
+        .innerJoin("core_kill_switches as k", (j) =>
+          j.onRef("k.scope_id", "=", "p.id").on("k.scope", "=", "project"),
+        )
+        .select(["p.id", "k.is_on", "k.reason", "k.changed_at", "k.epoch"])
+        .where("p.org_id", "=", input.orgId)
+        // A stable order (the projects' index is (org_id, slug)): "more" means the same ones are past it.
+        .orderBy("p.slug")
+        .limit(201)
+        .execute(),
+    ]);
+    return {
+      org: org
+        ? { on: !!org.is_on, reason: org.reason, changedAt: org.changed_at, epoch: org.epoch }
+        : null,
+      projects: projects.slice(0, 200).map((r) => ({
+        projectId: r.id,
+        on: !!r.is_on,
+        reason: r.reason,
+        changedAt: r.changed_at,
+        epoch: r.epoch,
+      })),
+      more: projects.length > 200,
+    };
+  },
+});
+
 export const killSwitchSet = defineOperation({
   name: "killSwitch.set",
   description:
@@ -946,6 +1014,12 @@ export const killSwitchSet = defineOperation({
     id: z.string().min(1),
     on: z.boolean(),
     reason: z.string().max(500).optional(),
+    /**
+     * The switch's epoch the person saw (killSwitch.list): turning it off is refused if it was
+     * turned on again since, so an off decided against an old reason can't apply (review of #165).
+     * Required to turn a switch off, from every surface.
+     */
+    epoch: z.number().int().nonnegative().optional(),
   }),
   output: z.object({
     on: z.boolean(),
@@ -973,8 +1047,28 @@ export const killSwitchSet = defineOperation({
       .where("scope_id", "=", input.id)
       .executeTakeFirst();
     const wasOn = current?.is_on === 1;
+    // Every surface names the switch it saw before turning it off (review of #165).
+    if (!input.on && input.epoch === undefined)
+      throw new OperationError("invalid_input", "say which switch you saw: send its epoch");
+    if (!input.on && input.epoch !== undefined && input.epoch !== (current?.epoch ?? 0))
+      throw new OperationError(
+        "conflict",
+        "the switch was turned on again since you looked: look at its reason again before turning it off",
+      );
     const epoch = (current?.epoch ?? 0) + (input.on && !wasOn ? 1 : 0);
     if (wasOn === input.on) return { on: input.on, epoch, workItems: 0, changed: false };
+    // The write is conditional on the switch being as read: a change in between refuses this one.
+    if (current)
+      ctx.guardExists(
+        "kill switch unchanged",
+        ctx.db
+          .selectFrom("core_kill_switches")
+          .select("scope_id")
+          .where("scope", "=", input.scope)
+          .where("scope_id", "=", input.id)
+          .where("epoch", "=", current.epoch)
+          .where("is_on", "=", current.is_on),
+      );
 
     ctx.write(
       ctx.db

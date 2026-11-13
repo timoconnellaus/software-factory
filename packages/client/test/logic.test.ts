@@ -48,6 +48,7 @@ function detail(
       headSha: null,
       prNumber: null,
       policySha: null,
+      repairsMain: false,
       workflow: null,
       workflowReason: null,
       ...item,

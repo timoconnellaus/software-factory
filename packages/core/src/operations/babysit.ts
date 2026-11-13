@@ -429,6 +429,323 @@ export const flakeRecord = defineOperation({
   },
 });
 
+/** Most characters of one file's patch kept for the reopened gate. */
+const RESOLUTION_PATCH_MAX = 4_000;
+/** Most files a resolution lists. */
+const RESOLUTION_FILES_MAX = 50;
+/** Most paths read: past it, or past GitHub's own caps, the resolution isn't read (fail closed). */
+const RESOLUTION_PATHS_MAX = 250;
+
+export const resolutionSchema = z.object({
+  sha,
+  /**
+   * `clean`: a merge of the approved head and the default branch, read in full: `files` is the
+   * resolution. Anything else: review the whole diff, and `reason` says why (`unclean`: not such a
+   * merge; `incomplete`: too large to read in full; `failed`: it couldn't be read).
+   */
+  status: z.enum(["clean", "unclean", "incomplete", "failed"]),
+  reason: z.string().nullable(),
+  itemHead: sha.nullable(),
+  main: sha.nullable(),
+  files: z.array(
+    z.object({
+      path: z.string(),
+      previousPath: z.string().nullable(),
+      /** Both sides had changed it: the conflict, always listed. False: a deviation, flagged. */
+      conflicted: z.boolean(),
+      /** Whose content it has: the item's, the default branch's, both (equal), or neither. */
+      took: z.enum(["item", "main", "both", "neither"]),
+      /** What it means, when it matters (a side discarded, a deviation from the merge). */
+      note: z.string().nullable(),
+      /** GitHub gave no patch (binary or too large): look at the file. */
+      patchOmitted: z.boolean(),
+      /** The patch was clipped at RESOLUTION_PATCH_MAX characters. */
+      patchTruncated: z.boolean(),
+    }),
+  ),
+  /**
+   * Deviations from a plain merge outside the conflict: a path one side changed whose content
+   * isn't that side's (main's fix undone, the item's change dropped), or one neither side changed.
+   */
+  outside: z.array(z.string()),
+  /** Resolution files not listed (past RESOLUTION_FILES_MAX), conflicted or not. */
+  notShown: z.number(),
+  /** What each patch is against: the item's head, so it includes the default branch's changes. */
+  patchBase: z.literal("itemHead"),
+});
+export type Resolution = z.infer<typeof resolutionSchema>;
+
+const unreadable = (
+  headSha: string,
+  status: "unclean" | "incomplete" | "failed",
+  reason: string,
+  itemHead: string | null = null,
+  main: string | null = null,
+): Resolution => ({
+  sha: headSha,
+  status,
+  reason: `${reason}: review the whole diff`,
+  itemHead,
+  main,
+  files: [],
+  outside: [],
+  notShown: 0,
+  patchBase: "itemHead",
+});
+
+/**
+ * Reads what a resolution changed. Fails closed: anything but a merge of the approved head with a
+ * commit on the default branch, read in full, is `unclean` or `incomplete`, and the gate shows the
+ * whole diff.
+ */
+async function readResolution(
+  ctx: HandlerContext,
+  repo: Awaited<ReturnType<typeof repoRef>>,
+  defaultBranch: string,
+  headSha: string,
+  approvedHead: string,
+): Promise<{ summary: Resolution; patches: Record<string, string> }> {
+  const github = ctx.services.github;
+  const parents = await github.commitParents(repo, headSha);
+  const [itemHead, main] = parents;
+  if (parents.length !== 2 || !itemHead || !main) {
+    return { summary: unreadable(headSha, "unclean", "not a merge commit"), patches: {} };
+  }
+  // The first parent must be the head that conflicted (the approved one), and the second a commit
+  // on the default branch: otherwise a change on top of the approved head would pass for a parent.
+  if (itemHead !== approvedHead) {
+    return {
+      summary: unreadable(
+        headSha,
+        "unclean",
+        `not a merge of the approved head ${approvedHead.slice(0, 7)} (its first parent is ${itemHead.slice(0, 7)})`,
+        itemHead,
+        main,
+      ),
+      patches: {},
+    };
+  }
+  const onMain = await github.compareCommits(repo, main, defaultBranch);
+  if (onMain.behindBy !== 0) {
+    return {
+      summary: unreadable(
+        headSha,
+        "unclean",
+        `its second parent ${main.slice(0, 7)} isn't on ${defaultBranch}`,
+        itemHead,
+        main,
+      ),
+      patches: {},
+    };
+  }
+  const [ours, theirs, touched] = await Promise.all([
+    github.changedPaths(repo, main, itemHead),
+    github.changedPaths(repo, itemHead, main),
+    github.compareFiles(repo, itemHead, headSha),
+  ]);
+  // GitHub's compare lists at most 300 files: at that many it may have stopped.
+  if (!ours.complete || !theirs.complete || touched.length >= 300) {
+    return {
+      summary: unreadable(headSha, "incomplete", "too large to read in full", itemHead, main),
+      patches: {},
+    };
+  }
+  // More than one merge base (a criss-cross): no single base to judge from (review of #175).
+  const ambiguous = await github.mergeBaseAmbiguous(repo, itemHead, main);
+  if (ambiguous !== false) {
+    return {
+      summary: unreadable(
+        headSha,
+        ambiguous === null ? "incomplete" : "unclean",
+        ambiguous === null
+          ? "too many commits to find the merge base"
+          : "the item and the default branch have more than one merge base",
+        itemHead,
+        main,
+      ),
+      patches: {},
+    };
+  }
+  const both = new Set(ours.paths.filter((p) => theirs.paths.includes(p)));
+  const byPath = new Map(touched.map((f) => [f.path, f]));
+  // A rename's old path too: a deletion GitHub shows as a rename is still a path to judge.
+  const renamedFrom = touched.flatMap((f) => (f.previousPath ? [f.previousPath] : []));
+  const paths = [...new Set([...ours.paths, ...theirs.paths, ...byPath.keys(), ...renamedFrom])];
+  if (paths.length > RESOLUTION_PATHS_MAX) {
+    return {
+      summary: unreadable(headSha, "incomplete", "too large to read in full", itemHead, main),
+      patches: {},
+    };
+  }
+  const [atR, atItem, atMain] = await Promise.all([
+    github.pathEntries(repo, headSha, paths),
+    github.pathEntries(repo, itemHead, paths),
+    github.pathEntries(repo, main, paths),
+  ]);
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const itemChanged = new Set(ours.paths);
+  const mainChanged = new Set(theirs.paths);
+  // Each path against what a plain merge gives (review of #175): changed only by the item, it must
+  // be the item's; only on main, main's; on neither side, unchanged. Anything else is a deviation
+  // (including taking one side wholesale where the merge takes the other, which would undo a
+  // change). Changed on both sides (the conflict) it is always listed, with the side it took.
+  type Took = "item" | "main" | "both" | "neither";
+  type Judged = { path: string; kind: "conflict" | "deviation"; took: Took };
+  const judged = paths.flatMap((p): Judged[] => {
+    const tookItem = same(atR[p], atItem[p]);
+    const tookMain = same(atR[p], atMain[p]);
+    const took: Took =
+      tookItem && tookMain ? "both" : tookItem ? "item" : tookMain ? "main" : "neither";
+    if (both.has(p)) return [{ path: p, kind: "conflict", took }];
+    const expected = mainChanged.has(p) ? tookMain : tookItem;
+    return expected ? [] : [{ path: p, kind: "deviation", took }];
+  });
+  const ordered = [
+    ...judged.filter((j) => j.kind === "conflict"),
+    ...judged.filter((j) => j.kind === "deviation"),
+  ];
+  const listed = ordered.slice(0, RESOLUTION_FILES_MAX);
+  const patches: Record<string, string> = {};
+  const files = listed.map((j) => {
+    const f = byPath.get(j.path);
+    const patch = f?.patch ?? null;
+    if (patch) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
+    return {
+      path: j.path,
+      previousPath: f?.previousPath ?? null,
+      conflicted: j.kind === "conflict",
+      took: j.took,
+      note:
+        j.kind === "conflict"
+          ? j.took === "item"
+            ? "took the item's side: the default branch's change is discarded"
+            : j.took === "main"
+              ? "took the default branch's side: the item's change is discarded"
+              : null
+          : mainChanged.has(j.path)
+            ? "differs from the default branch's change, which a merge would take"
+            : itemChanged.has(j.path)
+              ? "differs from the item's change, which a merge would take"
+              : "changed by the resolution alone",
+      patchOmitted: patch === null,
+      patchTruncated: (patch?.length ?? 0) > RESOLUTION_PATCH_MAX,
+    };
+  });
+  return {
+    summary: {
+      sha: headSha,
+      status: "clean",
+      reason: null,
+      itemHead,
+      main,
+      files,
+      outside: ordered.filter((j) => j.kind === "deviation").map((j) => j.path),
+      notShown: ordered.length - listed.length,
+      patchBase: "itemHead",
+    },
+    patches,
+  };
+}
+
+export const babysitResolution = defineOperation({
+  name: "babysit.resolution",
+  description:
+    "Record what the babysitter's conflict resolution changed (spec 53 decision 1: the person sees only the resolution). Only for a merge of the approved head with a commit on the default branch, read in full: the files whose content is neither parent's, which of them both sides had changed (the conflict), the files outside the conflict (flagged), what isn't shown, and each patch (kept apart, read on demand). Anything else, or a read that fails, is recorded as such and the gate shows the whole diff. Carries the babysit job's delivery fence. The babysitter only.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId, headSha: sha, approvedHead: sha, deliveryFence }),
+  output: z.object({ status: z.string(), files: z.number(), outside: z.array(z.string()) }),
+  async handler(input, ctx) {
+    onlyBabysitter(ctx);
+    const w = requireWorkItem(ctx);
+    const repository = requireRepository(ctx);
+    await requireFence(ctx, w, input.deliveryFence);
+    const repo = await repoRef(ctx, repository);
+    let read: { summary: Resolution; patches: Record<string, string> };
+    try {
+      read = await readResolution(
+        ctx,
+        repo,
+        repository.default_branch,
+        input.headSha,
+        input.approvedHead,
+      );
+    } catch (error) {
+      // GitHub failed: recorded, so the gate says the resolution couldn't be read.
+      read = {
+        summary: unreadable(
+          input.headSha,
+          "failed",
+          `the resolution couldn't be read (${error instanceof Error ? error.message : String(error)})`.slice(
+            0,
+            500,
+          ),
+        ),
+        patches: {},
+      };
+    }
+    const row = {
+      head_sha: input.headSha,
+      summary: JSON.stringify(read.summary),
+      patches: JSON.stringify(read.patches),
+      created_at: ctx.now,
+    };
+    ctx.write(
+      ctx.db
+        .insertInto("core_babysit_resolutions")
+        .values({ work_item_id: w.id, ...row })
+        .onConflict((oc) => oc.column("work_item_id").doUpdateSet(row)),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      after: {
+        resolution: input.headSha,
+        status: read.summary.status,
+        files: read.summary.files.length,
+        outside: read.summary.outside,
+      },
+    });
+    return {
+      status: read.summary.status,
+      files: read.summary.files.length,
+      outside: read.summary.outside,
+    };
+  },
+});
+
+/** A stored resolution's summary, when it is for `headSha` (none, or the head moved: null). */
+export function resolutionFor(
+  row: { head_sha: string; summary: string } | undefined,
+  headSha: string | null,
+): Resolution | null {
+  if (!row || row.head_sha !== headSha) return null;
+  const parsed = resolutionSchema.safeParse(parseJson(row.summary, null));
+  return parsed.success ? parsed.data : null;
+}
+
+export const babysitResolutionPatches = defineOperation({
+  name: "babysit.resolutionPatches",
+  description:
+    "The patches of the babysitter's conflict resolution on a work item's current head, for the reopened merge gate (spec 53 decision 1), each against the item's head and clipped. Empty when there is none or the head has moved. For a person who can see the item (its org's members).",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({ headSha: z.string().nullable(), patches: z.record(z.string(), z.string()) }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const row = await ctx.db
+      .selectFrom("core_babysit_resolutions")
+      .select(["head_sha", "patches"])
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst();
+    if (!row || row.head_sha !== w.head_sha) return { headSha: null, patches: {} };
+    return { headSha: row.head_sha, patches: parseJson<Record<string, string>>(row.patches, {}) };
+  },
+});
+
 /** Parses a finished `babysit` run's result; null when it has none that parses. */
 export function babysitResult(text: string | null) {
   if (!text) return null;

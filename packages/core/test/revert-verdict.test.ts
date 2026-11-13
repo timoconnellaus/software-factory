@@ -107,6 +107,51 @@ describe("exactInverse", () => {
     ).toBe(false);
   });
 
+  it("judges a rename's old path too: the inverse puts it back", async () => {
+    const renamed = {
+      services: {
+        github: {
+          commitParents: async (_r: unknown, sha: string) => (sha === "merge" ? ["before"] : []),
+          compareFiles: async () => [{ path: "b.ts", status: "renamed", previousPath: "a.ts" }],
+          changedPaths: async () => ({
+            mergeBase: "base",
+            paths: ["a.ts", "b.ts"],
+            complete: true,
+          }),
+          pathEntries: async (_r: unknown, sha: string, paths: string[]) => {
+            const t: Record<string, Record<string, string>> = {
+              before: { "a.ts": "x" },
+              merge: { "b.ts": "x" },
+              base: { "b.ts": "x" },
+              revert: { "a.ts": "x" },
+            };
+            return Object.fromEntries(
+              paths
+                .filter((p) => t[sha]?.[p])
+                .map((p) => [p, { mode: "100644", sha: t[sha]?.[p] }]),
+            );
+          },
+        },
+      },
+    } as unknown as Parameters<typeof exactInverse>[0];
+    expect(await exactInverse(renamed, repo, "main", "merge", "revert")).toBe(true);
+    // A revert that left the old path deleted is not the inverse.
+    const github = (renamed as unknown as { services: { github: Record<string, unknown> } })
+      .services.github as {
+      pathEntries: (r: unknown, sha: string, paths: string[]) => Promise<unknown>;
+    };
+    const broken = {
+      services: {
+        github: {
+          ...github,
+          pathEntries: async (r: unknown, sha: string, paths: string[]) =>
+            sha === "revert" ? {} : github.pathEntries(r, sha, paths),
+        },
+      },
+    } as unknown as Parameters<typeof exactInverse>[0];
+    expect(await exactInverse(broken, repo, "main", "merge", "revert")).toBe(false);
+  });
+
   it("makes text the App posts inert: no mention, link or closing keyword", () => {
     expect(inert("Fixes #12 for @someone `x`")).toBe("`Fixes #12 for @someone 'x'`");
   });

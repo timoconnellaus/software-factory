@@ -161,9 +161,22 @@ export function Panel({
 }
 
 /** A section title in the page, with an optional quiet note after it. */
-export function SectionTitle({ children, note }: { children: React.ReactNode; note?: string }) {
+export function SectionTitle({
+  children,
+  note,
+  className,
+}: {
+  children: React.ReactNode;
+  note?: string;
+  className?: string;
+}) {
   return (
-    <h2 className="m-0 flex flex-wrap items-baseline gap-2.5 font-semibold text-[13px]">
+    <h2
+      className={cn(
+        "m-0 flex flex-wrap items-baseline gap-2.5 font-semibold text-[13px]",
+        className,
+      )}
+    >
       {children}
       {note && <span className="font-normal text-ink-muted text-xs">{note}</span>}
     </h2>
