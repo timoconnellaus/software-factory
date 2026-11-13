@@ -14,6 +14,8 @@ import { bun, onInbox, onNavigate } from "../bridge.ts";
 import { AppError } from "../components/app-error.tsx";
 import { KeyNotices } from "../components/key-notices.tsx";
 import { UpdateRequired } from "../components/update-required.tsx";
+import { Updating } from "../components/updating.tsx";
+import { WindowSkeleton } from "../components/window-skeleton.tsx";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 import { DRAG } from "../lib/title-bar.ts";
 
@@ -60,7 +62,18 @@ function Root() {
   );
   // Signing in or out changes everything the cache holds.
   const shown = useSignedInRoutes(session ? session.signedIn : null);
-  if (!session) return null;
+  // The main process hasn't answered yet: the window's shell, as index.html drew it.
+  if (!session) return <WindowSkeleton />;
+  // Restart to update, from the click until the app restarts (or a refusal): the whole window.
+  if (update?.applying)
+    return (
+      <Updating
+        applying={update.applying}
+        back={async () =>
+          client.setQueryData(["update"], await bun.updateAction({ action: "back" }))
+        }
+      />
+    );
   // The door refused this build (ADR 0393): only updating helps, signed in or not.
   if (update?.required)
     return (
@@ -78,7 +91,9 @@ function Root() {
         <SignIn session={session} />
       ) : shown !== null ? (
         <Outlet key={shown} />
-      ) : null}
+      ) : (
+        <WindowSkeleton />
+      )}
       <Toaster position="bottom-right" closeButton />
       <KeyNotices session={session} />
     </>

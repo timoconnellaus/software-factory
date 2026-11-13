@@ -111,7 +111,18 @@ const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLin
  */
 function updateStatus(): UpdateStatus {
   const which = new URLSearchParams(location.search).get("update");
+  // Restart to update under way (`?applying=verifying|waiting|restarting|refused`).
+  const step = new URLSearchParams(location.search).get("applying");
+  const applying = step
+    ? {
+        step: step as "verifying" | "waiting" | "restarting" | "refused",
+        version: "0.1.42",
+        reason:
+          step === "refused" ? "Version 0.1.42 was refused: its signature didn't check out." : null,
+      }
+    : null;
   return {
+    applying,
     required: !!which,
     ready: which === "ready" || which === "jobs" || which === "waiting",
     version: which === "ready" || which === "jobs" || which === "waiting" ? "0.1.42" : null,
@@ -226,8 +237,13 @@ async function write(p: { op: string; input: unknown }): Promise<CallResult> {
   return answer(p.op, p.input);
 }
 
+/** `?session=slow`: the main process never answers, so the window shows its loading shell. */
+const SLOW = SESSION_FIXTURE === "slow";
 export const bun = {
-  session: async () => ({ ...session }),
+  session: async () => {
+    if (SLOW) await new Promise(() => undefined);
+    return { ...session };
+  },
   signIn: async () => ({ ...session }),
   signOut: async () => session,
   signInAgain: async () => session,

@@ -450,6 +450,12 @@ export const SCREENS = [
     query: "?check=not-installed",
     design: "SettingsDevices.html",
   },
+  // The window while the app loads (WindowSkeleton = index.html's static shell; `?session=slow`).
+  { name: "loading-shell", path: "/", query: "?session=slow" },
+  // Restart to update, step by step (fake-bridge.ts `?applying=`).
+  { name: "updating-verifying", path: "/", query: "?applying=verifying" },
+  { name: "updating-restarting", path: "/", query: "?applying=restarting" },
+  { name: "updating-refused", path: "/", query: "?applying=refused" },
   // The app's error screen (an error no page handles; fake-bridge.ts `?crash=1`). No design file.
   { name: "app-error", path: "/", query: "?crash=1" },
   {

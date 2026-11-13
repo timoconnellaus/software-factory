@@ -116,6 +116,8 @@ function make(
     bundle?: { version: string; channel: string } | null;
     results?: UpdateResult[];
     synced?: string[];
+    /** The staged bundle's content hash, as it is each time it is taken. */
+    fingerprint?: () => Promise<string>;
   } = {},
 ) {
   const timers: number[] = [];
@@ -143,6 +145,7 @@ function make(
         over.synced?.push(root);
       },
       results: () => over.results ?? [],
+      fingerprint: over.fingerprint ?? (async () => "same"),
       log: () => {},
     },
     (st) => phases.push(st.phase),
@@ -261,7 +264,12 @@ describe("Updates", () => {
       bad && cmd.endsWith("codesign") && args[0] === "--verify"
         ? Promise.resolve({ code: 1, out: "a sealed resource is missing or invalid" })
         : e.exec(cmd, args);
-    const { updates } = make(u, { exec, runs: e.runs });
+    // A bundle that changed hashes differently from the one checked at download.
+    const { updates } = make(
+      u,
+      { exec, runs: e.runs },
+      { fingerprint: async () => (bad ? "changed" : "checked") },
+    );
     await updates.check();
     expect(updates.state.ready).toBe(true);
     bad = true;
@@ -848,5 +856,78 @@ describe("an update that didn't install", () => {
     expect(v.actions).toEqual([
       { action: "restart", label: "Retry the update", variant: "default" },
     ]);
+  });
+});
+
+describe("the click is fast: the check is done at download", () => {
+  const verifies = (runs: string[][]) =>
+    runs.filter((r) => r.includes("--verify") || r[0]?.endsWith("spctl")).length;
+
+  it("checks the staged bundle when it lands, and only hashes it again to apply", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    const { updates } = make(u, e);
+    await updates.check();
+    expect(updates.state.ready).toBe(true);
+    expect(verifies(e.runs)).toBe(2); // codesign --verify and spctl, once
+    expect(await updates.verifyForApply()).toBeNull();
+    await updates.apply();
+    expect(verifies(e.runs)).toBe(2); // not again
+    expect(u.calls).toContain("apply");
+  });
+
+  it("checks in full again when the bundle changed since, and refuses it if it fails", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let hash = "first";
+    let bad = false;
+    const exec: Exec = (cmd, args) =>
+      bad && cmd.endsWith("codesign") && args[0] === "--verify"
+        ? Promise.resolve({ code: 1, out: "a sealed resource is missing or invalid" })
+        : e.exec(cmd, args);
+    const { updates } = make(u, { exec, runs: e.runs }, { fingerprint: async () => hash });
+    await updates.check();
+    hash = "changed";
+    bad = true;
+    const why = await updates.verifyForApply();
+    expect(why).toMatch(/signature/);
+    expect(updates.state.reason).toBe("Version 0.1.5 was refused: its signature didn't check out.");
+    await updates.apply();
+    expect(u.calls).not.toContain("apply");
+  });
+
+  it("doesn't remember a bundle that changed while it was being checked", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let n = 0;
+    const { updates } = make(u, e, { fingerprint: async () => `take-${n++}` });
+    await updates.check();
+    expect(updates.state.ready).toBe(true);
+    const before = verifies(e.runs);
+    await updates.verifyForApply();
+    expect(verifies(e.runs)).toBe(before + 2); // checked in full again
+  });
+
+  it("checks in full when another version is staged now", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let staged = "0.1.5";
+    const { updates } = make(u, e);
+    await updates.check();
+    // The staged record changes under it (a later download), same hash: still checked in full.
+    const before = verifies(e.runs);
+    staged = "0.1.6";
+    (updates as unknown as { d: { staged: () => unknown; bundle: () => unknown } }).d.staged =
+      () => ({
+        version: staged,
+        hash: "def",
+        path: `${STAGED}-2`,
+      });
+    (updates as unknown as { d: { bundle: () => unknown } }).d.bundle = () => ({
+      version: staged,
+      channel: "canary",
+    });
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before + 2);
   });
 });
