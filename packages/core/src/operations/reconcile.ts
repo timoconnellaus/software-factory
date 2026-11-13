@@ -1,7 +1,8 @@
 // The reconciler in shadow, read side (spec 52 PR (c), ADR 0511 §7): what it predicted over an ended
 // item's history, and the agreement streak the switch-over waits for (20 ended items in a row with
 // no divergence, spec 52 Q14). The streak is not a number until the comparison covers everything
-// (`SHADOW_NOT_COMPARED` is empty): until then it says what is missing.
+// (`SHADOW_NOT_COMPARED` is empty), which it is now: stages, jobs and attempts, gates and who
+// decided them, send-back targets and rounds, retries, slot steps and every kind of end.
 import { z } from "zod";
 import { defineOperation } from "../operation.ts";
 import { SHADOW_NOT_COMPARED, type ShadowVerdict } from "../stages/shadow.ts";
@@ -58,7 +59,7 @@ export const reconcileReport = defineOperation({
 
 export const reconcileStreak = defineOperation({
   name: "reconcile.streak",
-  description: `The shadow reconciler's agreement streak for an org (spec 52 PR (c)): how many ended items in a row, newest first, agreed with no divergence. The switch-over waits for ${AGREEMENT_STREAK_TARGET}; any divergence resets it. Until the comparison covers jobs, gates, send-backs, retries, slot steps and every kind of end, it reports "comparison incomplete" and what is missing, never a number. Members only.`,
+  description: `The shadow reconciler's agreement streak for an org (spec 52 PR (c)): how many ended items in a row, newest first, agreed with no divergence. The switch-over waits for ${AGREEMENT_STREAK_TARGET}; any divergence resets it. The comparison covers stages, jobs and attempts, gates and who decided them, send-backs, retries, slot steps and every kind of end; were any of it left out, it would report "comparison incomplete" and what is missing, never a number. Members only.`,
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",

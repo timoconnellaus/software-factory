@@ -1185,10 +1185,25 @@ screen needs).
    `next_check_at` move to the switch-over, since nothing writes them while the Workflow drives).
    As built in two PRs: (c1) `reconcile()` and `next()`, pure; (c2) the shadow pass, off the
    Workflow's path (a cron pass over the items that ended, one verdict row per item), which compares
-   stage order and skips. Jobs and attempts, gates and who decided them, send-back targets and
-   rounds, retry counts, slot steps and ends other than Done are not compared yet: each counts as a
-   divergence on every item, and `reconcile.streak` reports "comparison incomplete: <what is
-   missing>", never a number, until they are. `reconcile()`, the
+   stage order and skips. (c3) makes it complete: the pass reads each ended item's stage rows with
+   their times, its jobs with what each run reported (`core_jobs_item_idx`, the run by primary key),
+   and its gates with whether a person decided each one (`core_pending_actions_item_idx`), and
+   replays them through `reconcile()` in time order (`shadowVerdict`): before each thing the
+   Workflow did (a stage entered, skipped or finished, a job started, a gate opened, a send-back and
+   where it went, the merge, the end), what the reconciler would have done from the same history;
+   then the Workflow's own move is applied, so one difference doesn't cascade. Slot steps are the
+   small stages they are in the definition (a slot step whose condition didn't hold ran nothing, and
+   is compared as a skip); retries are compared through when each side gives up; a gate whose type
+   says a person decides must have been decided by one. The spec critic's and the adjudicator's runs
+   aren't steps. The planning session answers changes requested in the same live session, its next
+   turn. Ends other than Done are compared. The queue-head-moved difference is settled against the
+   babysitter: an approval holds for the head it was given on, or for one the babysitter proved
+   carries the approved change (`Observations.carriedApproval`, spec 53), including v12's carried
+   approval after a re-verify; it stays a named divergence only for items before the babysitter
+   (v4 to v10). The agent check now retries its run up to the item's retry limit, as today's slot
+   steps do. `reconcile.streak` reports a number. Not modelled, so reported as divergences on the
+   items that hit them: triage's readiness rounds (re-triage on answers), a PR conflict's free
+   rounds (v3), and a stage added by a re-pin before the item's stage (Q3). `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
    Workflow, drives nothing, and records what it would do next to what the Workflow did; a report
    per item and the **agreement streak** (consecutive finished items with no divergence). The
