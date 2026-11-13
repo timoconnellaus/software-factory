@@ -3,7 +3,12 @@
 // keeps its content then as revision 0 (the base); if the default branch's copy has changed since,
 // it's a conflict the planner must merge before the plan is approved.
 import { parseJson } from "@software-factory/db";
-import { DESIGN_NOTATION, type DesignType } from "@software-factory/runner-contract";
+import {
+  DESIGN_NOTATION,
+  type DesignType,
+  designPreviewSchema,
+  designSvgPath,
+} from "@software-factory/runner-contract";
 import { z } from "zod";
 import { sha256Hex } from "./attachments.ts";
 import { OperationError } from "./errors.ts";
@@ -99,6 +104,7 @@ export interface WriteBackFile {
   path: string;
   artifactId: string;
   revision: number;
+  /** The artifact's kind, or `preview`: a design's `.svg`, drawn by the runner (spec 22 part B). */
   kind: string;
   /** `new`: not pulled (no base to compare); `changed`: pulled, and differs from its base. */
   status: "new" | "changed";
@@ -133,6 +139,7 @@ export async function writeBackFiles(
       "a.pulled_path",
       "a.revision",
       "r.content",
+      "r.preview",
       "b.content as base",
     ])
     .where("a.work_item_id", "=", w.id)
@@ -145,27 +152,49 @@ export async function writeBackFiles(
   const taken = new Set<string>([planPath(w)]);
   for (const a of kept) if (a.pulled_path) taken.add(a.pulled_path);
   const out: WriteBackFile[] = [];
+  const free = (wanted: string) => {
+    const dot = wanted.lastIndexOf(".");
+    let path = wanted;
+    for (let n = 2; taken.has(path); n++) path = `${wanted.slice(0, dot)}-${n}${wanted.slice(dot)}`;
+    taken.add(path);
+    return path;
+  };
   for (const a of kept) {
     const pulled = a.pulled_path !== null && a.base !== null;
     if (pulled && a.content === a.base) continue;
-    let path = kimPath(a);
-    if (!a.pulled_path) {
-      const dot = path.lastIndexOf(".");
-      for (let n = 2; taken.has(path); n++)
-        path = `${kimPath(a).slice(0, dot)}-${n}${kimPath(a).slice(dot)}`;
-      taken.add(path);
-    }
+    const path = a.pulled_path ? kimPath(a) : free(kimPath(a));
+    const status = pulled ? "changed" : "new";
     out.push({
       path,
       artifactId: a.id,
       revision: a.revision,
       kind: a.kind,
-      status: pulled ? "changed" : "new",
+      status,
       content: a.content,
       base: pulled ? a.base : null,
     });
+    // A design's preview lands beside it as `.svg` (spec 22 part B, kim's naming).
+    const svg = a.kind === "design" ? previewSvg(a.preview) : null;
+    if (svg) {
+      out.push({
+        path: free(designSvgPath(path)),
+        artifactId: a.id,
+        revision: a.revision,
+        kind: "preview",
+        status,
+        content: svg,
+        base: null,
+      });
+    }
   }
   return out;
+}
+
+/** A stored preview's SVG, or null. */
+function previewSvg(json: string | null): string | null {
+  if (!json) return null;
+  const parsed = designPreviewSchema.safeParse(parseJson<unknown>(json, null));
+  return parsed.success ? parsed.data.svg : null;
 }
 
 /** What a person approved (core_specs.kim_files): each file's revision and content hash. */
@@ -175,6 +204,8 @@ export const kimManifestSchema = z.array(
     artifactId: z.string(),
     revision: z.number().int(),
     sha256: z.string(),
+    /** The file is the revision's preview SVG, not its content (spec 22 part B). */
+    preview: z.boolean().optional(),
   }),
 );
 export type KimManifest = z.infer<typeof kimManifestSchema>;
@@ -197,6 +228,7 @@ export async function bindKimApproval(
       artifactId: f.artifactId,
       revision: f.revision,
       sha256: await hashText(f.content),
+      ...(f.kind === "preview" ? { preview: true } : {}),
     })),
   );
   ctx.write(
@@ -221,7 +253,7 @@ export async function approvedKimFiles(
   if (!manifest.length) return [];
   const found = await ctx.db
     .selectFrom("core_planning_artifact_revisions")
-    .select(["artifact_id", "revision", "content"])
+    .select(["artifact_id", "revision", "content", "preview"])
     .where((eb) =>
       eb.or(
         manifest.map((m) =>
@@ -234,14 +266,15 @@ export async function approvedKimFiles(
   const out: { path: string; content: string }[] = [];
   for (const m of manifest) {
     const r = found.find((x) => x.artifact_id === m.artifactId && x.revision === m.revision);
-    if (!r || (await hashText(r.content)) !== m.sha256) {
+    const content = r ? (m.preview ? previewSvg(r.preview) : r.content) : null;
+    if (content === null || (await hashText(content)) !== m.sha256) {
       throw new OperationError(
         "conflict",
         `${m.path} isn't the revision a person approved at the gate: nothing is committed`,
         { path: m.path },
       );
     }
-    out.push({ path: m.path, content: r.content });
+    out.push({ path: m.path, content });
   }
   return out;
 }

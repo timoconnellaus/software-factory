@@ -91,8 +91,40 @@ Creating a design system when none exists, unless asked (as in kim).
 - Tests: `packages/core/test/designs.test.ts` and the db late-migrations test (0373 after
   everything on main).
 
-### Part B (next): the checks package and the System tab
-Checks on the runner (errors refuse a save, layout warnings save with the warning), `.svg` previews
-written with each design, the System tab drawing designs with changes highlighted against the base,
-and comments pinned on tables, boxes and arrows (criteria 1, 2, 3's highlighting, 4's previews).
+### Part B1: the runner's checks, previews and the `.svg` write-back
+- **`packages/planning-designs`** (Node, on the runner): `checkDesign(type, source)` parses with
+  each notation's own engine, as kim does: DBML with `@dbml/parse`, D2 with `@terrastruct/d2`
+  (wasm, dagre layout), Mermaid with `mermaid.parse` (parsing only), OpenAPI with `yaml` plus the
+  shape OpenAPI 3 needs. An error refuses the save with each problem's line, the line's text and a
+  fix (at most 8). It then **draws the design itself** to a static SVG (D2 from its compiled shapes
+  and routes; the data model, sequences and states laid out here, the last two read by a small
+  reader of its own after Mermaid accepted them; OpenAPI as endpoints and schema cards), with every
+  part's id, label, signature and box: tables, enums and relations; boxes and arrows; participants
+  and messages; states and transitions; endpoints and schemas. Layout warnings save with it and
+  name the parts: crossing arrows, arrows through a box they don't connect, and text too small once
+  fitted to a 1280×800 window. Ported in part from kim (`designCheck.ts`, `design/errors.ts`,
+  `design/layoutCheck.ts`, `design/dataModel.ts`).
+- **The planning MCP server** checks a design before relaying `artifact.add` or `artifact.update`:
+  refused, nothing reaches the cloud; saved, the preview goes with it (`preview`, never in the
+  model's tool schema) and the warnings come back to the planner as `layoutWarnings`. After a
+  `design.pull` of a design it reads the base, draws it, and stores its preview with
+  **`design.preview`** (revision 0, and revision 1 on a first pull), a harness-only call.
+- **The cloud** keeps the preview with the revision (`core_planning_artifact_revisions.preview`,
+  migration 0400) only if it was drawn from exactly that content (its SHA-256) and the SVG has no
+  script, event attribute, foreign content, style, image, link or outside reference
+  (`unsafeSvg`); it counts in the revision's size (the item's byte budget and pruning cover it).
+  `artifact.get` returns `designType` and `preview`; `artifact.read` returns `kind` and
+  `designType` and reads revision 0.
+- **Write-back** (criterion 4): each kept design's preview is written beside it as `.svg` (kim's
+  naming: `x.d2` → `x.svg`, `-2` on a collision), recorded in the approval's `kim_files` with
+  `preview: true` and committed in the same commit. The gate's file list shows it as an image.
+- **Rendering untrusted design text**: no design text is executed. The SVG is this repo's code's
+  drawing, its text escaped; the app only ever shows it as an image (`<img>` with a data URL), where
+  nothing runs or loads.
+- Tests: `packages/planning-designs/test/designs.test.ts` (criterion 1), `harness-claude`
+  `planning-designs.test.ts`, `core` `design-previews.test.ts` (criterion 4's previews).
 
+### Part B2 (next): the System tab
+The System tab draws each design's preview with what changed against the pulled base highlighted
+(criterion 3), and comments pinned on tables, boxes and arrows reach the planner naming the part
+(criterion 2).

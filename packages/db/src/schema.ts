@@ -1120,6 +1120,8 @@ export interface CorePlanningArtifactRevisionsTable {
   size: number;
   controls: Generated<string>;
   created_at: Iso;
+  /** A design's preview from the runner's checks (spec 22 part B, migration 0400), JSON. */
+  preview: string | null;
 }
 
 /** A person's edit to the plan's source lines (spec 27, ADR 0471). */

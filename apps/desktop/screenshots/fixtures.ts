@@ -1689,6 +1689,8 @@ export const ANSWERS: Answers = {
     latest: input.artifactId === "art_a" ? 2 : 1,
     content: input.artifactId === "art_a" ? MOCKUP_A : MOCKUP_B,
     controls: ["--accent"],
+    designType: null,
+    preview: null,
   }),
   "run.live": () => liveView(),
   "runner.list": () => ({

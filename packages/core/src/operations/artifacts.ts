@@ -5,17 +5,21 @@
 import { parseJson } from "@software-factory/db";
 import {
   ARTIFACT_MAX_BYTES,
-  artifactAddInputSchema,
+  artifactAddCallSchema,
   artifactDeleteInputSchema,
   artifactReadInputSchema,
   artifactShowInputSchema,
-  artifactUpdateInputSchema,
+  artifactUpdateCallSchema,
+  type DesignPreview,
   declaredControls,
+  designPreviewInputSchema,
+  designPreviewSchema,
   designPullInputSchema,
   designTypeOf,
 } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
+import { sha256Hex } from "../attachments.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
@@ -25,6 +29,41 @@ import { byJob, planningJob, planningJobFields } from "./planning.ts";
 import { repoRef, requireRepository, requireWorkItem, workItemId } from "./shared.ts";
 
 const bytes = (text: string) => new TextEncoder().encode(text).length;
+
+/**
+ * A design revision's preview as stored (spec 22 part B), checked against the source it was drawn
+ * from: the runner's checks drew it from exactly this content, or it isn't kept. The row's `size`
+ * counts it, and source and preview together fit one revision row.
+ */
+async function storedPreview(
+  kind: string,
+  content: string,
+  preview: DesignPreview | undefined,
+): Promise<{ preview: string | null; size: number }> {
+  if (!preview) return { preview: null, size: bytes(content) };
+  if (kind !== "design") {
+    throw new OperationError("invalid_input", "only a design has a preview");
+  }
+  if ((await sha256Hex(new TextEncoder().encode(content))) !== preview.sha256) {
+    throw new OperationError("invalid_input", "the preview wasn't drawn from this content");
+  }
+  const json = JSON.stringify(preview);
+  const size = bytes(content) + bytes(json);
+  if (size > ARTIFACT_MAX_BYTES) {
+    throw new OperationError(
+      "invalid_input",
+      `a design and its preview hold at most ${ARTIFACT_MAX_BYTES} bytes: split the design`,
+    );
+  }
+  return { preview: json, size };
+}
+
+/** A stored preview, read back; null when there is none or it no longer parses. */
+export function readPreview(json: string | null): DesignPreview | null {
+  if (!json) return null;
+  const parsed = designPreviewSchema.safeParse(parseJson<unknown>(json, null));
+  return parsed.success ? parsed.data : null;
+}
 
 /** The controls a revision declares: only HTML (a mockup or diagram) has any. */
 const controlsOf = (kind: string, content: string) =>
@@ -98,7 +137,7 @@ export const artifactAdd = defineOperation({
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
-  input: artifactAddInputSchema.extend(planningJobFields),
+  input: artifactAddCallSchema.extend(planningJobFields),
   output: z.object({
     artifactId: z.string(),
     revision: z.number(),
@@ -121,7 +160,8 @@ export const artifactAdd = defineOperation({
         "a design names its designType (data-model, architecture, data-flow, sequence, state, api), and only a design does",
       );
     }
-    await checkBudget(ctx, w.id, bytes(input.content), 0, true);
+    const stored = await storedPreview(input.kind, input.content, input.preview);
+    await checkBudget(ctx, w.id, stored.size, 0, true);
     const id = newId("planningArtifact");
     const controls = controlsOf(input.kind, input.content);
     ctx.write(
@@ -144,8 +184,9 @@ export const artifactAdd = defineOperation({
         artifact_id: id,
         revision: 1,
         content: input.content,
-        size: bytes(input.content),
+        size: stored.size,
         controls: JSON.stringify(controls),
+        preview: stored.preview,
         created_at: ctx.now,
       }),
     );
@@ -163,7 +204,7 @@ export const artifactUpdate = defineOperation({
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
-  input: artifactUpdateInputSchema.extend(planningJobFields),
+  input: artifactUpdateCallSchema.extend(planningJobFields),
   output: z.object({
     artifactId: z.string(),
     revision: z.number(),
@@ -179,7 +220,15 @@ export const artifactUpdate = defineOperation({
     let revision = current.revision;
     let controls = current.controls;
     let warnings: string[] = [];
+    let stored: { preview: string | null; size: number } | null = null;
+    if (input.preview && input.content === undefined) {
+      throw new OperationError(
+        "invalid_input",
+        "a preview comes with the content it was drawn from",
+      );
+    }
     if (input.content !== undefined) {
+      stored = await storedPreview(current.kind, input.content, input.preview);
       if (bytes(input.content) > ARTIFACT_MAX_BYTES) {
         throw new OperationError(
           "invalid_input",
@@ -192,7 +241,7 @@ export const artifactUpdate = defineOperation({
       await checkBudget(
         ctx,
         w.id,
-        bytes(input.content),
+        stored.size,
         await prunedBytes(ctx, current.id, revision),
         false,
       );
@@ -218,8 +267,9 @@ export const artifactUpdate = defineOperation({
           artifact_id: current.id,
           revision,
           content: input.content,
-          size: bytes(input.content),
+          size: stored?.size ?? bytes(input.content),
           controls: JSON.stringify(controls),
+          preview: stored?.preview ?? null,
           created_at: ctx.now,
         }),
       );
@@ -287,14 +337,15 @@ export const artifactShow = defineOperation({
 export const artifactGet = defineOperation({
   name: "artifact.get",
   description:
-    "A planning artifact's content (spec 21), the latest revision unless one is named, for the Planning view to render in a sandboxed frame (ADR 0472). Untrusted HTML: never render it on the app's own origin.",
+    "A planning artifact's content (spec 21), the latest revision unless one is named, for the Planning view to render in a sandboxed frame (ADR 0472). Untrusted HTML: never render it on the app's own origin. A design comes with the preview the runner drew (spec 22 part B): show its SVG only as an image.",
   risk: "read",
   actors: ["human"],
   permission: "member",
   input: z.object({
     workItemId,
     artifactId: z.string().min(1),
-    revision: z.number().int().positive().optional(),
+    /** A past revision; omitted, the latest. A pulled file's base is revision 0. */
+    revision: z.number().int().nonnegative().optional(),
   }),
   output: z.object({
     artifactId: z.string(),
@@ -304,6 +355,9 @@ export const artifactGet = defineOperation({
     latest: z.number(),
     content: z.string(),
     controls: z.array(z.string()),
+    /** A design's type and the preview the runner's checks drew (spec 22 part B), or null. */
+    designType: z.string().nullable(),
+    preview: designPreviewSchema.nullable(),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
@@ -334,6 +388,8 @@ export const artifactGet = defineOperation({
       latest: a.revision,
       content: r.content,
       controls: parseJson<string[]>(r.controls, []),
+      designType: a.design_type,
+      preview: readPreview(r.preview),
     };
   },
 });
@@ -348,6 +404,8 @@ export const artifactRead = defineOperation({
   input: artifactReadInputSchema.extend(planningJobFields),
   output: z.object({
     artifactId: z.string(),
+    kind: z.string(),
+    designType: z.string().nullable(),
     revision: z.number(),
     content: z.string(),
     controls: z.array(z.string()),
@@ -372,10 +430,51 @@ export const artifactRead = defineOperation({
     }
     return {
       artifactId: a.id,
+      kind: a.kind,
+      designType: a.design_type,
       revision,
       content: r.content,
       controls: parseJson<string[]>(r.controls, []),
     };
+  },
+});
+
+export const designPreview = defineOperation({
+  name: "design.preview",
+  description:
+    "The planning harness stores the preview its checks drew of a design revision it didn't save itself: a pulled file's base (revision 0) and first revision (spec 22 part B). Refused unless the preview was drawn from exactly that revision's content, and while the plan waits at the gate.",
+  risk: "write",
+  actors: ["runner"],
+  permission: "signed-in",
+  input: designPreviewInputSchema.extend(planningJobFields),
+  output: z.object({ artifactId: z.string(), revision: z.number() }),
+  scope: byJob,
+  async handler(input, ctx) {
+    const { session } = await planningJob(ctx, input);
+    refuseAtGate(ctx, session);
+    const w = requireWorkItem(ctx);
+    const a = await liveArtifact(ctx, w.id, input.artifactId);
+    // Revisions-table primary key (artifact_id, revision): a point read.
+    const r = await ctx.db
+      .selectFrom("core_planning_artifact_revisions")
+      .select(["content", "size"])
+      .where("artifact_id", "=", a.id)
+      .where("revision", "=", input.revision)
+      .executeTakeFirst();
+    if (!r) throw new OperationError("not_found", `revision ${input.revision} isn't kept`);
+    const stored = await storedPreview(a.kind, r.content, input.preview);
+    await checkBudget(ctx, w.id, stored.size, r.size, false);
+    ctx.write(
+      ctx.db
+        .updateTable("core_planning_artifact_revisions")
+        .set({ preview: stored.preview, size: stored.size })
+        .where("artifact_id", "=", a.id)
+        .where("revision", "=", input.revision)
+        .where("content", "=", r.content),
+    );
+    ctx.guardChanged("the revision is still the content the preview was drawn from");
+    guardBudget(ctx, w.id);
+    return { artifactId: a.id, revision: input.revision };
   },
 });
 
