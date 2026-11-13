@@ -16,7 +16,9 @@ import {
   ChannelCallError,
   type ControlPlaneClient,
   type Job,
+  LINE_PING,
   LINE_PING_MS,
+  LINE_PONG,
   LINE_PONG_DEADLINE_MS,
   LINE_SAFETY_POLL_MS,
   type LineMessage,
@@ -162,7 +164,7 @@ export class JobLine {
         this.wakeAll();
         ping = setInterval(() => {
           try {
-            ws.send("ping");
+            ws.send(LINE_PING);
           } catch {
             return;
           }
@@ -180,7 +182,7 @@ export class JobLine {
       });
       ws.addEventListener("message", (event) => {
         const data = typeof event.data === "string" ? event.data : "";
-        if (data === "pong") {
+        if (data === LINE_PONG) {
           if (deadline) clearTimeout(deadline);
           deadline = null;
           return;

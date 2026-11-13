@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { steerLoop } from "../src/job.ts";
 import { JobLine } from "../src/job-line.ts";
+import { terminalLoop } from "../src/terminal.ts";
 
 const job = { jobId: "job_1", lease: { fencingToken: 3 } } as unknown as Job;
 
@@ -138,6 +139,9 @@ describe("the job line (spec 44 part B)", () => {
     sockets[0]?.push("steer");
     for (let i = 0; i < 50 && calls.length < 2; i++) await tick(2);
     expect(calls[1]).toEqual({ fencingToken: 3, waitMs: 0 });
+    // While the line is up the host never holds a call too (that would pay twice).
+    await tick(30);
+    expect(calls.every((c) => c.waitMs === 0)).toBe(true);
     stop.abort();
     await Promise.all([loop, running]);
 
@@ -162,5 +166,36 @@ describe("the job line (spec 44 part B)", () => {
     });
     await done;
     expect(held[0]?.waitMs).toBe(STEER_WAIT_MAX_MS);
+  });
+
+  it("the terminal loop doesn't hold either while the line is up", async () => {
+    const { line, sockets, stop, running } = setup();
+    const calls: { waitMs?: number }[] = [];
+    for (let i = 0; i < 50 && !line.up(); i++) await tick(2);
+    const loop = terminalLoop({
+      adapter: {
+        openTerminal: async () => ({}) as never,
+        manifest: async () => ({ capabilities: ["terminal"] }),
+      } as never,
+      cp: {
+        terminal: async (_id: string, body: { waitMs?: number }) => {
+          calls.push(body);
+          return { connect: null };
+        },
+      } as unknown as ControlPlaneClient,
+      job,
+      open: async () => ({}) as never,
+      signal: stop.signal,
+      onStop: () => {},
+      log: () => {},
+      line,
+    });
+    await tick(10);
+    sockets[0]?.push("viewer");
+    for (let i = 0; i < 50 && calls.length < 2; i++) await tick(2);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.every((c) => c.waitMs === 0)).toBe(true);
+    stop.abort();
+    await Promise.all([loop, running]);
   });
 });
