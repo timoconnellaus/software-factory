@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@software-factory/ui/components/dropdown-menu";
+import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
@@ -22,7 +23,7 @@ import {
 } from "lucide-react";
 import { bun } from "../bridge.ts";
 import { sectionOf } from "../lib/places.ts";
-import { inboxQuery, projectsQuery, workListsQuery } from "../lib/queries.ts";
+import { inboxQuery, projectsQuery, setupStatusQuery, workListsQuery } from "../lib/queries.ts";
 import {
   orgInitial,
   orgOfProject,
@@ -32,6 +33,7 @@ import {
   waitingCount,
 } from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
+import { SETUP_UNFINISHED_LABEL, setupUnfinished } from "../lib/setup-dot.ts";
 import { chooseOrg, updateViewState, useViewState } from "../lib/view-state.ts";
 
 /** The chosen org (null: All), defaulting to the Personal org the first time. */
@@ -54,6 +56,29 @@ export function useScopedInbox() {
     query: inbox,
     inbox: inbox.data ? scopeInbox(inbox.data, orgOf, orgId) : undefined,
   };
+}
+
+/** The org Setup shows (the chosen one, else Personal): whether its setup is known to be unfinished. */
+export function useSetupUnfinished(): boolean {
+  const session = useSession();
+  const orgId = useOrgScope() ?? session.personalOrgId ?? "";
+  const status = useQuery({ ...setupStatusQuery(orgId), enabled: !!orgId });
+  return setupUnfinished(status);
+}
+
+/** The orange dot (the rail's waiting token) that marks unfinished setup. */
+export function SetupDot({ className }: { className?: string }) {
+  return (
+    <span
+      role="img"
+      aria-label={SETUP_UNFINISHED_LABEL}
+      title={SETUP_UNFINISHED_LABEL}
+      className={cn("flex flex-none", className)}
+      data-testid="setup-dot"
+    >
+      <StatusDot status="waiting" className="size-[7px]" />
+    </span>
+  );
 }
 
 export function OrgRail() {
@@ -161,6 +186,7 @@ export function Sidebar() {
   const section = sectionOf(path);
   const { inbox } = useScopedInbox();
   const waiting = inbox ? waitingCount(inbox) : 0;
+  const setupUnfinished = useSetupUnfinished();
   const pins = useViewState((s) => s.pins);
   const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
   const pinned = pins
@@ -233,6 +259,7 @@ export function Sidebar() {
       <span className="mt-auto" />
       <SideLink to="/settings" active={section === "settings"} icon={<SlidersHorizontalIcon />}>
         Settings
+        {setupUnfinished && <SetupDot className="mr-1.5 ml-auto" />}
       </SideLink>
     </nav>
   );
