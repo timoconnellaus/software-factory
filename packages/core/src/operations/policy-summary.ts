@@ -22,6 +22,8 @@ const SUMMARY_CHANGES = 3;
  */
 export function quotedName(name: string): string {
   const clean = name
+    // Line breaks and tabs are spaces; other control and invisible characters go.
+    .replace(/\s+/g, " ")
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
     .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁯﻿"“”]/g, "")
     .replace(/\s+/g, " ")
