@@ -201,6 +201,16 @@ async function save(w: W, draft: Record<string, unknown> = DRAFT, skillId?: stri
   );
 }
 
+/** The sha256 of a version's text, as a person reads it before accepting (`skill.get`). */
+const shaOf = async (w: W, skillId: string, version: number) =>
+  (
+    await ok<{ version: { sha256: string } }>(
+      "skill.get",
+      { orgId: w.orgId, skillId, version },
+      w.human,
+    )
+  ).version.sha256;
+
 const listed = (w: W) =>
   ok<{
     skills: { id: string; name: string; version: number; builtin: boolean; attachedTo: string[] }[];
@@ -305,14 +315,26 @@ describe("skills through the operations", () => {
     const self = await refusal(
       call(
         "skill.accept",
-        { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: proposed.skillId, version: 1 },
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: proposed.skillId,
+          version: 1,
+          sha256: await shaOf(w, proposed.skillId, 1),
+        },
         IMPROVER,
       ),
     );
     expect(self.code).toBe("forbidden");
     await ok(
       "skill.accept",
-      { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: proposed.skillId, version: 1 },
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: proposed.skillId,
+        version: 1,
+        sha256: await shaOf(w, proposed.skillId, 1),
+      },
       w.human,
     );
     const after = await listed(w);
@@ -506,7 +528,13 @@ describe("skills, review of #155", () => {
     expect(list.proposals[0]?.overrides?.builtin).toBe(PROTECTED);
     const accept = await call(
       "skill.accept",
-      { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: proposed.skillId, version: 1 },
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: proposed.skillId,
+        version: 1,
+        sha256: await shaOf(w, proposed.skillId, 1),
+      },
       w.human,
     );
     expect(accept.status).toBe("pending");
@@ -659,7 +687,13 @@ describe("skills, review of #155", () => {
     const stale = await refusal(
       call(
         "skill.accept",
-        { orgId: w.orgId, baseVersion: await orgVersion(w), skillId: id, version: 2 },
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: id,
+          version: 2,
+          sha256: await shaOf(w, id, 2),
+        },
         w.human,
       ),
     );
@@ -682,7 +716,10 @@ describe("skills, review of #155", () => {
       ["skill.attach", { orgId: w.orgId, baseVersion: base, skillId: id, target: { agent: "x" } }],
       ["skill.detach", { orgId: w.orgId, baseVersion: base, skillId: id, target: { agent: "x" } }],
       ["skill.archive", { orgId: w.orgId, baseVersion: base, skillId: id }],
-      ["skill.accept", { orgId: w.orgId, baseVersion: base, skillId: id, version: 1 }],
+      [
+        "skill.accept",
+        { orgId: w.orgId, baseVersion: base, skillId: id, version: 1, sha256: "0".repeat(64) },
+      ],
     ];
     for (const [op, input] of inputs) {
       for (const actor of [FOREMAN, RUNNER_ACTOR(uid("r_")), IMPROVER])
@@ -733,5 +770,194 @@ describe("skills, review of #155", () => {
       w.human,
     );
     expect(rollback.status).toBe("pending");
+  });
+});
+
+describe("skills, second review of #155", () => {
+  it("a person reads a proposal's text and its diff, and accepts only the text they read", async () => {
+    const w = await world();
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    await ok(
+      "skill.propose",
+      {
+        projectId: w.projectId,
+        skillId: id,
+        skill: { ...DRAFT, body: "Name the query.\nAdd a LIMIT." },
+      },
+      IMPROVER,
+    );
+    const got = await ok<{
+      version: { body: string; sha256: string; diff: { op: string; line: string }[] };
+    }>("skill.get", { orgId: w.orgId, skillId: id, version: 2 }, w.human);
+    expect(got.version.body).toBe("Name the query.\nAdd a LIMIT.");
+    expect(got.version.diff.filter((d) => d.op !== "same").map((d) => `${d.op} ${d.line}`)).toEqual(
+      ["remove Name the query each index serves.", "add Name the query.", "add Add a LIMIT."],
+    );
+    const wrong = await refusal(
+      call(
+        "skill.accept",
+        {
+          orgId: w.orgId,
+          baseVersion: await orgVersion(w),
+          skillId: id,
+          version: 2,
+          sha256: "a".repeat(64),
+        },
+        w.human,
+      ),
+    );
+    expect(wrong.message).toMatch(/isn't the text you read/);
+  });
+
+  it("the runner never gets a proposed version", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    await ok(
+      "skill.attach",
+      {
+        orgId: w.orgId,
+        baseVersion: await orgVersion(w),
+        skillId: id,
+        target: { agent: "Builder" },
+      },
+      w.human,
+    );
+    const def = {
+      ...SHIP,
+      stages: SHIP.stages.map((s) => (s.id === "build" ? { ...s, agent: "Builder" } : s)),
+    };
+    await decide(
+      w,
+      await call(
+        "workflow.save",
+        { orgId: w.orgId, baseVersion: await orgVersion(w), workflow: def },
+        w.human,
+      ),
+    );
+    const job = await enqueued(w, "build", "implement", {});
+    expect(job.context.skills?.map((s) => s.id)).toEqual([id]);
+    // The version it names is made a proposal behind its back: refused.
+    await rows(
+      "UPDATE core_skill_versions SET status = 'proposed' WHERE org_id = ? AND skill_id = ?",
+      w.orgId,
+      id,
+    );
+    const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);
+    const m5 = RUNNER_ACTOR(r.runnerId);
+    const { job: claimed } = await ok<{ job: Job | null }>(
+      "job.claim",
+      {
+        claimId: uid("claim-"),
+        manifest: {
+          contractVersion: CONTRACT_VERSION,
+          runnerKind: "orca",
+          harnesses: ["claude-code"],
+          capabilities: ["hooks"],
+        },
+        capacity: { max: 2, inUse: 0, accepting: true },
+      },
+      m5,
+    );
+    const refused = await refusal(
+      call(
+        "skill.forJob",
+        {
+          workItemId: job.item.workItemId,
+          jobId: claimed?.jobId,
+          fencingToken: claimed?.lease.fencingToken,
+          slug: "write-a-migration",
+        },
+        m5,
+      ),
+    );
+    expect(refused.code).toBe("not_found");
+  });
+
+  it("50 open proposals stop more; old rejected ones are pruned; the admins are told once", async () => {
+    const w = await world();
+    const now = new Date().toISOString();
+    for (let i = 0; i < 50; i++)
+      await rows(
+        `INSERT INTO core_skill_versions (org_id, skill_id, version, name, description, body, sha256, status, source, created_by, created_at)
+         VALUES (?, ?, 1, ?, 'd', 'b', 'x', 'proposed', 'agent', 'someone-else', ?)`,
+        w.orgId,
+        `sk_open_${i}`,
+        `Open ${i}`,
+        now,
+      );
+    const capped = await refusal(
+      call(
+        "skill.propose",
+        { projectId: w.projectId, skill: { name: "One more", description: "d", body: "b" } },
+        IMPROVER,
+      ),
+    );
+    expect(capped.message).toMatch(/waiting for a person/);
+    // Make room; an old rejected one is pruned by the next proposal, and nobody is told again.
+    await rows(
+      "DELETE FROM core_skill_versions WHERE org_id = ? AND skill_id LIKE 'sk_open_%' AND skill_id != 'sk_open_0'",
+      w.orgId,
+    );
+    await rows(
+      `INSERT INTO core_skill_versions (org_id, skill_id, version, name, description, body, sha256, status, source, created_at)
+       VALUES (?, 'sk_old', 1, 'Old', 'd', 'b', 'x', 'rejected', 'agent', '2026-01-01T00:00:00.000Z')`,
+      w.orgId,
+    );
+    const before = (
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'skill.proposed') > 0",
+      )
+    ).length;
+    await ok(
+      "skill.propose",
+      { projectId: w.projectId, skill: { name: "Next", description: "d", body: "b" } },
+      IMPROVER,
+    );
+    expect(
+      await rows(
+        "SELECT skill_id FROM core_skill_versions WHERE org_id = ? AND skill_id = 'sk_old'",
+        w.orgId,
+      ),
+    ).toEqual([]);
+    const after = (
+      await rows(
+        "SELECT id FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'skill.proposed') > 0",
+      )
+    ).length;
+    expect(after).toBe(before);
+  });
+
+  it("hidden characters are refused in a name and a description too", async () => {
+    const w = await world();
+    for (const skill of [
+      { ...DRAFT, name: "Write\u00ADa migration" },
+      { ...DRAFT, description: "How\u2028we write" },
+      { ...DRAFT, body: "tag \u{E0041}" },
+    ])
+      expect((await refusal(save(w, skill))).code).toBe("invalid_input");
+  });
+
+  it("a new judging stage that arrives with skills attached loosens", async () => {
+    const w = await world();
+    await onShip(w);
+    await save(w);
+    const id = (await listed(w)).skills.find((s) => !s.builtin)?.id as string;
+    const judged = {
+      ...SHIP,
+      stages: [
+        ...SHIP.stages.slice(0, 4),
+        { ...SECURITY, id: "second", name: "Second look", skills: [{ skill: id }] },
+        ...SHIP.stages.slice(4),
+      ],
+    };
+    const r = await call(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: await orgVersion(w), workflow: judged },
+      w.human,
+    );
+    expect(r.status).toBe("pending");
   });
 });

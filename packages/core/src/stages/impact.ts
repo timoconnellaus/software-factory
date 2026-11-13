@@ -237,6 +237,12 @@ export function workflowImpact(
           `Adds ${s.name}, which acts outside the factory (${type.reversibility}).`,
         ),
       );
+    else if (check && type?.judges && (s.skills?.length ?? 0) > 0)
+      // A judge that arrives with skills follows text accepted as practice: what it is told is
+      // policy (Q16, review of #155), so it loosens.
+      changes.push(
+        loosens(`stages.${s.id}`, `Adds ${s.name}, a judge that follows attached skills.`),
+      );
     else if (check)
       changes.push({
         path: `stages.${s.id}`,

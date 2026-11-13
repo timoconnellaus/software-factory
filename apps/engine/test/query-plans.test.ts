@@ -44,6 +44,116 @@ function minute17(): number {
   return d.getTime() > Date.now() ? d.getTime() - 3_600_000 : d.getTime();
 }
 
+/**
+ * A job's skills resolved at enqueue (the pinned org config by primary key, the needed skill versions
+ * by primary key, without bodies), the list, a proposal, reading it and accepting it, and the
+ * runner's read of a skill (`skill.forJob`: its job, run and lease by key, then the version).
+ */
+async function skillsScenario(e: Env) {
+  const o = await world();
+  const call = (op: string, input: unknown, actor: World["human"] = o.human) =>
+    as(e, op, input, actor);
+  const out = async <T>(op: string, input: unknown, actor?: World["human"]) => {
+    const r = await call(op, input, actor);
+    if (r.status !== "ok") throw new Error(`${op} is ${r.status}`);
+    return r.output as T;
+  };
+  await out("agent.save", {
+    orgId: o.orgId,
+    baseVersion: 0,
+    agent: { name: "Builder", role: "implement", tier: "standard", instructions: "" },
+  });
+  await out("skill.save", {
+    orgId: o.orgId,
+    baseVersion: 1,
+    skill: { name: "Write a migration", description: "d", body: "b" },
+  });
+  const list = await out<{ skills: { id: string; builtin: boolean }[] }>("skill.list", {
+    orgId: o.orgId,
+  });
+  const skillId = list.skills.find((x) => !x.builtin)?.id as string;
+  await out("skill.attach", {
+    orgId: o.orgId,
+    baseVersion: 2,
+    skillId,
+    target: { agent: "Builder" },
+  });
+  const ship = {
+    ...SOFTWARE,
+    id: "wf_ship",
+    name: "Ship",
+    stages: SOFTWARE.stages.map((x) => (x.id === "build" ? { ...x, agent: "Builder" } : x)),
+  };
+  await out("workflow.save", { orgId: o.orgId, baseVersion: 3, workflow: ship });
+  const cfg = await out<{
+    current: { version: number; policy: Record<string, unknown> | null } | null;
+  }>("config.get", { projectId: o.projectId });
+  await out("config.save", {
+    projectId: o.projectId,
+    baseVersion: cfg.current?.version ?? 0,
+    policy: { ...(cfg.current?.policy ?? {}), workflow: "wf_ship", workflows: [], agents: [] },
+  });
+  const item = await out<{ workItemId: string }>("workItem.create", {
+    state: "backlog",
+    projectId: o.projectId,
+    title: "Skilled",
+  });
+  await e.DB.prepare("UPDATE core_work_items SET org_config_version = 4 WHERE id = ?")
+    .bind(item.workItemId)
+    .run();
+  await out(
+    "job.enqueue",
+    { workItemId: item.workItemId, stage: "build", role: "implement", prompt: "x", context: {} },
+    FOREMAN as never,
+  );
+  // The factory proposes a change; a person reads it and accepts it.
+  await out(
+    "skill.propose",
+    {
+      projectId: o.projectId,
+      skillId,
+      skill: { name: "Write a migration", description: "d", body: "c" },
+    },
+    { type: "self-improve", id: "improver" } as never,
+  );
+  await out("skill.list", { orgId: o.orgId });
+  const read = await out<{ version: { sha256: string } }>("skill.get", {
+    orgId: o.orgId,
+    skillId,
+    version: 2,
+  });
+  await out("skill.accept", {
+    orgId: o.orgId,
+    baseVersion: 4,
+    skillId,
+    version: 2,
+    sha256: read.version.sha256,
+  });
+  // The runner reads the job's skill: its run and lease, as a claim leaves them.
+  const reg = await out<{ runnerId: string }>("runner.register", { name: "M5" });
+  const runner = { type: "runner", id: reg.runnerId } as never;
+  const job = await e.DB.prepare("SELECT id FROM core_jobs WHERE work_item_id = ?")
+    .bind(item.workItemId)
+    .first<{ id: string }>();
+  if (!job) throw new Error("no job");
+  const now = new Date().toISOString();
+  await e.DB.batch([
+    e.DB.prepare(
+      `INSERT INTO core_runs (id, job_id, work_item_id, run_no, stage, runner_id, branch, base_branch,
+         fencing_token, status, started_at) VALUES (?, ?, ?, 1, 'build', ?, 'b', 'main', 7, 'running', ?)`,
+    ).bind(uid("run_"), job.id, item.workItemId, reg.runnerId, now),
+    e.DB.prepare(
+      `INSERT INTO core_leases (work_item_id, holder_kind, holder_id, fencing_token, claimed_at) VALUES (?, 'run', ?, 7, ?)
+       ON CONFLICT (work_item_id) DO UPDATE SET fencing_token = 7, holder_kind = 'run', holder_id = excluded.holder_id`,
+    ).bind(item.workItemId, job.id, now),
+  ]);
+  return out(
+    "skill.forJob",
+    { workItemId: item.workItemId, jobId: job.id, fencingToken: 7, slug: "write-a-migration" },
+    runner,
+  );
+}
+
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
@@ -285,87 +395,12 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
-    // Spec 52 (f), review of #155: a job's skills resolved at enqueue (the pinned org config by
-    // primary key, the needed skill versions by primary key, without bodies), and the runner's read
-    // of one (`skill.forJob`: the job, its run and lease by key, then the version by primary key).
-    name: "job.enqueue with skills, and skill.forJob",
-    run: async (e) => {
-      const o = await world();
-      await ok(
-        "agent.save",
-        {
-          orgId: o.orgId,
-          baseVersion: 0,
-          agent: { name: "Builder", role: "implement", tier: "standard", instructions: "" },
-        },
-        o.human,
-      );
-      await ok(
-        "skill.save",
-        {
-          orgId: o.orgId,
-          baseVersion: 1,
-          skill: { name: "Write a migration", description: "d", body: "b" },
-        },
-        o.human,
-      );
-      const list = await ok<{ skills: { id: string; builtin: boolean }[] }>(
-        "skill.list",
-        { orgId: o.orgId },
-        o.human,
-      );
-      const skillId = list.skills.find((x) => !x.builtin)?.id as string;
-      await ok(
-        "skill.attach",
-        { orgId: o.orgId, baseVersion: 2, skillId, target: { agent: "Builder" } },
-        o.human,
-      );
-      const ship = {
-        ...SOFTWARE,
-        id: "wf_ship",
-        name: "Ship",
-        stages: SOFTWARE.stages.map((x) => (x.id === "build" ? { ...x, agent: "Builder" } : x)),
-      };
-      await ok("workflow.save", { orgId: o.orgId, baseVersion: 3, workflow: ship }, o.human);
-      const cfg = await ok<{
-        current: { version: number; policy: Record<string, unknown> | null } | null;
-      }>("config.get", { projectId: o.projectId }, o.human);
-      await ok(
-        "config.save",
-        {
-          projectId: o.projectId,
-          baseVersion: cfg.current?.version ?? 0,
-          policy: {
-            ...(cfg.current?.policy ?? {}),
-            workflow: "wf_ship",
-            workflows: [],
-            agents: [],
-          },
-        },
-        o.human,
-      );
-      const item = await ok<{ workItemId: string }>(
-        "workItem.create",
-        { state: "backlog", projectId: o.projectId, title: "Skilled" },
-        o.human,
-      );
-      await e.DB.prepare("UPDATE core_work_items SET org_config_version = 4 WHERE id = ?")
-        .bind(item.workItemId)
-        .run();
-      return as(
-        e,
-        "job.enqueue",
-        {
-          workItemId: item.workItemId,
-          stage: "build",
-          role: "implement",
-          prompt: "x",
-          context: {},
-        },
-        FOREMAN as never,
-      );
-    },
+    // Spec 52 (f), reviews of #155: a job's skills resolved at enqueue, then list, propose, read
+    // and accept, and the runner's skill.forJob (see skillsScenario).
+    name: "skills: enqueue, list, propose, get, accept and skill.forJob",
+    run: (e) => skillsScenario(e),
   },
+
   {
     // Last two: they end the test's run 31 days ago, archive it, and read it back.
     name: "archiving an ended run's events (retention)",
@@ -467,4 +502,26 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
       expect(await growingScans(env.DB, seen)).toEqual([]);
     });
   }
+
+  it("every read of a skill version uses its full key or a named index, never the org's history", async () => {
+    const seen: Recorded[] = [];
+    await skillsScenario(recordingEnv(env, seen));
+    const reads = seen.filter(
+      (r) => /core_skill_versions/.test(r.sql) && /^\s*select/i.test(r.sql),
+    );
+    expect(reads.length).toBeGreaterThan(0);
+    for (const { sql, params } of reads) {
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+        .bind(...params)
+        .all<{ detail: string }>();
+      const lines = results.map((r) => r.detail).filter((d) => /core_skill_versions/.test(d));
+      for (const d of lines)
+        expect(d, sql).toMatch(
+          /(?:PRIMARY KEY|INDEX sqlite_autoindex_core_skill_versions_1) \(org_id=\? AND skill_id=\?(?: AND version=\?)?\)|core_skill_versions_(status|rejected|author)_idx/,
+        );
+      // The batch read of versions by key: each arm on the whole primary key.
+      if (/\bOR\b/.test(sql))
+        expect(lines.join("\n"), sql).toMatch(/org_id=\? AND skill_id=\? AND version=\?/);
+    }
+  });
 });

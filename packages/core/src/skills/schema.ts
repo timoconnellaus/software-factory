@@ -20,17 +20,27 @@ export const MAX_ORG_SKILLS = 200;
 export const MAX_OPEN_PROPOSALS = 50;
 export const MAX_PROPOSALS_A_DAY = 10;
 
-/** Control and format characters (not newline or tab): text a person can't see doesn't go in. */
-function hasHidden(text: string): boolean {
+/**
+ * Text a person can't see doesn't go in (review of #155): C0 and C1 controls (not newline or tab),
+ * the soft hyphen, line and paragraph separators, zero-width and bidi marks, overrides and isolates,
+ * word joiners, variation selectors and tag characters.
+ */
+export function hasHidden(text: string): boolean {
   for (const ch of text) {
     const c = ch.codePointAt(0) ?? 0;
     if (c === 9 || c === 10 || c === 13) continue;
-    if (c < 32 || c === 127) return true;
-    if ((c >= 0x200b && c <= 0x200f) || (c >= 0x202a && c <= 0x202e)) return true;
+    if (c < 32 || (c >= 0x7f && c <= 0x9f) || c === 0xad) return true;
+    if ((c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e)) return true;
     if ((c >= 0x2060 && c <= 0x2064) || (c >= 0x2066 && c <= 0x2069) || c === 0xfeff) return true;
+    if ((c >= 0xfe00 && c <= 0xfe0f) || (c >= 0xe0000 && c <= 0xe01ef)) return true;
   }
   return false;
 }
+const visible = (what: string) =>
+  [
+    (t: string) => !hasHidden(t),
+    `no control or invisible format characters in the ${what}`,
+  ] as const;
 
 /** When a stage's attached skill applies to an item (spec 52, Skills). Absent: always. */
 export const skillConditionSchema = z
@@ -51,13 +61,23 @@ export const stageSkillSchema = z
 /** What a person (or the factory, proposing) writes as one version of a skill. */
 export const skillDraftSchema = z
   .object({
-    name: z.string().trim().min(1).max(80),
-    description: z.string().trim().min(1).max(300),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine(...visible("name")),
+    description: z
+      .string()
+      .trim()
+      .min(1)
+      .max(300)
+      .refine(...visible("description")),
     body: z
       .string()
       .min(1)
       .max(MAX_SKILL_BODY)
-      .refine((b) => !hasHidden(b), "no control or invisible format characters"),
+      .refine(...visible("instructions")),
     /** It changes a stage type's built-in skill: appended to it, or in its place. */
     overrides: z
       .object({ builtin: builtinSkillIdSchema, mode: z.enum(["extend", "replace"]) })

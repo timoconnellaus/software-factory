@@ -35,5 +35,12 @@ CREATE TABLE core_skill_versions (
 -- skill.list's open proposals for an org: WHERE org_id = ? AND status = 'proposed'.
 CREATE INDEX core_skill_versions_status_idx ON core_skill_versions (org_id, status)
   WHERE status = 'proposed';
+-- skill.propose's prune of old rejected proposals: WHERE org_id = ? AND status = 'rejected' AND
+-- created_at < ?, oldest first, LIMIT 20.
+CREATE INDEX core_skill_versions_rejected_idx ON core_skill_versions (org_id, created_at)
+  WHERE status = 'rejected';
+-- skill.propose's daily cap: a proposer's versions that day, WHERE org_id = ? AND created_by = ? AND
+-- created_at >= ?, LIMIT the cap + 1.
+CREATE INDEX core_skill_versions_author_idx ON core_skill_versions (org_id, created_by, created_at);
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 283) WHERE key = 'schema_version';

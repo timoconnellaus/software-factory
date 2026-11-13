@@ -86,7 +86,11 @@ export function resolveSkills(input: {
       : null;
   };
   // 1. The type's built-ins, extended or replaced by the org's overrides (built-in text first).
-  const overriding = [...input.orgSkills.values()].filter((s) => s.overrides);
+  // Only the org skills that override one of this type's built-ins (review of #155).
+  const own = new Set(BUILTIN_SKILLS.filter((x) => x.type === input.stageType).map((x) => x.id));
+  const overriding = [...input.orgSkills.values()].filter(
+    (s) => s.overrides && own.has(s.overrides.builtin),
+  );
   for (const s of BUILTIN_SKILLS.filter((x) => x.type === input.stageType)) {
     const over = overriding.filter((o) => o.overrides?.builtin === s.id);
     const replaced = over.find((o) => o.overrides?.mode === "replace");

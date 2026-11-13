@@ -90,9 +90,18 @@ async function versionsOf(
         "status",
         ...(withBody ? (["body"] as const) : []),
       ])
-      .where("org_id", "=", org)
+      // org_id inside each arm, so each is a primary-key lookup (MULTI-INDEX OR on the full key),
+      // never a walk of the org's version history (review of #155).
       .where((eb) =>
-        eb.or(chunk.map((w) => eb.and([eb("skill_id", "=", w.id), eb("version", "=", w.version)]))),
+        eb.or(
+          chunk.map((w) =>
+            eb.and([
+              eb("org_id", "=", org),
+              eb("skill_id", "=", w.id),
+              eb("version", "=", w.version),
+            ]),
+          ),
+        ),
       )
       .limit(chunk.length)
       .execute();
@@ -110,8 +119,8 @@ async function versionsOf(
   }
   return out;
 }
-/** Skill keys a query binds at most (two values each, well under D1's limit). */
-const VERSION_CHUNK = 40;
+/** Skill keys a query binds at most (three values each: 90, under D1's 100). */
+const VERSION_CHUNK = 30;
 
 /** Where a skill is attached in a config: agents and stages, for people and for archive's check. */
 function attachments(config: OrgConfig, skill: string): string[] {
@@ -345,6 +354,7 @@ type AcceptInput = {
   baseVersion: number;
   skillId: string;
   version: number;
+  sha256: string;
   note?: string;
 };
 async function acceptSkill(ctx: HandlerContext, input: AcceptInput, createdBy?: string) {
@@ -352,13 +362,18 @@ async function acceptSkill(ctx: HandlerContext, input: AcceptInput, createdBy?: 
   requireBase(version, input.baseVersion);
   const row = await ctx.db
     .selectFrom("core_skill_versions")
-    .select(["status", "overrides", "name", "parent_version"])
+    .select(["status", "overrides", "name", "parent_version", "sha256"])
     .where("org_id", "=", input.orgId)
     .where("skill_id", "=", input.skillId)
     .where("version", "=", input.version)
     .executeTakeFirst();
   if (!row || row.status !== "proposed")
     throw new OperationError("not_found", "no such proposal waiting for a decision");
+  if (row.sha256 !== input.sha256)
+    throw new OperationError(
+      "conflict",
+      "the proposal's text isn't the text you read: read it again (skill.get with its version) before accepting",
+    );
   // A proposal made against an older version would quietly replace a later save (review of #155).
   if ((row.parent_version ?? null) !== (config.skills[input.skillId]?.version ?? null))
     throw new OperationError(
@@ -491,16 +506,71 @@ export const skillList = defineOperation({
   },
 });
 
+/** A line diff (LCS), for a person to read a proposal against the current text. */
+export function lineDiff(
+  before: string,
+  after: string,
+): { op: "same" | "add" | "remove"; line: string }[] {
+  const a = before ? before.split("\n") : [];
+  const b = after.split("\n");
+  const n = a.length;
+  const m = b.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      (lcs[i] as number[])[j] =
+        a[i] === b[j]
+          ? ((lcs[i + 1] as number[])[j + 1] ?? 0) + 1
+          : Math.max((lcs[i + 1] as number[])[j] ?? 0, (lcs[i] as number[])[j + 1] ?? 0);
+  const out: { op: "same" | "add" | "remove"; line: string }[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) {
+      out.push({ op: "same", line: a[i] as string });
+      i++;
+      j++;
+    } else if (
+      i < n &&
+      (j >= m || ((lcs[i + 1] as number[])[j] ?? 0) >= ((lcs[i] as number[])[j + 1] ?? 0))
+    ) {
+      out.push({ op: "remove", line: a[i] as string });
+      i++;
+    } else {
+      out.push({ op: "add", line: b[j] as string });
+      j++;
+    }
+  }
+  return out;
+}
+
 export const skillGet = defineOperation({
   name: "skill.get",
   description:
-    "One skill (ADR 0513): its current text, its versions (newest first, at most 50) with who wrote each and why, and where it is attached. Members only.",
+    "One skill (ADR 0513): its current text, its versions (newest first, at most 50) with who wrote each and why, and where it is attached. With `version`, that version too (a proposal a person is about to accept): its text, its sha256 (which `skill.accept` must carry) and a line diff against the current text. Members only.",
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
-  input: z.object({ orgId, skillId: z.string().min(1).max(80) }),
+  input: z.object({
+    orgId,
+    skillId: z.string().min(1).max(80),
+    version: z.number().int().positive().optional(),
+  }),
   output: z.object({
     id: z.string(),
+    /** The version asked for (a proposal to read before accepting it), with its diff. */
+    version: z
+      .object({
+        version: z.number(),
+        status: z.string(),
+        name: z.string(),
+        description: z.string(),
+        body: z.string(),
+        sha256: z.string(),
+        overrides: z.object({ builtin: z.string(), mode: z.string() }).nullable(),
+        diff: z.array(z.object({ op: z.enum(["same", "add", "remove"]), line: z.string() })),
+      })
+      .nullable(),
     current: z
       .object({ version: z.number(), name: z.string(), description: z.string(), body: z.string() })
       .nullable(),
@@ -530,6 +600,7 @@ export const skillGet = defineOperation({
         },
         versions: [],
         attachedTo: attachments(config, builtin.id),
+        version: null,
       };
     // By the primary key's prefix, newest first.
     const versions = await ctx.db
@@ -547,8 +618,27 @@ export const skillGet = defineOperation({
         )
       : undefined;
     if (!versions.length) throw new OperationError("not_found", `no skill ${input.skillId}`);
+    const asked = input.version
+      ? (
+          await versionsOf(ctx.db, input.orgId, [{ id: input.skillId, version: input.version }])
+        ).get(input.skillId)
+      : undefined;
+    if (input.version && !asked)
+      throw new OperationError("not_found", `no v${input.version} of ${input.skillId}`);
     return {
       id: input.skillId,
+      version: asked
+        ? {
+            version: asked.version,
+            status: asked.status,
+            name: asked.name,
+            description: asked.description,
+            body: asked.body,
+            sha256: asked.sha256,
+            overrides: asked.overrides,
+            diff: lineDiff(current?.body ?? "", asked.body),
+          }
+        : null,
       current: current
         ? {
             version: current.version,
@@ -703,21 +793,42 @@ export const skillPropose = defineOperation({
         "conflict",
         `${open.length} proposals are waiting for a person: decide some first`,
       );
-    const today = ctx.now.slice(0, 10);
-    if (
-      open.filter((o) => o.created_by === ctx.actor.id && o.created_at.startsWith(today)).length >=
-      MAX_PROPOSALS_A_DAY
-    )
+    // Every proposal this proposer made today, whatever became of it (core_skill_versions_author_idx).
+    const today = await ctx.db
+      .selectFrom("core_skill_versions")
+      .select("version")
+      .where("org_id", "=", input.orgId)
+      .where("created_by", "=", ctx.actor.id)
+      .where("created_at", ">=", `${ctx.now.slice(0, 10)}T00:00:00.000Z`)
+      .limit(MAX_PROPOSALS_A_DAY + 1)
+      .execute();
+    if (today.length >= MAX_PROPOSALS_A_DAY)
       throw new OperationError("conflict", `at most ${MAX_PROPOSALS_A_DAY} proposals a day`);
+    // Its evidence names an item of this project (review of #155).
+    const from = input.skill.provenance?.workItemId;
+    if (from) {
+      const item = await ctx.db
+        .selectFrom("core_work_items")
+        .select("project_id")
+        .where("id", "=", from)
+        .executeTakeFirst();
+      if (item?.project_id !== requireProject(ctx).id)
+        throw new OperationError(
+          "invalid_input",
+          "the provenance names an item of another project",
+        );
+    }
     if ((await currentNames(ctx.db, input.orgId, config, id)).has(skillSlug(input.skill.name)))
       throw new OperationError("invalid_input", `another skill is called "${input.skill.name}"`);
     // Rejected proposals go after 30 days, a few at a time (by the primary key's prefix).
     ctx.write(
-      ctx.db
-        .deleteFrom("core_skill_versions")
-        .where("org_id", "=", input.orgId)
-        .where("status", "=", "rejected")
-        .where("created_at", "<", new Date(Date.parse(ctx.now) - 30 * 86_400_000).toISOString()),
+      ctx.d1
+        .prepare(
+          `DELETE FROM core_skill_versions WHERE (org_id, skill_id, version) IN (
+             SELECT org_id, skill_id, version FROM core_skill_versions INDEXED BY core_skill_versions_rejected_idx
+             WHERE org_id = ? AND status = 'rejected' AND created_at < ? ORDER BY created_at LIMIT 20)`,
+        )
+        .bind(input.orgId, new Date(Date.parse(ctx.now) - 30 * 86_400_000).toISOString()),
     );
     draftRow(
       ctx,
@@ -762,7 +873,7 @@ export const skillPropose = defineOperation({
 export const skillAccept = defineOperation({
   name: "skill.accept",
   description:
-    "Accept a proposed skill version (ADR 0513): it becomes the skill's current version in a new org config version. A person's decision, in the app; one a judge follows is policy and waits for an org admin. Org admins only.",
+    "Accept a proposed skill version (ADR 0513): it becomes the skill's current version in a new org config version. Carry the `sha256` of the text you read (`skill.get` with the version): a mismatch is refused, so nobody accepts text they didn't see. A person's decision, in the app; one a judge follows is policy and waits for an org admin. Org admins only.",
   risk: "write",
   // Judged by the proposal being accepted: its own overrides (review of #155), so a proposal that
   // extends the reviewer's protected skill is the loosening it is.
@@ -790,6 +901,8 @@ export const skillAccept = defineOperation({
     baseVersion,
     skillId: skillIdSchema,
     version: z.number().int().positive(),
+    /** The sha256 of the text the person read (`skill.get`): what they accept, exactly. */
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
     note,
   }),
   output: z.object({ version: z.number() }),
