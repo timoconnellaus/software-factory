@@ -14,10 +14,12 @@ import {
   type GitHubService,
   type InstallationInfo,
   type InstallationRepo,
+  mergeBaseAmbiguousFrom,
   OperationError,
   type PullRequestInfo,
   type RepoGuards,
   type RepoRef,
+  type SinceBase,
 } from "@software-factory/core";
 
 const API = "https://api.github.com";
@@ -563,6 +565,41 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         complete: files.length < COMPARE_FILES_CAP,
       };
     },
+    async mergeBaseAmbiguous(repo, a, b) {
+      const since = async (base: string, head: string): Promise<SinceBase | null> => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=250`,
+        );
+        if (r.status !== 200) return null;
+        const body = r.json as {
+          merge_base_commit?: { sha?: string };
+          total_commits?: number;
+          commits?: { sha: string; parents?: { sha: string }[] }[];
+        };
+        return {
+          base: body.merge_base_commit?.sha ?? null,
+          total: body.total_commits ?? 0,
+          commits: (body.commits ?? []).map((c) => ({
+            sha: c.sha,
+            parents: (c.parents ?? []).map((p) => p.sha),
+          })),
+        };
+      };
+      const [ab, ba] = await Promise.all([since(a, b), since(b, a)]);
+      if (!ab || !ba) return null;
+      // An ancestor of the base: the base is ahead of it and not behind (compare parent...base).
+      return mergeBaseAmbiguousFrom(ab, ba, async (sha, base) => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(sha)}...${encodeURIComponent(base)}?per_page=1`,
+        );
+        if (r.status !== 200) return null;
+        return (r.json as { behind_by?: number }).behind_by === 0;
+      });
+    },
     async pathEntries(repo, sha, paths) {
       // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
       // never the whole tree. GraphQL gives the mode as a number: 33188 is 100644 in octal.
@@ -713,6 +750,46 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         if (out.length >= body.total_count || body.check_runs.length === 0) break;
       }
       return out;
+    },
+    async revertPullRequest(repo, input) {
+      const pr = await api(repo, "GET", `/pulls/${input.number}`);
+      if (pr.status !== 200) fail(`read PR #${input.number}`, pr);
+      const nodeId = (pr.json as { node_id: string }).node_id;
+      const r = (await graphql(
+        repo,
+        `mutation($id: ID!, $title: String!, $body: String!) {
+          revertPullRequest(input: { pullRequestId: $id, title: $title, body: $body }) {
+            revertPullRequest { number url headRefName headRefOid }
+          }
+        }`,
+        { id: nodeId, title: input.title, body: input.body },
+      )) as {
+        data?: {
+          revertPullRequest?: {
+            revertPullRequest?: {
+              number: number;
+              url: string;
+              headRefName: string;
+              headRefOid: string;
+            };
+          };
+        };
+        errors?: unknown;
+      };
+      const made = r.data?.revertPullRequest?.revertPullRequest;
+      if (!made) fail(`revert PR #${input.number}`, { status: 200, json: r });
+      const m = made as NonNullable<typeof made>;
+      return { number: m.number, branch: m.headRefName, headSha: m.headRefOid, url: m.url };
+    },
+    async closePullRequest(repo, number) {
+      const r = await api(repo, "PATCH", `/pulls/${number}`, { state: "closed" });
+      if (r.status !== 200) fail(`close PR #${number}`, r);
+    },
+    async commentOnPullRequest(repo, number, body) {
+      const r = await api(repo, "POST", `/issues/${number}/comments`, {
+        body: body.slice(0, 60_000),
+      });
+      if (r.status !== 201) fail(`comment on PR #${number}`, r);
     },
     async rerequestCheckRun(repo, checkRunId) {
       const r = await api(

@@ -45,7 +45,7 @@ import {
 } from "../operation.ts";
 import { planningRunEnded, USER_EVENTS } from "../planning.ts";
 import { policyImpact } from "../policy/impact.ts";
-import { declaredChecks, type ProjectPolicy } from "../policy/project-policy.ts";
+import { declaredChecks, onOrgWorkflow, type ProjectPolicy } from "../policy/project-policy.ts";
 import { activeKillSwitch, loadPolicy } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
 import { hostChecksOn } from "../verify/proof.ts";
@@ -62,6 +62,7 @@ import {
   sha,
   workItemId,
 } from "./shared.ts";
+import { jobSkills } from "./skills.ts";
 import { RUNNER_OFFLINE_MS, WIP_WAIT_REASON } from "./work-items.ts";
 
 /** How long a lease lasts without a heartbeat (open question in ADR 0021; ADR 0052 picks this). */
@@ -549,6 +550,28 @@ export const jobEnqueue = defineOperation({
       requires.push("checks");
     }
     const id = newId("job");
+    // The skills the job follows (ADR 0513), as references the runner fetches by slug: for an item
+    // on an org workflow, at the org config version it pinned.
+    const project = ctx.scope.project;
+    // Only an item on an org workflow has any: nothing more is read for the others.
+    const skills =
+      project && (w.org_config_version !== null || onOrgWorkflow(ctx.scope.rawPolicy))
+        ? await jobSkills(
+            ctx,
+            w,
+            (
+              await loadPolicy(ctx.db, {
+                id: project.id,
+                policy_sha: w.policy_sha ?? project.policy_sha,
+              })
+            ).policy,
+            input.stage,
+            input.context,
+          )
+        : [];
+    // The engine's resolved list only: whatever a caller put under `skills` is dropped (review of #155).
+    const { skills: _caller, ...given } = input.context;
+    const context = skills.length ? { ...given, skills } : given;
     ctx.write(
       ctx.db.insertInto("core_jobs").values({
         id,
@@ -559,7 +582,7 @@ export const jobEnqueue = defineOperation({
         role: input.role,
         requires: JSON.stringify(requires),
         prompt: input.prompt,
-        context: JSON.stringify(input.context),
+        context: JSON.stringify(context),
         session_timeout_ms: input.sessionTimeoutMs,
         created_at: ctx.now,
         pool: stagePool(input.stage),

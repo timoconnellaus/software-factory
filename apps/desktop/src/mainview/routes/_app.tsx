@@ -18,6 +18,7 @@ import { CommandPalette } from "../components/shell-palette.tsx";
 import { OrgRail, Sidebar } from "../components/shell-sidebar.tsx";
 import { StatusBar } from "../components/shell-status-bar.tsx";
 import { Toolbar, useTabs } from "../components/shell-toolbar.tsx";
+import { WindowSkeleton } from "../components/window-skeleton.tsx";
 import {
   inboxQuery,
   meQuery,
@@ -65,6 +66,8 @@ export const appRoute = createRoute({
     ]).catch(() => null);
   },
   component: AppLayout,
+  // Loading the shell itself (the session and its first reads): the whole window, not a page.
+  pendingComponent: WindowSkeleton,
 });
 
 /** The work item in focus mode, when the window is on it (spec 41). Leaving the item leaves focus. */

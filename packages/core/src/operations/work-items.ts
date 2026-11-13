@@ -18,6 +18,7 @@ import { childEnded, childrenOf, PLAN_MERGED_OUTSIDE, SPLIT_MAX, sliceHash } fro
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
+import { resolutionFor, resolutionSchema } from "./babysit.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -424,6 +425,12 @@ export const workItemGet = defineOperation({
     waitsFor: z.array(linkView).optional(),
     waitedOnBy: z.array(linkView).optional(),
     /**
+     * What the babysitter's conflict resolution changed (spec 53 decision 1), for the item's
+     * current head: the reopened merge gate shows only this (patches: babysit.resolutionPatches),
+     * flags `outside`, and shows the whole diff when `status` isn't `clean`.
+     */
+    babysitResolution: resolutionSchema.nullable().optional(),
+    /**
      * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
      * plan split into (`children`), each with where it is.
      */
@@ -581,6 +588,7 @@ export const workItemGet = defineOperation({
         queue,
         waitsForRows,
         waitedOnRows,
+        resolutionRows,
         parentRows,
         childRows,
       ],
@@ -641,6 +649,11 @@ export const workItemGet = defineOperation({
           .innerJoin("core_work_items as t", "t.id", "l.work_item_id")
           .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
           .where("l.waits_for_id", "=", w.id),
+        // The babysitter's resolution on this head, its summary only (primary key; spec 53).
+        ctx.db
+          .selectFrom("core_babysit_resolutions")
+          .select(["head_sha", "summary"])
+          .where("work_item_id", "=", w.id),
         // Spec 24: the parent by primary key; the children by core_work_items_parent_idx (≤ 8).
         // Only a plan's child has a parent to show (review of #173): no lookup otherwise.
         ctx.db
@@ -660,6 +673,7 @@ export const workItemGet = defineOperation({
     const spec = w.current_spec_id ? specRows[0] : undefined;
     const packet = packetRows[0];
     return {
+      babysitResolution: resolutionFor(resolutionRows[0], w.head_sha),
       item: {
         ...summarise(w),
         body: w.body,
