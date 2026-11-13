@@ -18,7 +18,12 @@ import { childEnded, childrenOf, PLAN_MERGED_OUTSIDE, SPLIT_MAX, sliceHash } fro
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
-import { resolutionFor, resolutionSchema } from "./babysit.ts";
+import {
+  lastEndedDelivery,
+  resolutionExpected,
+  resolutionFor,
+  resolutionSchema,
+} from "./babysit.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -450,6 +455,12 @@ export const workItemGet = defineOperation({
      */
     babysitResolution: resolutionSchema.nullable().optional(),
     /**
+     * The merge gate reopened after a babysitter resolution of this head (#201 review), set by the
+     * engine when it ends the delivery for that reason. With no readable `babysitResolution`, the
+     * gate says the resolution couldn't be shown: review the whole diff.
+     */
+    resolutionExpected: z.boolean().optional(),
+    /**
      * Spec 24: the plan this item was split off (`parent`), and the work items its own approved
      * plan split into (`children`), each with where it is.
      */
@@ -610,6 +621,7 @@ export const workItemGet = defineOperation({
         waitsForRows,
         waitedOnRows,
         resolutionRows,
+        lastEndedRows,
         parentRows,
         childRows,
         factRows,
@@ -676,6 +688,8 @@ export const workItemGet = defineOperation({
           .selectFrom("core_babysit_resolutions")
           .select(["head_sha", "summary"])
           .where("work_item_id", "=", w.id),
+        // Whether the gate reopened for a resolution of this head (its latest ended delivery).
+        lastEndedDelivery(ctx, w.id),
         // Spec 24: the parent by primary key; the children by core_work_items_parent_idx (≤ 8).
         // Only a plan's child has a parent to show (review of #173): no lookup otherwise.
         ctx.db
@@ -702,6 +716,9 @@ export const workItemGet = defineOperation({
     const packet = packetRows[0];
     return {
       babysitResolution: resolutionFor(resolutionRows[0], w.head_sha),
+      resolutionExpected:
+        (!!w.head_sha && resolutionRows[0]?.head_sha === w.head_sha) ||
+        resolutionExpected(lastEndedRows[0], w.head_sha),
       item: {
         ...summarise(w),
         body: w.body,

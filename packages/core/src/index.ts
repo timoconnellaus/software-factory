@@ -20,7 +20,7 @@ export {
   SWEEP_CURSOR_KEY,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
-export { type BabysitReason, babysitResult } from "./operations/babysit.ts";
+export { type BabysitReason, babysitResult, RESOLVED_CONFLICT } from "./operations/babysit.ts";
 export {
   CLI_APPROVE_PATH,
   CLI_DEVICE_ACTOR,

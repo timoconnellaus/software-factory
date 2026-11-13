@@ -20,6 +20,7 @@ import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op } from "../lib/op.ts";
 import { useRefreshAfterDecision, workItemQuery } from "../lib/queries.ts";
 import { type Withdrawal, withdrawnBefore, withdrawnText } from "../lib/withdrawn.ts";
+import { ResolutionSummary, resolutionNeedsFullDiff } from "./resolution.tsx";
 import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
 import { Chip, Field, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 
@@ -96,6 +97,8 @@ function MergeDetail({
         <TwoColumns
           main={
             <>
+              {/* A reopened gate after the babysitter's resolution says so first (spec 53). */}
+              <ResolutionSummary detail={d} />
               <VerdictPanel packet={packet} />
               <section className="flex flex-col gap-2">
                 <SectionTitle>Acceptance criteria</SectionTitle>
@@ -116,7 +119,21 @@ function MergeDetail({
               </div>
             </>
           }
-          side={<MergeDecision detail={d} packet={packet} opened={opened} />}
+          side={
+            // A resolution that isn't clean, or can't be shown, isn't decided from the Inbox: the
+            // whole diff is the review (#201 review).
+            resolutionNeedsFullDiff(d) ? (
+              <Panel className="gap-1.5" data-testid="inbox-merge-elsewhere">
+                <div className="font-semibold">Decide from the item's review</div>
+                <div className="text-ink-muted">
+                  The babysitter resolved a conflict, and there's more than the conflict to look at:
+                  open the full diff there before you merge.
+                </div>
+              </Panel>
+            ) : (
+              <MergeDecision detail={d} packet={packet} opened={opened} />
+            )
+          }
         />
       )}
     </div>

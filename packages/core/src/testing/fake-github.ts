@@ -12,7 +12,11 @@ import type {
   RepoGuards,
   RepoRef,
 } from "../services.ts";
-import { mergeBaseAmbiguousFrom, type SinceBase } from "../verify/merge-base.ts";
+import {
+  type MergeBaseUnknown,
+  mergeBaseAmbiguousFrom,
+  type SinceBase,
+} from "../verify/merge-base.ts";
 import { PROTECTION_EVENTS } from "../verify/protection.ts";
 
 type Touch =
@@ -72,7 +76,7 @@ interface RepoState {
   /** Commits GitHub itself made and signed (update-branch merges), for `commitInfo`. */
   byGitHub?: Record<string, true>;
   /** `setMergeBaseAmbiguous`: the answer `mergeBaseAmbiguous` gives, whatever the graph. */
-  ambiguousOverride?: boolean | null;
+  ambiguousOverride?: boolean | MergeBaseUnknown;
   /** Of those, the ones a person made in GitHub's web conflict editor (authored by them). */
   webEditor?: Record<string, true>;
   /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
@@ -165,7 +169,10 @@ export interface FakeGitHub extends GitHubService {
    * Overrides `mergeBaseAmbiguous` for the repo (undefined: judged from the graph again), for a
    * caller's fail-closed test where a real criss-cross can't be built around a fixed head.
    */
-  setMergeBaseAmbiguous(repo: RepoRef, answer: boolean | null | undefined): Promise<void>;
+  setMergeBaseAmbiguous(
+    repo: RepoRef,
+    answer: boolean | MergeBaseUnknown | undefined,
+  ): Promise<void>;
   /** Points a branch at an existing commit, as a force-push does. */
   forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
   /** Sets a commit's committer date, as whoever pushed it chose (past or future). */

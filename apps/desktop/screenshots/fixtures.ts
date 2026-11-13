@@ -808,6 +808,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
               held: false,
             }
           : { parent: null, children: [], held: false },
+    babysitResolution: id === "wi_13" ? resolutionFixture(d.item.headSha) : null,
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
@@ -833,6 +834,62 @@ function detail(id: string): OpOutput<"workItem.get"> {
     gates: [],
     runs: [],
     reviewPacket: null,
+  };
+}
+
+/**
+ * Spec 53 decision 1: `?fixture=resolution` gives #13's head a clean resolution by the babysitter
+ * (a conflict, one file outside it), `?fixture=resolution-unclean` one it couldn't read in full.
+ */
+let seenResolution: "clean" | "unclean" | null = null;
+function resolutionFixture(head: string | null): OpOutput<"workItem.get">["babysitResolution"] {
+  const where = `${globalThis.location?.search ?? ""}${globalThis.location?.hash ?? ""}`;
+  if (where.includes("fixture=resolution-unclean")) seenResolution = "unclean";
+  else if (where.includes("fixture=resolution")) seenResolution = "clean";
+  if (!seenResolution) return null;
+  const base = {
+    sha: head ?? "9c41e07d2b",
+    itemHead: "4d1c9e2a7b",
+    main: "b7e0f31c55",
+    notShown: 0,
+    patchBase: "itemHead" as const,
+  };
+  if (seenResolution === "unclean") {
+    return {
+      ...base,
+      status: "incomplete",
+      reason: "too many merges between the item and the default branch to find the merge base",
+      files: [],
+      outside: [],
+      outsideNotShown: 0,
+    };
+  }
+  return {
+    ...base,
+    status: "clean",
+    reason: null,
+    files: [
+      {
+        path: "packages/core/src/verify/tests-intact.ts",
+        previousPath: null,
+        conflicted: true,
+        took: "neither",
+        note: null,
+        patchOmitted: false,
+        patchTruncated: false,
+      },
+      {
+        path: "apps/engine/src/deliver/deliverer.ts",
+        previousPath: null,
+        conflicted: false,
+        took: "item",
+        note: "differs from the default branch's change, which a merge would take",
+        patchOmitted: false,
+        patchTruncated: false,
+      },
+    ],
+    outside: ["apps/engine/src/deliver/deliverer.ts"],
+    outsideNotShown: 0,
   };
 }
 
@@ -2009,6 +2066,16 @@ export const ANSWERS: Answers = {
     ),
   }),
   "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
+  "babysit.resolutionPatches": (input) => ({
+    // The patches of the head the item is at, as the engine returns them.
+    headSha: detail(input.workItemId).item.headSha,
+    patches: {
+      "packages/core/src/verify/tests-intact.ts":
+        "@@ -41,7 +41,9 @@ export function testsIntact(files: ChangedFile[]) {\n   const findings: Finding[] = [];\n-  for (const f of files) {\n+  // Both sides: main's skip-list and the item's suppression check.\n+  for (const f of files.filter((x) => !SKIP.has(x.path))) {\n     findings.push(...suppressions(f));\n+    findings.push(...thresholds(f));\n   }",
+      "apps/engine/src/deliver/deliverer.ts":
+        '@@ -199,3 +199,3 @@\n-    if (!head || head.driver !== "babysitter") return null;\n+    if (!head) return null;',
+    },
+  }),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
   "workItem.timeline": (input) =>

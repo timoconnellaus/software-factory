@@ -21,6 +21,7 @@ import {
   invoke,
   isOperationError,
   NO_BABYSIT_RUNNER,
+  RESOLVED_CONFLICT,
 } from "@software-factory/core";
 import { parseJson } from "@software-factory/db";
 import { invokeDeps } from "../deps.ts";
@@ -783,7 +784,7 @@ async function settleBabysit(
         return {
           kind: "end",
           delivery: "withdrawn",
-          reason: `the babysitter resolved a conflict with the default branch in ${job.head_sha.slice(0, 7)}: review the resolution. ${result.note}`,
+          reason: `${RESOLVED_CONFLICT}${job.head_sha.slice(0, 7)}: review the resolution. ${result.note}`,
         };
       }
       const why = moved.status === "ok" ? String(moved.output.reason ?? "") : refusal(moved);

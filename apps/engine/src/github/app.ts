@@ -592,7 +592,6 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         };
       };
       const [ab, ba] = await Promise.all([since(a, b), since(b, a)]);
-      if (!ab || !ba) return null;
       // An ancestor of the base: the base is ahead of it and not behind (compare parent...base).
       return mergeBaseAmbiguousFrom(ab, ba, async (sha, base) => {
         const r = await api(

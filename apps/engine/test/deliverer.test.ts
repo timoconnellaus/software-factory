@@ -1013,8 +1013,8 @@ describe("the approval across a merge of main (ADR 0582)", () => {
   // #190 review (3): an ambiguous merge base (a criss-cross) leaves "the side that changed a path"
   // undefined: withdrawn, as is "can't tell". The judgement itself is #175's (merge-base.test.ts,
   // from a recorded GitHub compare); here only that the update fails closed on it.
-  for (const answer of [true, null] as const) {
-    it(`withdraws an update whose merge base is ${answer ? "ambiguous" : "unknown"}`, async () => {
+  for (const answer of [true, "unreadable"] as const) {
+    it(`withdraws an update whose merge base is ${answer === true ? "ambiguous" : "unknown"}`, async () => {
       const w = await world();
       const a = await toMergeGateWith(w, `Criss-cross ${answer}`, files("src/a.ts"));
       await github.push(w.repo, "main", undefined, ["README.md"]);

@@ -1,5 +1,6 @@
 import type { AttachmentBlobs } from "./attachments.ts";
 import type { MobileAttestationService } from "./operations/mobile.ts";
+import type { MergeBaseUnknown } from "./verify/merge-base.ts";
 
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
@@ -328,10 +329,10 @@ export interface GitHubService {
    * Whether two commits have more than one merge base (a criss-cross: each side merged the other),
    * so a three-way judgement from GitHub's single `merge_base_commit` could be wrong: the merge bases
    * GitHub reports each way differ, or a commit is new on both sides (a second merge base is
-   * reachable from both heads but not from the first). Null when it can't tell (more commits than a
-   * compare lists): treat that as ambiguous too.
+   * reachable from both heads but not from the first). Otherwise why it can't tell
+   * (`MergeBaseUnknown`, never `false`): treat that as ambiguous too.
    */
-  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | null>;
+  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | MergeBaseUnknown>;
   /**
    * Merges `head` (an exact SHA, the default branch's head the merge queue read) into `branch` on
    * GitHub (`POST /repos/{o}/{r}/merges`, #190 review). Synchronous: `merged` returns the merge
