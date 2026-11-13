@@ -642,13 +642,16 @@ async function settleBabysit(
   const context = parseJson<{ reason?: BabysitReason; deliveryFence?: number }>(job?.context, {});
   const fence = context.deliveryFence ?? sitter.babysit_fence;
   const itemId = job?.work_item_id ?? head.work_item_id;
-  const next = async (cancel = false) => {
+  const next = async (cancel = false): Promise<boolean> => {
     const closed = await call(env, lease, "babysit.next", {
       workItemId: itemId,
       deliveryFence: fence,
       cancel,
     });
+    // A cancel refused because a runner claimed the job just now: the job stands.
+    if (closed.status === "refused" && cancel) return false;
     if (closed.status === "refused") throw new Error(`babysit.next refused: ${closed.message}`);
+    return true;
   };
   // Still to be claimed or at work. With no runner online that can babysit (an older runner can't:
   // ADR 0620), it doesn't wait for ever: past BABYSIT_RECHECK_MS the job is cancelled and the
@@ -664,7 +667,7 @@ async function settleBabysit(
           ? `no runner claimed the babysit job in ${BABYSIT_UNCLAIMED_MS / 60_000} minutes`
           : null;
     if (job.status === "queued" && why && reason) {
-      await next(true);
+      if (!(await next(true))) return { kind: "wait", ms: BABYSIT_RECHECK_MS };
       return {
         kind: "end",
         delivery: reason.kind === "conflict" ? "conflict" : "failed",

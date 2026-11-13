@@ -185,6 +185,7 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
     expect(opened?.suspects.map((s) => s.workItemId)).toEqual([a.id]);
     // Not yet proven: the failing check is rerun once on the red head.
     expect(opened).toMatchObject({ culpritWorkItemId: null, candidateWorkItemId: a.id });
+    expect(opened?.attribution).toMatch(/^candidate, not proven: /);
     expect((await github.state(w.repo)).reruns ?? []).toHaveLength(1);
     // The rerun fails again: proven.
     await mainCi(w, a.mergeSha, "failure");
@@ -230,6 +231,19 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
     );
   });
 
+  it("a repair closes the episode with the rerun unreported: no flake is recorded", async () => {
+    const w = await world();
+    await mainCi(w, await mainHead(w), "success");
+    const a = await land(w, "Breaks main for real", "src/a.ts");
+    await mainCi(w, a.mergeSha, "failure");
+    expect(await health(w)).toMatchObject({ candidateWorkItemId: a.id });
+    // A fix lands on main before the rerun on the red head reports; main is green on the fix.
+    const fixed = await github.push(w.repo, "main", undefined, ["src/a-fix.ts"]);
+    await mainCi(w, fixed, "success");
+    expect(await health(w)).toMatchObject({ state: "green", candidateWorkItemId: null });
+    expect(await first("SELECT id FROM core_flakes WHERE head_sha = ?", a.mergeSha)).toBeNull();
+  });
+
   it("two landings: no culprit is guessed; a person names one of the suspects, and only a suspect", async () => {
     const w = await world();
     await mainCi(w, await mainHead(w), "success");
@@ -265,6 +279,40 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
     await expect(
       call("mainRed.attribute", { workItemId: b.id, why: "guess", deliveryFence: 1 }, BABYSITTER),
     ).rejects.toMatchObject({ code: "fenced" });
+    // The repository's babysit job, through the babysitter with its fence: refused over a person's.
+    const item = await first<{ project_id: string; repository_id: string }>(
+      "SELECT project_id, repository_id FROM core_work_items WHERE id = ?",
+      b.id,
+    );
+    const key = `${item?.project_id}:${item?.repository_id}`;
+    const jobId = `job_${"b".repeat(32)}${uid("").slice(0, 0)}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO core_jobs (id, work_item_id, project_id, org_id, stage, role, prompt, session_timeout_ms, created_at, pool) SELECT ?, id, project_id, org_id, 'babysit', 'implement', 'p', 1, ?, 'light' FROM core_work_items WHERE id = ?",
+      ).bind(jobId, new Date().toISOString(), b.id),
+      env.DB.prepare(
+        "INSERT INTO core_delivery_state (key, project_id, repository_id, updated_at, babysit_job_id, babysit_fence) VALUES (?, ?, ?, ?, ?, 7) ON CONFLICT (key) DO UPDATE SET babysit_job_id = excluded.babysit_job_id, babysit_fence = 7",
+      ).bind(key, item?.project_id, item?.repository_id, new Date().toISOString(), jobId),
+    ]);
+    await expect(
+      call(
+        "mainRed.attribute",
+        { workItemId: b.id, why: "the job thinks b", deliveryFence: 7 },
+        BABYSITTER,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    // With no person's attribution standing, the job's goes through.
+    await env.DB.prepare(
+      "UPDATE core_main_health SET culprit_work_item_id = NULL, attribution = NULL, attributed_by = NULL WHERE project_id = ?",
+    )
+      .bind(w.projectId)
+      .run();
+    await ok(
+      "mainRed.attribute",
+      { workItemId: b.id, why: "the job thinks b", deliveryFence: 7 },
+      BABYSITTER,
+    );
+    expect(await health(w)).toMatchObject({ culpritWorkItemId: b.id, attributedBy: "agent" });
   });
 
   it("an attached PR is held too, saying the owner decides (decision 7)", async () => {
@@ -308,6 +356,15 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
       "UPDATE core_main_health SET red_since = NULL, state = 'green' WHERE project_id = ?",
     )
       .bind(w.projectId)
+      .run();
+    // One not yet due again (it failed before) waits its turn.
+    await env.DB.prepare("UPDATE core_verify_checks SET release_after = ? WHERE head_sha = ?")
+      .bind(new Date(Date.now() + 3_600_000).toISOString(), ha)
+      .run();
+    await releaseHeldChecks(env);
+    expect((await verifyCheck(ha))?.title).toBe(HELD_TITLE);
+    await env.DB.prepare("UPDATE core_verify_checks SET release_after = NULL WHERE head_sha = ?")
+      .bind(ha)
       .run();
     await releaseHeldChecks(env);
     await releaseHeldChecks(env);

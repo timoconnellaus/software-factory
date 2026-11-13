@@ -4,7 +4,7 @@
 // deliverer lands only repairs, and every other approved delivery is held. `delivery.status` is the
 // Factory Overview's Babysitter line; `workItem.markRepair` is how a person says a fix repairs main.
 import type { CoreDatabase, MainHealthState } from "@software-factory/db";
-import type { Selectable } from "kysely";
+import { type Selectable, sql } from "kysely";
 import { z } from "zod";
 import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
@@ -146,7 +146,7 @@ async function provenCulprit(
   if (parents[0] !== lastGreen) return null;
   return {
     workItemId: only.workItemId,
-    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, main went red on it, and the red reproduced on a rerun`,
+    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, and main went red on it`,
   };
 }
 
@@ -176,7 +176,7 @@ async function recheckHeads(
 ): Promise<void> {
   // Only heads in an open delivery state in this repository: the babysitter's queue
   // (core_merge_queue_babysitter_idx, partial: queued babysitter entries) and open merge gates
-  // (core_pending_actions_open_merge_idx, partial: pending merge gates). Each at most 50.
+  // (core_pending_actions_open_merge_idx (project_id), partial: pending merge gates). Each at most 50.
   const queued = await ctx.db
     .selectFrom("core_merge_queue")
     .innerJoin("core_work_items", "core_work_items.id", "core_merge_queue.work_item_id")
@@ -191,9 +191,9 @@ async function recheckHeads(
     .selectFrom("core_pending_actions")
     .innerJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
     .select(["core_work_items.head_sha", "core_work_items.pr_number"])
+    .where("core_pending_actions.project_id", "=", projectId)
     .where("core_pending_actions.kind", "=", "merge")
     .where("core_pending_actions.status", "=", "pending")
-    .where("core_work_items.project_id", "=", projectId)
     .where("core_work_items.repository_id", "=", repository.id)
     .limit(50)
     .execute();
@@ -211,6 +211,9 @@ async function recheckHeads(
     });
   }
 }
+
+/** How an unproven candidate's attribution starts (shown as such until it reproduces). */
+const CANDIDATE_PREFIX = "candidate, not proven: ";
 
 /** Failed conclusions for a rerun's proof. */
 const RED = new Set(["failure", "timed_out", "cancelled", "action_required"]);
@@ -241,7 +244,7 @@ async function redReproduced(
         c.status === "completed" &&
         RED.has(c.conclusion ?? "") &&
         !!c.completedAt &&
-        c.completedAt > r.asked_at,
+        Date.parse(c.completedAt) > Date.parse(r.asked_at),
     ),
   );
 }
@@ -403,7 +406,15 @@ export const mainObserve = defineOperation({
             ? (candidate?.workItemId ?? null)
             : (before?.candidate_work_item_id ?? null),
       attribution:
-        state === "green" ? null : opens ? (candidate?.why ?? null) : (before?.attribution ?? null),
+        state === "green"
+          ? null
+          : opens
+            ? candidate
+              ? `${CANDIDATE_PREFIX}${candidate.why}; rerunning the failing checks to see whether the red reproduces`
+              : null
+            : reproduced
+              ? `${(before?.attribution ?? "").replace(CANDIDATE_PREFIX, "").replace(/; rerunning.*$/, "")}, and the red reproduced on a rerun`
+              : (before?.attribution ?? null),
       attributed_by:
         state === "green"
           ? null
@@ -454,10 +465,17 @@ export const mainObserve = defineOperation({
             audience: row.audience,
             green_at: row.green_at,
             suspects: row.suspects,
-            culprit_work_item_id: row.culprit_work_item_id,
-            attribution: row.attribution,
-            attributed_by: row.attributed_by,
-            candidate_work_item_id: row.candidate_work_item_id,
+            // Who turned it red changes only when the episode opens, closes or its candidate is
+            // proven: otherwise the stored columns stand, so a person's attribution made while
+            // this observation was read is never wiped by it.
+            ...(opens || state === "green" || reproduced
+              ? {
+                  culprit_work_item_id: row.culprit_work_item_id,
+                  attribution: row.attribution,
+                  attributed_by: row.attributed_by,
+                  candidate_work_item_id: row.candidate_work_item_id,
+                }
+              : {}),
           }),
         ),
     );
@@ -500,16 +518,28 @@ export const mainObserve = defineOperation({
           .where("head_sha", "=", head),
       );
     }
-    // Green on the red head after its rerun: it was a flake, recorded as one (decision 3).
-    if (closes && before?.first_red_sha) {
-      const flaked = await ctx.db
+    // Green on the red head itself, with each rerun check now green after it was asked: a flake,
+    // recorded as one (decision 3). Green on another head (a repair or revert landed before the
+    // rerun reported) proves nothing about the red one: no flake is recorded.
+    if (closes && before?.first_red_sha && head === before.first_red_sha) {
+      const asked = await ctx.db
         .selectFrom("core_ci_reruns")
-        .select(["check_name", "run_url", "work_item_id"])
+        .select(["check_name", "run_url", "work_item_id", "asked_at"])
         .where("repository_id", "=", repository.id)
         .where("head_sha", "=", before.first_red_sha)
         .where("passed", "is", null)
         .limit(20)
         .execute();
+      const flaked = asked.filter((r) =>
+        counted.some(
+          (c) =>
+            c.name === r.check_name &&
+            c.status === "completed" &&
+            c.conclusion === "success" &&
+            !!c.completedAt &&
+            Date.parse(c.completedAt) > Date.parse(r.asked_at),
+        ),
+      );
       for (const f of flaked) {
         ctx.write(
           ctx.db.insertInto("core_flakes").values({
@@ -525,14 +555,14 @@ export const mainObserve = defineOperation({
           }),
         );
       }
-      if (flaked.length > 0) {
+      for (const f of flaked) {
         ctx.write(
           ctx.db
             .updateTable("core_ci_reruns")
             .set({ passed: 1 })
             .where("repository_id", "=", repository.id)
             .where("head_sha", "=", before.first_red_sha)
-            .where("passed", "is", null),
+            .where("check_name", "=", f.check_name),
         );
       }
     }
@@ -710,9 +740,15 @@ export const mainRedAttribute = defineOperation({
           candidate_work_item_id: null,
         })
         .where("repository_id", "=", w.repository_id)
-        .where("red_since", "=", row.red_since),
+        .where("red_since", "=", row.red_since)
+        // Atomic: refused if a stronger attribution committed since it was read.
+        .where(
+          sql<number>`CASE attributed_by WHEN 'agent' THEN 1 WHEN 'person' THEN 2 WHEN 'proven' THEN 3 ELSE 0 END`,
+          "<=",
+          ATTRIBUTION_RANK[by],
+        ),
     );
-    ctx.guardChanged("the episode is still open");
+    ctx.guardChanged("the episode is open and no stronger attribution was made");
     ctx.change({
       entity: "main_health",
       id: w.repository_id,

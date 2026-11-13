@@ -24,15 +24,21 @@ ALTER TABLE core_main_health ADD COLUMN attributed_by TEXT
 ALTER TABLE core_main_health ADD COLUMN candidate_work_item_id TEXT;
 
 -- When `factory/verify` on a head was set to held (spec 53, decision 7); null when it isn't. The
--- cron's release sweep reads only held rows: `WHERE held_at IS NOT NULL ... LIMIT 20`, through the
--- partial index below, so it never reads the verify checks of heads that were never held.
+-- cron's release sweep reads only held rows: `WHERE held_at IS NOT NULL AND (release_after IS NULL
+-- OR release_after <= ?) ORDER BY release_after LIMIT 20`, through the partial index below, so it
+-- never reads the verify checks of heads that were never held. A held row it couldn't release backs
+-- off (`release_attempts`, `release_after`), oldest attempt first, so one that keeps failing never
+-- starves the rest.
 ALTER TABLE core_verify_checks ADD COLUMN held_at TEXT;
-CREATE INDEX core_verify_checks_held_idx ON core_verify_checks (held_at) WHERE held_at IS NOT NULL;
+ALTER TABLE core_verify_checks ADD COLUMN release_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE core_verify_checks ADD COLUMN release_after TEXT;
+CREATE INDEX core_verify_checks_held_idx ON core_verify_checks (release_after)
+  WHERE held_at IS NOT NULL;
 
--- recheckHeads' merge gates (main.observe, once per episode opening or closing): `WHERE kind =
--- 'merge' AND status = 'pending'` joined to the item for its repository. Partial: only open merge
--- gates, a handful.
-CREATE INDEX core_pending_actions_open_merge_idx ON core_pending_actions (work_item_id)
+-- recheckHeads' merge gates (main.observe, once per episode opening or closing): `WHERE project_id
+-- = ? AND kind = 'merge' AND status = 'pending'` joined to the item for its repository. Partial: only
+-- open merge gates, and only the project's.
+CREATE INDEX core_pending_actions_open_merge_idx ON core_pending_actions (project_id)
   WHERE kind = 'merge' AND status = 'pending';
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 391) WHERE key = 'schema_version';

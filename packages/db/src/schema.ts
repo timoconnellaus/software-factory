@@ -857,6 +857,9 @@ export interface CoreVerifyChecksTable {
   repository_id: string | null;
   /** 0391 (spec 53, decision 7): when it was set to held; null when it isn't held. */
   held_at: string | null;
+  /** 0391: the release sweep's tries on a held row, and when it may try again. */
+  release_attempts: Generated<number>;
+  release_after: string | null;
 }
 
 // ---- 0060: onboarding (installations, connect state, runner device login) ----

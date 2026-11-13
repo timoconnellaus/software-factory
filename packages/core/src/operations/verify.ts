@@ -705,11 +705,7 @@ export const verifyRefresh = defineOperation({
     }
 
     // A held check (decision 7) on an item that has ended: it says so, never stays pending.
-    if (
-      item &&
-      existing?.held_at &&
-      !["running", "waiting", "paused", "done"].includes(item.status)
-    ) {
+    if (item && existing?.held_at && !["running", "waiting", "paused"].includes(item.status)) {
       const output = {
         status: "completed" as const,
         conclusion: "failure" as const,

@@ -270,6 +270,16 @@ describe("the babysit job (spec 53 §4)", () => {
       w.runnerActor,
     );
     expect(claimed.job?.jobId).toBe(dead.id);
+    // A cancel that races the claim changes nothing: the claimed job stands.
+    await expect(
+      call("babysit.next", { workItemId: a.id, deliveryFence: 1, cancel: true }, BABYSITTER),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      await first<{ babysit_job_id: string }>(
+        "SELECT babysit_job_id FROM core_delivery_state WHERE key = ?",
+        `${a.projectId}:${a.repositoryId}`,
+      ),
+    ).toEqual({ babysit_job_id: dead.id });
     // The lease expires (runner gone): the reaper fails the run.
     await ok("run.expire", { jobId: dead.id, reason: "lease expired" }, FOREMAN);
     const fresh = await babysitJob(a.id);

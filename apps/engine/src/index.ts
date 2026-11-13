@@ -103,18 +103,28 @@ export default {
  * partial: only held rows) whose repository is no longer red or whose item has ended, each
  * evaluated again with verify.refresh. Idempotent: one that stays held stays held.
  */
-export async function releaseHeldChecks(env: Env, limit = 20): Promise<number> {
+export async function releaseHeldChecks(env: Env, limit = 20, now = new Date()): Promise<number> {
+  const t = now.toISOString();
   const { results } = await env.DB.prepare(
-    `SELECT v.head_sha, v.pr_number, r.owner, r.name FROM core_verify_checks v
+    `SELECT v.project_id, v.head_sha, v.pr_number, v.release_attempts, r.owner, r.name
+     FROM core_verify_checks v
      JOIN core_work_items w ON w.id = v.work_item_id
      JOIN core_repositories r ON r.id = w.repository_id
      LEFT JOIN core_main_health h ON h.repository_id = r.id
-     WHERE v.held_at IS NOT NULL
+     WHERE v.held_at IS NOT NULL AND (v.release_after IS NULL OR v.release_after <= ?1)
        AND (h.red_since IS NULL OR w.status NOT IN ('running', 'waiting', 'paused'))
-     LIMIT ?`,
+     ORDER BY v.release_after
+     LIMIT ?2`,
   )
-    .bind(limit)
-    .all<{ head_sha: string; pr_number: number | null; owner: string; name: string }>();
+    .bind(t, limit)
+    .all<{
+      project_id: string;
+      head_sha: string;
+      pr_number: number | null;
+      release_attempts: number;
+      owner: string;
+      name: string;
+    }>();
   for (const r of results) {
     try {
       await invoke(
@@ -131,6 +141,16 @@ export async function releaseHeldChecks(env: Env, limit = 20): Promise<number> {
     } catch (error) {
       console.error(`release held ${r.head_sha} failed`, error);
     }
+    // Still held (verify.refresh threw, or left it held): back off, 2^n minutes up to an hour, so
+    // one that keeps failing goes to the back and never starves the rest. A released row (held_at
+    // null) isn't touched.
+    const wait = Math.min(60, 2 ** Math.min(r.release_attempts + 1, 6)) * 60_000;
+    await env.DB.prepare(
+      `UPDATE core_verify_checks SET release_attempts = release_attempts + 1, release_after = ?
+       WHERE project_id = ? AND head_sha = ? AND held_at IS NOT NULL`,
+    )
+      .bind(new Date(now.getTime() + wait).toISOString(), r.project_id, r.head_sha)
+      .run();
   }
   return results.length;
 }

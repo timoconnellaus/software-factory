@@ -235,6 +235,8 @@ export const babysitNext = defineOperation({
           .where("id", "=", state.babysit_job_id)
           .where("status", "=", "queued"),
       );
+      // A runner claimed it meanwhile: nothing is closed, and the delivery waits for that run.
+      ctx.guardChanged("the babysit job is still unclaimed");
     }
     ctx.write(
       ctx.db
