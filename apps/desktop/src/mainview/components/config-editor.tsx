@@ -21,7 +21,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBlocker } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { configQuery } from "../lib/factory-queries.ts";
 import { OpError, op, read, submitKey } from "../lib/op.ts";
@@ -63,6 +63,53 @@ export function draftView(
   return { draft: mine, doc, dirty, moved };
 }
 
+/**
+ * The save button's words: a loosening is sent for approval, anything else saves the next version.
+ * `short` drops "for approval" at a narrow window (tested).
+ */
+export function saveLabel(loosens: boolean, currentVersion: number) {
+  return loosens
+    ? { full: "Send for approval", short: "Send" }
+    : { full: `Save v${currentVersion + 1}`, short: `Save v${currentVersion + 1}` };
+}
+
+/** How long after the last edit a draft is sent for classification. */
+export const PREVIEW_DEBOUNCE_MS = 600;
+
+/** `value`, once it has stopped changing for `ms`. */
+export function useDebounced<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
+}
+
+/** The cap on any instructions text (project and org agents and steps: the schemas' max). */
+export const INSTRUCTIONS_MAX = 4_000;
+
+/** "1,234 / 4,000" under an instructions box, amber near the cap, so it is seen before the error. */
+export function CharCount({ value, max = INSTRUCTIONS_MAX }: { value: string; max?: number }) {
+  const n = value.length;
+  return (
+    <span
+      className={cn(
+        "self-end text-[11px] tabular-nums",
+        n > max
+          ? "font-medium text-chip-amber-ink"
+          : n > max * 0.9
+            ? "text-chip-amber-ink"
+            : "text-ink-muted",
+      )}
+      data-testid="char-count"
+    >
+      {n.toLocaleString("en")} / {max.toLocaleString("en")}
+      {n > max ? ": too long to save" : ""}
+    </span>
+  );
+}
+
 /** A draft of the project's config over its current version, and how to save it. */
 export function useConfigDraft(projectId: string) {
   const config = useQuery({ ...configQuery(projectId), enabled: !!projectId });
@@ -75,12 +122,18 @@ export function useConfigDraft(projectId: string) {
   const currentVersion = current?.version ?? 0;
   const { draft, doc, dirty, moved } = draftView(raw, projectId, current);
 
-  const preview = useQuery({
-    queryKey: ["config", projectId, "preview", draft?.doc ?? null],
-    queryFn: () => read("config.preview", { projectId, policy: draft?.doc ?? {} }),
-    enabled: dirty,
+  // Classified once typing stops (Cloudflare cost: every preview is a Worker request and D1
+  // reads; a keystroke each would be thousands for one instructions box). Until then, "Classifying…".
+  const settled = useDebounced(draft?.doc ?? null, PREVIEW_DEBOUNCE_MS);
+  const typing = JSON.stringify(settled) !== JSON.stringify(draft?.doc ?? null);
+  const query = useQuery({
+    queryKey: ["config", projectId, "preview", settled],
+    queryFn: () => read("config.preview", { projectId, policy: settled ?? {} }),
+    enabled: dirty && !typing && !!settled,
     placeholderData: keepPreviousData,
   });
+  // While typing or loading, the answer on screen is never an older draft's.
+  const preview = { ...query, isPlaceholderData: query.isPlaceholderData || typing };
 
   const setDraft = (next: Doc | null) =>
     setRaw(
@@ -323,7 +376,7 @@ export function SaveBar({ editor }: { editor: ConfigEditor }) {
           disabled={busy || moved || !fresh?.valid}
           data-testid="config-save"
         >
-          {busy ? "Saving…" : loosens ? "Send" : `Save v${currentVersion + 1}`}
+          {busy ? "Saving…" : saveLabel(loosens, currentVersion).short}
           {!busy && loosens && <span className="max-[899px]:hidden"> for approval</span>}
         </Button>
       </div>

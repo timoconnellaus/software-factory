@@ -203,6 +203,47 @@ describe("planning sessions (spec 20)", () => {
     expect(bad.code).toBe("invalid_input");
   });
 
+  it("peek says when news falls due as wait would, and an idle wait writes at most every 30 s (spec 44)", async () => {
+    const w = await world();
+    const m5 = await runner(w);
+    const { item, job } = await planning(w, m5);
+    const asked = await agent<{ questionIds: string[] }>(m5, job, "question.ask", {
+      questions: [{ prompt: "Filename?" }, { prompt: "Zip it?" }],
+    });
+    // Idle, nothing a person did: peek says nothing is due.
+    await agent(m5, job, "planning.wait", {});
+    expect(await agent(m5, job, "planning.peek", {})).toMatchObject({ dueAt: null });
+    // An answer with a question still open falls due 15 s later: peek and wait agree.
+    await ok(
+      "question.answer",
+      { questionId: asked.questionIds[0], answer: "export.csv" },
+      w.human,
+    );
+    const wait = await agent<{ due: boolean; recheckAt: string | null }>(
+      m5,
+      job,
+      "planning.wait",
+      {},
+    );
+    const peek = await agent<{ dueAt: string | null }>(m5, job, "planning.peek", {});
+    expect(wait.due).toBe(false);
+    expect(peek.dueAt).toBe(wait.recheckAt);
+    // With the wait's own idleMs.
+    const quick = await agent<{ dueAt: string | null }>(m5, job, "planning.peek", { idleMs: 0 });
+    expect(Date.parse(quick.dueAt ?? "")).toBeLessThan(Date.parse(peek.dueAt ?? ""));
+    // Many evaluations of an idle wait: agent_seen_at is written once, not each time.
+    const seen = async () =>
+      (
+        await first<{ agent_seen_at: string }>(
+          "SELECT agent_seen_at FROM core_planning_sessions WHERE work_item_id = ?",
+          item.workItemId,
+        )
+      ).agent_seen_at;
+    const before = await seen();
+    for (let i = 0; i < 5; i++) await agent(m5, job, "planning.wait", {});
+    expect(await seen()).toBe(before);
+  });
+
   it("brings answers, revisions and chat to the agent as news since its cursor, and waits by kim's rule", async () => {
     const w = await world();
     const m5 = await runner(w);
