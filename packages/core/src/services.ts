@@ -344,7 +344,12 @@ export interface FactoryServices {
    * archived (tests that don't need it, sf-app).
    */
   runArchive?: {
-    get(key: string): Promise<string | null>;
+    /**
+     * An archived object's text, or null when it isn't there; throws when R2 can't be read. Objects
+     * are written once, so a read may be served from the isolate's cache, unless `fresh` (what
+     * audit.verify asks for: it checks the bucket as it is now).
+     */
+    get(key: string, opts?: { fresh?: boolean }): Promise<string | null>;
     /** Whether the object is there (an R2 HEAD): run.reportArchiveMissing checks for itself. */
     exists(key: string): Promise<boolean>;
   };

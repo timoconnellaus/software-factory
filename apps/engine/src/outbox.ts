@@ -158,9 +158,8 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       await notifyPlanningViewers(env, message.payload.workItemId);
       return;
     case "run.steered":
-      // The runner host's held steer call waits on the work item's hub (ADR 0400). A wake, not a
-      // change: open Planning tabs don't re-read.
-      await planningHub(env, message.payload.workItemId).wake();
+      // Nothing to wake: the runner host's held steer call polls for queued steers in the Worker
+      // (spec 44 part A); the runner socket's push (part B) will route here by job.
       return;
     case "device.revoked":
       // A revoked device's live socket closes now, not when it next calls (ADR 0541).
