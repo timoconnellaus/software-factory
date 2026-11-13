@@ -502,9 +502,32 @@ describe("the merge gate's words", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
       "Checks 1 of 1",
       "Criteria 4 met",
+      "Proven 2 of 4",
       "Reviewer approves",
       "No risk flags",
     ]);
+  });
+
+  it("chips the proven count, or says no checks are set up instead of 0 of N", () => {
+    const proven = (s: Record<string, unknown>) => ({
+      ...packet,
+      sections: { ...packet.sections, proven: s },
+    });
+    expect(
+      verdictChips(proven({ proven: 0, total: 4, checksSetUp: false })).map((c) => c.label),
+    ).toContain("No checks set up");
+    const labels = verdictChips(proven({ proven: 0, total: 4, checksSetUp: false })).map(
+      (c) => c.label,
+    );
+    expect(labels.some((l) => /proven/i.test(l))).toBe(false);
+    expect(verdictChips(proven({ proven: 2, total: 4, checksSetUp: true }))).toContainEqual({
+      label: "Proven 2 of 4",
+      status: "waiting",
+    });
+    expect(verdictChips(proven({ proven: 4, total: 4 }))).toContainEqual({
+      label: "Proven 4 of 4",
+      status: "done",
+    });
   });
 });
 
