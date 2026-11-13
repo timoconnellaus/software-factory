@@ -133,6 +133,12 @@ describe("the shadow reconciler", () => {
     )
       .bind(moved, JSON.stringify({ carriedFrom: "a1" }), new Date().toISOString())
       .run();
+    // The other has a packet too, so the two differ only by the named difference.
+    await env.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, sections, created_at) VALUES ('rp_still', ?, 'b2', 'pass', '{}', ?)",
+    )
+      .bind(still, new Date().toISOString())
+      .run();
     while ((await shadowPass(env, later())) > 0);
     const report = async (id: string) =>
       ok<{ report: { known: { reason: string }[]; divergences: number } }>(

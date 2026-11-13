@@ -31,6 +31,7 @@ import {
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { askOne } from "./ask.ts";
+import { AUTO_APPROVE, autoApproveSetting } from "./auto-approve.ts";
 import { lineStopped } from "./delivery.ts";
 import {
   pendingActionId,
@@ -892,11 +893,34 @@ export const mergeQueueMerging = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   input: z.object({ workItemId, merging: z.boolean() }),
-  output: z.object({ merging: z.boolean() }),
+  output: z.object({ merging: z.boolean(), withdrawn: z.string().optional() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const entry = await requireBabysitterEntry(ctx, w);
     if (input.merging) await requireOpenToMerge(ctx, w);
+    // Dark factory mode (ADR 0515, review of #152): an approval no person gave is checked again just
+    // before the merge. A hold since, or the setting switched off, withdraws it, and the item goes
+    // back to verify and its merge gate (Workflow v12), where a person decides.
+    if (input.merging && entry.pending_action_id) {
+      const why = await autoApprovalLapsed(ctx, w, entry.pending_action_id);
+      if (why) {
+        ctx.writePendingStatus(
+          "close",
+          ctx.db
+            .updateTable("core_pending_actions")
+            .set({
+              status: "rejected",
+              decision: "withdrawn",
+              decided_at: ctx.now,
+              note: `withdrawn: ${why}`,
+            })
+            .where("id", "=", entry.pending_action_id)
+            .where("status", "=", "approved"),
+        );
+        ctx.change({ entity: "merge_queue", id: entry.id, after: { withdrawn: why } });
+        return { merging: false, withdrawn: why };
+      }
+    }
     ctx.write(
       ctx.db
         .updateTable("core_merge_queue")
@@ -999,3 +1023,32 @@ export const mergeQueueHold = defineOperation({
     return wait ? { state: "holding" as const, until } : { state: "resumed" as const, until: null };
   },
 });
+
+/**
+ * Why an auto-approval no longer holds at the merge (ADR 0515): the project is held, or the setting
+ * is off now. Null for a person's approval, or one that still holds. Point reads only.
+ */
+async function autoApprovalLapsed(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  pendingActionId: string,
+): Promise<string | null> {
+  const pa = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select("decided_by")
+    .where("id", "=", pendingActionId)
+    .executeTakeFirst();
+  if (pa?.decided_by !== AUTO_APPROVE.id) return null;
+  const hold = ctx.scope.rawPolicy?.autoApproveHold;
+  if (hold) return `auto-approved merges are held on this project: ${hold.reason}`;
+  const project = ctx.scope.project;
+  if (!project) return "the project can't be read";
+  const now = await autoApproveSetting(ctx.db, project, project.policy_sha, null);
+  const pinned = await autoApproveSetting(
+    ctx.db,
+    project,
+    w.policy_sha ?? project.policy_sha,
+    w.org_config_version,
+  );
+  return now.enabled && pinned.enabled ? null : "the workflow's auto-approval is off now";
+}

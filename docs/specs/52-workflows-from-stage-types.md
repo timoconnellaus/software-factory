@@ -1353,6 +1353,24 @@ screen needs).
    would have changed every autonomy table. Not built: deploy approvals (no deploy stage yet) and a
    desktop card for the hold (the desktop stays read-only on policy decisions until the presence
    helper covers them).
+   After review: the setting counts only while it is on in both the org version the item pinned and
+   the current one, with the stricter limits (`stricterAutoApprove`), so switching it off stops items
+   already at a gate; a hold is written whatever the setting says. `SELF_MODIFY_PATHS` protects by
+   directory (all of `packages/core/src`, `apps/engine/src`, `apps/app/src`, `apps/desktop/src/bun`,
+   the connectors, `runner-contract`, `runner-local`, `harness-claude`, `local/runner-host`,
+   `packages/db`, `presets`, the deploy and check scripts, `.factory`, `.github`, wrangler configs,
+   `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `docs/adr`), and a test walks the import graph from the
+   gate and verify entry points and fails on any module outside it. The criteria condition counts
+   only ties a person approved (the spec's links, as #146's `everyCriterionProven`): **small items
+   never qualify**, since triage, an agent, ties their criteria. A weakened proof fails it. Wider risk
+   paths (schemas outside migrations, auth and billing by more names, secrets, CI and infra,
+   `.gitmodules`, agent instruction files, evals, every lock file), generated files and any file with
+   no readable diff (binary, too large, a submodule) make an item not low risk; `maxPerDay` (10)
+   caps auto-approvals per project per day, checked and counted in the approval's batch. The babysitter
+   checks again just before it merges (`mergeQueue.merging`): a hold since, or the setting switched
+   off, withdraws the auto-approval, and the item goes back to verify and its gate (v12). The
+   every-fifth review is counted and decided in the same batch, and goes to the gate's assignee or
+   the project's first approver.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.
