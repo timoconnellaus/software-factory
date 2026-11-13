@@ -188,10 +188,11 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   off the app, so no token (the CLI's, MCP's) can approve anything.
 - **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun), a window shell of sections with nested lists drawn from `packages/ui`'s desktop tokens: it
   supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
-  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates
-  only with a per-call presence proof (Touch ID) the door verifies; nothing else on the Mac can make
-  one. The website (`sf-app`) shrinks to sign-in, device approval, Connect GitHub and the `/open/*`
-  trampoline. A `ClientHub` Durable Object per person holds the app's live socket
+  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates,
+  and (ADR 0610) policy decisions (org workflows and agents, org config approvals and rollbacks,
+  adopting projects' workflows, a looser override, a kill switch off), only with a per-call presence
+  proof (Touch ID) the door verifies. The website (`sf-app`) shrinks to sign-in, device approval,
+  Connect GitHub and the `/open/*` trampoline. A `ClientHub` Durable Object per person holds the app's live socket
   (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
   desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
 - **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
@@ -228,6 +229,7 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
 | `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
 | `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
 | `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
+| `packages/planning-designs` | The runner's design checks (spec 22 part B): DBML, D2, Mermaid and OpenAPI parsed with their own engines, errors with the line and a fix, layout warnings, and a static SVG preview with every part's box. Used by the planning MCP server, never by the cloud |
 | `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's Claude account in the launch (ADR 0410), the run's git config, transcript and stream-json parsing |
 | `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), the web terminal bridge as a tmux control-mode client (ADR 0440), takeover by `tmux attach`, orphan reaping. `src/container/`: a container per job (ADR 0430): the job repo, the Docker runtime, the agent image and egress proxy (`container/`), the container check. `src/sprites/`: a sprite per job (ADR 0480): the Sprites API client and its fake, the pane-to-sprite TTY bridge, the run-file mirror, the result bundle import, sprite reaping. `src/stream.ts`: the stream-json session mode (ADR 0450): the launch script as a child process with JSON in and out, events from the structured output, steers as JSON user messages, takeover by `claude --resume` |
 | `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |

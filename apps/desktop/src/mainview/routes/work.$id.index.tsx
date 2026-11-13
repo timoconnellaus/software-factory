@@ -9,7 +9,7 @@ import {
   errorMessage,
   STAGE_LABEL,
 } from "@software-factory/client/format";
-import type { WorkItemDetail } from "@software-factory/client/ops";
+import type { OpOutput, WorkItemDetail } from "@software-factory/client/ops";
 import { parsePacket } from "@software-factory/client/packet";
 import { agentTime, stageSteps, yourTime } from "@software-factory/client/work-item";
 import { Button } from "@software-factory/ui/components/button";
@@ -949,6 +949,7 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
                   {r.endedAt ? capitalise(r.outcome ?? r.status) : "Running"}
                 </span>
                 {r.summary && <div className="mt-0.5 text-ink-3 text-xs">{r.summary}</div>}
+                <RunLog run={r} />
               </td>
             </tr>
           ))}
@@ -958,16 +959,104 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
   );
 }
 
+/**
+ * Where a run's log is, once it isn't simply in D1 (AGENTS.md "Cloudflare cost"): archived to R2 30
+ * days after the run ended (read back from there), or missing from the archive, which is recorded as
+ * an incident for a person on Checks and incidents. Never shown as an empty run.
+ */
+function RunLog({ run }: { run: WorkItemDetail["runs"][number] }) {
+  if (run.log === "kept") return null;
+  if (run.log === "archived") {
+    return (
+      <div className="mt-0.5 text-ink-muted text-xs" data-testid="run-log-archived">
+        Log archived
+      </div>
+    );
+  }
+  return (
+    <div className="mt-0.5 text-xs" data-testid="run-log-missing">
+      <span className="text-destructive">Log missing from the archive</span>
+      {" · "}
+      {run.archiveIncident?.resolvedAt ? (
+        <span className="text-ink-muted">incident resolved</span>
+      ) : (
+        <Link to="/factory/incidents" className="underline">
+          incident open
+        </Link>
+      )}
+    </div>
+  );
+}
+
 function Activity({ detail }: { detail: WorkItemDetail }) {
-  const timeline = useQuery(timelineQuery(detail.item.id));
+  // Routine machine entries older than 90 days are in the audit archive (ADR 0591): read back from
+  // R2 only when asked.
+  const [archived, setArchived] = useState(false);
+  const timeline = useQuery(timelineQuery(detail.item.id, archived));
   const me = useSession().user.id;
   return (
-    <Panel className="px-4 py-3.5">
+    <Panel className="grid gap-3 px-4 py-3.5">
       {timeline.data ? (
-        <Timeline entries={timeline.data.entries} gates={detail.gates} me={me} />
+        <>
+          <ArchiveNote
+            archive={timeline.data.archive}
+            onShow={() => (archived ? void timeline.refetch() : setArchived(true))}
+            loading={timeline.isFetching}
+          />
+          <Timeline entries={timeline.data.entries} gates={detail.gates} me={me} />
+        </>
       ) : (
         <Skeleton className="h-24 w-full" />
       )}
     </Panel>
+  );
+}
+
+/** Where the item's archived entries stand: none, there to read, read, unreadable, or lost. */
+type TimelineArchive = OpOutput<"workItem.timeline">["archive"];
+
+function ArchiveNote({
+  archive,
+  onShow,
+  loading,
+}: {
+  archive: TimelineArchive;
+  onShow: () => void;
+  loading: boolean;
+}) {
+  const n = `${archive.rows}${archive.more ? "+" : ""} older ${archive.rows === 1 ? "entry" : "entries"}`;
+  if (archive.state === "none") return null;
+  if (archive.state === "missing") {
+    return (
+      <div role="alert" className="text-destructive text-sm" data-testid="activity-archive-missing">
+        Part of this item's archived activity is missing from the archive. Run{" "}
+        <code className="font-mono text-[12px]">audit.verify</code> for its days to see which.
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ink-3 text-sm"
+      data-testid={`activity-archive-${archive.state}`}
+    >
+      <span>
+        {archive.state === "read"
+          ? `Showing ${n} read back from the archive (routine machine entries older than 90 days).`
+          : archive.state === "failed"
+            ? "Couldn't read the archive."
+            : `${n} (routine machine entries older than 90 days) ${archive.rows === 1 && !archive.more ? "is" : "are"} in the archive.`}
+      </span>
+      {archive.state !== "read" && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={loading}
+          onClick={onShow}
+          data-testid="show-archived"
+        >
+          {archive.state === "failed" ? "Try again" : "Show them"}
+        </Button>
+      )}
+    </div>
   );
 }

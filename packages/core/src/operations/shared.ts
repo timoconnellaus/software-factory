@@ -428,3 +428,13 @@ export const RUN_ARCHIVE_AFTER_DAYS = 30;
 
 /** The most events one run.reportEvents call takes, so the most log lines one stored row holds. */
 export const RUN_EVENTS_BATCH_MAX = 500;
+
+/**
+ * Where a person may make a policy decision (ADR 0610): the website (`app`), or the desktop with a
+ * presence proof for exactly this call. Never a phone, the CLI, MCP, a runner or an agent.
+ */
+export function policyDecisionSurface(ctx: HandlerContext): boolean {
+  const surface = ctx.origin.surface;
+  if (surface === "app" || surface === "test") return true;
+  return surface === "desktop" && ctx.presence === true;
+}

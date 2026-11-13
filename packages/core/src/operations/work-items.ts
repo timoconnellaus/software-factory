@@ -5,6 +5,7 @@ import { parseJson, readBatch } from "@software-factory/db";
 import { capacityPausedSchema, triageResultSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
+import { parseChunk } from "../audit-chain.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
@@ -476,6 +477,13 @@ export const workItemGet = defineOperation({
         takeover: z.object({ label: z.string(), hint: z.string() }).nullable(),
         startedAt: z.string(),
         endedAt: z.string().nullable(),
+        /**
+         * Where the run's log is (AGENTS.md "Cloudflare cost"): `kept` in D1; `archived` to R2 (30
+         * days after the run ended; read back from there); `missing`, an archived object is lost
+         * and recorded as an incident for a person (`archiveIncident`).
+         */
+        log: z.enum(["kept", "archived", "missing"]),
+        archiveIncident: z.object({ id: z.string(), resolvedAt: z.string().nullable() }).nullable(),
       }),
     ),
     reviewPacket: z
@@ -560,11 +568,22 @@ export const workItemGet = defineOperation({
           .selectAll()
           .where("work_item_id", "=", w.id)
           .orderBy("created_at"),
+        // Each run's archive incident, if its archived log lost an object (one per run, on
+        // core_incidents_run_idx): a point lookup per run, in the same query.
         ctx.db
           .selectFrom("core_runs")
-          .selectAll()
-          .where("work_item_id", "=", w.id)
-          .orderBy("run_no"),
+          .leftJoin("core_incidents", (j) =>
+            j
+              .onRef("core_incidents.run_id", "=", "core_runs.id")
+              .on("core_incidents.kind", "=", "archive_missing"),
+          )
+          .selectAll("core_runs")
+          .select([
+            "core_incidents.id as archive_incident_id",
+            "core_incidents.resolved_at as archive_incident_resolved_at",
+          ])
+          .where("core_runs.work_item_id", "=", w.id)
+          .orderBy("core_runs.run_no"),
         ctx.db
           .selectFrom("core_review_packets")
           .selectAll()
@@ -684,6 +703,14 @@ export const workItemGet = defineOperation({
         takeover: parseJson<{ label: string; hint: string } | null>(r.takeover, null),
         startedAt: r.started_at,
         endedAt: r.ended_at,
+        log: r.archive_incident_id
+          ? ("missing" as const)
+          : r.events_archived_at
+            ? ("archived" as const)
+            : ("kept" as const),
+        archiveIncident: r.archive_incident_id
+          ? { id: r.archive_incident_id, resolvedAt: r.archive_incident_resolved_at }
+          : null,
       })),
       reviewPacket: packet
         ? {
@@ -724,66 +751,199 @@ export const workItemGet = defineOperation({
   },
 });
 
+async function sha256Text(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Archived objects workItem.timeline reads in one call at most (each up to 1 MB). */
+export const TIMELINE_ARCHIVE_CHUNKS = 20;
+
+const timelineEntry = z.object({
+  id: z.string(),
+  at: z.string(),
+  operation: z.string(),
+  actorType: z.string(),
+  actorId: z.string(),
+  decision: z.string(),
+  outcome: z.string(),
+  reason: z.string().nullable(),
+  pendingActionId: z.string().nullable(),
+  result: z.unknown(),
+  /** Read back from the audit archive (ADR 0591), not D1. */
+  archived: z.boolean().optional(),
+});
+
 export const workItemTimeline = defineOperation({
   name: "workItem.timeline",
   description:
-    "A work item's timeline, straight from the audit journal (spec 13): every operation on it with actor, gate decision, outcome and reason, oldest first.",
+    "A work item's timeline, straight from the audit journal (spec 13): every operation on it with actor, gate decision, outcome and reason, oldest first. Routine machine entries older than 90 days are in the audit archive (ADR 0591): `archive` says how many, and `archived: true` reads them back from R2 and merges them in.",
   // Polled: reads nothing an org workflow decides (spec 52 PR (d), cost).
   skipsOrgWorkflow: true,
   risk: "read",
   actors: ["human", "agent"],
   permission: "member",
-  input: z.object({ workItemId, limit: z.number().int().min(1).max(1000).default(500) }),
+  input: z.object({
+    workItemId,
+    limit: z.number().int().min(1).max(1000).default(500),
+    /** Read the item's archived entries back from R2 too (on demand; not for polling). */
+    archived: z.boolean().default(false),
+    /** The archive's next page: the `archive.next` an earlier answer gave. */
+    archiveAfter: z.object({ day: z.string(), seq: z.number().int() }).optional(),
+  }),
   output: z.object({
-    entries: z.array(
-      z.object({
-        id: z.string(),
-        at: z.string(),
-        operation: z.string(),
-        actorType: z.string(),
-        actorId: z.string(),
-        decision: z.string(),
-        outcome: z.string(),
-        reason: z.string().nullable(),
-        pendingActionId: z.string().nullable(),
-        result: z.unknown(),
-      }),
-    ),
+    entries: z.array(timelineEntry),
+    /**
+     * The item's entries in the audit archive: `rows` and `chunks` count all of them, every page. `available`: there are some, not read this time;
+     * `read`; `failed`, R2 couldn't be read (try again); `missing`, an object the archive's records
+     * name isn't in the bucket. `none` when nothing of the item is archived.
+     */
+    archive: z.object({
+      rows: z.number(),
+      chunks: z.number(),
+      state: z.enum(["none", "available", "read", "failed", "missing"]),
+      /** More archived objects hold the item's entries than one call reads. */
+      more: z.boolean(),
+      /** Where the next page of the archive starts (pass it as `archiveAfter`), when `more`. */
+      next: z.object({ day: z.string(), seq: z.number() }).nullable(),
+    }),
   }),
   async handler(input, ctx) {
-    const rows = await ctx.db
-      .selectFrom("core_audit")
-      .select([
-        "id",
-        "at",
-        "operation",
-        "actor_type",
-        "actor_id",
-        "decision",
-        "outcome",
-        "reason",
-        "pending_action_id",
-        "result",
-      ])
-      .where("work_item_id", "=", input.workItemId)
-      .orderBy("at")
-      .orderBy(sql`rowid`)
-      .limit(input.limit)
-      .execute();
-    return {
-      entries: rows.map((r) => ({
-        id: r.id,
-        at: r.at,
-        operation: r.operation,
-        actorType: r.actor_type,
-        actorId: r.actor_id,
-        decision: r.decision,
-        outcome: r.outcome,
-        reason: r.reason,
-        pendingActionId: r.pending_action_id,
-        result: parseJson<unknown>(r.result, null),
-      })),
+    const [rows, archivedChunks, archivedTotals] = await readBatch(ctx.d1, [
+      ctx.db
+        .selectFrom("core_audit")
+        .select([
+          "id",
+          "at",
+          "operation",
+          "actor_type",
+          "actor_id",
+          "decision",
+          "outcome",
+          "reason",
+          "pending_action_id",
+          "result",
+        ])
+        .where("work_item_id", "=", input.workItemId)
+        .orderBy("at")
+        .orderBy(sql`rowid`)
+        .limit(input.limit),
+      // Which archived objects hold the item's entries: core_audit_archive_items' primary key
+      // prefix (usually none), with each object's key by the chunk table's primary key.
+      ctx.db
+        .selectFrom("core_audit_archive_items as i")
+        .innerJoin("core_audit_archive_chunks as c", (j) =>
+          j.onRef("c.day", "=", "i.day").onRef("c.seq", "=", "i.seq"),
+        )
+        .select(["i.day", "i.seq", "i.rows", "c.r2_key", "c.sha256"])
+        .where("i.work_item_id", "=", input.workItemId)
+        .$if(input.archiveAfter !== undefined, (q) => {
+          const after = input.archiveAfter as { day: string; seq: number };
+          return q.where((eb) =>
+            eb.or([
+              eb("i.day", ">", after.day),
+              eb.and([eb("i.day", "=", after.day), eb("i.seq", ">", after.seq)]),
+            ]),
+          );
+        })
+        .orderBy("i.day")
+        .orderBy("i.seq")
+        .limit(TIMELINE_ARCHIVE_CHUNKS + 1),
+      // The item's totals across every page (its few index rows, by the primary key prefix).
+      ctx.db
+        .selectFrom("core_audit_archive_items")
+        .select([
+          sql<number>`count(*)`.as("chunks"),
+          sql<number>`coalesce(sum(rows), 0)`.as("rows"),
+        ])
+        .where("work_item_id", "=", input.workItemId),
+    ]);
+    const entries: z.infer<typeof timelineEntry>[] = rows.map((r) => ({
+      id: r.id,
+      at: r.at,
+      operation: r.operation,
+      actorType: r.actor_type,
+      actorId: r.actor_id,
+      decision: r.decision,
+      outcome: r.outcome,
+      reason: r.reason,
+      pendingActionId: r.pending_action_id,
+      result: parseJson<unknown>(r.result, null),
+    }));
+    const chunks = archivedChunks.slice(0, TIMELINE_ARCHIVE_CHUNKS);
+    const archive = {
+      rows: Number(archivedTotals[0]?.rows ?? 0),
+      chunks: Number(archivedTotals[0]?.chunks ?? 0),
+      state: (chunks.length === 0 ? "none" : "available") as
+        | "none"
+        | "available"
+        | "read"
+        | "failed"
+        | "missing",
+      more: archivedChunks.length > TIMELINE_ARCHIVE_CHUNKS,
+      next:
+        archivedChunks.length > TIMELINE_ARCHIVE_CHUNKS
+          ? {
+              day: (chunks.at(-1) as (typeof chunks)[number]).day,
+              seq: (chunks.at(-1) as (typeof chunks)[number]).seq,
+            }
+          : null,
     };
+    if (!input.archived || chunks.length === 0) return { entries, archive };
+    const store = ctx.services.runArchive;
+    if (!store) return { entries, archive: { ...archive, state: "failed" as const } };
+    // Each object is checked against its record's SHA-256 (the isolate may cache it; the record
+    // can't change): one that doesn't match is shown as missing, never as what it holds.
+    const bodies = await Promise.all(
+      chunks.map((c) =>
+        store.get(c.r2_key).then(
+          async (body) => ({
+            body: body !== null && (await sha256Text(body)) === c.sha256 ? body : null,
+            failed: false,
+          }),
+          () => ({ body: null, failed: true }),
+        ),
+      ),
+    );
+    const old: z.infer<typeof timelineEntry>[] = [];
+    let state: "read" | "failed" | "missing" = "read";
+    for (const b of bodies) {
+      if (b.failed) {
+        if (state === "read") state = "failed";
+        continue;
+      }
+      if (b.body === null) {
+        state = "missing";
+        continue;
+      }
+      let lines: ReturnType<typeof parseChunk>;
+      try {
+        lines = parseChunk(b.body);
+      } catch {
+        state = "missing";
+        continue;
+      }
+      for (const { row: r } of lines) {
+        if (r.work_item_id !== input.workItemId) continue;
+        old.push({
+          id: r.id,
+          at: r.at,
+          operation: r.operation,
+          actorType: r.actor_type,
+          actorId: r.actor_id,
+          decision: r.decision,
+          outcome: r.outcome,
+          reason: r.reason,
+          pendingActionId: r.pending_action_id,
+          result: parseJson<unknown>(r.result, null),
+          archived: true,
+        });
+      }
+    }
+    // Merged by time; within the same instant, D1's own order and then the archive's.
+    const merged = [...old, ...entries].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    // Every D1 entry the limit read stays: the archived ones are added, never in their place.
+    return { entries: merged, archive: { ...archive, state } };
   },
 });
 

@@ -49,6 +49,14 @@ export type OutboxMessage =
    * 0580). `repositoryId` null: the project's items that record no repository.
    */
   | { kind: "delivery.wake"; payload: { projectId: string; repositoryId: string | null } }
+  /**
+   * Re-evaluate `factory/verify` on a head after this call commits (`verify.refresh`): a red episode
+   * opened or closed (spec 53, decision 7), so its "held: main is red" goes on or comes off.
+   */
+  | {
+      kind: "verify.recheck";
+      payload: { repo: { owner: string; name: string }; headSha: string; prNumber: number | null };
+    }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
@@ -274,6 +282,12 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   which holds work back or releases it under the gates that apply anyway.
    */
   desktopDecidable?: true;
+  /**
+   * Inputs of a presence-decidable operation the desktop may run without a proof, the desktop only:
+   * ones that decide nothing (adopting projects' workflows as a dry run, ADR 0610). The phone, the
+   * CLI and MCP stay refused.
+   */
+  desktopOneTap?: (input: z.output<I>) => boolean;
   /**
    * A person-only operation the phone may run with one tap, without a fingerprint (ADR 0541
    * decision 5, the owner's rule "ordinary answers are one tap"): everything `desktopDecidable`,

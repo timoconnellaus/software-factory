@@ -71,6 +71,20 @@ function tableAliases(sql: string): Map<string, string> {
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
+    match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
+    why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
+  },
+  {
+    match:
+      /from "core_work_items" where "repository_id" = \? and "head_sha" = \? order by "updated_at"/,
+    why: "the items with one head SHA in one repository (core_work_items_repository_head_idx): one or two",
+  },
+  {
+    match:
+      /FROM core_merge_queue q JOIN core_work_items w ON w\.id = q\.work_item_id\s+WHERE q\.project_id = \?1 AND q\.status = 'queued'/,
+    why: "the deliverer's head: one project's open queue entries (core_merge_queue_project_idx), a handful",
+  },
+  {
     match: /FROM core_outbox WHERE next_at <= \?/,
     why: "due outbox rows only (core_outbox_next_idx); a delivered row is deleted",
   },
@@ -94,6 +108,20 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
     match: /from "core_work_items" where .*"status" in .* order by \+updated_at/,
     why: "workItem.list with a status filter reads and sorts only that project's rows in those statuses (core_work_items_status_idx). Only the CLI's `sf list` filters by status, on demand, asking for the live statuses (bounded by the active limit); a status that grows (done) would sort them all, and nothing polls with a status",
+  },
+  {
+    match: /^select \* from "core_questions" where "work_item_id" = \? order by "created_at"$/,
+    why: "workItem.get: one item's questions (a few per planning round), by the item's index",
+  },
+  {
+    match:
+      /^select \* from "core_pending_actions" where "work_item_id" = \? order by "created_at"$/,
+    why: "workItem.get: one item's gates (one per gate it reached), by the item's index",
+  },
+  {
+    match:
+      /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" = \? and "w"\."repository_id" = \? and "q"\."status" = \?/,
+    why: "workItem.get at the merge stage: one repository's queued merges (the merge queue's depth, a handful)",
   },
 ];
 

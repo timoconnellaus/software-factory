@@ -8,6 +8,8 @@ import {
 } from "../verify/protection.ts";
 import { FAKE_APP, type FakeGitHub, fakeGitHub } from "./fake-github.ts";
 
+export { HELPER_MAX_SUMMARY, keyHelperRefusal } from "./key-helper.ts";
+
 const FAKE_APP_ID = FAKE_APP.id;
 
 export {
