@@ -120,6 +120,9 @@ importers:
       '@software-factory/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@software-factory/runner-host':
+        specifier: workspace:*
+        version: link:../../local/runner-host
       '@software-factory/timeline':
         specifier: workspace:*
         version: link:../../packages/timeline

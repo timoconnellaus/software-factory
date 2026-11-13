@@ -14,15 +14,24 @@
 //   version (which Electrobun copies into its record) is the bucket's word; a genuine, older signed
 //   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
 //   version must equal the manifest's and be newer than the running one (updates.ts).
+//
+// The signature, Gatekeeper and Team ID checks are shared with SF Runner.app's verifier
+// (@software-factory/runner-host/bundle-verify, spec 45 §2).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+  assess,
+  checkSignature,
+  type Exec,
+  teamIdOf,
+} from "@software-factory/runner-host/bundle-verify";
+
+export type { Exec };
+export { teamIdOf };
 
 export const APP_IDENTIFIER = "com.software-factory.desktop";
-
-/** Runs a command; `code` is its exit status, `out` its stdout and stderr together. */
-export type Exec = (cmd: string, args: string[]) => Promise<{ code: number; out: string }>;
 
 export const bunExec: Exec = async (cmd, args) => {
   const p = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -37,13 +46,6 @@ export const bunExec: Exec = async (cmd, args) => {
 /** The running .app (Contents/MacOS/<exe> → the bundle), as Electrobun's updater computes it. */
 export const runningAppPath = () => resolve(dirname(process.execPath), "..", "..");
 
-/** The Team ID the bundle at `app` is signed with, or null (unsigned, ad hoc, unreadable). */
-export async function teamIdOf(app: string, exec: Exec): Promise<string | null> {
-  const r = await exec("/usr/bin/codesign", ["-dv", "--verbose=2", app]);
-  const team = /^TeamIdentifier=([A-Z0-9]{10})$/m.exec(r.out)?.[1];
-  return r.code === 0 && team ? team : null;
-}
-
 export const requirement = (team: string) =>
   `anchor apple generic and identifier "${APP_IDENTIFIER}" and certificate leaf[subject.OU] = "${team}"`;
 
@@ -54,17 +56,7 @@ export async function verifyBundle(
   exec: Exec,
 ): Promise<string | null> {
   if (!/^[A-Z0-9]{10}$/.test(team)) return "this build has no Team ID to check updates against";
-  const sig = await exec("/usr/bin/codesign", [
-    "--verify",
-    "--deep",
-    "--strict",
-    `-R=${requirement(team)}`,
-    staged,
-  ]);
-  if (sig.code !== 0) return `its signature doesn't check out: ${lastLine(sig.out)}`;
-  const gk = await exec("/usr/sbin/spctl", ["--assess", "--type", "execute", staged]);
-  if (gk.code !== 0) return `Gatekeeper rejects it: ${lastLine(gk.out)}`;
-  return null;
+  return (await checkSignature(staged, requirement(team), exec)) ?? (await assess(staged, exec));
 }
 
 /**
@@ -120,8 +112,6 @@ export async function bundleFingerprint(app: string): Promise<string> {
   await walk(app, "");
   return hash.digest("hex");
 }
-
-const lastLine = (s: string) => s.trim().split("\n").at(-1)?.slice(0, 200) ?? "";
 
 export interface StagedUpdate {
   version: string;

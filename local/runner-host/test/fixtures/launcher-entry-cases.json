@@ -1,0 +1,161 @@
+{
+  "comment": "Command lines the launcher (apps/desktop/native/sf-runner-launcher's tests) and the CLI (test/launcher-entries.test.ts) must agree on: `run` is the script and its arguments, or null for exit 64.",
+  "cases": [
+    {
+      "args": [],
+      "run": ["service.cjs"]
+    },
+    {
+      "args": ["runner"],
+      "run": ["sf-runner.cjs", "run"]
+    },
+    {
+      "args": ["check-child"],
+      "run": ["check-sandbox-child.cjs"]
+    },
+    {
+      "args": ["selftest"],
+      "run": ["service.cjs", "--selftest"]
+    },
+    {
+      "args": ["login-item-status"],
+      "run": [null]
+    },
+    {
+      "args": ["service-stop", "--when", "idle"],
+      "run": ["sf-runner.cjs", "service", "stop", "--when", "idle"]
+    },
+    {
+      "args": ["service-stop"],
+      "run": null
+    },
+    {
+      "args": ["service-stop", "--when", "later"],
+      "run": null
+    },
+    {
+      "args": ["service-stop", "--when", "idle", "--when", "now"],
+      "run": null
+    },
+    {
+      "args": ["service-uninstall", "--forget-identity", "--when", "now"],
+      "run": ["sf-runner.cjs", "service", "uninstall", "--forget-identity", "--when", "now"]
+    },
+    {
+      "args": ["service-status", "--json"],
+      "run": ["sf-runner.cjs", "service", "status", "--json"]
+    },
+    {
+      "args": ["login", "--name", "m5", "--url", "https://engine.example.com"],
+      "run": [
+        "sf-runner.cjs",
+        "login",
+        "--no-install",
+        "--name",
+        "m5",
+        "--url",
+        "https://engine.example.com"
+      ]
+    },
+    {
+      "args": ["login", "--url", "http://engine.example.com"],
+      "run": null
+    },
+    {
+      "args": ["login", "--url", "https://me:pw@engine.example.com"],
+      "run": null
+    },
+    {
+      "args": ["login", "--url", "https://"],
+      "run": null
+    },
+    {
+      "args": ["login", "--name", "../x"],
+      "run": null
+    },
+    {
+      "args": ["login", "--name", "-x"],
+      "run": ["sf-runner.cjs", "login", "--no-install", "--name", "-x"]
+    },
+    {
+      "args": ["login", "--no-install"],
+      "run": null
+    },
+    {
+      "args": ["doctor", "--fix", "--json"],
+      "run": ["sf-runner.cjs", "doctor", "--fix", "--json"]
+    },
+    {
+      "args": ["doctor", "extra"],
+      "run": null
+    },
+    {
+      "args": ["account", "list"],
+      "run": ["sf-runner.cjs", "account", "list"]
+    },
+    {
+      "args": ["account", "add", "work", "--token-stdin", "--oauth"],
+      "run": ["sf-runner.cjs", "account", "add", "work", "--token-stdin", "--oauth"]
+    },
+    {
+      "args": ["account", "add", "work", "--oauth"],
+      "run": null
+    },
+    {
+      "args": ["account", "add", "work", "--token-stdin", "--oauth", "--api-key"],
+      "run": null
+    },
+    {
+      "args": ["account", "add"],
+      "run": null
+    },
+    {
+      "args": ["account", "use", "a/b"],
+      "run": null
+    },
+    {
+      "args": ["sprites", "login", "--no-check"],
+      "run": ["sf-runner.cjs", "sprites", "login", "--no-check"]
+    },
+    {
+      "args": ["sprites", "logout", "--no-check"],
+      "run": null
+    },
+    {
+      "args": ["run"],
+      "run": null
+    },
+    {
+      "args": ["pair"],
+      "run": null
+    },
+    {
+      "args": ["install"],
+      "run": null
+    },
+    {
+      "args": ["/tmp/x.js"],
+      "run": null
+    },
+    {
+      "args": ["./sf-runner.cjs"],
+      "run": null
+    },
+    {
+      "args": [""],
+      "run": null
+    },
+    {
+      "args": ["runner", "runner"],
+      "run": null
+    },
+    {
+      "args": ["selftest", "--inspect"],
+      "run": null
+    },
+    {
+      "args": ["--inspect"],
+      "run": null
+    }
+  ]
+}

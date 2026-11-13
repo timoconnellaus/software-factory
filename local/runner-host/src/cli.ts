@@ -69,6 +69,7 @@ import {
 import { deviceLogin } from "./device-login.ts";
 import { gitAtLeast, MIN_GIT } from "./git.ts";
 import { acquireHostLock, HostLockedError } from "./host-lock.ts";
+import { cliArgsAllowed } from "./launcher-entries.ts";
 import { installHint, linuxChecks } from "./linux.ts";
 import { readLiveJobs } from "./live-jobs.ts";
 import { findOnPath, parsePairingInput, serviceNode } from "./pairing.ts";
@@ -750,6 +751,12 @@ function opener(): string | null {
   return null;
 }
 
+// Inside SF Runner.app the launcher has already refused anything outside its entry table; check
+// again here, so a launcher bug can't widen what runs (spec 45 §1).
+if (!cliArgsAllowed("sf-runner.cjs", process.argv.slice(2))) {
+  process.stderr.write("sf-runner: this command isn't one of SF Runner's entries\n");
+  process.exit(64);
+}
 const [command, ...rest] = process.argv.slice(2);
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   login,

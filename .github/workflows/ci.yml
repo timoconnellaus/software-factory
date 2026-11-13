@@ -97,6 +97,38 @@ jobs:
           codesign --force --sign - --entitlements "$work/ents.plist" "$work/signed"
           node apps/desktop/scripts/check-profile.ts --self-test apps/desktop/test/fixtures/sf-keys-profile.plist "$work/signed"
 
+  # SF Runner.app's launcher (spec 45 §1, ADR 0643): its Swift unit tests, then a real ad-hoc
+  # bundle (the pinned Node, the sealed scripts, the launcher built with no Team ID) against the
+  # tamper, environment, argument, planted-module, inspector and launch-constraint tests, with the
+  # check's cost per start in the job summary. The Developer ID half runs in the release.
+  runner-launcher-macos:
+    name: runner launcher (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      NODE_DIST_VERSION: "24.21.0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: swift test --package-path apps/desktop/native/sf-runner-launcher
+      - name: Build an ad-hoc SF Runner.app
+        working-directory: apps/desktop
+        run: |
+          node scripts/vendor-node.mjs
+          node scripts/bundle-runner.mjs --sealed
+          node scripts/runner-app.mjs --out "$RUNNER_TEMP/runner-app"
+      - name: Launcher against the bundle
+        run: |
+          sw_vers
+          node --test --test-reporter=spec apps/desktop/native/sf-runner-launcher/test/launcher.test.mjs
+        env:
+          SF_RUNNER_APP: ${{ runner.temp }}/runner-app/SF Runner.app
+
   # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
   # toolchain under it (hostedtoolcache, setup-pnpm), required.
   check-sandbox-macos:
