@@ -107,14 +107,24 @@ describe("the work-item Workflow", () => {
       "done:done",
     ]);
     expect(stages.find((s) => s.stage === "spec")?.reason).toMatch(/below the spec threshold/);
-    // The reconciler in shadow predicted every stage transition. What it doesn't compare yet still
-    // counts against the item (shadowVerdictOf checks), so it doesn't count toward a streak.
+    // The reconciler in shadow predicted everything the Workflow did: each stage, job, gate and who
+    // decided it, the merge and the end (spec 52 PR (c), complete).
     expect(await shadowVerdictOf(item.workItemId)).toEqual([
       "enter triage",
+      "job triage triage",
+      "complete triage",
       "skip spec",
       "enter build",
+      "job build build",
+      "complete build",
       "enter verify",
+      "job verify verify",
+      "complete verify",
       "enter merge",
+      "gate merge gate",
+      "merge gate decided by a person",
+      "operation merge",
+      "complete merge",
       "end done",
     ]);
     // The compiled Software definition passes and skips the same stages (spec 52 PR (a)).
@@ -283,10 +293,12 @@ describe("the work-item Workflow", () => {
       "SELECT stage, status FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge') ORDER BY started_at, rowid",
       item.workItemId,
     );
-    // The shadow doesn't guess a send-back's target from its own output: the stage after each
-    // send-back is not compared, and says so.
+    // The shadow predicts both send-backs and where they went: the failed verify and the person's
+    // send-back at the merge gate both go back to build, and nothing diverges.
     const shadow = await shadowVerdictOf(item.workItemId);
-    expect(shadow.filter((t) => t.includes("not compared: a send-back's target"))).toHaveLength(2);
+    expect(shadow.filter((t) => t === "sendBack verify → build")).toHaveLength(1);
+    expect(shadow.filter((t) => t === "sendBack merge → build")).toHaveLength(1);
+    expect(shadow.filter((t) => t.includes("≠"))).toEqual([]);
     // Both send-backs went where the compiled definition sends them (spec 52 PR (a)).
     const { def } = definitionFor({ ...BALANCED, retryLimit: 2 }, "change");
     await expectStagesAsDefined(item.workItemId, def, "small");

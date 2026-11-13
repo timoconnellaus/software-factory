@@ -7,7 +7,7 @@ import XCTest
 final class PresenceMessageTests: XCTestCase {
   let nonce = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_xy"
   let digest = String(repeating: "0123456789abcdef", count: 4)
-  let summary = "Merge 3f2a91c \"Fix the inbox count\" into main of acme/widgets"
+  let summary = "Merge 3f2a91c into main of acme/widgets: \"Fix the inbox count\""
 
   func message(_ lines: [String]) -> Data { Data(lines.joined(separator: "\n").utf8) }
   func refused(_ lines: [String], _ why: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -42,6 +42,19 @@ final class PresenceMessageTests: XCTestCase {
     refused([nonce, "review.merge", digest, String(repeating: "a", count: maxSummaryCharacters + 1)], "too long")
   }
   func testControlCharactersInSummary() { refused([nonce, "review.merge", digest, "Merge\u{1b}[2J"], "control") }
+  func testLineAndParagraphSeparatorsInSummary() {
+    // CharacterSet.controlCharacters has neither; both render as a line break in the sheet.
+    refused([nonce, "review.merge", digest, "Merge 3f2a91c\u{2028}into main"], "separator")
+    refused([nonce, "review.merge", digest, "Merge 3f2a91c\u{2029}into main"], "separator")
+  }
+  func testFormatCharactersInSummary() {
+    refused([nonce, "review.merge", digest, "Merge\u{200B} 3f2a91c"], "format")
+    refused([nonce, "review.merge", digest, "Merge \u{202E}cb19a2f3"], "format")
+  }
+  func testOrdinaryUnicodeSummaryIsAccepted() throws {
+    let m = try parsePresenceMessage(message([nonce, "spec.approve", digest, "Approve the spec for #12 \"Café – naïve 日本\""])).get()
+    XCTAssertEqual(m.op, "spec.approve")
+  }
   func testBadNonce() {
     refused(["short", "review.merge", digest, summary], "nonce")
     refused([nonce + "/+", "review.merge", digest, summary], "nonce")
@@ -85,8 +98,8 @@ final class ArgumentsTests: XCTestCase {
 final class PromptAndExitTests: XCTestCase {
   func testReasonCompletesTheSentence() {
     XCTAssertEqual(
-      promptReason("Merge 3f2a91c \"Fix the inbox count\" into main of acme/widgets"),
-      "merge 3f2a91c \"Fix the inbox count\" into main of acme/widgets")
+      promptReason("Merge 3f2a91c into main of acme/widgets: \"Fix the inbox count\""),
+      "merge 3f2a91c into main of acme/widgets: \"Fix the inbox count\"")
     XCTAssertEqual(promptReason("Approve the spec for #12"), "approve the spec for #12")
   }
   func testExitCodes() {

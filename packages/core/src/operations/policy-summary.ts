@@ -6,12 +6,12 @@
 // - names (a workflow's, an agent's, a project's, the org's) come last, cleaned, in the room the
 //   facts leave under MAX_SUMMARY, and never pose as a fact;
 // - every piece that came from a document (a change sentence naming a stage, an id) is cleaned too.
-// These are the rules of `titled()` and `cleanTitle()` in PR #153 (desktop.ts), ported here while it
-// is in review; when it lands this module calls them instead (review of #156, item 4).
+// The rules are summary.ts's (`titled`, `cleanTitle`, MAX_FACTS), shared with every other summary.
 import type { Db } from "@software-factory/db";
 import type { FloorParse } from "../policy/gate.ts";
 import type { PolicyImpact } from "../policy/impact.ts";
 import { type OrgConfig, parseOrgConfig } from "../stages/org-config.ts";
+import { cleanTitle, MAX_FACTS, titled } from "./summary.ts";
 import {
   currentOrgConfig,
   orgConfigImpact,
@@ -19,31 +19,6 @@ import {
   withAgent,
   withWorkflow,
 } from "./workflows.ts";
-
-/** How long a summary grows with a title in it (as #153). */
-export const MAX_SUMMARY = 120;
-/** The most the facts alone may take, under the key helper's 300 (as #153). */
-export const MAX_FACTS = 280;
-
-/**
- * Text as a summary may show it: no format characters (Cf: zero-width, soft hyphen, bidi), no
- * control or line/paragraph separators, no double quotes (a title is quoted), whitespace collapsed.
- */
-export function cleanTitle(text: string): string {
-  return text
-    .replace(/\p{Cf}/gu, "")
-    .replace(/["\p{Zl}\p{Zp}\p{Cc}]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** `facts "title"`: the facts whole, then the title in the room left under MAX_SUMMARY. */
-export function titled(facts: string, title: string | null | undefined): string {
-  const t = [...cleanTitle(title ?? "")];
-  const room = MAX_SUMMARY - [...facts].length - 3;
-  if (t.length === 0 || room < 8) return facts;
-  return `${facts} "${t.length > room ? `${t.slice(0, room - 1).join("")}…` : t.join("")}"`;
-}
 
 /** `s` cut to `max` characters with an ellipsis. */
 const cut = (s: string, max: number) => {

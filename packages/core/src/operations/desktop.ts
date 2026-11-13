@@ -30,6 +30,7 @@ import {
   describeOrgConfigDecision,
   describeOverrideApprove,
 } from "./policy-summary.ts";
+import { MAX_FACTS, titled } from "./summary.ts";
 import { ORG_CONFIG_WRITES } from "./workflows.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
@@ -161,11 +162,23 @@ export function rawSignature(sig: Uint8Array): Uint8Array<ArrayBuffer> {
 export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
   `${nonce}\n${op}\n${digest}\n${summary}`;
 
-const quoted = (title: string) => `"${title.replace(/\s+/g, " ").slice(0, 80)}"`;
+export { cleanTitle, MAX_FACTS, MAX_SUMMARY, titled } from "./summary.ts";
+
+/** `s` cut in the middle to `max` characters (a branch name too long for the facts' limit). */
+const middle = (s: string, max: number) => {
+  const c = [...s];
+  if (c.length <= max) return s;
+  const half = Math.max(1, Math.floor((max - 1) / 2));
+  return `${c.slice(0, half).join("")}…${c.slice(-half).join("")}`;
+};
 
 /**
  * The words for the decision a presence proof is for (ADR 0391), from the engine's own records,
- * never from the caller: the Touch ID prompt shows them.
+ * never from the caller: the Touch ID prompt shows them, completing "SF Keys is trying to …".
+ * **Every case puts the engine's facts first and anything a person or agent wrote (a title) last,
+ * through `titled`**: the facts whole (an unusual condition first among them), the title only in the
+ * room they leave under MAX_SUMMARY. New cases
+ * (the config and workflow decisions included) follow the same rule.
  */
 async function describeDecision(ctx: HandlerContext, op: string, input: Record<string, unknown>) {
   const item = async (id: unknown) =>
@@ -177,26 +190,32 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
           .where("w.id", "=", id)
           .executeTakeFirst()
       : undefined;
-  const named = async (id: unknown) => {
+  /** `<prefix> #12 "title"`, or `<prefix> a work item`. */
+  const onItem = async (prefix: string, id: unknown) => {
     const w = await item(id);
-    return w ? `#${w.number} ${quoted(w.title)}` : "a work item";
+    return w ? titled(`${prefix} #${w.number}`, w.title) : `${prefix} a work item`;
   };
   switch (op) {
     case "spec.approve":
-      return `Approve the spec for ${await named(input.workItemId)}`;
+      return onItem("Approve the spec for", input.workItemId);
     case "spec.requestChanges":
-      return `Request changes to the spec for ${await named(input.workItemId)}`;
+      return onItem("Request changes to the spec for", input.workItemId);
     case "review.merge": {
-      // The prompt names the commit, the repository and a merge without checks (spec 40 M4b,
-      // spec 60): `Merge 3f2a91c "…" into main of acme/widgets, without its checks`. Every client
-      // sends the head SHA; without one it falls back to the work item's number.
+      // The prompt names a merge without checks first, then the commit, the branch and the
+      // repository, then the title (spec 40 M4b, spec 60): `Merge WITHOUT its checks: 3f2a91c into
+      // main of acme/widgets: "Fix the inbox count"`. The unusual condition leads, so it is in the
+      // first words even where the sheet can't show everything. Every client sends the head SHA;
+      // without one it falls back to the work item's number.
       const w = await item(input.workItemId);
       if (!w) return "Merge a work item";
-      const commit =
-        typeof input.headSha === "string" ? `${input.headSha.slice(0, 7)} ` : `#${w.number} `;
-      const into = `${w.default_branch ?? "the default branch"}${w.owner ? ` of ${w.owner}/${w.name}` : ""}`;
-      const without = input.mergeWithoutChecks === true ? ", without its checks" : "";
-      return `Merge ${commit}${quoted(w.title)} into ${into}${without}`;
+      const commit = typeof input.headSha === "string" ? input.headSha.slice(0, 7) : `#${w.number}`;
+      const verb = input.mergeWithoutChecks === true ? "Merge WITHOUT its checks:" : "Merge";
+      const repo = w.owner ? ` of ${w.owner}/${w.name}` : "";
+      const fixed = `${verb} ${commit} into ${repo}:`.length;
+      // GitHub bounds owners (39) and repository names (100); only the branch can outgrow the facts'
+      // limit, and only it is shortened.
+      const branch = middle(w.default_branch ?? "the default branch", MAX_FACTS - fixed);
+      return titled(`${verb} ${commit} into ${branch}${repo}:`, w.title);
     }
     case "mobile.pairOffer":
       return "Add a phone to your account";
@@ -207,9 +226,9 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
         ? "Turn on fingerprint approvals on this device"
         : "Change this device's settings";
     case "review.sendBack":
-      return `Send ${await named(input.workItemId)} back`;
+      return onItem("Send back to build", input.workItemId);
     case "question.acceptDefaults":
-      return `Accept the recommended answers on ${await named(input.workItemId)}`;
+      return onItem("Accept the recommended answers on", input.workItemId);
     case "question.answer": {
       const q =
         typeof input.questionId === "string"
@@ -219,7 +238,7 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
               .where("id", "=", input.questionId)
               .executeTakeFirst()
           : undefined;
-      return `Answer a question on ${await named(q?.work_item_id)}`;
+      return onItem("Answer a question on", q?.work_item_id);
     }
     case "approval.decide": {
       const pa =
@@ -231,7 +250,7 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
               .executeTakeFirst()
           : undefined;
       const verb = input.decision === "rejected" ? "Reject" : "Approve";
-      // A config change names the project, the versions and what it loosens (ADR 0610).
+      // A config change names the versions and what it loosens, the project last (ADR 0610).
       const config = pa ? await describeConfigDecision(ctx, pa, verb) : null;
       if (config) return config;
       const org =
@@ -239,7 +258,9 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
           ? await describeOrgConfigDecision(ctx.db, pa.operation, parsed(pa.input), verb)
           : null;
       if (org) return org;
-      return `${verb} ${pa ? `${pa.operation} on ${await named(pa.work_item_id)}` : "a pending action"}`;
+      return pa
+        ? onItem(`${verb} ${pa.operation} on`, pa.work_item_id)
+        : `${verb} a pending action`;
     }
     case "workflow.save":
     case "agent.save":
@@ -442,7 +463,7 @@ export const desktopAuthStart = defineOperation({
 export const desktopAuthLookup = defineOperation({
   name: "desktop.authLookup",
   description:
-    "What a desktop sign-in is waiting for, so the website can show it before a person approves: the device name, where its key lives, the key's fingerprint, its status and expiry.",
+    "What a desktop sign-in is waiting for, so the website can show it before a person approves: the device name, where its key lives, the key's fingerprint, its status and expiry, and the software-key Mac of yours it replaces when approved, if any.",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -454,10 +475,30 @@ export const desktopAuthLookup = defineOperation({
     keyFingerprint: z.string(),
     status: z.enum(["pending", "approved", "denied", "consumed", "expired"]),
     expiresAt: z.string(),
+    /**
+     * The name of your software-key Mac this sign-in replaces when approved (a Secure Enclave key
+     * for a Mac of the same name revokes it, desktop.authExchange), or null.
+     */
+    replacesSoftwareMac: z.string().nullable(),
   }),
   async handler(input, ctx) {
     const row = await requestById(ctx, input.requestId);
+    // Once per page load, on core_desktop_devices_user_idx (one person's devices).
+    const replaced =
+      row.key_storage === "secure-enclave"
+        ? await ctx.db
+            .selectFrom("core_desktop_devices")
+            .select("name")
+            .where("user_id", "=", ctx.actor.id)
+            .where("platform", "=", "macos")
+            .where("name", "=", row.device_name)
+            .where("key_storage", "=", "software")
+            .where("revoked_at", "is", null)
+            .limit(1)
+            .executeTakeFirst()
+        : undefined;
     return {
+      replacesSoftwareMac: replaced?.name ?? null,
       requestId: row.id,
       deviceName: row.device_name,
       // A Mac's request is only ever secure-enclave or software (requestById reads macos only).
@@ -542,7 +583,7 @@ export const desktopDenyDevice = defineOperation({
 export const desktopAuthExchange = defineOperation({
   name: "desktop.authExchange",
   description:
-    "The desktop app trades the one-time code from the sf:// callback, with its PKCE verifier, for a desktop token (30 days) bound to the device it registered. Once only. Called unsigned by sf-engine's client door.",
+    "The desktop app trades the one-time code from the sf:// callback, with its PKCE verifier, for a desktop token (30 days) bound to the device it registered. Once only. A Secure Enclave key for a Mac revokes the same person's live software-key Macs of the same name (moving a Mac to the Secure Enclave, spec 40 M4b). Called unsigned by sf-engine's client door.",
   risk: "write",
   actors: ["runner"],
   permission: "signed-in",
@@ -623,6 +664,48 @@ export const desktopAuthExchange = defineOperation({
       id: deviceId,
       after: { user: user.id, name: row.device_name, keyStorage: row.key_storage },
     });
+    // Moving a Mac to the Secure Enclave (spec 40 M4b): the app revokes its software-key device
+    // before signing in again, but if that failed (offline, killed) the old device and its 30-day
+    // token, which an agent may hold, would stay live. So a Secure Enclave key approved for a Mac
+    // revokes the same person's live software-key Macs of the same name. Once per sign-in, on
+    // core_desktop_devices_user_idx (one person's devices, a handful).
+    if (row.key_storage === "secure-enclave") {
+      const old = await ctx.db
+        .selectFrom("core_desktop_devices")
+        .select("id")
+        .where("user_id", "=", user.id)
+        .where("platform", "=", "macos")
+        .where("name", "=", row.device_name)
+        .where("key_storage", "=", "software")
+        .where("revoked_at", "is", null)
+        .limit(20)
+        .execute();
+      const ids = old.map((d) => d.id);
+      if (ids.length) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_desktop_devices")
+            .set({ revoked_at: ctx.now })
+            .where("id", "in", ids)
+            .where("revoked_at", "is", null),
+        );
+        ctx.write(
+          ctx.db
+            .updateTable("core_cli_tokens")
+            .set({ revoked_at: ctx.now })
+            .where("device_id", "in", ids)
+            .where("revoked_at", "is", null),
+        );
+        for (const id of ids) {
+          ctx.emit({ kind: "device.revoked", payload: { userId: user.id, deviceId: id } });
+          ctx.change({
+            entity: "desktop_device",
+            id,
+            after: { revoked: true, replacedBy: deviceId },
+          });
+        }
+      }
+    }
     return { token, tokenId, deviceId, expiresAt, login: user.github_login ?? null };
   },
 });
@@ -768,7 +851,7 @@ export const presenceRedeem = defineOperation({
       throw refused(
         device.platform === "android"
           ? "this phone can't approve: its key isn't attested in secure hardware on a verified, locked phone"
-          : "this device's key isn't in the Secure Enclave (an unsigned build): decide on the website",
+          : "this Mac's key isn't in the Secure Enclave yet: update the app and sign in again, or decide on the website",
       );
     }
     if (!device.decides && input.op !== "device.update" && !possessionOnly(input.op)) {
