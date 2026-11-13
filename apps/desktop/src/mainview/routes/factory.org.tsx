@@ -31,7 +31,6 @@ import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { CannotApproveYet, useCanDecide } from "../components/cannot-approve.tsx";
 import {
-  ChangeDiff,
   CharCount,
   ImpactChip,
   ImpactList,
@@ -39,6 +38,7 @@ import {
   Segmented,
 } from "../components/config-fields.tsx";
 import { Cell, Empty, Row, TablePanel, When, WIDE } from "../components/data-table.tsx";
+import { DiffRows } from "../components/diff-rows.tsx";
 import { type OrgWorkflow, OrgWorkflowForm } from "../components/org-workflow-form.tsx";
 import { Reads } from "../components/read-state.tsx";
 import { Chip, PageArea, PageHeader, Panel, SectionTitle } from "../components/shell-list.tsx";
@@ -50,6 +50,7 @@ import {
   stageTypesQuery,
 } from "../lib/factory-queries.ts";
 import { op, read } from "../lib/op.ts";
+import { agentDiff, type DiffRow, workflowDiff } from "../lib/org-diff.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { orgScope } from "../lib/scope.ts";
 import { useSession } from "../lib/session.ts";
@@ -398,7 +399,21 @@ export function cannotApproveOrg(p: Pending, version: number): string | null {
     return "The engine couldn't classify this change, so it can't be approved here. Reject it, or look again later.";
   if (p.operation !== "orgConfig.rollback" && !p.proposal)
     return "This change can't be shown: what it would save isn't readable. Reject it.";
+  // The engine says it changes something, but no difference can be shown: nothing to approve blind.
+  if (
+    p.impact.changes.length > 0 &&
+    p.operation !== "orgConfig.rollback" &&
+    differenceOf(p).length === 0
+  )
+    return "The engine sees a change here that this screen can't show. Reject it, and look at it again.";
   return null;
+}
+
+/** The rows of a waiting change's difference (every field), for workflows and agents. */
+export function differenceOf(p: Pending): DiffRow[] {
+  if (p.operation === "workflow.save") return workflowDiff(p.current, p.proposal);
+  if (p.operation === "agent.save") return agentDiff(p.current, p.proposal);
+  return [];
 }
 
 /**
@@ -469,61 +484,11 @@ function PendingOrgChanges({ config }: { config: OpOutput<"orgConfig.get"> }) {
   );
 }
 
-/** What a waiting org change would change, before and after. */
+/** What a waiting org change would change, field by field, before and after. */
 function OrgDifference({ change }: { change: Pending }) {
-  if (change.operation === "workflow.save") {
-    const stages = (v: Record<string, unknown> | null) =>
-      Array.isArray(v?.stages)
-        ? (v.stages as { id: string; name: string; settings?: unknown }[])
-        : [];
-    const was = stages(change.current);
-    const now = stages(change.proposal);
-    const settingsChanged = now.filter((s) => {
-      const b = was.find((x) => x.id === s.id);
-      return b && JSON.stringify(b.settings ?? {}) !== JSON.stringify(s.settings ?? {});
-    });
-    return (
-      <div
-        className="flex flex-col gap-1 rounded-lg bg-page px-3 py-2 text-xs"
-        data-testid="org-pending-diff"
-      >
-        <div>
-          <span className="text-ink-3">Stages now: </span>
-          {was.map((s) => s.name).join(" → ") || "none (a new workflow)"}
-        </div>
-        <div>
-          <span className="text-ink-3">Stages after: </span>
-          <span className="font-medium">{now.map((s) => s.name).join(" → ")}</span>
-        </div>
-        {settingsChanged.map((s) => (
-          <div key={s.id} className="break-words">
-            <span className="text-ink-3">{s.name} settings: </span>
-            <span className="line-through">
-              {JSON.stringify(was.find((x) => x.id === s.id)?.settings ?? {})}
-            </span>
-            {" → "}
-            <span className="font-medium">{JSON.stringify(s.settings ?? {})}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  if (change.operation === "agent.save")
-    return (
-      <ChangeDiff
-        before={change.current}
-        after={change.proposal}
-        changes={["name", "role", "tier", "instructions"].map((path) => ({
-          path,
-          summary: "",
-          class: "neutral",
-        }))}
-        testId="org-pending-diff"
-      />
-    );
   if (change.operation === "orgConfig.rollback")
     return <div className="text-ink-3 text-xs">Back to v{change.toVersion}, as a new version.</div>;
-  return null;
+  return <DiffRows rows={differenceOf(change)} testId="org-pending-diff" />;
 }
 
 type Agent = { name: string; role: string; tier?: string; instructions?: string };
@@ -540,11 +505,18 @@ function OrgAgents({
   const agents = (Array.isArray(config?.config.agents) ? config.config.agents : []) as Agent[];
   const [editing, setEditingState] = useState<Agent | null>(null);
   const [original, setOriginal] = useState<Agent | null>(null);
+  // The org config version the edit started from: the save names it, so a newer save by someone
+  // else is refused (conflict) instead of silently replaced (review of #159).
+  const [editBase, setEditBase] = useState<number | null>(null);
   const setEditing = (a: Agent | null) => {
     setEditingState(a);
-    if (a === null || original === null || a.name !== original.name || editing === null)
+    if (a === null || original === null || a.name !== original.name || editing === null) {
       setOriginal(a ? { ...a } : null);
+      setEditBase(a ? (config?.version ?? 0) : null);
+    }
   };
+  const latest = agents.find((x) => x.name === original?.name) ?? null;
+  const agentMoved = editing !== null && editBase !== null && editBase !== (config?.version ?? 0);
   const { run, pending } = usePolicyDecide();
   const canDecide = useCanDecide();
   return (
@@ -631,16 +603,39 @@ function OrgAgents({
             onChange={(e) => setEditing({ ...editing, instructions: e.target.value })}
           />
           <CharCount value={editing.instructions ?? ""} />
+          {agentMoved && (
+            <div className="flex flex-col gap-2 text-[13px]" data-testid="org-agent-moved">
+              <span>
+                The org's workflows changed while you were editing (v{editBase} → v{config?.version}
+                ). What changed in this agent since you opened it:
+              </span>
+              <DiffRows rows={agentDiff(original, latest)} />
+              {agentDiff(original, latest).length === 0 && (
+                <span className="text-ink-3 text-xs">Nothing in this agent.</span>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-fit"
+                onClick={() => {
+                  setOriginal(latest ? { ...latest } : original);
+                  setEditBase(config?.version ?? 0);
+                }}
+              >
+                Keep my changes on v{config?.version}
+              </Button>
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={!editing.name.trim() || pending !== null || !canDecide}
+              disabled={!editing.name.trim() || pending !== null || !canDecide || agentMoved}
               onClick={async () => {
                 const out = await run(
                   "agent.save",
                   {
                     orgId,
-                    baseVersion: config?.version ?? 0,
+                    baseVersion: editBase ?? 0,
                     agent: { ...editing, name: editing.name.trim() },
                   },
                   `Saved ${editing.name.trim()}`,
@@ -843,14 +838,16 @@ function OrgHistory({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={pending !== null || !preview.data}
+              disabled={pending !== null || !preview.data || preview.isFetching || preview.isError}
               onClick={() => {
                 const toVersion = confirm;
+                const base = preview.data?.currentVersion;
                 setConfirm(null);
                 if (toVersion !== null)
                   void run(
                     "orgConfig.rollback",
-                    { orgId, baseVersion: config?.version ?? 0, toVersion },
+                    // The version the person saw classified: a newer one is refused (conflict).
+                    { orgId, baseVersion: base ?? 0, toVersion },
                     `Rolled back to v${toVersion}`,
                   );
               }}

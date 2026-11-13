@@ -260,7 +260,8 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     const text = textOf(html);
     expect(html).toContain('data-testid="org-pending-impact"');
     expect(text).toContain("Removes the agent check Reviewer.");
-    expect(text).toContain("Stages after: Planning → Build → Verify → Merge");
+    expect(html).toContain('data-testid="org-pending-diff"');
+    expect(text).toContain("Reviewer (removed)");
     expect(html).toContain('data-testid="org-pending-approve"');
   });
 
