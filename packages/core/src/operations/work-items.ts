@@ -725,6 +725,11 @@ export const workItemGet = defineOperation({
   },
 });
 
+async function sha256Text(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Archived objects workItem.timeline reads in one call at most (each up to 1 MB). */
 export const TIMELINE_ARCHIVE_CHUNKS = 20;
 
@@ -757,6 +762,8 @@ export const workItemTimeline = defineOperation({
     limit: z.number().int().min(1).max(1000).default(500),
     /** Read the item's archived entries back from R2 too (on demand; not for polling). */
     archived: z.boolean().default(false),
+    /** The archive's next page: the `archive.next` an earlier answer gave. */
+    archiveAfter: z.object({ day: z.string(), seq: z.number().int() }).optional(),
   }),
   output: z.object({
     entries: z.array(timelineEntry),
@@ -771,6 +778,8 @@ export const workItemTimeline = defineOperation({
       state: z.enum(["none", "available", "read", "failed", "missing"]),
       /** More archived objects hold the item's entries than one call reads. */
       more: z.boolean(),
+      /** Where the next page of the archive starts (pass it as `archiveAfter`), when `more`. */
+      next: z.object({ day: z.string(), seq: z.number() }).nullable(),
     }),
   }),
   async handler(input, ctx) {
@@ -800,8 +809,17 @@ export const workItemTimeline = defineOperation({
         .innerJoin("core_audit_archive_chunks as c", (j) =>
           j.onRef("c.day", "=", "i.day").onRef("c.seq", "=", "i.seq"),
         )
-        .select(["i.day", "i.seq", "i.rows", "c.r2_key"])
+        .select(["i.day", "i.seq", "i.rows", "c.r2_key", "c.sha256"])
         .where("i.work_item_id", "=", input.workItemId)
+        .$if(input.archiveAfter !== undefined, (q) => {
+          const after = input.archiveAfter as { day: string; seq: number };
+          return q.where((eb) =>
+            eb.or([
+              eb("i.day", ">", after.day),
+              eb.and([eb("i.day", "=", after.day), eb("i.seq", ">", after.seq)]),
+            ]),
+          );
+        })
         .orderBy("i.day")
         .orderBy("i.seq")
         .limit(TIMELINE_ARCHIVE_CHUNKS + 1),
@@ -829,14 +847,26 @@ export const workItemTimeline = defineOperation({
         | "failed"
         | "missing",
       more: archivedChunks.length > TIMELINE_ARCHIVE_CHUNKS,
+      next:
+        archivedChunks.length > TIMELINE_ARCHIVE_CHUNKS
+          ? {
+              day: (chunks.at(-1) as (typeof chunks)[number]).day,
+              seq: (chunks.at(-1) as (typeof chunks)[number]).seq,
+            }
+          : null,
     };
     if (!input.archived || chunks.length === 0) return { entries, archive };
     const store = ctx.services.runArchive;
     if (!store) return { entries, archive: { ...archive, state: "failed" as const } };
+    // Each object is checked against its record's SHA-256 (the isolate may cache it; the record
+    // can't change): one that doesn't match is shown as missing, never as what it holds.
     const bodies = await Promise.all(
       chunks.map((c) =>
         store.get(c.r2_key).then(
-          (body) => ({ body, failed: false }),
+          async (body) => ({
+            body: body !== null && (await sha256Text(body)) === c.sha256 ? body : null,
+            failed: false,
+          }),
           () => ({ body: null, failed: true }),
         ),
       ),

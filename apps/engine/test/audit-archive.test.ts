@@ -11,6 +11,7 @@ import {
   chainLines,
   checkChunk,
   GENESIS,
+  NEVER_ARCHIVED,
   parseChunk,
 } from "@software-factory/core/audit-chain";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -146,7 +147,12 @@ describe("the audit archive", () => {
       q.includes("CREATE TRIGGER core_audit_delete_archived_only"),
     );
     const listed = [...(trigger ?? "").matchAll(/'([a-zA-Z]+\.[a-zA-Z]+)'/g)].map((x) => x[1]);
-    expect(new Set(listed)).toEqual(new Set(AUDIT_ARCHIVE_OPERATIONS));
+    expect([...listed].sort()).toEqual([...AUDIT_ARCHIVE_OPERATIONS].sort());
+    // Nothing that issues a credential or records what reached main is ever on it.
+    for (const op of NEVER_ARCHIVED) {
+      expect(listed, op).not.toContain(op);
+      expect(AUDIT_ARCHIVE_OPERATIONS as readonly string[], op).not.toContain(op);
+    }
   });
 
   it("a stray object at the chunk's key stops the tick and deletes nothing; the exact one is used", async () => {

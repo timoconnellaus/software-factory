@@ -11,13 +11,18 @@ export const VERIFY_MAX_DAYS = 31;
 /** Archived objects one call reads at most (each up to 1 MB). */
 export const VERIFY_MAX_CHUNKS = 100;
 
+/**
+ * One day's verdict. No row or object counts: the archive holds every org's machine rows, so an
+ * org admin learns whether the chain is whole, not how busy other orgs were.
+ */
 const dayVerdict = z.object({
   day: z.string(),
   ok: z.boolean(),
-  /** `archived`, or `not archived` (not yet due, or a gap after archived days). */
-  status: z.enum(["archived", "not archived"]),
-  rows: z.number(),
-  chunks: z.number(),
+  /**
+   * `archived`; `before the archive` (earlier than its first day: nothing to archive); `not yet`
+   * (after its last day: not due or not reached yet); `missing` (between archived days: a gap).
+   */
+  status: z.enum(["archived", "before the archive", "not yet", "missing"]),
   why: z.string().nullable(),
 });
 
@@ -26,7 +31,7 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "a UTC day, YYYY-MM-DD");
 export const auditVerify = defineOperation({
   name: "audit.verify",
   description:
-    "Verify the audit archive's hash chain for a range of UTC days (at most 31): every archived object is read fresh from R2 and re-hashed from the previous day's root, and each day's root and link are checked against D1's records. A missing, altered, added or reordered row, a missing object or a missing day is reported with the day and why. Reports verdicts only, never row contents. The archive holds every org's machine rows, so any org admin may verify it.",
+    "Verify the audit archive's hash chain for a range of UTC days (at most 31): every archived object is read fresh from R2 and re-hashed from the previous day's root, and each day's root and link are checked against D1's records. A missing, altered, added or reordered row, a missing object or a missing day is reported with the day and why. Reports a verdict per day only, never rows or counts: the archive holds every org's machine rows, so any org admin may verify that it is whole, without learning how busy other orgs were.",
   risk: "read",
   actors: ["human"],
   permission: "admin",
@@ -46,7 +51,7 @@ export const auditVerify = defineOperation({
     const store = ctx.services.runArchive;
     if (!store) throw new OperationError("unavailable", "the archive isn't bound here");
     // The days (and the one before, for its root) and their chunks, by primary key ranges.
-    const [days, chunks, firstEver] = await Promise.all([
+    const [days, chunks, bounds] = await Promise.all([
       ctx.db
         .selectFrom("core_audit_archives")
         .selectAll()
@@ -65,30 +70,36 @@ export const auditVerify = defineOperation({
         .execute(),
       ctx.db
         .selectFrom("core_audit_archives")
-        .select(sql<string | null>`min(day)`.as("day"))
+        .select([sql<string | null>`min(day)`.as("first"), sql<string | null>`max(day)`.as("last")])
         .executeTakeFirst(),
     ]);
     const byDay = new Map(days.map((d) => [d.day, d]));
+    const first = bounds?.first ?? null;
+    const last = bounds?.last ?? null;
+    // The chunk read stopped at its cap: from the first day it cut into, the records are partial.
+    const cutDay =
+      chunks.length > VERIFY_MAX_CHUNKS ? (chunks[VERIFY_MAX_CHUNKS]?.day ?? null) : null;
+    const listed = chunks.slice(0, VERIFY_MAX_CHUNKS);
     const out: z.infer<typeof dayVerdict>[] = [];
-    let read = 0;
     let stoppedAt: string | null = null;
     for (let d = input.from; d <= input.to; d = nextDay(d)) {
       const rec = byDay.get(d);
       if (!rec) {
-        // Not archived: fine once no later day is (not due yet); a gap otherwise.
-        const later = days.some((x) => x.day > d);
-        out.push({
-          day: d,
-          ok: !later,
-          status: "not archived",
-          rows: 0,
-          chunks: 0,
-          why: later ? "a later day is archived, so this one is missing" : null,
-        });
+        if (first === null || d > (last as string)) {
+          out.push({ day: d, ok: true, status: "not yet", why: null });
+        } else if (d < first) {
+          out.push({ day: d, ok: true, status: "before the archive", why: null });
+        } else {
+          out.push({
+            day: d,
+            ok: false,
+            status: "missing",
+            why: "between archived days, but not recorded: a gap in the chain",
+          });
+        }
         continue;
       }
-      const theirs = chunks.filter((c) => c.day === d);
-      if (read + rec.chunks > VERIFY_MAX_CHUNKS || theirs.length < rec.chunks) {
+      if (cutDay !== null && d >= cutDay) {
         if (out.length === 0) {
           throw new OperationError(
             "invalid_input",
@@ -101,11 +112,10 @@ export const auditVerify = defineOperation({
       const result = await verifyDay(
         rec,
         byDay.get(prevDay(d)) ?? null,
-        firstEver?.day === d,
-        theirs,
+        first === d,
+        listed.filter((c) => c.day === d),
       );
-      read += theirs.length;
-      out.push({ day: d, status: "archived", rows: rec.rows, chunks: rec.chunks, ...result });
+      out.push({ day: d, status: "archived", ...result });
     }
     return { ok: out.every((x) => x.ok), days: out, nextDay: stoppedAt };
 
@@ -123,8 +133,9 @@ export const auditVerify = defineOperation({
       }
       if (before && rec.prev_root !== before.root)
         return fail("doesn't chain from the day before's root");
-      if (theirs.length !== rec.chunks)
-        return fail(`${theirs.length} objects recorded, ${rec.chunks} counted`);
+      if (theirs.length !== rec.chunks) {
+        return fail(`${rec.chunks} objects counted for the day, ${theirs.length} recorded`);
+      }
       let prev = rec.prev_root;
       let rows = 0;
       for (const [i, c] of theirs.entries()) {

@@ -13,10 +13,12 @@
 -- - not tied to a gate or an approval (`pending_action_id` and `approval_id` both NULL);
 -- - one of the routine operations listed in the trigger below (and in AUDIT_ARCHIVE_OPERATIONS in
 --   packages/core/src/audit-chain.ts, which a test keeps equal to this list): leases, heartbeats,
---   claims, steers, run events, tokens, hand-backs, stage moves, merge-queue moves, branch moves,
---   device-login polls, deliveries of news and the intake's observations. No merge, no PR, no spec,
---   no triage, no question, no planning content, no gate, no incident, no config or policy change,
---   no work item created or released, no sign-in.
+--   claims, steers, run events, artifacts, hand-backs, stage moves, merge-queue moves short of
+--   merging, a branch's first push, deliveries of news and the intake's observations. Never what
+--   issues a credential (a job token, a device login's runner key or CLI token, a sign-in), never
+--   the record of what reached main (`mergeQueue.merging`, `branch.advance`, a merge), no PR, no
+--   spec, no triage, no question, no planning content, no gate, no incident, no config or policy
+--   change, no work item created or released.
 -- Changing that list is a migration, so it is reviewed by a person like any other policy change.
 
 -- One row per archived UTC day, kept in D1 for good: the day's root (the hash of its last machine
@@ -77,7 +79,10 @@ CREATE TABLE core_audit_archive_leases (
 
 -- The journal stays append-only, except for exactly this delete: a machine row (above) at least 90
 -- days old whose (at, id) falls inside an archived chunk's range for its day. UPDATE stays refused.
-DROP TRIGGER IF EXISTS core_audit_no_delete;
+-- The trigger checks that a chunk's range covers the row, not that the row is in the object: the
+-- archiver's batch deletes exactly the ids it wrote to the object, in the batch that records it
+-- (ADR 0591). Checking membership in SQL would cost 2 to 4 more rows written per archived row.
+-- Created before the old trigger is dropped, so there is no moment with neither.
 CREATE TRIGGER core_audit_delete_archived_only BEFORE DELETE ON core_audit
 WHEN NOT (
   OLD.decision = 'allow'
@@ -88,15 +93,13 @@ WHEN NOT (
        OR (OLD.actor_type = 'agent' AND OLD.actor_id = 'foreman'))
   AND OLD.operation IN (
     'runner.heartbeat', 'job.claim', 'job.enqueue',
-    'run.takeSteers', 'run.reportEvents', 'run.issueToken', 'run.addArtifact', 'run.handBack',
-    'run.release', 'run.expire',
+    'run.takeSteers', 'run.reportEvents', 'run.addArtifact', 'run.handBack', 'run.release',
+    'run.expire',
     'lease.claim', 'lease.heartbeat', 'lease.release',
-    'runner.deviceStart', 'runner.devicePoll', 'cli.deviceStart', 'cli.devicePoll',
     'planning.wait', 'planning.news', 'planning.yield', 'planning.requestYield',
-    'branch.ensure', 'branch.advance',
+    'branch.ensure',
     'workItem.enterStage', 'workItem.awaitHead', 'workItem.awaitQuestions',
-    'mergeQueue.enter', 'mergeQueue.leave', 'mergeQueue.update', 'mergeQueue.merging',
-    'mergeQueue.hold', 'queue.pull',
+    'mergeQueue.enter', 'mergeQueue.leave', 'mergeQueue.update', 'mergeQueue.hold', 'queue.pull',
     'connector.receive', 'push.observe', 'main.observe', 'verify.refresh'
   )
   AND OLD.at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-90 days')
@@ -108,5 +111,32 @@ WHEN NOT (
   )
 )
 BEGIN SELECT RAISE(ABORT, 'core_audit is append-only: only archived machine rows may be deleted'); END;
+DROP TRIGGER IF EXISTS core_audit_no_delete;
+
+-- INSERT OR REPLACE would delete a row without the delete trigger firing (recursive triggers are
+-- off), so a person's row could be replaced by a machine row and then archived away. Refused: an
+-- insert whose id or idempotency key is already there aborts, with the message a UNIQUE conflict
+-- has (invoke() reads a conflict on the idempotency key from it). Two index lookups per audit
+-- insert, no write.
+CREATE TRIGGER core_audit_no_replace BEFORE INSERT ON core_audit
+WHEN EXISTS (SELECT 1 FROM core_audit WHERE id = NEW.id)
+  OR (NEW.idempotency_key IS NOT NULL
+      AND EXISTS (SELECT 1 FROM core_audit WHERE idempotency_key = NEW.idempotency_key))
+BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: core_audit (append-only: no replace)'); END;
+
+-- The archive's records are written once: a day, a chunk and its work-item index rows are never
+-- changed or deleted, so the chain's head can only advance by a new day.
+CREATE TRIGGER core_audit_archives_no_update BEFORE UPDATE ON core_audit_archives
+BEGIN SELECT RAISE(ABORT, 'core_audit_archives is append-only'); END;
+CREATE TRIGGER core_audit_archives_no_delete BEFORE DELETE ON core_audit_archives
+BEGIN SELECT RAISE(ABORT, 'core_audit_archives is append-only'); END;
+CREATE TRIGGER core_audit_archive_chunks_no_update BEFORE UPDATE ON core_audit_archive_chunks
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_chunks is append-only'); END;
+CREATE TRIGGER core_audit_archive_chunks_no_delete BEFORE DELETE ON core_audit_archive_chunks
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_chunks is append-only'); END;
+CREATE TRIGGER core_audit_archive_items_no_update BEFORE UPDATE ON core_audit_archive_items
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_items is append-only'); END;
+CREATE TRIGGER core_audit_archive_items_no_delete BEFORE DELETE ON core_audit_archive_items
+BEGIN SELECT RAISE(ABORT, 'core_audit_archive_items is append-only'); END;
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 366) WHERE key = 'schema_version';

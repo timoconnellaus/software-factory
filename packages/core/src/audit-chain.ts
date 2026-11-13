@@ -25,9 +25,12 @@ export const AUDIT_ARCHIVE_AFTER_DAYS = 90;
 /**
  * The routine operations whose machine rows are archived: the list in migration 0366's delete
  * trigger, which a test keeps equal to this one. Leases, heartbeats, claims, steers, run events,
- * tokens, hand-backs, stage and merge-queue moves, branch moves, device-login polls, deliveries of
- * news and the intake's observations. Never a merge, a PR, a spec, a triage, a question, planning
- * content, a gate, an incident, a config or policy change, an item created or released, a sign-in.
+ * artifacts, hand-backs, stage moves, merge-queue moves short of merging, the first push of a branch,
+ * deliveries of news, and the intake's observations. Never anything that issues a credential (a
+ * job token, a runner key or CLI token from a device login, a sign-in), records what reached main
+ * (`mergeQueue.merging`, `branch.advance`, a merge), a PR, a spec, a triage, a question, planning
+ * content, a gate, an incident, a config or policy change, or an item created or released:
+ * NEVER_ARCHIVED names the ones that would otherwise look routine.
  */
 export const AUDIT_ARCHIVE_OPERATIONS = [
   "runner.heartbeat",
@@ -35,7 +38,6 @@ export const AUDIT_ARCHIVE_OPERATIONS = [
   "job.enqueue",
   "run.takeSteers",
   "run.reportEvents",
-  "run.issueToken",
   "run.addArtifact",
   "run.handBack",
   "run.release",
@@ -43,29 +45,42 @@ export const AUDIT_ARCHIVE_OPERATIONS = [
   "lease.claim",
   "lease.heartbeat",
   "lease.release",
-  "runner.deviceStart",
-  "runner.devicePoll",
-  "cli.deviceStart",
-  "cli.devicePoll",
   "planning.wait",
   "planning.news",
   "planning.yield",
   "planning.requestYield",
   "branch.ensure",
-  "branch.advance",
   "workItem.enterStage",
   "workItem.awaitHead",
   "workItem.awaitQuestions",
   "mergeQueue.enter",
   "mergeQueue.leave",
   "mergeQueue.update",
-  "mergeQueue.merging",
   "mergeQueue.hold",
   "queue.pull",
   "connector.receive",
   "push.observe",
   "main.observe",
   "verify.refresh",
+] as const;
+
+/**
+ * Routine-looking operations that stay in D1 forever (review of #170): the record that a credential
+ * was issued (device logins settle into a runner key or a CLI token; `run.issueToken` mints a
+ * GitHub token, ADR 0033), and the record of what reached main. A test keeps them off both lists.
+ */
+export const NEVER_ARCHIVED = [
+  "runner.deviceStart",
+  "runner.devicePoll",
+  "cli.deviceStart",
+  "cli.devicePoll",
+  "run.issueToken",
+  "mergeQueue.merging",
+  "branch.advance",
+  "pr.merge",
+  "pr.autoMerge",
+  "desktop.authExchange",
+  "mobile.authExchange",
 ] as const;
 
 const ARCHIVED_OPS: ReadonlySet<string> = new Set(AUDIT_ARCHIVE_OPERATIONS);

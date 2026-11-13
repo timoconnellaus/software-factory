@@ -66,6 +66,53 @@ describe("core schema", () => {
     await expect(env.DB.prepare("DELETE FROM core_audit").run()).rejects.toThrow(/append-only/);
   });
 
+  it("refuses INSERT OR REPLACE over a row, by id or idempotency key (migration 0366)", async () => {
+    const ins = (verb: string, id: string, actor: string, key: string | null) =>
+      env.DB.prepare(
+        `${verb} INTO core_audit (id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input, idempotency_key)
+         VALUES (?, '2026-01-01T00:00:00Z', 'runner.heartbeat', 'write', ?, 'x', '{}', 'allow', 'ok', '{}', ?)`,
+      )
+        .bind(id, actor, key)
+        .run();
+    await ins("INSERT", "au_person", "human", "key-1");
+    await expect(ins("INSERT OR REPLACE", "au_person", "runner", null)).rejects.toThrow(
+      /UNIQUE constraint failed/,
+    );
+    await expect(ins("REPLACE", "au_other", "runner", "key-1")).rejects.toThrow(
+      /UNIQUE constraint failed/,
+    );
+    await expect(ins("INSERT", "au_person", "runner", null)).rejects.toThrow(
+      /UNIQUE constraint failed/,
+    );
+    const row = await env.DB.prepare(
+      "SELECT actor_type FROM core_audit WHERE id = 'au_person'",
+    ).first();
+    expect(row).toEqual({ actor_type: "human" });
+  });
+
+  it("keeps the archive's records append-only (migration 0366)", async () => {
+    await env.DB.prepare(
+      `INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-01-01', 0, 0, 'r', 'p', 'x')`,
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
+       VALUES ('2025-01-01', 1, 'k', 'a', 'a', 'b', 'b', 1, 1, 's', 'p', 'h', 'x')`,
+    ).run();
+    await env.DB.prepare(
+      "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-01-01', 1, 1)",
+    ).run();
+    for (const sql of [
+      "UPDATE core_audit_archives SET root = 'forged'",
+      "DELETE FROM core_audit_archives",
+      "UPDATE core_audit_archive_chunks SET last_hash = 'forged'",
+      "DELETE FROM core_audit_archive_chunks",
+      "UPDATE core_audit_archive_items SET rows = 9",
+      "DELETE FROM core_audit_archive_items",
+    ]) {
+      await expect(env.DB.prepare(sql).run(), sql).rejects.toThrow(/append-only/);
+    }
+  });
+
   it("deletes only archived machine rows at least 90 days old (migration 0366)", async () => {
     const old = new Date(Date.now() - 100 * 86_400_000).toISOString();
     const day = old.slice(0, 10);
