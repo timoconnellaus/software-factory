@@ -355,3 +355,23 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > it as `proven.checksSetUp`. When checks exist, the count stays and each criterion not proven says
 > why ("no check is named for this", a named check that didn't pass, a static check, or only the
 > reviewer's link).
+
+> **Amended 2026-11-13 (triage ties, the owner's decision; Workflow feature `triage-ties`).** A small
+> item skips the spec stage, so it had no person-approved links and none of its criteria could be
+> Proven. From `triage-ties` triage names the proving check for each criterion it writes, from
+> `checks.provable` (the declared checks, then the required CI checks, never `factory/verify`).
+> The tie is data the code validates: `workItem.triage` keeps only those names (an unknown one is
+> dropped and journaled, leaving the criterion Not proven), records them as `[checks: …]` tags on
+> triage's spec, accepts `[checks: none]` ("not covered by a check") as an honest answer, and is
+> refused once the item has left triage. `reviewPacket.record` proves an item without a spec
+> against those ties (`linkedBy: "triage"`); the reviewer's links still never prove. A check may not
+> be called `none`.
+
+> **Amended 2026-11-13 (coordinator review of the triage ties).** Two corrections to the note above.
+> (1) A setup check never proves: a declared check may say `proves: false`, and without it only a
+> check that runs tests proves (`checkProves`); install and build, by name or command, and static
+> checks never do, and `checks.provable` doesn't offer them to triage. (2) Triage is an agent, so its
+> ties are not proof: a criterion whose triage-named check passed is "passed the check triage named
+> (not checked by a person)" (`passedTriageCheck`), counted apart from **Proven** in the packet
+> (`proven.triage`), the gate and `factory/verify`. Proven means a check a person tied it to passed.
+> Auto-approval (ADR 0515) reads `everyCriterionProven`, which counts only person-approved ties.

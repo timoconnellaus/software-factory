@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The key helper's entitlements, and only these (ADR 0394). TEAM_ID is filled in at build time
+     from the release environment; the embedded provisioning profile authorises both values. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.application-identifier</key>
+	<string>TEAM_ID.com.software-factory.desktop.keys</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TEAM_ID</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>TEAM_ID.com.software-factory.desktop.keys</string>
+	</array>
+</dict>
+</plist>
