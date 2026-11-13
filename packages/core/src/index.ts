@@ -51,6 +51,7 @@ export {
 export { BRANCH_MOVED_AFTER_APPROVAL } from "./operations/github.ts";
 export * as operations from "./operations/index.ts";
 export { STEER_OFFERS_MAX } from "./operations/live.ts";
+export { MOVED_TWICE, MOVED_WHILE_WAITING } from "./operations/merge-queue.ts";
 export {
   formatPairCode,
   MOBILE_APPROVE_PATH,

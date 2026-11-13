@@ -165,7 +165,7 @@ export const prMerge = defineOperation({
     // or a leave that commits in between refuses it.
     await requireOpenToMerge(ctx, w);
     // Verified on this exact head, from the factory's own records (#190 review).
-    await requireVerifiedHead(ctx, w, input.headSha);
+    const verified = await requireVerifiedHead(ctx, w, input.headSha);
     const repo = await repoRef(ctx, requireRepository(ctx));
     const github = ctx.services.github;
     // A PR GitHub already shows merged at this head was merged by a call that lost track of it (a
@@ -185,7 +185,7 @@ export const prMerge = defineOperation({
     } else {
       const merged = await github.mergePullRequest(repo, {
         number: w.pr_number,
-        sha: input.headSha,
+        sha: verified,
         method: "merge",
       });
       if (!merged.merged && merged.headMoved) {

@@ -80,14 +80,22 @@ proves how the commit was made, not that the change the person approved is the c
 >   requiring `factory/verify`, and that ruleset may be off (it was off on this repository on
 >   2026-11-13) or absent on a customer's. GitHub's required check, where it is on, is a second guard.
 > - **No packet is carried to another head**, on any row. ADR 0330's carry for items that land
->   themselves (Workflow v4–v10) is gone: such an item can't verify a new head before it merges, so
->   the queue's update ends its turn (`moved`) and it goes back to build and verify on the new head.
->   That costs it a rebuild and a new approval each time main moves before it lands.
+>   themselves (Workflow v4–v10) is gone: their update ends the turn (`moved`), the approval is
+>   closed as withdrawn, and the item verifies the new head without a build (the path a withdrawn
+>   approval takes at any version), then a person decides again. It costs them a verify and a new
+>   approval each time main moves before they land; the loop guard below bounds it.
+> - **Types and the adapter enforce it too** (third review): the adapter's merge takes a
+>   `VerifiedHead`, which only `requireVerifiedHead` makes, and its merge of main into a branch
+>   (`mergeIntoBranch`) refuses the repository's default branch, which it reads from GitHub. A
+>   source scan keeps both: each merge is in a registered operation that checks the head first.
 > - **The new head's digest becomes the approval's** (`approved_digest`), so `mergeQueue.enter` takes
 >   the approval back only for that change. The timeline says, in words, that the default branch was
 >   merged in cleanly, the approval carried, and on which head it was verified again.
 > - **A loop guard:** when the item's last two delivery attempts were both withdrawn at an update for
 >   the same reason (counted back from the latest, so an update that carried the approval in between
 >   starts again), it isn't updated a third time on its own: it is held and a person asked, with the
->   reason, recommending to wait. A reopened merge gate says plainly that the approval was withdrawn,
+>   reason, recommending to wait. An item that lands itself (v4–v10) gets the same after two turns in
+>   a row that ended with main merged in and a trip back to verify (`mergeQueue.hold`, called by its
+>   own Workflow). A merge the queue made is never made twice: while one is recorded the branch's own
+>   ref is read (the PR's view can lag), so "nothing to merge" can't wipe the record. A reopened merge gate says plainly that the approval was withdrawn,
 >   when and why, and that it was verified again.

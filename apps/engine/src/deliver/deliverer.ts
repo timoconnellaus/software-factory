@@ -507,10 +507,12 @@ async function deliverHead(
   // babysitter's to handle on a v11 item: pr.merge leaves the approval to it.
   const mergeRefused = landed.status === "refused" ? landed.details?.mergeRefused : undefined;
   // Verified, but its factory/verify hasn't caught up with CI yet (#190 review): wait, then retry,
-  // as long as CI may take (UNVERIFIED_GIVE_UP_MS since the entry last changed), then end.
+  // as long as CI may take (UNVERIFIED_GIVE_UP_MS since verify passed on this head: the merging
+  // mark moves the entry's updated_at every pass), then end.
   if (mergeRefused === "unverified" && landed.status === "refused" && landed.details?.pending) {
-    const since = Date.parse(head.updated_at);
-    const waited = clock().getTime() - (Number.isNaN(since) ? clock().getTime() : since);
+    const since = Date.parse(String(landed.details.passedAt ?? ""));
+    // No time to measure from: don't wait on it at all.
+    const waited = Number.isNaN(since) ? Number.POSITIVE_INFINITY : clock().getTime() - since;
     if (waited < UNVERIFIED_GIVE_UP_MS) return CI_RECHECK_MS;
     return end(
       "left",

@@ -1115,10 +1115,10 @@ export const prAutoMerge = defineOperation({
     }
     // Verified on this exact head by the factory's own records, as pr.merge requires (#190 review):
     // its factory/verify a success, so a head held while main is red doesn't merge.
-    await requireVerifiedHead(ctx, w, input.headSha);
+    const verified = await requireVerifiedHead(ctx, w, input.headSha);
     const merged = await ctx.services.github.mergePullRequest(repo, {
       number: w.pr_number,
-      sha: input.headSha,
+      sha: verified,
       method: "merge",
     });
     if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);

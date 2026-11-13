@@ -645,6 +645,14 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       return out;
     },
     async mergeIntoBranch(repo, { branch, head, message }) {
+      // Never into the default branch (#190 review, round 3): that is a merge of the PR, which goes
+      // only through mergePullRequest and a verified head. Read from GitHub, not from the caller.
+      const info = await api(repo, "GET", "");
+      if (info.status !== 200) fail("repository", info);
+      const defaultBranch = (info.json as { default_branch?: string }).default_branch;
+      if (!defaultBranch || branch === defaultBranch) {
+        return { status: "refused", reason: `won't merge into the default branch (${branch})` };
+      }
       const r = await api(repo, "POST", "/merges", { base: branch, head, commit_message: message });
       if (r.status === 201) {
         const c = r.json as { sha: string; parents?: { sha: string }[] };

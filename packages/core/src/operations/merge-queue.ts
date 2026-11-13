@@ -13,7 +13,7 @@ import type {
 } from "@software-factory/db";
 import { type Selectable, sql } from "kysely";
 import { z } from "zod";
-import { BABYSITTER } from "../actors.ts";
+import { BABYSITTER, FOREMAN } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import {
@@ -22,7 +22,7 @@ import {
   type RepositoryRow,
   type WorkItemRow,
 } from "../operation.ts";
-import type { RepoRef } from "../services.ts";
+import type { RepoRef, VerifiedHead } from "../services.ts";
 import {
   approvalSurvivesMergeOfMain,
   boundUpdate,
@@ -247,11 +247,11 @@ export async function requireVerifiedHead(
   ctx: HandlerContext,
   item: WorkItemRow,
   headSha: string,
-): Promise<void> {
+): Promise<VerifiedHead> {
   const [packet, check] = await Promise.all([
     ctx.db
       .selectFrom("core_review_packets")
-      .select(["verdict", "sections"])
+      .select(["verdict", "sections", "created_at"])
       .where("work_item_id", "=", item.id)
       .where("head_sha", "=", headSha)
       .orderBy("created_at", "desc")
@@ -295,9 +295,14 @@ export async function requireVerifiedHead(
       {
         mergeRefused: "unverified",
         pending: check?.work_item_id === item.id && check.status !== "completed",
+        // When verify passed on this head: the wait for its check is measured from here, which
+        // nothing else (the merging mark) moves.
+        passedAt: packet.created_at,
       },
     );
   }
+  // The only place a VerifiedHead is made: the adapter's merge takes nothing else.
+  return headSha as VerifiedHead;
 }
 
 /**
@@ -578,7 +583,7 @@ export const mergeQueueList = defineOperation({
 export const mergeQueueUpdate = defineOperation({
   name: "mergeQueue.update",
   description:
-    "Bring the head of the merge queue up to date with the default branch (ADR 0330). `current`: it already contains the default branch. `updating`: GitHub was asked to merge the default branch in (update-branch); call again to see the result. `updated`: GitHub made that clean merge; the review packet carries over to the new head and CI runs there. `conflict`: the default branch can't merge in cleanly (back to build). `refused`/`moved`: GitHub refused, or the head moved some other way. `held`: the babysitter's bound on updates was reached (`mergeQueue.hold` asks a person). Only the head may update. Risk `write`, like the control plane's other moves of a work item's branch.",
+    "Bring the head of the merge queue up to date with the default branch (ADR 0330). The queue makes the merge itself (GitHub's merge API, of the exact default-branch head it read) and accepts only the merge commit GitHub returned. `current`: it already contains the default branch. `updating`: the merge is made but the branch isn't seen at it yet; call again. `reverify` (the babysitter): the merge is the queue's own and its one-sided paths are each side's, so the approval stays bound to the new head, which is verified again before it merges. `withdrawn` (the babysitter): anything else; the approval is closed. `moved`: for an item that lands itself (v4–v10), any new head: no review packet is carried to it, so it goes back to verify. `conflict`: the default branch can't merge in cleanly (back to build). `refused`: GitHub refused. `held`: the bound on updates, or the loop guard (two withdrawals for the same reason, or two trips back to verify, in a row), was reached; `mergeQueue.hold` asks a person. Only the head may update. Risk `write`, like the control plane's other moves of a work item's branch.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -620,7 +625,16 @@ export const mergeQueueUpdate = defineOperation({
     const github = ctx.services.github;
     const at = entry.head_sha;
     const pr = await github.pullRequestMergeability(repo, w.pr_number);
-    const prHead = pr.headSha ?? at;
+    // With a merge of the queue's recorded on this head, the branch's own ref is the truth, not the
+    // PR's view of it, which can lag (#190 review, round 3): a lagging view must not make the queue
+    // merge again (GitHub then answers "nothing to merge" and the recorded merge would be lost).
+    const recorded = entry.update_merge_sha !== null && entry.update_from_sha === at;
+    const prHead = recorded
+      ? ((await github.getBranchSha(repo, w.branch).catch(() => null)) ?? at)
+      : (pr.headSha ?? at);
+    if (recorded && prHead === at) {
+      return { state: "updating" as const, headSha: at, reason: null };
+    }
 
     if (prHead !== at)
       return acceptUpdate(ctx, {
@@ -685,10 +699,13 @@ export const mergeQueueUpdate = defineOperation({
     // the same reason, with no update since that carried it, isn't updated a third time on its
     // own: it is held and a person asked, with the reason. A person's grant on this entry allows
     // one more (granted updates carry only with an approval, so a fresh approval starts at 0).
-    if (entry.driver === "babysitter" && entry.updates_granted === 0) {
+    // An item that lands itself (v4–v10) gets the same guard (round 3): two turns in a row that
+    // ended with main merged in and a trip back to verify, then it is held and the owner asked.
+    if (entry.updates_granted === 0) {
       const repeated = await repeatedWithdrawal(ctx, w.id, entry.id, repository.default_branch);
       if (repeated) {
-        return { state: "held" as const, headSha: at, reason: `${WITHDRAWN_TWICE}${repeated}` };
+        const prefix = entry.driver === "babysitter" ? WITHDRAWN_TWICE : MOVED_TWICE;
+        return { state: "held" as const, headSha: at, reason: `${prefix}${repeated}` };
       }
     }
     // The queue makes the merge itself (#190 review): POST /merges of the exact default-branch head
@@ -731,7 +748,8 @@ export const mergeQueueUpdate = defineOperation({
     );
     // GitHub merged onto whatever the branch was: a commit pushed after the queue read `at` is under
     // this merge, so it isn't the approved head merged with main. acceptUpdate withdraws it.
-    const seen = (await github.pullRequestMergeability(repo, w.pr_number)).headSha;
+    // The branch's own ref, not the PR's view of it (which can lag).
+    const seen = await github.getBranchSha(repo, w.branch).catch(() => null);
     if (seen && seen !== at) {
       return acceptUpdate(ctx, {
         w,
@@ -795,15 +813,46 @@ async function acceptUpdate(
   // and a packet is never carried to a head it wasn't made for (#190 review, round 2): any new head
   // ends its turn (`moved`), and it goes back to build and verify like any other moved branch.
   if (!babysitter) {
-    ctx.write(ctx.db.updateTable("core_merge_queue").set(consumed).where("id", "=", entry.id));
-    return {
-      state: "moved" as const,
-      headSha: prHead,
-      reason:
-        unbound === null
-          ? `${repository.default_branch} was merged in as ${prHead.slice(0, 7)}: the new head is verified again before it merges`
-          : `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)} (${unbound})`,
-    };
+    ctx.write(
+      ctx.db
+        .updateTable("core_merge_queue")
+        .set({ ...consumed, head_sha: prHead, updated_at: ctx.now })
+        .where("id", "=", entry.id)
+        .where("head_sha", "=", at),
+    );
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ head_sha: prHead, updated_at: ctx.now })
+        .where("id", "=", w.id),
+    );
+    const why =
+      unbound === null
+        ? `${repository.default_branch} was merged in as ${prHead.slice(0, 7)}: the new head is verified again before it merges`
+        : `the branch moved to ${prHead.slice(0, 7)}, which isn't the queue's merge of ${repository.default_branch} into ${at.slice(0, 7)} (${unbound})`;
+    // The approval was for the old head: closed, as a withdrawal is; a person decides again.
+    if (entry.pending_action_id) {
+      ctx.writePendingStatus(
+        "close",
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({
+            status: "rejected",
+            decision: "withdrawn",
+            decided_at: ctx.now,
+            note: `withdrawn: ${why}`,
+          })
+          .where("id", "=", entry.pending_action_id)
+          .where("status", "=", "approved"),
+      );
+    }
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { sha: at },
+      after: { sha: prHead, by: `merge queue: ${repository.default_branch} merged in` },
+    });
+    return { state: "moved" as const, headSha: prHead, reason: why };
   }
   let mismatches: string[] | null = null;
   let bothChanged = 0;
@@ -959,6 +1008,13 @@ async function repeatedWithdrawal(
   ) {
     return last.end_reason.slice(prefix.length);
   }
+  // An item that lands itself: each trip has its own SHAs, so the kind of end is what repeats.
+  if (
+    last?.end_reason?.startsWith(MOVED_WHILE_WAITING) &&
+    before?.end_reason?.startsWith(MOVED_WHILE_WAITING)
+  ) {
+    return last.end_reason.slice(MOVED_WHILE_WAITING.length);
+  }
   return null;
 }
 
@@ -983,6 +1039,16 @@ async function mergeBaseAmbiguous(
  * Below GitHub's 300-file compare cap, and a bounded number of GraphQL directory reads.
  */
 export const MAX_CHANGED_PATHS = 250;
+
+/**
+ * How an item that lands itself (v4–v10) leaves the queue when main had to be merged in (the
+ * Workflow's leave reason): it goes back to verify the new head (#190 review, round 3).
+ */
+export const MOVED_WHILE_WAITING = "the default branch moved while this was waiting to merge: ";
+
+/** The hold reason when such an item left the queue that way twice in a row (the loop guard). */
+export const MOVED_TWICE =
+  "the default branch moved twice in a row while this was waiting to merge, and each time it went back to verify: ";
 
 /** The hold reason when an approval was withdrawn twice for the same reason (the loop guard). */
 export const WITHDRAWN_TWICE =
@@ -1094,6 +1160,20 @@ const requireBabysitterEntry = async (ctx: HandlerContext, w: WorkItemRow) => {
   return entry;
 };
 
+/**
+ * The entry `mergeQueue.hold` acts on: the babysitter's own, or (round 3) one an item's own
+ * Workflow lands (v4–v10), held by the loop guard; each only by the actor that drives it.
+ */
+const requireHoldEntry = async (ctx: HandlerContext, w: WorkItemRow) => {
+  const entry = await openEntry(ctx, w.id);
+  if (!entry) throw new OperationError("conflict", `work item #${w.number} is not in the queue`);
+  const driver = entry.driver === "babysitter" ? BABYSITTER : FOREMAN;
+  if (ctx.actor.type !== driver.type || ctx.actor.id !== driver.id) {
+    throw new OperationError("forbidden", "only what lands this entry holds it");
+  }
+  return entry;
+};
+
 export const mergeQueueMerging = defineOperation({
   name: "mergeQueue.merging",
   description:
@@ -1142,7 +1222,7 @@ export async function holdingEntry(ctx: HandlerContext, workItemId: string, ques
 export const mergeQueueHold = defineOperation({
   name: "mergeQueue.hold",
   description:
-    "At its bound on updates (the default branch kept moving while CI ran) the babysitter holds the head of its queue and asks a person, instead of sending good, approved work back to build (spec 53 review). The first call asks (`asked`); while the question is open, `waiting`; once answered, the person's answer allows one more update, now (`resumed`) or after an hour (`holding`, with `until`). The babysitter only.",
+    "At its bound on updates (the default branch kept moving while CI ran) the babysitter holds the head of its queue and asks a person, instead of sending good, approved work back to build (spec 53 review). The first call asks (`asked`); while the question is open, `waiting`; once answered, the person's answer allows one more update, now (`resumed`) or after an hour (`holding`, with `until`). The babysitter for its own entries; an item's own Workflow (v4–v10) for its entry, when the loop guard held it.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -1153,7 +1233,7 @@ export const mergeQueueHold = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    const entry = await requireBabysitterEntry(ctx, w);
+    const entry = await requireHoldEntry(ctx, w);
     if (entry.held_until && entry.held_until > ctx.now) {
       return { state: "holding" as const, until: entry.held_until };
     }
@@ -1163,11 +1243,14 @@ export const mergeQueueHold = defineOperation({
       .where("id", "=", entry.id)
       .where("status", "=", "queued");
     if (!entry.hold_question_id) {
-      const looping = input.reason.startsWith(WITHDRAWN_TWICE);
+      const moved = input.reason.startsWith(MOVED_TWICE);
+      const looping = moved || input.reason.startsWith(WITHDRAWN_TWICE);
       const questionId = await askOne(ctx, w, {
-        prompt: looping
-          ? `#${w.number}'s approval was withdrawn twice in a row for the same reason when the default branch was merged in (${input.reason.slice(WITHDRAWN_TWICE.length)}). Another update will likely withdraw it again, and it then needs approving again. Update once more and verify again, or wait?`
-          : `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
+        prompt: moved
+          ? `The default branch moved twice in a row while #${w.number} was waiting to merge, and each time it went back to build and verify (${input.reason.slice(MOVED_TWICE.length)}). Merge the default branch in once more and verify again, or wait?`
+          : looping
+            ? `#${w.number}'s approval was withdrawn twice in a row for the same reason when the default branch was merged in (${input.reason.slice(WITHDRAWN_TWICE.length)}). Another update will likely withdraw it again, and it then needs approving again. Update once more and verify again, or wait?`
+            : `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
         context: input.reason,
         options: [HOLD_ANSWERS.now, HOLD_ANSWERS.wait],
         defaultAnswer: looping ? HOLD_ANSWERS.wait : HOLD_ANSWERS.now,

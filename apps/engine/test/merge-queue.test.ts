@@ -116,7 +116,9 @@ describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
       const left = await waitFor("A updated and out of the queue", () =>
         entry(a.id, "AND status = 'left'"),
       );
-      expect(left?.end_reason).toMatch(/merged in as .* verified again before it merges/);
+      expect(left?.end_reason).toMatch(
+        /moved while this was waiting to merge: main was merged in as .* verified again before it merges/,
+      );
       // The queue's merge is on the branch, and no packet was carried to it.
       const item = await first<{ branch: string }>(
         "SELECT branch FROM core_work_items WHERE id = ?",
@@ -133,9 +135,16 @@ describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
         ),
       ).toBeNull();
       expect((await github.state(w.repo)).pulls.every((p) => p.state === "open")).toBe(true);
-      // Back through build and verify on the updated head, then the gate: it lands.
-      await runStage(w, a.id, "build", () => build(["src/a.ts"]));
-      await runStage(w, a.id, "verify", () => verifyPass);
+      // The approval was closed; the item verifies the updated head (no build), then the gate.
+      const approval = await first<{ decision: string }>(
+        "SELECT decision FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' ORDER BY created_at LIMIT 1",
+        a.id,
+      );
+      expect(approval?.decision).toBe("withdrawn");
+      await runStage(w, a.id, "verify", (job) => {
+        expect(job.harness.prompt).toContain(head);
+        return verifyPass;
+      });
       await gateOpen(a.id, "merge");
       // B, built on today's main, queues behind A and lands after it.
       const b = await toMergeGate(w, "Second in line", "src/b.ts");
@@ -150,6 +159,42 @@ describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
       expect(bLeft?.status).toBe("left");
       expect(bLeft?.end_reason).toMatch(/verified again before it merges/);
       await ok("workItem.cancel", { workItemId: b.id, reason: "end of test" }, w.human);
+    },
+  );
+
+  // #190 review, round 3: on a busy main an item that lands itself could go round for ever (update,
+  // back to verify, approve, update...). After two trips in a row it is held and the owner asked.
+  it.skipIf(version !== 7)(
+    "holds an item that went back to verify twice in a row, and asks the owner",
+    async () => {
+      const w = await world();
+      const a = await toMergeGate(w, "Main keeps moving", "src/a.ts");
+      const trip = async (n: number) => {
+        await github.push(w.repo, "main", undefined, [`docs/elsewhere-${n}.md`]);
+        await approve(w, a.id);
+        await waitFor("back to verify", () =>
+          entry(a.id, `AND status = 'left' AND end_reason LIKE '%moved while this was waiting%'`),
+        );
+        await runStage(w, a.id, "verify", () => verifyPass);
+        await gateOpen(a.id, "merge");
+      };
+      await trip(1);
+      await trip(2);
+      await github.push(w.repo, "main", undefined, ["docs/elsewhere-3.md"]);
+      await approve(w, a.id);
+      const held = await waitFor("held, the owner asked", () =>
+        first<{ hold_question_id: string | null }>(
+          "SELECT hold_question_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND hold_question_id IS NOT NULL",
+          a.id,
+        ),
+      );
+      const q = await first<{ prompt: string }>(
+        "SELECT prompt FROM core_questions WHERE id = ?",
+        held.hold_question_id,
+      );
+      expect(q?.prompt).toMatch(/moved twice in a row while #\d+ was waiting to merge/);
+      expect((await github.state(w.repo)).pulls.every((p) => p.state === "open")).toBe(true);
+      await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
     },
   );
 
@@ -194,21 +239,19 @@ describe.each([7, 11, WORKFLOW_VERSION])("the merge queue (v%i)", (version) => {
   // v4–v7 carry the packet to the updated head (ADR 0330). The babysitter's deliveries (v11+) verify
   // an updated head again instead (spec 53 PR c): deliverer.test.ts covers them.
   it.skipIf(version !== 7)(
-    "sends a head that main must be merged into back to build, whatever its CI",
+    "sends a head that main must be merged into back to verify, whatever its CI",
     async () => {
       const w = await world();
       const a = await toMergeGate(w, "Breaks with main", "src/a.ts");
       await github.push(w.repo, "main", undefined, ["src/api.ts"]);
       await github.setCiDefault(w.repo, RED_CI);
       await approve(w, a.id);
-      // The update ends its turn before CI is read (#190 review): back to build and verify.
-      await runStage(w, a.id, "build", async (job) => {
-        expect(job.harness.prompt).toMatch(/verified again before it merges/);
-        return build(["src/a-fixed.ts"]);
-      });
+      // The update ends its turn before CI is read (#190 review): it verifies the new head, where
+      // the red CI fails verify and sends it back to build as a failed attempt.
+      await runStage(w, a.id, "verify", () => verifyPass);
       const left = await entry(a.id);
       expect(left).toMatchObject({ status: "left" });
-      expect(left?.end_reason).toMatch(/verified again before it merges/);
+      expect(left?.end_reason).toMatch(/moved while this was waiting to merge/);
       await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
     },
   );

@@ -2,7 +2,7 @@
 // The Workflow's attached path is tested end to end in apps/engine/test/attach-flow.test.ts.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { type Actor, FOREMAN, invoke } from "../src/index.ts";
+import { type Actor, FOREMAN, invoke, type VerifiedHead } from "../src/index.ts";
 import {
   call,
   delivered,
@@ -122,7 +122,8 @@ describe("workItem.attachPr (spec 05, criterion 1)", () => {
     const merged = await github.openOutsidePull(w.repo, { branch: "tim/merged", title: "Merged" });
     await github.mergePullRequest(w.repo, {
       number: merged.number,
-      sha: merged.headSha,
+      // Merged on GitHub outside the factory: nothing verified it.
+      sha: merged.headSha as VerifiedHead,
       method: "merge",
     });
     expect((await refusal(attach(w, merged.number))).message).toMatch(/already merged/);

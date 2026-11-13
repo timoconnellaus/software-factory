@@ -232,9 +232,12 @@ approval is actually about: the change.
     main's head, and accepts only a PR head equal to that SHA, with exactly those two parents
     (`boundUpdate`). Author, committer and signature are not checked: any token of the same App can
     write a commit with the same ones. A request no merge answered is cleared, and an accepted merge
-    uses it up. Anything else: `withdrawn` for the babysitter; an item landing itself (v4 to v10)
-    ends its turn on any update (`moved`) and verifies the new head from build, since no packet is
-    carried to a head it wasn't made for.
+    uses it up; while it is recorded the queue reads the branch's ref and never merges again.
+    Anything else: `withdrawn` for the babysitter; an item landing itself (v4 to v10) ends its turn
+    on any update (`moved`): its approval is closed and it verifies the new head without a build,
+    since no packet is carried to a head it wasn't made for. Two such turns in a row hold it and
+    ask the owner, as the babysitter's loop guard does. The adapter's merge takes only a
+    `VerifiedHead`, and its merge of main into a branch refuses the default branch.
   - **A bound update keeps the approval over a file both sides changed** (#61, ADR 0582 amended
     2026-11-13). Judged from the merge base: a path only the item changed must be the approved head's,
     a path only main changed must be main's (`oneSidedMismatches`); an ambiguous merge base withdraws.

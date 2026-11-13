@@ -64,6 +64,14 @@ export interface TreeEntry {
 /** A commit's files by path. */
 export type Tree = Record<string, TreeEntry>;
 
+declare const verifiedHead: unique symbol;
+/**
+ * A head SHA the factory verified itself (#190 review, round 3): a pass review packet made for it
+ * and its own factory/verify a success. Only `requireVerifiedHead` (operations/merge-queue.ts)
+ * makes one, so the adapter's merge can't be called with a SHA nothing checked.
+ */
+export type VerifiedHead = string & { readonly [verifiedHead]: true };
+
 export interface CommitInfo {
   parents: string[];
   /**
@@ -328,7 +336,8 @@ export interface GitHubService {
    * Merges `head` (an exact SHA, the default branch's head the merge queue read) into `branch` on
    * GitHub (`POST /repos/{o}/{r}/merges`, #190 review). Synchronous: `merged` returns the merge
    * commit GitHub made and its parents, so the queue records that exact SHA and accepts no other
-   * head. `current`: nothing to merge. `conflict`: it can't merge cleanly. `refused`: anything else.
+   * head. `current`: nothing to merge. `conflict`: it can't merge cleanly. `refused`: anything else,
+   * and always for the repository's default branch, which the adapter reads from GitHub itself.
    */
   mergeIntoBranch(
     repo: RepoRef,
@@ -344,7 +353,7 @@ export interface GitHubService {
    */
   mergePullRequest(
     repo: RepoRef,
-    input: { number: number; sha: string; method: "merge" | "squash" },
+    input: { number: number; sha: VerifiedHead; method: "merge" | "squash" },
   ): Promise<
     { merged: true; sha: string } | { merged: false; reason: string; headMoved?: boolean }
   >;

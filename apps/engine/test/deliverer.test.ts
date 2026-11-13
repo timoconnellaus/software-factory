@@ -4,9 +4,13 @@
 // what is the deliverer's own: who lands it, the outcome read back, and one pass at a time.
 
 import { env } from "cloudflare:workers";
-import { BABYSITTER, FOREMAN, operations } from "@software-factory/core";
+import { BABYSITTER, FOREMAN, operations, type VerifiedHead } from "@software-factory/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { deliverRepository, deliverTestSeams } from "../src/deliver/deliverer.ts";
+import {
+  deliverRepository,
+  deliverTestSeams,
+  UNVERIFIED_GIVE_UP_MS,
+} from "../src/deliver/deliverer.ts";
 import { mobileTestSeams } from "../src/mobile.ts";
 import {
   all,
@@ -278,11 +282,19 @@ describe("the babysitter's deliverer (v11)", () => {
     const u = await updatedAndWaiting(w, "Merged by a pass that died");
     // A pass merged on GitHub and died before anything was recorded.
     expect(
-      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+      await github.mergePullRequest(w.repo, {
+        number: u.pr,
+        sha: u.head_sha as VerifiedHead,
+        method: "merge",
+      }),
     ).toMatchObject({ merged: true });
     // GitHub refuses a second merge, as the real API does (405).
     expect(
-      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+      await github.mergePullRequest(w.repo, {
+        number: u.pr,
+        sha: u.head_sha as VerifiedHead,
+        method: "merge",
+      }),
     ).toEqual({ merged: false, reason: "Pull Request is not mergeable" });
     const r = await call(
       "pr.merge",
@@ -902,6 +914,21 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     await github.deferUpdates(w.repo, true);
     await approve(w, a);
     await updateAsked(a);
+    // Polled again before GitHub shows the merge (round 3): no second merge, and the recorded merge
+    // stays. GitHub itself would answer a second merge with 204, nothing to merge.
+    await deliverAgain(a);
+    const recorded = await first<{ update_merge_sha: string | null }>(
+      "SELECT update_merge_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'",
+      a,
+    );
+    expect(recorded?.update_merge_sha).toBeTruthy();
+    expect(
+      await github.mergeIntoBranch(w.repo, {
+        branch: await branchOf(a),
+        head: "main",
+        message: "",
+      }),
+    ).toEqual({ status: "current" });
     await github.completeUpdate(w.repo, (await ids(a)).pr);
     await github.deferUpdates(w.repo, false);
     await deliverAgain(a);
@@ -971,6 +998,53 @@ describe("the approval across a merge of main (ADR 0582)", () => {
   }
 
   // #190 review: nothing merges on a head the factory hasn't verified, whatever the ruleset says.
+  // #190 review, round 3: a verified head whose factory/verify stays waiting doesn't hold the queue
+  // for ever. The wait is measured from when verify passed, which the merging mark doesn't move.
+  it("gives up on a head whose factory/verify never becomes a success", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Check stuck waiting", files("src/a.ts"));
+    const head = String(
+      (await first<{ head_sha: string }>("SELECT head_sha FROM core_work_items WHERE id = ?", a))
+        ?.head_sha,
+    );
+    // Just before each merge, the check reads as still waiting (its CI result not processed).
+    deliverTestSeams.beforeLand = async () => {
+      await env.DB.prepare(
+        "UPDATE core_verify_checks SET status = 'in_progress', conclusion = NULL WHERE head_sha = ?",
+      )
+        .bind(head)
+        .run();
+    };
+    await approve(w, a);
+    await waitFor("refused as pending", () =>
+      first(
+        "SELECT 1 AS q FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND actor_id = 'babysitter' AND outcome != 'ok'",
+        a,
+      ),
+    );
+    const at = await ids(a);
+    // Another pass soon after: still waiting, still queued (the mark moved updated_at meanwhile).
+    await deliverRepository(env, at.projectId, at.repositoryId);
+    expect(
+      await first<{ status: string }>(
+        "SELECT status FROM core_merge_queue WHERE work_item_id = ? ORDER BY enqueued_at DESC LIMIT 1",
+        a,
+      ),
+    ).toEqual({ status: "queued" });
+    // Past the bound since verify passed: the delivery ends, saying why, and the queue moves on.
+    const later = new Date(Date.now() + UNVERIFIED_GIVE_UP_MS + 60_000);
+    await deliverRepository(env, at.projectId, at.repositoryId, () => later);
+    const ended = await waitFor("left", () =>
+      first<{ end_reason: string }>(
+        "SELECT end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.end_reason).toMatch(/factory\/verify never became a success/);
+    expect(await merges(a)).toHaveLength(0);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
+  });
+
   it("a carried approval doesn't merge while the new head's verification is pending, nor with no packet or a failing one", async () => {
     const w = await world();
     const a = await toMergeGateWith(w, "Pending re-verify", files("src/a.ts"));

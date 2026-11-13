@@ -691,6 +691,10 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       return [...(first ? [first] : []), ...(second ? [second] : [])];
     },
     async mergeIntoBranch(r, { branch, head }) {
+      // As the App client: never into the default branch.
+      if (branch === defaultBranch) {
+        return { status: "refused", reason: `won't merge into the default branch (${branch})` };
+      }
       const state = await load(r);
       const at = state.refs[branch];
       if (!at) return { status: "refused", reason: "Base does not exist" };
@@ -699,7 +703,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         return { status: "conflict", reason: "Merge conflict" };
       }
       const into = state.refs[head] ?? head;
-      if (reachable(state, at).has(into)) return { status: "current" };
+      // Already merged in, even where the branch isn't seen at the merge yet: GitHub's 204.
+      const pending = pull ? state.pendingMerges?.[pull.number] : undefined;
+      if (reachable(state, at).has(into) || (pending && reachable(state, pending).has(into))) {
+        return { status: "current" };
+      }
       const next = await commit(state, at, `merge-${branch}`);
       state.merged = { ...(state.merged ?? {}), [next]: into };
       state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
