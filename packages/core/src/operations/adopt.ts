@@ -8,6 +8,7 @@ import type { Db } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
+import { canonicalJson } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { policyImpact, same } from "../policy/impact.ts";
 import {
@@ -29,6 +30,7 @@ import {
 import { stageType } from "../stages/registry.ts";
 import type { StageInstance, WorkflowDefinition } from "../stages/workflow.ts";
 import { formatPolicy, writeVersion } from "./config.ts";
+import { sha256Hex } from "./onboarding.ts";
 import { currentOrgConfig, orgConfigImpact, writeOrgVersion } from "./workflows.ts";
 
 /** The settings a project may override (spec 52, Q5): they become its overrides, never the org's. */
@@ -183,11 +185,26 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
   actors: ["human"],
   permission: "admin",
   browserOnly: true,
+  // Its dry run writes nothing and decides nothing: one tap on the desktop (ADR 0610).
+  desktopOneTap: (input) => input.dryRun !== false,
+  // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
+  // and never a CLI, MCP, runner or agent token.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     orgId: z.string().min(1),
     /** The org config version this was planned from (0 before the first): a stale one is a conflict. */
     baseVersion: z.number().int().nonnegative(),
     dryRun: z.boolean().default(true),
+    /**
+     * The real run: the dry run's `planDigest`. The proof covers it, and the run is refused if the
+     * plan it computes now differs, so it moves exactly the projects the dry run showed (review of
+     * #156).
+     */
+    planDigest: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   }),
   output: z.object({
     dryRun: z.boolean(),
@@ -218,6 +235,8 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
     skipped: z.array(z.object({ projectId: z.string(), name: z.string(), reason: z.string() })),
     /** Projects that would move but wait for the next run (at most ADOPT_PER_RUN move in one). */
     remaining: z.array(z.string()),
+    /** SHA-256 of the plan (what each project becomes, the workflows and agents added). */
+    planDigest: z.string(),
   }),
   async handler(input, ctx) {
     return adopt(ctx, input);
@@ -226,7 +245,7 @@ export const orgConfigAdoptProjectWorkflows = defineOperation({
 
 async function adopt(
   ctx: HandlerContext,
-  input: { orgId: string; baseVersion: number; dryRun: boolean },
+  input: { orgId: string; baseVersion: number; dryRun: boolean; planDigest?: string | undefined },
 ) {
   const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
   if (version !== input.baseVersion)
@@ -485,7 +504,24 @@ async function adopt(
       added: false,
       projects: projects.filter((p) => p.workflow === SOFTWARE.id).map((p) => p.name),
     });
-  if (input.dryRun || projects.length === 0) return out;
+  // The plan as the person saw it in the dry run: the same moves, whatever version numbers follow.
+  const planDigest = await sha256Hex(
+    canonicalJson({
+      workflows: out.workflows,
+      agents: out.agents,
+      projects: out.projects.map(({ version: _v, ...p }) => p),
+      remaining: out.remaining,
+    }),
+  );
+  const shown = { ...out, planDigest };
+  if (input.dryRun || projects.length === 0) return shown;
+  if (!input.planDigest)
+    throw new OperationError("invalid_input", "run the dry run first and send its planDigest");
+  if (input.planDigest !== planDigest)
+    throw new OperationError(
+      "conflict",
+      "the plan changed since the dry run (a project or the org's workflows moved on): run the dry run again",
+    );
 
   const written: OrgConfig = {
     ...after.config,
@@ -520,5 +556,5 @@ async function adopt(
       latest: p.row.latest,
     });
   }
-  return out;
+  return shown;
 }

@@ -72,6 +72,7 @@ import { op, submitKey } from "../lib/op.ts";
 import { orphanedComments } from "../lib/plan-blocks.ts";
 import { planningQuery } from "../lib/queries.ts";
 import { answeredTag, holdsRecommendation, recommendedValues } from "../lib/question-card.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
@@ -94,7 +95,9 @@ export function Planning({
   useLive(item.id, planning.data);
   usePresence(item.id);
   const focus = mode === "focus";
-  // Docked, chat folds to a strip on the right; in focus it stays open.
+  // Docked, chat folds to a strip on the right; in focus it stays open, unless the window is too
+  // narrow for three panes, where it folds too so it never covers the workspace (review of #130).
+  const wide = useMedia(WIDE_PLANNING);
   const [chatOpen, setChatOpen] = useState(false);
   // Spec 21: the workspace's tab, comment mode, a hovered option's preview, a mockup opened full size.
   const [tab, setTab] = useState<"plan" | "mockups" | "canvas">(() => {
@@ -154,7 +157,9 @@ export function Planning({
     setDraft({ text, questionId });
     setChatOpen(true);
   };
-  const showChat = focus || chatOpen;
+  const layout = planningLayout(focus, wide);
+  const chatPinned = layout.chatPinned;
+  const showChat = chatPinned || chatOpen;
   // Designs (spec 22) are text in their own notation, not HTML: the mockup panes leave them out.
   const visuals = { ...view, artifacts: view.artifacts.filter((x) => x.kind !== "design") };
 
@@ -172,8 +177,8 @@ export function Planning({
           onDiscuss={discuss}
           onPreview={setPreview}
           className={cn(
-            "w-[300px] flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
-            focus && "w-[336px]",
+            "flex-none overflow-y-auto border-line-soft border-r px-3 py-3",
+            layout.questionsWidth,
           )}
         />
         <section className="flex min-w-0 flex-1 flex-col bg-panel" data-testid="workspace">
@@ -239,8 +244,8 @@ export function Planning({
             workItemId={item.id}
             draft={draft}
             onDraft={setDraft}
-            onClose={focus ? undefined : () => setChatOpen(false)}
-            className="w-[330px] flex-none border-line-soft border-l"
+            onClose={chatPinned ? undefined : () => setChatOpen(false)}
+            className={cn("flex-none border-line-soft border-l", layout.chatWidth)}
           />
         ) : (
           <button
@@ -1006,7 +1011,7 @@ function WorkspaceTabs({
   const mockups = view.artifacts.filter((a) => a.kind !== "design").length;
   return (
     <div
-      className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-4"
+      className="flex h-11 min-w-0 flex-none items-center gap-2 overflow-x-auto border-line-soft border-b px-4"
       data-testid="workspace-tabs"
     >
       <ToggleGroup

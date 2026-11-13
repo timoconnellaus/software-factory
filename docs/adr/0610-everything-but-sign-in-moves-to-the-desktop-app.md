@@ -81,3 +81,35 @@ can't approve it (ADR 0391, consequences).
   to this ADR.
 - A person without the desktop app can no longer change policy or see work from a browser. The
   website says so and links to the download.
+
+## Amendment, 2026-11-13: as built (step 3)
+- **Presence-decidable on the desktop only** (`presenceDecidable` with `presenceSurfaces:
+  ["desktop"]`): `workflow.save`, `workflow.createFromTemplate`, `workflow.archive`, `agent.save`,
+  `orgConfig.rollback`, `orgConfig.adoptProjectWorkflows`, `override.approve` and `killSwitch.set`
+  with `on: false`. `approval.decide` on an org config proposal and `override.approve` check in the
+  handler that the call came from the website or carries a desktop proof (`policyDecisionSurface`).
+  The phone stays refused for all of them (ADR 0541, 0543).
+- **Adopting projects' workflows as a dry run** writes nothing and decides nothing, so it is one tap
+  on the desktop (`desktopOneTap`, a new per-input flag for the desktop only); the CLI and MCP stay
+  refused, as before.
+- **Each proof's summary is the engine's**, naming what is decided and, first, what it loosens
+  (`policy-summary.ts`): for example `Save the org workflow (v4 to v5): loosens: …: "Release" in
+  "Acme"`. Names come last, without quotes or invisible characters, at most 60 characters.
+- `packages/core/test/decidability.test.ts` pins the table; `test/policy-decisions.test.ts` pins
+  that agents, runners, the CLI, MCP, the phone and a desktop without a proof are refused.
+
+## Amendment, 2026-11-13: after the review of step 3 (#156)
+- **A software key never makes a policy decision**, whatever `DESKTOP_ALLOW_SOFTWARE_KEYS` says:
+  that allowance is for deciding merges on an unsigned dev build. `presence.challenge` refuses a
+  challenge for any policy decision (`POLICY_DECISION_OPS`, and `approval.decide` on a config,
+  org config or self-modify change) from a device whose key is a software key, so a key any
+  process of the user can read can't loosen the factory's rules even on a dev engine.
+- **What a proof approves is bound in its input.** `override.approve` names the override's value
+  and the project's config version it was shown, and is refused if the stored ones differ.
+  Adopting projects' workflows for real names the dry run's `planDigest` (the SHA-256 of what each
+  project becomes), and is refused if the plan computed at that moment differs.
+- **Summaries the key helper signs**: every policy summary keeps to the helper's rules (at most 300
+  characters, no control or format characters): the facts first and whole, "loosens N things:
+  <the first>…" when there are several (the full list is on the screen), names last, cleaned
+  (`cleanTitle`), in the room the facts leave. The engine's tests run every summary they produce
+  through a port of the helper's rules, kept in step with `Core.swift` by a drift test.

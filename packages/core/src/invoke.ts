@@ -165,6 +165,7 @@ export function deviceDecidable(
 ): boolean {
   if (surface === "mobile" && phoneRefuses(op, input)) return false;
   if (op.desktopDecidable) return true;
+  if (surface === "desktop" && op.desktopOneTap) return op.desktopOneTap(input as never);
   if (surface !== "mobile" || !op.mobileDecidable) return false;
   return op.mobileDecidable === true || op.mobileDecidable(input);
 }
@@ -748,7 +749,11 @@ export async function runOperation<O = unknown>(
       }
     }
     if (guard || unique) {
-      throw new OperationError("conflict", `${op.name}: the state changed underneath this call`);
+      // `raced`: another call changed the state between this one's reads and its batch (a guard or
+      // a unique key), so trying again may succeed; not a refusal of the state as it is.
+      throw new OperationError("conflict", `${op.name}: the state changed underneath this call`, {
+        raced: true,
+      });
     }
     throw error;
   }

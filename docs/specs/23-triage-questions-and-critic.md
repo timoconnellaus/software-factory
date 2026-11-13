@@ -61,7 +61,7 @@ Routing triage questions by decision domain (R1 milestone (c)).
   fixed prompt; the backlog card and the item page show "needs info: …" as the status reason.
 - The check (`packages/core/src/readiness.ts`) is a floor for emptiness, not a judgement of
   clarity (review of #117). It parks only an item with nothing to act on (no body and a title under
-  four words, or a body that is only template headings or a link) or an exact duplicate of an open
+  four words, or a body that is only template headings and unticked checklists, images or a link) or an exact duplicate of an open
   item from the same source (`core_work_items_project_title_idx`, migration 0371). Everything else
   goes to triage. "A person" is decided by the surface: the app, the desktop, the phone and the sf
   CLI are; MCP (an agent with a person's token), intake and automation aren't. The tests hold 15
