@@ -378,9 +378,9 @@ function PolicyAction({ project }: { project: ProjectState }) {
           : "this project has no factory config yet."}
       </span>
       <Button size="sm" asChild data-testid="open-settings">
-        <ExternalLink href={`${WEBSITE_URL}/projects/${project.id}/settings`}>
-          Open Settings ↗
-        </ExternalLink>
+        <Link to="/factory/policy" search={{ project: project.id, edit: true }}>
+          Open Policy
+        </Link>
       </Button>
     </div>
   );
@@ -708,12 +708,9 @@ function ProjectDetails({ project }: { project: ProjectState }) {
                 "none yet"
               )}
               {" · "}
-              <ExternalLink
-                href={`${WEBSITE_URL}/projects/${project.id}/settings`}
-                className="underline"
-              >
-                Settings ↗
-              </ExternalLink>
+              <Link to="/factory/policy" search={{ project: project.id }} className="underline">
+                Policy
+              </Link>
             </span>
             <Button
               size="sm"

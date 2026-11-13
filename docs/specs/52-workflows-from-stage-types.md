@@ -828,7 +828,8 @@ and after.
   (ADR 0370 §5): who approves and the autonomy decision tighten for running items, never loosen.
 - **Tightening reaches running items (Q3).** When a saved version only tightens against an item's
   pinned one (`workflowImpact` has no `loosens`), the item moves onto it at its **next stage
-  boundary**, automatically, journaled as `workflow: repinned`. Gates and checks added *ahead* of the
+  boundary**, automatically, journaled as `workflow: repinned` (as built: the delivery boundaries,
+  before verify and before the merge gate, from Workflow v13). Gates and checks added *ahead* of the
   item apply to it; ones added before its current stage don't apply retroactively (the item doesn't
   go back). A version that loosens anything never moves a running item.
 - **Moving an item by hand** is `workItem.moveWorkflowVersion` (human): allowed at a stage boundary
@@ -1272,8 +1273,19 @@ screen needs).
    rest are listed and move in the next run. A project on an org workflow sees only the org agents
    its workflow's stages name, so one project's agent never becomes another's default. A project's
    other, unused slot workflows and its agents stay in its config (deviation from "removed": removing
-   them would itself classify as loosening). Still to come in (d): the tightening re-pin at the next
-   boundary (Q3).
+   them would itself classify as loosening). (d5) builds Q3: from Workflow v13 (`repin-tightening`;
+   the next free number at merge), at each delivery boundary (before verify, before the merge gate,
+   every round) the Workflow calls `workItem.repinWorkflow`. When the org has saved past the item's
+   pinned `org_config_version`, the project's workflow is resolved under both versions (its
+   overrides with each version's approvals) and compared by `workflowImpact` with the judging
+   agents (`repinImpact`); with no loosening the item's pin moves (guarded on the old value),
+   journaled as `workflow: repinned` with the tightenings, and the stages ahead run from the new
+   version's plan (`<boundary>: workflow plan`). A slot already run isn't run again. A version that
+   loosens anything, or that can't be resolved, never moves the item; a later tightening on top of
+   a loosened version still compares against what the item pinned, so it doesn't move either. The
+   re-pin covers delivery only: a shaping item's version is decided at release (Q4), whose
+   comparison needs the version it was shaped under. The call writes an audit row only when the
+   item moved (ADR 0590).
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the

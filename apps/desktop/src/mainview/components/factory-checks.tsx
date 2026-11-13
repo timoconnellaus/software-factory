@@ -4,14 +4,47 @@
 // its own links are opinion. A packet from before has neither section: the criteria show the
 // reviewer's met / not met, as they did.
 import {
+  CHECKS_DOCS_URL,
   type CheckOutcome,
   type CriterionProof,
   type ParsedPacket,
   packetExecuted,
+  packetProven,
+  whyNotProven,
 } from "@software-factory/client/packet";
 import type { Status } from "@software-factory/ui/components/status-dot";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
+import { ExternalLink } from "../lib/external.tsx";
 import { Panel, SectionTitle } from "./shell-list.tsx";
+
+/**
+ * The project has no declared checks and no required CI check reported (the owner's decision,
+ * 2026-11-13): nothing could prove a criterion, so the gate says so instead of "0/N proven". No
+ * screen declares checks yet, so the link is the docs section.
+ */
+export function NoChecksNotice() {
+  return (
+    <Panel className="gap-1" data-testid="no-checks">
+      <div className="flex items-center gap-2 font-medium">
+        <StatusDot status="idle" />
+        No checks are set up for this project, so nothing can be proven.
+      </div>
+      <div className="text-ink-3 text-xs">
+        The marks below are the reviewer's opinion.{" "}
+        <ExternalLink
+          href={CHECKS_DOCS_URL}
+          className="text-ink-2 underline underline-offset-2"
+          data-testid="no-checks-link"
+        >
+          How to set up checks
+        </ExternalLink>
+      </div>
+    </Panel>
+  );
+}
+
+/** False when the packet says nothing was set up that could prove a criterion. */
+export const noChecksSetUp = (packet: ParsedPacket) => packetProven(packet)?.checksSetUp === false;
 
 /** A check the host did not run (no isolation, no container, no sandbox): never a pass. */
 const notRun = (r: CheckOutcome) =>
@@ -27,6 +60,10 @@ function outcome(r: CheckOutcome): string {
 export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
   const executed = packetExecuted(packet);
   if (!executed) return null; // a packet from before the factory ran checks itself
+  // Nothing set up at all: the criteria say so once (NoChecksNotice), not twice.
+  if (noChecksSetUp(packet) && executed.rows.length === 0 && executed.extra.length === 0) {
+    return null;
+  }
   // Checks not run have a heading of their own, apart from failures (fourth review, S2).
   const all = [...executed.rows, ...executed.extra.map((r) => ({ name: r.name, result: r }))];
   const rows = all.filter(({ result }) => !result || !notRun(result));
@@ -125,8 +162,11 @@ export function FactoryChecks({ packet }: { packet: ParsedPacket }) {
 export function criterionMark(
   met: boolean,
   proof: CriterionProof | undefined,
+  noChecks = false,
 ): { status: Status; label: string } {
   if (!met) return { status: "waiting", label: "Not met" };
+  // No checks set up: nothing could prove it, so the mark is the reviewer's, said as such.
+  if (noChecks) return { status: "idle", label: "Met (opinion)" };
   if (!proof) return { status: "done", label: "Met" }; // a packet from before: the reviewer's word
   return proof.proven
     ? { status: "done", label: "Proven" }
@@ -135,31 +175,27 @@ export function criterionMark(
 
 /** Under a criterion: what proved it (or why nothing did), who linked it, the reviewer's opinion. */
 export function CriterionProofNote({ proof }: { proof: CriterionProof }) {
-  const linked = proof.provenBy.length + proof.unproven.length + proof.notCounted.length > 0;
   return (
     <div className="mt-0.5 flex flex-col gap-0.5 text-xs" data-testid="criterion-proof">
       <div className="font-medium text-ink-2">
         {proof.proven ? `Proven by ${proof.provenBy.join(", ")}` : "Not proven"}
+        {!proof.proven && (
+          <span className="font-normal text-ink-3" data-testid="criterion-why">
+            {": "}
+            {whyNotProven(proof)}
+          </span>
+        )}
         {proof.weakened && (
           <span className="font-normal text-amber-700 dark:text-amber-400">
             {" "}
             · weakened: gate files changed on this commit (see Tests intact)
           </span>
         )}
-        {!proof.proven && proof.unproven.length > 0 && (
-          <span className="font-normal text-ink-3">
-            {" "}
-            (linked {proof.unproven.join(", ")}: didn't pass on this commit)
-          </span>
-        )}
       </div>
-      {linked && (
+      {/* Not proven already says why (whyNotProven); proven says who tied it. */}
+      {proof.proven && (
         <div className="text-ink-3" data-testid="criterion-linked-by">
-          {proof.linkedBy === "spec"
-            ? "Linked in the approved spec"
-            : "Linked by the reviewer, not proven"}
-          {proof.notCounted.length > 0 &&
-            ` · ${proof.notCounted.join(", ")} passed but can't prove a criterion (a static check, or a link the approved spec doesn't make)`}
+          Linked in the approved spec
         </div>
       )}
     </div>
