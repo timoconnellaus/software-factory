@@ -136,5 +136,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     listInstallationRepos: no,
     getInstallationRepo: no,
     userInstallationIds: no,
+    rerequestCheckRun: no,
+    checkRunDetail: no,
   };
 }

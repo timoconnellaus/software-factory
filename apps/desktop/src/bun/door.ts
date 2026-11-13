@@ -128,9 +128,12 @@ export class Door {
     try {
       signature = await sign(presenceMessage(c.nonce, op, digest, c.summary));
     } catch (error) {
+      // The key helper's own reason when it gives one (busy, cancelled, expired, auth_failed…,
+      // device-key.ts); nothing is decided either way.
+      const code = (error as { code?: unknown } | null)?.code;
       return {
         ok: false,
-        code: "cancelled",
+        code: typeof code === "string" ? code : "cancelled",
         error: error instanceof Error ? error.message : "Touch ID was cancelled",
       };
     }

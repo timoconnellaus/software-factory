@@ -21,6 +21,7 @@ import {
   isReleaseIncomplete,
   type Job,
   type JobState,
+  pushesRunBranch,
   RESULT_FILE,
   type RunnerAdapter,
   type RunnerEvent,
@@ -562,7 +563,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       const verdict = canRun(await adapter.manifest(), job);
       if (!verdict.ok) throw new Error(`refused: ${verdict.reason}`);
       await stream.push({ type: "job.state", state: "claimed" });
-      if (job.stage === "build") assertPushable(job);
+      if (pushesRunBranch(job)) assertPushable(job);
 
       await stream.push({ type: "job.state", state: "preparing", detail: "fetching the base" });
       const token = await freshToken();
@@ -601,8 +602,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         detail: `${workspace.path} on ${workspace.branch} @ ${workspace.baseSha.slice(0, 7)} (${clone})`,
       });
       // A build starts from the default branch's latest too (ADR 0320): the host merges it in, so
-      // the PR stays mergeable while other work lands. A conflict is left for the agent.
-      if (job.stage === "build") {
+      // the PR stays mergeable while other work lands. A conflict is left for the agent. A babysit
+      // job sent to resolve a conflict (spec 53 §4) starts the same way.
+      if (pushesRunBranch(job)) {
         const merge = await git.mergeDefault(job, workspace.path);
         ahead = merge.ahead;
         const from = job.repo.defaultBranch;
@@ -761,7 +763,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         }
       }
 
-      if (job.stage === "build" && outcome === "completed" && !error) {
+      if (pushesRunBranch(job) && outcome === "completed" && !error) {
         try {
           const merge = await git.mergeState(workspace.path);
           if (merge.unmerged.length > 0) {

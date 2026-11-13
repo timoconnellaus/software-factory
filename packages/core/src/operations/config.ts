@@ -24,8 +24,9 @@ import {
   resolveProjectWorkflow,
 } from "../stages/project-workflow.ts";
 import { requireAdjudicatorEarned } from "./adjudicator.ts";
-import { facts, titled } from "./policy-summary.ts";
+import { facts } from "./policy-summary.ts";
 import { policyDecisionSurface, projectId, requireProject } from "./shared.ts";
+import { titled } from "./summary.ts";
 import { currentOrgConfig } from "./workflows.ts";
 
 /** The config operations whose loosening saves wait for an approver. */
@@ -840,6 +841,9 @@ export async function describeConfigDecision(
       ? `drafted on v${input.baseVersion}, now v${current}`
       : `v${current} to v${current + 1}`;
   const rollback = pa.operation === "config.rollback";
+  // The engine's facts first, the project's name last (titled, spec 40 M4b): a name can't push the
+  // versions or what the change loosens off the prompt.
+  const named = (facts: string) => titled(facts, project.name, "; project");
   const head = rollback
     ? `${verb}: roll the policy back to v${Number(input.toVersion)} (${versions})`
     : `${verb} a change to the policy (${versions})`;
@@ -852,9 +856,9 @@ export async function describeConfigDecision(
         const parsed = parseProjectPolicy(JSON.stringify(input.policy ?? null));
         return parsed.ok ? parsed.policy : undefined;
       })();
-  if (!target) return titled(facts(head, "the change can't be read"), project.name);
+  if (!target) return named(facts(head, "the change can't be read"));
   const impact = await impactOf(ctx.db, project, before?.policy ?? null, target, ctx.floor);
-  return titled(facts(head, impact), project.name);
+  return named(facts(head, impact));
 }
 
 /** The org workflow's own value of a setting a project overrides (for the override's summary). */
