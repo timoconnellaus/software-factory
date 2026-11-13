@@ -178,30 +178,37 @@ describe("the key helper in the release (spec 40 M4b)", () => {
     });
   });
 
+  const notarized = {
+    ...signed,
+    ELECTROBUN_APPLEAPIKEYPATH: "/k.p8",
+    ELECTROBUN_APPLEAPIKEY: "KEY",
+    ELECTROBUN_APPLEAPIISSUER: "ISS",
+  };
+
   it("plans the archive, both manifests and notarization", () => {
-    expect(helperPlan(signed, files, true)).toEqual({
+    expect(helperPlan(notarized, files, true)).toEqual({
       archive: TAR,
       manifests: ["canary-macos-arm64-update.json", "canary-macos-arm64-update-v2.json"],
       teamId: TEAM,
       identity: "Developer ID Application: X",
-      notarize: null,
-    });
-    const notarized = {
-      ...signed,
-      ELECTROBUN_APPLEAPIKEYPATH: "/k.p8",
-      ELECTROBUN_APPLEAPIKEY: "KEY",
-      ELECTROBUN_APPLEAPIISSUER: "ISS",
-    };
-    expect(helperPlan(notarized, files, true)).toMatchObject({
       notarize: { key: "/k.p8", keyId: "KEY", issuer: "ISS" },
     });
   });
 
+  it("never ships the re-signed app un-notarized, unless a local build says so", () => {
+    expect(() => helperPlan(signed, files, true)).toThrow(/notariz/);
+    expect(helperPlan({ ...signed, SF_KEYS_LOCAL_UNNOTARIZED: "1" }, files, true)).toMatchObject({
+      notarize: null,
+    });
+  });
+
   it("refuses a half-configured release rather than shipping a broken helper", () => {
-    expect(() => helperPlan({ ...signed, ELECTROBUN_TEAMID: "" }, files, true)).toThrow(/Team ID/);
-    expect(() => helperPlan(signed, [], true)).toThrow(/no canary/);
+    expect(() => helperPlan({ ...notarized, ELECTROBUN_TEAMID: "" }, files, true)).toThrow(
+      /Team ID/,
+    );
+    expect(() => helperPlan(notarized, [], true)).toThrow(/no canary/);
     // A delta patch would rebuild Electrobun's archive, without the helper's signature.
-    expect(() => helperPlan(signed, [...files, "1abc.patch"], true)).toThrow(/delta patches/);
+    expect(() => helperPlan(notarized, [...files, "1abc.patch"], true)).toThrow(/delta patches/);
   });
 
   it("fills the Team ID into exactly the three entitlements ADR 0394 names", () => {
@@ -233,15 +240,11 @@ describe("the key helper in the release (spec 40 M4b)", () => {
     expect(rewriteManifest(v1, "new", 42)).toBe(v1);
   });
 
-  it("passes the launch smoke test only for a helper that runs and holds its group", () => {
-    const group = `${TEAM}.com.software-factory.desktop.keys`;
-    const ok = JSON.stringify({
-      "com.apple.application-identifier": group,
-      "keychain-access-groups": [group],
-    });
-    expect(smokeVerdict({ status: 0, signal: null, stdout: ok }, TEAM)).toBeNull();
-    expect(smokeVerdict({ status: null, signal: "SIGKILL", stdout: "" }, TEAM)).toMatch(/killed/);
-    expect(smokeVerdict({ status: 0, signal: null, stdout: "{}" }, TEAM)).toMatch(/access groups/);
-    expect(smokeVerdict({ status: 1, signal: null, stdout: ok }, TEAM)).toMatch(/exited 1/);
+  it("passes the launch smoke test only for a helper that runs and finds no key (exit 3)", () => {
+    expect(smokeVerdict({ status: 3, signal: null, stderr: "no key" })).toBeNull();
+    expect(smokeVerdict({ status: null, signal: "SIGKILL", stderr: "" })).toMatch(/killed/);
+    // -34018: the keychain refused the access group.
+    expect(smokeVerdict({ status: 1, signal: null, stderr: "OSStatus -34018" })).toMatch(/-34018/);
+    expect(smokeVerdict({ status: 0, signal: null, stderr: "" })).toMatch(/exited 0/);
   });
 });
