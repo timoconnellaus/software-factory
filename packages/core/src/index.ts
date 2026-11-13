@@ -25,6 +25,7 @@ export {
   CLI_TOKEN_PREFIX,
   resolveCliToken,
 } from "./operations/cli.ts";
+export { PENDING_SHOWN } from "./operations/config.ts";
 export {
   DESKTOP_APPROVE_PATH,
   DESKTOP_CALLBACK_URL,

@@ -531,11 +531,9 @@ async function held(env: Env, lease: Lease, head: HeadRow): Promise<boolean> {
 }
 
 /**
- * When a delivery counts as merged, and its item Done (spec 53, owner question 6, not yet answered):
- * today, when GitHub answers the merge with success. The recommendation is "when its merge commit
- * is on the default branch"; GitHub's success means the commit is there, so they agree except for a
- * merge GitHub reports and then loses. A different answer (say, after main's CI on the merge is
- * green) is a change here only: return false and look again on the next pass.
+ * When a delivery counts as merged, and its item Done (spec 53, decision 6, 2026-11-13): when its
+ * merge commit is on the default branch. GitHub answering the merge with success means the commit
+ * is there. A red `main` afterwards makes the item a suspect; it doesn't undo Done.
  */
 function mergedForGood(landed: Called): boolean {
   return landed.status === "ok";
