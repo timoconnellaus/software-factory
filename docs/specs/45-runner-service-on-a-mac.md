@@ -278,13 +278,17 @@ it would look like ours. So Node is signed with a **launch constraint** (`codesi
 --launch-constraint-parent` with a plist requiring the parent to be `com.software-factory.runner`,
 and of `<TEAM>` in a release), and the kernel refuses to start it from anything but the launcher.
 PR 2's prototype: on macOS 26.5, even ad hoc, `Helpers/node` run from a shell is killed (SIGKILL,
-137) and the launcher starts it; the launcher's CI test checks it on macOS 15. Ad hoc, the
-constraint names only the identifier, which anyone can sign ad hoc; only the Team ID makes it a
-wall, so it holds in release builds.
+137) and the launcher starts it; on macOS 15.8 (CI) an ad-hoc build's constraint is **not**
+enforced. Ad hoc, the constraint names only the identifier, which anyone can sign ad hoc, so it is
+a wall only with the Team ID: the release's prototype step checks the team-signed bundle and the
+launcher test fails a team-signed bundle that doesn't hold it. The same CI run found that macOS 15
+lets dyld honour `DYLD_INSERT_LIBRARIES` for an **ad-hoc** hardened launcher; the hardened
+runtime's protection is a release (team-signed) property, which dev builds don't have.
 
 **Cost.** The check costs about one hash of the bundle (116 MB unpacked, mostly Node). Measured in
 PR 2 on an Apple silicon Mac, macOS 26.5, ad-hoc signed, warm cache: a median of about 51 ms per
-start over 10 starts (max 56 ms), the whole launcher before Node. The Developer ID, notarized,
+start over 10 starts (max 56 ms), the whole launcher before Node; on CI's macOS 15 VM, a median
+of 171 ms (max 229 ms). The Developer ID, notarized,
 read-only figure with the network denied comes from the release's prototype step and is recorded
 in PR 2's description; a cold cache isn't measured (purging it needs root). A check child or a hook
 runs per check or per hook, not per command, so the cost is acceptable up to 1 s.
