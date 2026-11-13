@@ -146,6 +146,24 @@ export const verifyResultSchema = z.object({
   riskFlags: z.array(z.string().max(500)).max(20).default([]),
 });
 
+/**
+ * `babysit` (spec 53 §4, ADR 0583): the babysitter's judgement on the one reason it was woken for.
+ * It only judges and, for a conflict, resolves it on its run branch (the host pushes that). Every
+ * action follows from this in code, with its own floor: a `flake` is rerun once (`ci.rerun`), a
+ * `resolved` conflict moves the item's branch (`branch.advance`) and withdraws the approval, a
+ * `regression` goes back to build with the note, `person` asks a person.
+ */
+export const babysitResultSchema = z.object({
+  verdict: z.enum(["flake", "regression", "resolved", "person"]),
+  /** The failing check it judged (a `check-failed` reason). */
+  check: z.string().min(1).max(200).optional(),
+  /** The test inside it, when the log names one: recorded with the known flake. */
+  test: z.string().min(1).max(500).optional(),
+  /** Why: what the log or the conflict showed. Shown on the item's activity. */
+  note: z.string().min(1).max(8_000),
+});
+
+export type BabysitResult = z.infer<typeof babysitResultSchema>;
 export type TriageResult = z.infer<typeof triageResultSchema>;
 export type StepResult = z.infer<typeof stepResultSchema>;
 export type QuestionDraft = z.infer<typeof questionDraftSchema>;

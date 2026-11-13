@@ -84,6 +84,8 @@ export default {
       await pruneExpired(env.DB, now);
       // And check results of items that ended more than 30 days ago (ADR 0501).
       await pruneCheckResults(env.DB, now);
+      // And the babysitter's reruns and known flakes older than 30 days (spec 53 §4).
+      await pruneBabysit(env.DB, now);
     }
     // Once an hour: attachment blobs whose upload never got its row (ADR 0310).
     if (now.getUTCMinutes() === 17) {
@@ -91,6 +93,32 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+/** How long the babysitter keeps its reruns and known flakes (spec 53, decision 3's 14 days, with room). */
+export const BABYSIT_KEEP_DAYS = 30;
+
+/**
+ * Hourly: the babysitter's flake reruns and known flakes older than BABYSIT_KEEP_DAYS, oldest first,
+ * at most `limit` of each (core_ci_reruns_asked_idx and core_flakes_seen_idx, migration 0390).
+ */
+export async function pruneBabysit(db: D1Database, now: Date, limit = 500): Promise<number> {
+  const cutoff = new Date(now.getTime() - BABYSIT_KEEP_DAYS * 86_400_000).toISOString();
+  const [reruns, flakes] = await db.batch([
+    db
+      .prepare(
+        `DELETE FROM core_ci_reruns WHERE rowid IN
+           (SELECT rowid FROM core_ci_reruns WHERE asked_at < ? ORDER BY asked_at LIMIT ?)`,
+      )
+      .bind(cutoff, limit),
+    db
+      .prepare(
+        `DELETE FROM core_flakes WHERE id IN
+           (SELECT id FROM core_flakes WHERE seen_at < ? ORDER BY seen_at LIMIT ?)`,
+      )
+      .bind(cutoff, limit),
+  ]);
+  return (reruns?.meta.changes ?? 0) + (flakes?.meta.changes ?? 0);
+}
 
 /** How long the factory's check results outlive their item (ADR 0501, fourth review). */
 export const CHECK_RESULTS_KEEP_DAYS = 30;
