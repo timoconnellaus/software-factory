@@ -45,10 +45,9 @@ export function onlyEitherSide(approved: Tree, main: Tree, merged: Tree): string
 }
 
 /**
- * Owner question 1 (spec 53), the recommended answer, not yet confirmed: an approval survives a
- * merge of the default branch only when that merge is the one the factory asked GitHub for, made
- * of its two parents' files only, and the change is identical. One function, so a different answer
- * ("every new head goes back to a person") is a change here: return false.
+ * Spec 53, decision 1 (2026-11-13): an approval survives a merge of the default branch only when
+ * that merge is the one the factory asked GitHub for, made of its two parents' files only, and the
+ * change is identical (the checks then pass again on the new head before it merges).
  */
 export function approvalSurvivesMergeOfMain(check: {
   requestedByFactory: boolean;
