@@ -266,7 +266,7 @@ async function readHead(
     `SELECT q.id, q.work_item_id, q.pending_action_id, q.approved_sha, q.head_sha, q.driver,
             q.update_asked_at, q.merging_at, q.held_until, q.updated_at,
             w.status AS item_status, w.number, w.repairs_main, q.project_id, w.repository_id,
-            w.kind, w.workflow_version
+            w.item_kind AS kind, w.workflow_version
      FROM core_merge_queue q JOIN core_work_items w ON w.id = q.work_item_id
      WHERE q.project_id = ?1 AND q.status = 'queued'
        AND w.status IN ('running', 'waiting', 'paused')

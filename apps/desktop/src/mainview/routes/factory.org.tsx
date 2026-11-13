@@ -417,6 +417,13 @@ export function cannotApproveOrg(p: Pending, version: number): string | null {
     return "The engine couldn't classify this change, so it can't be approved here. Reject it, or look again later.";
   if (!p.proposal)
     return "This change can't be shown: what it would make current isn't readable. Reject it.";
+  // An autopilot is approved with what it runs with on screen (review of #197): its agent and
+  // every skill's text must be there.
+  if (p.operation === "autopilot.save" || p.operation === "autopilot.enable") {
+    const uses = (p.proposal as { uses?: { agent?: unknown; skills?: { body?: unknown }[] } }).uses;
+    if (!uses?.agent || (uses.skills ?? []).some((x) => x.body === null || x.body === undefined))
+      return "What this autopilot would run with (its agent or a skill) can't be shown. Reject it, and look at it again.";
+  }
   const rows = differenceOf(p);
   if (unreadable(rows))
     return "Part of this change can't be shown here (the two sides read the same). Reject it, and look at it again.";

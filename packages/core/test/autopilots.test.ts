@@ -184,6 +184,33 @@ describe("the cron evaluator (review of #197): the one the firing code uses", ()
     expect(cronError("0 2 * * *")).toBeNull();
   });
 
+  it("zones are checked against the runtime's own database (workerd, as the engine that fires)", () => {
+    // These tests run in workerd, like the app that saves and the engine that fires.
+    for (const tz of ["Australia/Sydney", "America/Ciudad_Juarez", "Pacific/Kiritimati", "UTC"])
+      expect(
+        autopilotSchema.safeParse({
+          ...AP(),
+          trigger: { kind: "schedule", cron: "0 2 * * *", timezone: tz },
+        }).success,
+        tz,
+      ).toBe(true);
+    expect(
+      autopilotSchema.safeParse({
+        ...AP(),
+        trigger: { kind: "schedule", cron: "0 2 * * *", timezone: "Mars/Olympus_Mons" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("*/n in a day field is restricted: with a day of week it is an OR (unlike Vixie cron)", () => {
+    const p = parseCron("0 0 */2 * 1");
+    if (!p.ok) throw new Error(p.error);
+    expect(p.cron.doms).not.toBeNull();
+    // Odd days or Mondays: 2 January 2026 (a Friday, an even day) doesn't fire; 3 January (odd) does.
+    const t = nextFire(p.cron, "UTC", Date.UTC(2026, 0, 1, 0, 0));
+    expect(new Date(t as number).toISOString()).toBe("2026-01-03T00:00:00.000Z");
+  });
+
   it("refuses an offset time zone: named zones only", () => {
     for (const tz of ["+00:07", "-03:17", "+10:00"])
       expect(

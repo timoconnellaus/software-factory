@@ -45,7 +45,7 @@ import {
 interface ItemRow {
   id: string;
   org_id: string;
-  kind: "change" | "incident" | "attached";
+  kind: "change" | "incident" | "attached" | "autopilot";
   status: string;
   size: Size | null;
   domains: string | null;
@@ -110,7 +110,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   const reads = await env.DB.batch(
     ids.flatMap((id) => [
       env.DB.prepare(
-        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, w.org_config_adopted,
+        `SELECT w.id, w.org_id, w.item_kind AS kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, w.org_config_adopted,
            w.shaping_started_at, w.release_flag, w.needs_info, w.workflow_id, p.raw,
            c.created_at AS org_created_at,
            -- Questions put to a person on the item (core_questions_position_idx (work_item_id leading), one row is enough).
@@ -300,6 +300,9 @@ function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserve
   if (!ENDS.includes(row.status)) return null; // not ended
   // Cancelled before its pipeline started: nothing ran, so there is nothing to compare.
   if (stages.every((s) => s.stage === "intake")) return null;
+  // An autopilot run (ADR 0514) runs its own one-stage flow, not the stage list: nothing to compare.
+  if (row.kind === "autopilot") return null;
+  const kind = row.kind;
   if (!row.raw) return notComparable("the config the item ran under can't be found");
   const parsed = parseProjectPolicy(row.raw);
   if (!parsed.ok)
@@ -308,7 +311,7 @@ function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserve
   if (!policy) return notComparable("the org workflow the item pinned can't be resolved");
   let definition: ReturnType<typeof compileItemWorkflow>;
   try {
-    definition = compileItemWorkflow(policy, row.workflow, row.kind);
+    definition = compileItemWorkflow(policy, row.workflow, kind);
   } catch (e) {
     return notComparable(
       `the item's workflow doesn't compile to a definition: ${e instanceof Error ? e.message : "unknown"}`,
@@ -329,7 +332,7 @@ function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserve
   return shadowVerdict(
     definition,
     {
-      kind: row.kind,
+      kind,
       size,
       domains,
       hasRepository: true,

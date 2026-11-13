@@ -1155,13 +1155,13 @@ async function buildJob(
  */
 function jobChecks(
   policy: ProjectPolicy | null,
-  item: Pick<WorkItemRow, "kind" | "workflow" | "workflow_version">,
+  item: Pick<WorkItemRow, "item_kind" | "workflow" | "workflow_version">,
   stage: string,
   context: Record<string, unknown> = {},
 ): { checks?: Job["checks"] } {
   // An item whose Workflow started before v8 has no checks step: its jobs carry none.
   if (!policy || !hostChecksOn(item)) return {};
-  const unbuilt = item.kind === "attached" || context.runChecks === true;
+  const unbuilt = item.item_kind === "attached" || context.runChecks === true;
   if (stage !== "build" && !(stage === "verify" && unbuilt)) return {};
   const commands = declaredChecks(policy, item.workflow);
   return commands.length

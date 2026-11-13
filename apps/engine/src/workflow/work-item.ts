@@ -249,7 +249,7 @@ class Ended extends Error {
 
 interface Meta extends ItemBrief {
   /** `incident` items may auto-merge a check-only fix (v2). Missing in v1 instances' replays. */
-  kind?: "change" | "incident" | "attached";
+  kind?: "change" | "incident" | "attached" | "autopilot";
   /** The attached PR's number and head when the item was created (spec 05). */
   prNumber?: number | null;
   headSha?: string | null;
@@ -385,6 +385,14 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
     // the steps it ran before.
     const meta = await flow.meta();
     if (meta.kind === "attached") return flow.runAttached(version, meta);
+    // An autopilot run (ADR 0514) never runs the change pipeline: its own flow comes with runner
+    // support (g2b); until then a run is ended when it is created, and nothing starts this.
+    if (meta.kind === "autopilot")
+      return {
+        status: "failed",
+        workItemId: event.payload.workItemId,
+        reason: "no runner supports autopilots yet",
+      };
     // Every version runs the same flow; what it does is its row of WORKFLOW_VERSION_FEATURES.
     return flow.runV1(version);
   }
@@ -1409,7 +1417,7 @@ class ItemFlow {
   private async readMeta(name = "meta: item"): Promise<Meta> {
     return this.step.do(name, async () => {
       const row = await this.env.DB.prepare(
-        `SELECT w.number, w.title, w.body, w.branch, w.kind, w.pr_number, w.head_sha,
+        `SELECT w.number, w.title, w.body, w.branch, w.item_kind AS kind, w.pr_number, w.head_sha,
                 r.default_branch, p.raw FROM core_work_items w
          JOIN core_projects pr ON pr.id = w.project_id
          -- The item's repository, else its project's only one (ADR 0490), as itemRepository().
@@ -1427,7 +1435,7 @@ class ItemFlow {
           title: string;
           body: string;
           branch: string;
-          kind: "change" | "incident" | "attached";
+          kind: "change" | "incident" | "attached" | "autopilot";
           pr_number: number | null;
           head_sha: string | null;
           default_branch: string | null;

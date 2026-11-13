@@ -59,6 +59,7 @@ const NO_ITEM = {
   "connector.receive": "an intake event that creates or routes items",
   "github.installation": "the App's installation",
   "audit.archiveHealth": "the audit archive's health",
+  "autopilot.fire": "starts a new autopilot run (a new item), never works on an existing one",
 };
 const ITEM_KEYS = ["workItemId", "jobId", "pendingActionId", "questionId"];
 

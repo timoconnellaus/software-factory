@@ -1,7 +1,7 @@
 // Kysely table types for the core_* schema (ADR 0050). Hand-maintained next to the SQL migrations in
 // ../migrations, updated in the same commit as each migration. JSON columns are TEXT holding JSON;
 // use `json()`/`parseJson()` from ./json.ts to cross the boundary.
-import type { Generated } from "kysely";
+import type { ColumnType, Generated } from "kysely";
 
 /** ISO-8601 UTC timestamp string. */
 export type Iso = string;
@@ -293,7 +293,18 @@ export type WorkItemStatus =
   | "cancelled";
 export type Size = "small" | "medium" | "large";
 /** `attached`: a PR opened outside the factory, verified and merged by it (spec 05). */
-export type WorkItemKind = "change" | "incident" | "attached";
+/**
+ * An item's kind as the factory reads it (`item_kind`, migration 0284): an autopilot run is
+ * `autopilot`, whatever is stored. Every read that branches or filters on kind uses this.
+ */
+export type WorkItemKind = "change" | "incident" | "attached" | "autopilot";
+/** The stored kind (the CHECK'd column), written on insert only. */
+export type StoredWorkItemKind = "change" | "incident" | "attached";
+/**
+ * The stored `kind` when read: deliberately not comparable to a kind, so code can't branch on it
+ * (read `item_kind`). Branded, never produced by the database driver as such.
+ */
+export type RawWorkItemKind = { readonly __readItemKindInstead: unique symbol };
 
 export interface CoreWorkItemsTable {
   id: string;
@@ -303,7 +314,12 @@ export interface CoreWorkItemsTable {
   slug: string;
   title: string;
   body: Generated<string>;
-  kind: Generated<WorkItemKind>;
+  /** Stored kind: written on insert; read `item_kind` instead (migration 0284). */
+  kind: ColumnType<RawWorkItemKind, StoredWorkItemKind | undefined, StoredWorkItemKind>;
+  /** The kind as the factory reads it: `autopilot` for an autopilot run, else `kind`. Generated. */
+  item_kind: ColumnType<WorkItemKind, never, never>;
+  /** The autopilot run this item is (core_autopilot_runs), or null. */
+  autopilot_run_id: Generated<string | null>;
   requester_user_id: string;
   source: string;
   stage: Generated<Stage>;
@@ -1418,6 +1434,24 @@ export interface CoreMobileNoncesTable {
   consumed_at: Iso | null;
 }
 
+/** Each firing of an autopilot (migration 0284, ADR 0514). */
+export interface CoreAutopilotRunsTable {
+  id: string;
+  org_id: string;
+  autopilot_id: string;
+  org_config_version: number;
+  trigger: "schedule" | "event" | "manual";
+  dedupe_key: string;
+  project_id: string | null;
+  work_item_id: string | null;
+  status: Generated<"running" | "done" | "failed" | "cancelled" | "skipped">;
+  reason: string | null;
+  outputs: Generated<string>;
+  created_by: string | null;
+  created_at: string;
+  ended_at: string | null;
+}
+
 export interface CorePairOffersTable {
   id: string;
   user_id: string;
@@ -1474,6 +1508,7 @@ export interface CoreDatabase {
   core_kill_switches: CoreKillSwitchesTable;
   core_batch_guard: CoreBatchGuardTable;
   core_work_items: CoreWorkItemsTable;
+  core_autopilot_runs: CoreAutopilotRunsTable;
   core_work_item_links: CoreWorkItemLinksTable;
   core_intake_keys: CoreIntakeKeysTable;
   core_intake_events: CoreIntakeEventsTable;

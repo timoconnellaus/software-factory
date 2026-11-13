@@ -330,6 +330,20 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     expect(differenceOf(turnOn).map((r) => r.label)).toEqual(["enabled", "uses"]);
     expect(differenceOf(turnOn).find((r) => r.label === "uses")?.now).toMatch(/Pass all\./);
     expect(cannotApproveOrg(turnOn, 4)).toBeNull();
+    // Approve only with what it runs with on screen: no agent, or a skill with no text, is Reject only.
+    const noAgent = {
+      ...turnOn,
+      proposal: { ...turnOn.proposal, uses: { agent: null, skills: [] } },
+    };
+    expect(cannotApproveOrg(noAgent, 4)).toMatch(/can't be shown/);
+    const noBody = {
+      ...turnOn,
+      proposal: {
+        ...turnOn.proposal,
+        uses: { agent: { name: "Triager" }, skills: [{ id: "sk_x", body: null }] },
+      },
+    };
+    expect(cannotApproveOrg(noBody, 4)).toMatch(/can't be shown/);
   });
 });
 

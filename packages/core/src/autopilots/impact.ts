@@ -5,7 +5,7 @@
 // (the person approving sees all it would reach). A new autopilot is judged against nothing:
 // creating one that is on loosens; one created off is practice until it is turned on.
 import type { ImpactChange } from "../policy/impact.ts";
-import { cronWithin, parseCron } from "./cron.ts";
+import { cronShape, cronWithin, parseCron } from "./cron.ts";
 import type { AutopilotConfig } from "./schema.ts";
 
 type Projects = "all" | readonly string[];
@@ -136,7 +136,15 @@ function compare(label: string, path: string, b: Reach, a: Reach): ImpactChange[
     // In local calendar space, exact for every year (review of #197): no clock, no horizon.
     const was = parseCron(b.schedule.cron);
     const now = parseCron(a.schedule.cron);
-    if (!was.ok || !now.ok || a.schedule.timeZone !== b.schedule.timeZone)
+    // The same times written another way (spacing, 7 for 0): nothing to compare (review of #197).
+    const same =
+      was.ok &&
+      now.ok &&
+      a.schedule.timeZone === b.schedule.timeZone &&
+      JSON.stringify(cronShape(was.cron)) === JSON.stringify(cronShape(now.cron));
+    if (same) {
+      // no change in when it fires
+    } else if (!was.ok || !now.ok || a.schedule.timeZone !== b.schedule.timeZone)
       add("trigger", "loosens", `${label} runs at times it didn't before.`);
     else if (!cronWithin(now.cron, was.cron))
       add("trigger", "loosens", `${label} runs at times it didn't before.`);

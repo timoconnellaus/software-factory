@@ -296,7 +296,7 @@ export const workItemAwaitHead = defineOperation({
   output: z.object({ moved: z.boolean(), headSha: z.string().nullable(), event: z.string() }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
-    if (w.kind !== "attached") {
+    if (w.item_kind !== "attached") {
       throw new OperationError("invalid_input", "only an attached PR's item waits for a push");
     }
     const event = prHeadEvent(w.id);
