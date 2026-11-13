@@ -105,6 +105,7 @@ export interface OpMap {
   "agent.save": Def<typeof operations.agentSave>;
   "orgConfig.get": Def<typeof operations.orgConfigGet>;
   "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
+  "orgConfig.previewRollback": Def<typeof operations.orgConfigPreviewRollback>;
   "orgConfig.adoptProjectWorkflows": Def<typeof operations.orgConfigAdoptProjectWorkflows>;
   "override.approve": Def<typeof operations.overrideApprove>;
   "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;
