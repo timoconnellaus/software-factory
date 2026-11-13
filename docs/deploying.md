@@ -86,10 +86,12 @@ heartbeats, and they could never learn to update.
 
 ### Account ID
 
-Repo variable `CLOUDFLARE_ACCOUNT_ID` (already set):
+Repo secret `CLOUDFLARE_ACCOUNT_ID` (already set). It is a secret, not a variable, so that Actions
+masks it in this public repository's logs (an account ID is not a credential, but it isn't
+published either):
 
 ```sh
-gh variable set CLOUDFLARE_ACCOUNT_ID --body <account-id>
+gh secret set CLOUDFLARE_ACCOUNT_ID
 ```
 
 ### API token
@@ -200,7 +202,7 @@ touches the app or anything it bundles publishes a **canary** (`0.1.<run>`). **S
 | `ASC_KEY_P8`, `ASC_KEY_ID`, `ASC_ISSUER_ID` | An App Store Connect API key (Developer role) for `notarytool` |
 | `DESKTOP_R2_ACCESS_KEY_ID`, `DESKTOP_R2_SECRET_ACCESS_KEY` | An R2 API token scoped to `sf-desktop-releases` only (below) |
 
-It also reads the repo variable `CLOUDFLARE_ACCOUNT_ID` (for the R2 endpoint) and, for stable,
+It also reads the repo secret `CLOUDFLARE_ACCOUNT_ID` (for the R2 endpoint) and, for stable,
 `DESKTOP_STABLE_ENABLED`.
 
 **The upload token (owner, once).** The upload no longer uses the repo-wide `CLOUDFLARE_API_TOKEN`,

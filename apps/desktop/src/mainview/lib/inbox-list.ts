@@ -1,8 +1,9 @@
 // The Inbox's nested list (spec 41, design InboxMerge/InboxQuestion): what waits on you, grouped
 // Merges, Specs, Questions, Approvals, then Notices. Each entry has a key, which is what `?item=`
 // selects: the work item id for anything on a work item (so `sf://` links and `/?item=` keep
-// working), the gate's id for a gate with no item, `protection-<project>` and `setup` for notices.
-import type { Inbox, SetupStatus } from "@software-factory/client/ops";
+// working), the gate's id for a gate with no item, `protection-<project>` for notices. Setup is not
+// an Inbox item: unfinished setup is an orange dot on Settings and on Setup in its list.
+import type { Inbox } from "@software-factory/client/ops";
 import type { Status } from "@software-factory/ui/components/status-dot";
 
 export type InboxEntry =
@@ -15,12 +16,11 @@ export type InboxEntry =
   | { key: string; group: "Specs"; kind: "planning"; planning: Inbox["planning"][number] }
   | { key: string; group: "Questions"; kind: "question"; question: Inbox["questions"][number] }
   | { key: string; group: "Approvals"; kind: "release"; flag: Inbox["releaseFlags"][number] }
-  | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] }
-  | { key: string; group: "Notices"; kind: "setup"; setup: SetupStatus };
+  | { key: string; group: "Notices"; kind: "protection"; drift: Inbox["protection"][number] };
 
 export const GROUP_ORDER = ["Merges", "Specs", "Questions", "Approvals", "Notices"] as const;
 
-export function inboxEntries(inbox: Inbox, setup: SetupStatus | null | undefined): InboxEntry[] {
+export function inboxEntries(inbox: Inbox): InboxEntry[] {
   const seen = new Set<string>();
   const out: InboxEntry[] = [];
   const add = (e: InboxEntry) => {
@@ -47,7 +47,6 @@ export function inboxEntries(inbox: Inbox, setup: SetupStatus | null | undefined
   for (const drift of inbox.protection) {
     add({ key: `protection-${drift.projectId}`, group: "Notices", kind: "protection", drift });
   }
-  if (setup && !setup.complete) add({ key: "setup", group: "Notices", kind: "setup", setup });
   return GROUP_ORDER.flatMap((g) => out.filter((e) => e.group === g));
 }
 
@@ -101,13 +100,5 @@ export function entryText(
         sub: e.drift.name,
         status: "failed",
       };
-    case "setup": {
-      const done = e.setup.steps.filter((s) => s.done).length;
-      return {
-        title: "Finish setup",
-        sub: `${done} of ${e.setup.steps.length} done`,
-        status: "waiting",
-      };
-    }
   }
 }

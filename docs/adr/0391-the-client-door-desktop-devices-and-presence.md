@@ -105,3 +105,11 @@ embedded Developer ID provisioning profile (a bare executable with that entitlem
 is [ADR 0394](0394-the-key-helper-is-its-own-signed-bundle.md). The key stays `.userPresence`
 (Touch ID, or the login password) with no reuse window, as decided above; the owner kept gate
 approvals on the desktop with Touch ID.
+
+## Amendment, 2026-11-13: policy decisions are presence-decidable on the desktop (ADR 0610)
+The owner moved everything but sign-in to the desktop app and accepted the risk until the key
+helper exists ([ADR 0610](0610-everything-but-sign-in-moves-to-the-desktop-app.md)). Decision 3's
+"still browser-only" list shrinks: **turning a kill switch off** and the org config writes and
+approvals (ADR 0516 decision 5) become presence-decidable on the `desktop` surface, each with a
+proof for that exact call. Approving a runner, CLI, desktop or phone login and registering a runner
+or rotating its key stay on the website. The CLI, MCP, runners and agents gain nothing.
