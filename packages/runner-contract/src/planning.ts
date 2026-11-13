@@ -374,6 +374,8 @@ export const planningNewsInputSchema = z.object({
 /** A hook's cheap look (a read): is there anything after `cursor` (default: the last delivered)? */
 export const planningPeekInputSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
+  /** The wait's quiet time after a person's last answer, so `dueAt` matches it (spec 44). */
+  idleMs: z.number().int().min(0).max(600_000).optional(),
 });
 export const planningWaitInputSchema = z.object({
   cursor: z.number().int().nonnegative().optional(),
