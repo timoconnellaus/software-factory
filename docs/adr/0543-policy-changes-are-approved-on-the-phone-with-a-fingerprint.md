@@ -86,3 +86,10 @@ which an approver decides with `approval.decide`.
   approver, the device, the proof's summary and the digest.
 - Workflow changes ride the same path, because workflows are part of the config document (ADR
   0371).
+
+## Amendment, 2026-11-13: the website no longer approves (ADR 0610)
+The website keeps only sign-in and device approval
+([ADR 0610](0610-everything-but-sign-in-moves-to-the-desktop-app.md)), so the places a person approves
+a config change are the desktop app (Touch ID) and, as decided here, the phone (fingerprint). The
+`app` surface stays allowed in `invoke()`, but no website screen calls these operations any more.
+The phone's rules are unchanged.

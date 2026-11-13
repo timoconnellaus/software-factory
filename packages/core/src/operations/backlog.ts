@@ -28,9 +28,13 @@ import {
   refuseIfParked,
   TRIAGE_PARK_CAP,
 } from "../readiness.ts";
-import { activeKillSwitch, approverIds, loadPolicy } from "../scope.ts";
+import { activeKillSwitch, approverIds, loadPolicy, overrideApprovals } from "../scope.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
-import { resolveProjectWorkflow, shapingStagesOf } from "../stages/project-workflow.ts";
+import {
+  repinImpact,
+  resolveProjectWorkflow,
+  shapingStagesOf,
+} from "../stages/project-workflow.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
@@ -1904,5 +1908,86 @@ export const workItemParkForInfo = defineOperation({
     // Its slot is free: the next queued item may start, after this commits.
     requestPull(ctx, w.project_id);
     return { status: "backlog", questionIds: marker.questionIds };
+  },
+});
+
+/**
+ * Spec 52, Q3: a saved org workflow version that only tightens reaches a running item at its next
+ * stage boundary. The Workflow calls this at each boundary in delivery (before verify, before the
+ * merge gate); the item moves onto the org's current version when the project's workflow resolved
+ * under it (overrides and that version's approvals) has no loosening against the version the item
+ * pinned. A loosened version never moves a running item. Stages already run don't run again: only
+ * the stages ahead of the item use the new version.
+ */
+export const workItemRepinWorkflow = defineOperation({
+  name: "workItem.repinWorkflow",
+  description:
+    "At a stage boundary, move a running work item onto its org's current workflow version when that version only tightens against the one the item pinned (spec 52, Q3). Journaled as `workflow: repinned`. A version that loosens anything never moves a running item; `reason` says why it stayed. The Workflow calls it.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  // Called at every boundary: an audit row only when the item moved (ADR 0590).
+  audit: { changesOnly: true, changed: (out) => out.repinned },
+  input: z.object({
+    workItemId,
+    /** The boundary, for the journal (the stage the item is about to enter). */
+    at: z.string().max(40),
+  }),
+  output: z.object({
+    repinned: z.boolean(),
+    from: z.number().nullable(),
+    to: z.number().nullable(),
+    reason: z.string().nullable(),
+  }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const project = requireProject(ctx);
+    const pinned = w.org_config_version;
+    const stay = (reason: string) => ({ repinned: false, from: pinned, to: null, reason });
+    if (pinned === null) return stay("the item isn't on an org workflow");
+    if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status))
+      return stay("the item isn't running");
+    // One point read of the org's row (and its current document, parsed).
+    const current = await currentOrgConfig(ctx.db, project.org_id);
+    if (current.version === 0 || current.version <= pinned)
+      return stay("the item is on the org's current version");
+    const raw = (
+      await loadPolicy(ctx.db, { id: project.id, policy_sha: w.policy_sha ?? project.policy_sha })
+    ).policy;
+    if (!raw || !onOrgWorkflow(raw)) return stay("the item's config isn't on an org workflow");
+    const then = await storedOrgConfig(ctx.db, project.org_id, pinned);
+    if (!then) return stay(`org config v${pinned} can't be read`);
+    const impact = repinImpact(
+      raw,
+      { config: then, approvals: await overrideApprovals(ctx.db, project.id, pinned) },
+      {
+        config: current.config,
+        approvals: await overrideApprovals(ctx.db, project.id, current.version),
+      },
+    );
+    const loosening = impact.changes.filter((c) => c.class === "loosens");
+    if (loosening.length)
+      return stay(
+        `v${current.version} loosens against v${pinned}: ${loosening.map((c) => c.summary).join(" ")}`,
+      );
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({ org_config_version: current.version, updated_at: ctx.now })
+        .where("id", "=", w.id)
+        .where("org_config_version", "=", pinned),
+    );
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { orgConfigVersion: pinned },
+      after: {
+        workflow: "repinned",
+        orgConfigVersion: current.version,
+        at: input.at,
+        tightens: impact.changes.filter((c) => c.class === "tightens").map((c) => c.summary),
+      },
+    });
+    return { repinned: true, from: pinned, to: current.version, reason: null };
   },
 });
