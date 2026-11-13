@@ -31,3 +31,44 @@ reference. The risk is an agent that creates and ships its own work.
 - `core_work_items.kind` gains `autopilot`; boards and `activeLimit` ignore that kind.
 
 > Amended 2026-11-12 (spec 52's answers, questions 18 and 19): a run is a work item of kind `autopilot`, **hidden only from the Work lists**. Each run is a full work item, shown as run history on the autopilot's own page, and anything a run produces for a person (an item it filed, a proposal, a digest) appears in Work or the Inbox linked back to the run. (The owner asked "why hidden?", was given this answer, and didn't object.) Until a budget exists, each **autopilot** has its own limits: a time limit per run, a cap on how much one run can file, and a daily run cap. Items an autopilot files may be merged under `autoApprove` like any other ([ADR 0515](0515-merges-may-be-approved-automatically-dark-factory-mode.md)); the autopilot itself still never merges.
+
+> Amended 2026-11-13 (build step (g1)): the actor, config and operations are built; runs and firing
+> are next. The actor's deny is enforced in code before the floor (`AUTOPILOT_NEVER`), so no
+> project override can turn it into review or allow. Classification is stricter than §5 says:
+> besides releasing work and widening the scope, raising a limit, changing the output kind or the
+> backlog project, and widening an event trigger's projects loosen; it is judged whether or not the
+> autopilot is on, so widening one while it is off and then turning it on can't slip through.
+
+> Amended 2026-11-13 (review of #197): a change is judged by **reach**, not shape. One that is off
+> reaches nothing: changing it is practice, and turning it on loosens, so the person approving sees
+> all it would reach; a new one that is on is judged against nothing (it loosens). For one that is
+> on, anything that widens what it may do loosens: releasing work or filing closer to running,
+> more projects or more projects' events (a schedule fires on no project's events, so schedule →
+> event widens), another event kind, a more frequent schedule, another output or project, higher
+> limits, another agent, more capabilities or skills, and a rewritten instruction. A property test
+> holds that no run of practice or tightening saves ends where one direct change would loosen.
+> Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
+> proof; the phone stays refused.
+>
+> Amended 2026-11-13 (second review of #197): a schedule is judged by its **actual fire times**,
+> enumerated over 400 days from a fixed epoch in the autopilot's time zone by the one cron evaluator
+> (`autopilots/cron.ts`), which the firing code uses too: a change is practice only when the new
+> times are a subset of the old; any time it didn't fire before loosens. **Decided:** a time-zone
+> change shifts when it fires, so it loosens like any other new time. Any change of trigger kind
+> loosens, both ways. Crons the evaluator doesn't fully run (macros, names, `L`/`W`/`#`, reversed
+> ranges, anything but ASCII spaces) are refused at save. The agent an enabled autopilot hands to,
+> the skills attached to that agent, and the skills it follows are part of its reach: changing them
+> loosens, as for an agent that judges work.
+>
+> Amended 2026-11-13 (third review of #197): schedules are compared in **local calendar space**,
+> not by enumerating instants: every (month, day, weekday, hour) a cron could fire at, about 61,000
+> checks with no clock, so the answer holds for every year (29 February included) and costs a few
+> milliseconds. Same time zone: practice only if every local time the new one fires at, the old one
+> did; a time-zone change loosens. Time zones are named IANA zones only (no offsets such as
+> +00:07), and a cron that never fires (31 February) is refused at save. The clock is used only for
+> the next fire time, which walks local days for up to 9 years and converts only the matches.
+> **Daylight saving, decided:** a local time that doesn't exist fires at the first minute after the
+> gap; one that happens twice fires once, the first time; the firing's dedupe key is its local wall
+> time. A waiting autopilot change carries what it would run with as it is now (its agent and the
+> skills it follows), and the desktop's pending screen shows it.
+

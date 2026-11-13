@@ -8,9 +8,11 @@
 // - every piece that came from a document (a change sentence naming a stage, an id) is cleaned too.
 // The rules are summary.ts's (`titled`, `cleanTitle`, MAX_FACTS), shared with every other summary.
 import type { Db } from "@software-factory/db";
+import { type AutopilotConfig, autopilotSchema } from "../autopilots/schema.ts";
 import type { FloorParse } from "../policy/gate.ts";
 import type { PolicyImpact } from "../policy/impact.ts";
 import { type OrgConfig, parseOrgConfig } from "../stages/org-config.ts";
+import { withAutopilot } from "./autopilots.ts";
 import { cleanTitle, MAX_FACTS, titled } from "./summary.ts";
 import {
   currentOrgConfig,
@@ -115,6 +117,32 @@ export async function describeOrgConfigDecision(
         `${String(agent.name ?? "")} in ${org}`,
       );
     }
+    case "autopilot.save": {
+      const parsed = attempt(() => autopilotSchema.parse(obj(raw.autopilot)) as never);
+      const ap = parsed as AutopilotConfig | null;
+      const after = ap ? attempt(() => withAutopilot(config, ap)) : null;
+      return titled(
+        facts(
+          say(`save an org autopilot (${versions})${ap ? `: ${autopilotReach(ap)}` : ""}`),
+          // A count, so what it may do and its name both fit; the card lists each change.
+          ((imp) =>
+            typeof imp === "string"
+              ? imp
+              : `${imp.changes.filter((c) => c.class === "loosens").length} loosenings`)(
+            impactOf(after),
+          ),
+        ),
+        `${String(obj(raw.autopilot).name ?? "")} in ${org}`,
+      );
+    }
+    case "autopilot.enable": {
+      const id = String(raw.autopilotId ?? "");
+      const ap = config.autopilots.find((a) => a.id === id);
+      return titled(
+        facts(say(`turn on an org autopilot (${versions})${ap ? `: ${autopilotReach(ap)}` : ""}`)),
+        `${ap?.name ?? id} in ${org}`,
+      );
+    }
     case "workflow.archive": {
       const wf = config.workflows.find((w) => w.id === raw.workflowId);
       return titled(
@@ -215,4 +243,29 @@ export async function describeOverrideApprove(
     ),
     p?.name ?? String(raw.projectId),
   );
+}
+
+/**
+ * What an autopilot may do once on, in facts (review of #197): its trigger, its output and
+ * whether it releases work, the projects it reaches, and its limits. The name goes after, quoted.
+ */
+export function autopilotReach(a: AutopilotConfig): string {
+  const trigger =
+    a.trigger.kind === "schedule"
+      ? `${a.trigger.cron} ${a.trigger.timezone}`
+      : `on ${a.trigger.event}${a.trigger.projects ? ` (${a.trigger.projects.length} projects)` : ""}`;
+  const output =
+    a.output.kind === "backlog"
+      ? a.output.state === "queued"
+        ? "files and RELEASES work"
+        : `files ${a.output.state} items`
+      : a.output.kind === "labels"
+        ? "labels items"
+        : a.output.kind === "digest"
+          ? "a digest"
+          : "proposals";
+  const projects =
+    a.scope.projects === "all" ? "all projects" : `${a.scope.projects.length} projects`;
+  const uses = `agent ${a.agent}${a.skills.length ? `, ${a.skills.length} skills` : ""}`;
+  return `${trigger}; ${output}; ${projects}; ${uses}; ${a.limits.maxOutputs}/run, ${a.limits.runsPerDay}/day, ${a.limits.minutes} min`;
 }

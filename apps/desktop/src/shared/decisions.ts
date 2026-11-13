@@ -19,6 +19,9 @@ export const DECISION_OPS: ReadonlySet<string> = new Set([
   "orgConfig.rollback",
   "override.approve",
   "workItem.markRepair",
+  // Saving or turning on an org autopilot (ADR 0514, review of #197).
+  "autopilot.save",
+  "autopilot.enable",
 ]);
 
 /**

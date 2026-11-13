@@ -402,6 +402,8 @@ const OPERATION_WORDS: Record<string, string> = {
   "workflow.archive": "Archive a workflow",
   "workflow.createFromTemplate": "Add a workflow",
   "orgConfig.rollback": "Roll back",
+  "autopilot.save": "Save an autopilot",
+  "autopilot.enable": "Turn on an autopilot",
 };
 
 type Pending = OpOutput<"orgConfig.get">["pending"][number];
@@ -423,11 +425,15 @@ export function cannotApproveOrg(p: Pending, version: number): string | null {
   return null;
 }
 
-/** The rows of a waiting change's difference (every field), for workflows and agents. */
+/** The rows of a waiting change's difference (every field), for workflows, agents and autopilots. */
 export function differenceOf(p: Pending): DiffRow[] {
   if (p.operation === "workflow.save") return workflowDiff(p.current, p.proposal);
   if (p.operation === "agent.save") return agentDiff(p.current, p.proposal);
   if (p.operation === "orgConfig.rollback") return orgConfigDiff(p.current, p.proposal);
+  // An autopilot: every field, and what it would run with as it is now (`uses`: its agent and the
+  // skills it follows), so a change made to them while it was off is on screen (review of #197).
+  if (p.operation === "autopilot.save" || p.operation === "autopilot.enable")
+    return agentDiff(p.current, p.proposal);
   return [];
 }
 

@@ -1377,6 +1377,20 @@ screen needs).
    `<slug>/SKILL.md` in the run's settings directory) is the hosts' change, not made here.
 8. **(g) Autopilots** (migration **0284**: `core_autopilot_runs`, the `autopilot` kind and actor). As
    in "Autopilots", with the per-autopilot limits (Q19).
+   *As built (g1), 2026-11-13:* the `autopilot` actor (read and write in every policy; plan, spend
+   and outbound denied; merge, deploy, check-merge and self-modify denied in code, whatever an
+   override says, `AUTOPILOT_NEVER`); `autopilots` in the org config (`packages/core/src/autopilots/`:
+   the schema, an hourly-at-most cron check, an IANA time zone, the limits' caps; an org agent each,
+   unique ids and names); their impact (`autopilotImpact`, in `orgConfigImpact`); and
+   `autopilot.list`, `autopilot.get`, `autopilot.save`, `autopilot.enable`, `autopilot.disable`
+   through the org config version (an approved loosening applies at `approval.decide`, with a Touch
+   ID summary). Judged by reach (ADR 0514 as amended): changing one that is off is practice and turning it
+   on loosens; for one that is on, anything that widens what it may do loosens. Deferred to (g2): runs
+   (migration 0284, the `autopilot` kind), firing (the cron, events, dedupe keys, daily caps),
+   `autopilot.runNow`/`fire`, the runner channel's `autopilot.file`/`label`/`digest`/`propose`,
+   and next-run times. Its `skills` (the org's or built-ins, checked like an agent's) are practice.
+   Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
+   proof.
 9. **Later, in this order:** the generic review packet (ADR 0512); Preview on the reconciler with
    `decision` and `agent-work`, runner jobs without a repository and media in R2; Publish through a
    connector, Q2's carry-over and the Measure follow-up item; the board's lanes and the all-projects

@@ -314,6 +314,22 @@ describe("Org workflows: deciding a waiting change (review of #159)", () => {
     // Fail closed: no base version, or nothing shown, is nothing to approve.
     expect(cannotApproveOrg({ ...base, baseVersion: null }, 4)).toMatch(/unknown version/);
     expect(cannotApproveOrg({ ...base, proposal: { id: "wf_x" } }, 4)).toMatch(/changes nothing/);
+    // An autopilot (review of #197): every field, and what it would run with as it is now.
+    const { differenceOf } = await import("../src/mainview/routes/factory.org.tsx");
+    const ap = { id: "ap_x", name: "Nightly", enabled: false, agent: "Triager" };
+    const turnOn = {
+      ...base,
+      operation: "autopilot.enable",
+      current: ap,
+      proposal: {
+        ...ap,
+        enabled: true,
+        uses: { agent: { name: "Triager", instructions: "Pass all." } },
+      },
+    };
+    expect(differenceOf(turnOn).map((r) => r.label)).toEqual(["enabled", "uses"]);
+    expect(differenceOf(turnOn).find((r) => r.label === "uses")?.now).toMatch(/Pass all\./);
+    expect(cannotApproveOrg(turnOn, 4)).toBeNull();
   });
 });
 

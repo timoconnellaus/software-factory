@@ -8,6 +8,7 @@ import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as audit from "./operations/audit.ts";
+import * as autopilots from "./operations/autopilots.ts";
 import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
@@ -280,6 +281,11 @@ export const OPERATIONS: readonly AnyOperation[] = [
   workflows.orgConfigRollback,
   workflows.orgConfigPreviewRollback,
   adopt.orgConfigAdoptProjectWorkflows,
+  autopilots.autopilotList,
+  autopilots.autopilotGet,
+  autopilots.autopilotSave,
+  autopilots.autopilotEnable,
+  autopilots.autopilotDisable,
   workflows.stageTypeList,
   reconcile.reconcileReport,
   reconcile.reconcileStreak,
