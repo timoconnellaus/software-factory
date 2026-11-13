@@ -5,9 +5,12 @@ import { has, WORKFLOW_FEATURES, WORKFLOW_VERSION_FEATURES } from "../src/index.
 describe("Workflow features per version", () => {
   it("has a row for every version, each adding to the one before, and nothing for an unknown one", () => {
     const versions = Object.keys(WORKFLOW_VERSION_FEATURES).map(Number);
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     expect([...(WORKFLOW_VERSION_FEATURES[1] ?? [])]).toEqual([]);
-    expect([...(WORKFLOW_VERSION_FEATURES[15] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    expect([...(WORKFLOW_VERSION_FEATURES[16] ?? [])]).toEqual([...WORKFLOW_FEATURES]);
+    // v16 adds splits (spec 24); nothing earlier has them.
+    expect(has(16, "splits")).toBe(true);
+    expect(has(15, "splits")).toBe(false);
     // v13 is v12 and the tightening re-pin (spec 52, Q3).
     expect(has(13, "reverify-on-withdrawal")).toBe(true);
     expect(has(12, "repin-tightening")).toBe(false);

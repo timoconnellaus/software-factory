@@ -14,6 +14,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
+import { childEnded, sliceHash } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -987,6 +988,7 @@ export const workItemCancel = defineOperation({
         before: { status: w.status },
         after: { status: "cancelled", reason: input.reason },
       });
+      await childEnded(ctx, w, "cancelled");
       return { cancelled: true };
     }
     if (
@@ -1003,6 +1005,7 @@ export const workItemCancel = defineOperation({
     cancelWorkItem(ctx, w, input.reason);
     // Its slot is free: the next queued item may start, after this commits (ADR 0491).
     requestPull(ctx, w.project_id);
+    await childEnded(ctx, w, "cancelled");
     return { cancelled: true };
   },
 });
@@ -1061,10 +1064,33 @@ export const workItemTriage = defineOperation({
           : null;
     }
     // An attached PR is already built: spec and build are skipped whatever its size (spec 05).
+    // Spec 24 (review of #171): a plan's child whose body and criteria still hash to the slice a
+    // person approved with the parent's spec keeps the approved criteria, and skips planning when
+    // triage finds the slice complete and the approved size isn't large. Anything changed since
+    // (an edit while it waited) and it plans under the policy like any item.
+    const slice = w.split_slice
+      ? parseJson<{ size?: string; sha256?: string } | null>(w.split_slice, null)
+      : null;
+    const approvedCriteria = parseJson<string[] | null>(w.acceptance_criteria ?? "null", null);
+    const sliceBound =
+      w.source === "planning" &&
+      w.parent_work_item_id !== null &&
+      slice?.sha256 !== undefined &&
+      approvedCriteria !== null &&
+      slice.sha256 === (await sliceHash(w.title, w.body, approvedCriteria));
+    const sliceApproved =
+      sliceBound && input.result.specRequested === "skip" && slice?.size !== "large";
+    if (sliceBound && approvedCriteria) input.result.acceptanceCriteria = approvedCriteria;
     const decision =
       w.kind === "attached"
         ? { required: false, reason: ATTACHED_SKIP_REASON }
-        : specRequired(policy, input.result.size, input.result.specRequested);
+        : sliceApproved
+          ? {
+              required: false,
+              reason:
+                "its slice of the parent's plan is complete, and a person approved it with the parent's spec (spec 24)",
+            }
+          : specRequired(policy, input.result.size, input.result.specRequested);
     const reason = `${decision.reason}. Triage: ${input.result.reason}`;
     const specId = newId("spec");
     // `triage-ties`: the check that proves each criterion, as data the code validates. Only
@@ -1243,7 +1269,8 @@ export const workItemFinish = defineOperation({
   permission: "signed-in",
   input: z.object({
     workItemId,
-    status: z.enum(["done", "failed", "rejected"]),
+    /** `cancelled`: a split's parent whose children all ended without merging (spec 24). */
+    status: z.enum(["done", "failed", "rejected", "cancelled"]),
     reason: z.string().max(4_000),
   }),
   output: z.object({ status: z.string() }),
@@ -1305,7 +1332,7 @@ export const workItemFinish = defineOperation({
         event: `workItem.${input.status}`,
         userId: w.requester_user_id,
         workItemId: w.id,
-        title: `${input.status === "done" ? "Shipped" : input.status === "failed" ? "Failed" : "Rejected"}: ${w.title}`,
+        title: `${input.status === "done" ? "Shipped" : input.status === "failed" ? "Failed" : input.status === "cancelled" ? "Cancelled" : "Rejected"}: ${w.title}`,
         url: `/work/${w.id}`,
       },
     });
@@ -1317,6 +1344,8 @@ export const workItemFinish = defineOperation({
     });
     // Its slot is free, and what waited on it may start (ADR 0491).
     await requestPullsAfterEnd(ctx, w, input.status);
+    // A split's child: its siblings and parent hear of it (spec 24).
+    await childEnded(ctx, w, input.status);
     return { status: input.status };
   },
 });
