@@ -2,6 +2,7 @@
 // ready, is released to the factory (queued), and the factory pulls queued items into the pipeline
 // by priority, respecting "waits for" links and the project's active limit. Creating an item no
 // longer starts its Workflow: the pull does (`startPipeline`).
+import { questionDraftSchema } from "@software-factory/runner-contract";
 import { sql } from "kysely";
 import { z } from "zod";
 import { OperationError } from "../errors.ts";
@@ -12,18 +13,24 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
+import { same } from "../policy/impact.ts";
+import { onOrgWorkflow, type ProjectPolicy, specRequired } from "../policy/project-policy.ts";
 import {
+  generationOf,
   type NeedsInfo,
   needsInfoOf,
+  nextGeneration,
   park,
   parkIfNotReady,
   precheck,
   precheckPrompt,
   readinessHint,
   refuseIfParked,
+  TRIAGE_PARK_CAP,
 } from "../readiness.ts";
-import { activeKillSwitch, loadPolicy } from "../scope.ts";
+import { activeKillSwitch, approverIds, loadPolicy } from "../scope.ts";
+import type { OrgConfig } from "../stages/org-config.ts";
+import { resolveProjectWorkflow, shapingStagesOf } from "../stages/project-workflow.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
 import {
@@ -37,6 +44,7 @@ import {
   STAGES,
   workItemId,
 } from "./shared.ts";
+import { currentOrgConfig, storedOrgConfig } from "./workflows.ts";
 
 /** States before release: no Workflow instance exists in them, except `shaping` (part C). */
 export const PRE_PIPELINE = ["backlog", "shaping", "ready", "queued"] as const;
@@ -122,6 +130,12 @@ export function releaseRefusal(
 export interface StartConditions {
   activeLimit: number;
   needsRepository: boolean;
+  /**
+   * A shaped item whose shaping was checked against this org config version (spec 52, Q4): it starts
+   * only while the org is still at it, in the same guarded write, so a change after the check
+   * aborts the pull rather than starting delivery unchecked.
+   */
+  orgVersion?: number;
 }
 
 /**
@@ -134,7 +148,16 @@ export interface StartConditions {
  */
 export function startPipeline(
   ctx: HandlerContext,
-  item: { id: string; number: number; shaping_started_at?: string | null },
+  item: {
+    id: string;
+    number: number;
+    shaping_started_at?: string | null;
+    /**
+     * The item's Workflow instance: its id, unless it was shaped again (spec 52, Q4) or triage
+     * parked it (spec 23: `<id>-r2`, …).
+     */
+    workflow_id?: string | null;
+  },
   project: Pick<ProjectRow, "id" | "org_id" | "policy_sha">,
   pin: {
     policy: Pick<ProjectPolicy, "workflow"> | null;
@@ -153,6 +176,13 @@ export function startPipeline(
         status_reason: null,
         pulled_at: ctx.now,
         policy_sha: pin.trial?.candidateSha ?? project.policy_sha,
+        // Delivery always runs on the org's current config version (spec 52, Q4): a shaped item's
+        // older version decided only whether its shaping still counts, at release.
+        org_config_version: (eb) =>
+          eb
+            .selectFrom("core_organization")
+            .select("config_version")
+            .where("id", "=", project.org_id),
         trial_id: pin.trial?.id ?? null,
         workflow,
         workflow_reason: workflow ? "the project's workflow" : null,
@@ -178,7 +208,18 @@ export function startPipeline(
               ),
             ),
           )
-          .$if(!!conditions?.needsRepository, (q2) => q2.where("repository_id", "is not", null)),
+          .$if(!!conditions?.needsRepository, (q2) => q2.where("repository_id", "is not", null))
+          .$if(conditions?.orgVersion !== undefined, (q2) =>
+            q2.where(
+              (eb) =>
+                eb
+                  .selectFrom("core_organization")
+                  .select("config_version")
+                  .where("id", "=", project.org_id),
+              "=",
+              conditions?.orgVersion ?? -1,
+            ),
+          ),
       ),
   );
   ctx.guardChanged(`start #${item.number}`);
@@ -187,7 +228,11 @@ export function startPipeline(
     // `release: wait`. Wake it; delivery reads the version and workflow pinned just now.
     ctx.emit({
       kind: "workflow.event",
-      payload: { instanceId: item.id, type: releaseEvent(item.id), payload: {} },
+      payload: {
+        instanceId: item.workflow_id ?? item.id,
+        type: releaseEvent(item.id),
+        payload: {},
+      },
     });
     ctx.change({
       entity: "work_item",
@@ -210,7 +255,8 @@ export function startPipeline(
   );
   ctx.emit({
     kind: "workflow.create",
-    payload: { instanceId: item.id, params: { workItemId: item.id } },
+    // The item's current Workflow generation (spec 23: a triage-parked item starts a new one).
+    payload: { instanceId: item.workflow_id ?? item.id, params: { workItemId: item.id } },
   });
   ctx.change({
     entity: "work_item",
@@ -347,6 +393,10 @@ export async function pullQueued(
         "created_at",
         "repository_id",
         "shaping_started_at",
+        "workflow_id",
+        "org_config_version",
+        "released_by",
+        "requester_user_id",
       ])
       .where("project_id", "=", project.id)
       .where("status", "=", "queued")
@@ -364,17 +414,44 @@ export async function pullQueued(
     ? (await loadPolicy(ctx.db, { id: project.id, policy_sha: trial.candidateSha })).policy
     : null;
   const started: string[] = [];
+  // Spec 52, Q4: a shaped item's shaping is checked again here, against the version delivery will
+  // run on. The org's current config is read once; each older version once (by primary key).
+  const raw = ctx.scope.rawPolicy;
+  const onOrg = !!raw && onOrgWorkflow(raw);
+  const current = onOrg ? await currentOrgConfig(ctx.db, project.org_id) : null;
+  const older = new Map<number, OrgConfig | null>();
   for (const q of queue) {
     if (room <= 0) break;
     if (blocked.get(q.id)?.length) continue;
     if (needsRepository && !q.repository_id) continue;
+    let orgVersion: number | undefined;
+    if (q.shaping_started_at && raw && current) {
+      const shapedUnder = q.org_config_version;
+      if (shapedUnder !== null && shapedUnder !== current.version && !older.has(shapedUnder))
+        older.set(shapedUnder, await storedOrgConfig(ctx.db, project.org_id, shapedUnder));
+      const flag = shapingFlag(raw, q, current, older.get(shapedUnder ?? -1) ?? null, {
+        id: q.released_by ?? q.requester_user_id,
+        agent: false,
+        now: ctx.now,
+      });
+      if (flag) {
+        // Back to Ready, flagged, for the person who released it: nothing starts.
+        flagAtPull(ctx, q, flag, q.released_by ?? q.requester_user_id);
+        continue;
+      }
+      orgVersion = current.version;
+    }
     const onTrial = trial && trialRoom > 0 && trialPolicy;
     startPipeline(
       ctx,
       q,
       project,
       { policy: onTrial ? trialPolicy : policy, trial: onTrial ? trial : null },
-      { activeLimit: policy.activeLimit, needsRepository },
+      {
+        activeLimit: policy.activeLimit,
+        needsRepository,
+        ...(orgVersion !== undefined ? { orgVersion } : {}),
+      },
     );
     if (onTrial && --trialRoom === 0) trial = null;
     started.push(q.id);
@@ -510,11 +587,184 @@ const startedOutput = z.object({
     .optional(),
   /** The readiness pre-check's hint for the person who released it (spec 23): ignorable. */
   hint: z.string().optional(),
+  /**
+   * Set when it wasn't released because its workflow's shaping stages changed since it was shaped
+   * (spec 52, Q4): a person chooses with workItem.releaseChoice.
+   */
+  releaseFlag: z
+    .object({ reason: z.string(), shapedUnder: z.number(), current: z.number() })
+    .optional(),
   /** What it waits for that isn't done; empty when nothing holds it. */
   blockedBy: z.array(
     z.object({ id: z.string(), number: z.number(), title: z.string(), status: z.string() }),
   ),
 });
+
+/** A shaped item's release flag (spec 52, Q4), on `core_work_items.release_flag` (migration 0285). */
+export interface ReleaseFlag {
+  /** Why, in a sentence. */
+  reason: string;
+  /** The org config version the item was shaped under, and the current one. */
+  shapedUnder: number;
+  current: number;
+  /** Who tried to release it, and whether that was an agent. */
+  flaggedBy: string;
+  byAgent: boolean;
+  at: string;
+}
+
+export const releaseFlagOf = (raw: string | null | undefined): ReleaseFlag | null => {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ReleaseFlag;
+  } catch {
+    return null;
+  }
+};
+
+/** The two choices a person has for a flagged item (spec 52, Q4; the owner's answer). */
+export const RELEASE_CHOICES = ["reshape", "accept"] as const;
+
+/**
+ * Whether a shaped item's shaping still counts under the org's current workflow (spec 52, Q4).
+ * Delivery always runs on the current version; the version the item was shaped under decides only
+ * this. Null when it counts: not shaped, not on an org workflow, shaped under the current version,
+ * or the current version's shaping stages are the same (ids, types, settings with defaults,
+ * conditions, agents, in order). Otherwise the flag to set: a person chooses.
+ */
+async function releaseFlagFor(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  orgId: string,
+): Promise<ReleaseFlag | null> {
+  const raw = ctx.scope.rawPolicy;
+  if (!w.shaping_started_at || !raw || !onOrgWorkflow(raw)) return null;
+  const current = await currentOrgConfig(ctx.db, orgId);
+  const shapedUnder = w.org_config_version;
+  if (shapedUnder === null || shapedUnder === current.version) return null;
+  const then = await storedOrgConfig(ctx.db, orgId, shapedUnder);
+  return shapingFlag(raw, w, current, then, {
+    id: ctx.actor.id,
+    agent: ctx.actor.type !== "human",
+    now: ctx.now,
+  });
+}
+
+/**
+ * The pure check (spec 52, Q4): null when an item's finished shaping counts under the org's current
+ * version (shaped under it, or the shaping stages are the same in it), else the flag to set.
+ */
+function shapingFlag(
+  raw: ProjectPolicy,
+  w: { number: number; org_config_version: number | null; shaping_started_at: string | null },
+  current: { version: number; config: OrgConfig },
+  then: OrgConfig | null,
+  by: { id: string; agent: boolean; now: string },
+): ReleaseFlag | null {
+  if (!w.shaping_started_at || !onOrgWorkflow(raw)) return null;
+  const shapedUnder = w.org_config_version;
+  if (shapedUnder === null || shapedUnder === current.version) return null;
+  const shaping = (config: OrgConfig | null) => {
+    const r = config ? resolveProjectWorkflow(raw, config) : null;
+    return r?.ok ? shapingStagesOf(r.value) : null;
+  };
+  const was = shaping(then);
+  if (was !== null && same(was, shaping(current.config))) return null;
+  return {
+    reason: `#${w.number} was shaped under org config v${shapedUnder}; its workflow's shaping stages changed in v${current.version}. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.`,
+    shapedUnder,
+    current: current.version,
+    flaggedBy: by.id,
+    byAgent: by.agent,
+    at: by.now,
+  };
+}
+
+/** The pull's flag (spec 52, Q4): a queued shaped item goes back to Ready, flagged, unreleased. */
+function flagAtPull(
+  ctx: HandlerContext,
+  q: { id: string; number: number },
+  flag: ReleaseFlag,
+  chooser: string | null,
+) {
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({
+        status: "ready",
+        released_at: null,
+        released_by: null,
+        release_flag: JSON.stringify(flag),
+        release_flag_user_id: chooser,
+        status_reason: "flagged: its workflow's shaping stages changed since it was shaped",
+        updated_at: ctx.now,
+      })
+      .where("id", "=", q.id)
+      .where("status", "=", "queued"),
+  );
+  ctx.change({
+    entity: "work_item",
+    id: q.id,
+    before: { status: "queued" },
+    after: { status: "ready", releaseFlag: flag },
+  });
+  if (chooser)
+    ctx.emit({
+      kind: "notify",
+      payload: {
+        event: "workItem.releaseFlagged",
+        userId: chooser,
+        workItemId: q.id,
+        title: `#${q.number} went back to Ready: its workflow's shaping changed before it started`,
+        url: `/?item=${q.id}`,
+      },
+    });
+}
+
+/**
+ * Flags an item instead of releasing it (spec 52, Q4): the marker on the item, and the person who
+ * must choose told. The person who released it; for an agent's release, the item's requester, else
+ * the project's first approver. Nothing is released.
+ */
+async function flagRelease(ctx: HandlerContext, w: WorkItemRow, flag: ReleaseFlag) {
+  const chooser = !flag.byAgent
+    ? ctx.actor.id
+    : (w.requester_user_id ?? (await approverIds(ctx.db, w.org_id, ctx.scope.policy))[0] ?? null);
+  ctx.write(
+    ctx.db
+      .updateTable("core_work_items")
+      .set({
+        release_flag: JSON.stringify(flag),
+        release_flag_user_id: chooser,
+        status_reason: "flagged: its workflow's shaping stages changed since it was shaped",
+        updated_at: ctx.now,
+      })
+      .where("id", "=", w.id)
+      .where("status", "in", ["backlog", "ready"]),
+  );
+  ctx.change({
+    entity: "work_item",
+    id: w.id,
+    before: { releaseFlag: releaseFlagOf(w.release_flag) },
+    after: { releaseFlag: flag },
+  });
+  if (chooser)
+    ctx.emit({
+      kind: "notify",
+      payload: {
+        event: "workItem.releaseFlagged",
+        userId: chooser,
+        workItemId: w.id,
+        title: `#${w.number} needs your choice before it's released: its workflow's shaping changed`,
+        url: `/?item=${w.id}`,
+      },
+    });
+  return {
+    status: w.status,
+    releaseFlag: { reason: flag.reason, shapedUnder: flag.shapedUnder, current: flag.current },
+    blockedBy: [],
+  };
+}
 
 export const workItemRelease = defineOperation({
   name: "workItem.release",
@@ -551,6 +801,10 @@ function parkedOutput(m: NeedsInfo) {
 export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
   {
     const project = requireProject(ctx);
+    // A shaped item whose workflow's shaping changed isn't released: it is flagged for a person,
+    // whoever asked (an agent's release leaves it flagged, with the reason; spec 52, Q4).
+    const flag = await releaseFlagFor(ctx, w, project.org_id);
+    if (flag) return flagRelease(ctx, w, flag);
     const plan = w.shaping_started_at ? await shapedPlan(ctx, w) : null;
     ctx.write(
       ctx.db
@@ -560,6 +814,8 @@ export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
           status_reason: null,
           released_at: ctx.now,
           released_by: ctx.actor.id,
+          release_flag: null,
+          release_flag_user_id: null,
           updated_at: ctx.now,
         })
         .where("id", "=", w.id)
@@ -582,6 +838,117 @@ export async function releaseNow(ctx: HandlerContext, w: WorkItemRow) {
     };
   }
 }
+
+export const workItemReleaseChoice = defineOperation({
+  name: "workItem.releaseChoice",
+  description:
+    "Decide a work item flagged at release because its workflow's shaping stages changed since it was shaped (spec 52, Q4). `reshape`: shape it again under the current workflow (its shaping stages run again, then it is ready). `accept`: accept the shaping already done and release it, delivered under the current workflow; if the org's workflow changed again since the flag, it isn't released: it is flagged again against the current version (`refused` says so). A person's choice, recorded; never an agent's.",
+  risk: "write",
+  actors: ["human"],
+  permission: "member",
+  browserOnly: true,
+  // A person's call from the app or the desktop, never a CLI or MCP token an agent might hold.
+  desktopDecidable: true,
+  input: z.object({ workItemId, choice: z.enum(RELEASE_CHOICES) }),
+  output: z.object({
+    status: z.string(),
+    /** Why `accept` didn't release: the org saved again since the flag, which now names that. */
+    refused: z.string().optional(),
+  }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const project = requireProject(ctx);
+    const flag = releaseFlagOf(w.release_flag);
+    if (!flag)
+      throw new OperationError("conflict", `work item #${w.number} isn't waiting on that choice`);
+    const current = await currentOrgConfig(ctx.db, project.org_id);
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      before: { releaseFlag: flag },
+      after: { releaseChoice: input.choice, orgConfigVersion: current.version },
+    });
+    const cleared = {
+      release_flag: null,
+      release_flag_user_id: null,
+      status_reason: null,
+      updated_at: ctx.now,
+    };
+    if (input.choice === "accept" && current.version !== flag.current) {
+      // The org saved again since the flag: the person accepted a difference that is no longer the
+      // one there is. Not released; flagged again against the current version, so they see it.
+      const again = await releaseFlagFor(ctx, w, project.org_id);
+      if (again) {
+        const out = await flagRelease(ctx, w, {
+          ...again,
+          flaggedBy: ctx.actor.id,
+          byAgent: false,
+        });
+        return {
+          status: out.status,
+          refused: `the org's workflow changed again (v${flag.current} → v${current.version}): look at the new difference and choose again`,
+        };
+      }
+      // Its shaping counts under the current version after all: an ordinary release.
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set(cleared)
+          .where("id", "=", w.id)
+          .where("release_flag", "is not", null),
+      );
+      ctx.guardChanged("release choice");
+      const out = await releaseNow(ctx, { ...w, ...cleared });
+      return { status: out.status };
+    }
+    if (input.choice === "accept") {
+      // The shaping done counts under the current version: release checks against it from now.
+      ctx.write(
+        ctx.db
+          .updateTable("core_work_items")
+          .set({ ...cleared, org_config_version: current.version || null })
+          .where("id", "=", w.id)
+          .where("release_flag", "is not", null),
+      );
+      ctx.guardChanged("release choice");
+      const out = await releaseNow(ctx, {
+        ...w,
+        ...cleared,
+        org_config_version: current.version || null,
+      });
+      return { status: out.status };
+    }
+    // Shape it again: the old Workflow, waiting for its release, ends; a new instance runs the
+    // current workflow's shaping stages for the same item.
+    const workflowId = `${w.id}_r${Date.parse(ctx.now).toString(36)}`;
+    ctx.emit({ kind: "workflow.terminate", payload: { instanceId: w.workflow_id } });
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          ...cleared,
+          status: "backlog",
+          shaping_started_at: null,
+          shaped_at: null,
+          shaped_base_sha: null,
+          workflow_id: workflowId,
+        })
+        .where("id", "=", w.id)
+        .where("release_flag", "is not", null),
+    );
+    ctx.guardChanged("release choice");
+    const out = await shapeNow(ctx, {
+      ...w,
+      ...cleared,
+      status: "backlog",
+      shaping_started_at: null,
+      shaped_at: null,
+      shaped_base_sha: null,
+      workflow_id: workflowId,
+    });
+    return { status: out.status };
+  },
+});
 
 export const workItemShape = defineOperation({
   name: "workItem.shape",
@@ -653,6 +1020,11 @@ export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
           shaping_started_at: ctx.now,
           // The version shaping runs under; the pull pins delivery's again at release.
           policy_sha: project.policy_sha,
+          org_config_version: (eb) =>
+            eb
+              .selectFrom("core_organization")
+              .select("config_version")
+              .where("id", "=", project.org_id),
           workflow,
           workflow_reason: workflow ? "the project's workflow" : null,
           updated_at: ctx.now,
@@ -675,7 +1047,7 @@ export async function shapeNow(ctx: HandlerContext, w: WorkItemRow) {
     );
     ctx.emit({
       kind: "workflow.create",
-      payload: { instanceId: w.id, params: { workItemId: w.id } },
+      payload: { instanceId: w.workflow_id ?? w.id, params: { workItemId: w.id } },
     });
     ctx.change({
       entity: "work_item",
@@ -1084,6 +1456,13 @@ const boardItem = z.object({
       projectId: z.string(),
     }),
   ),
+  /**
+   * Set when release flagged it (spec 52, Q4): its workflow's shaping stages changed since it was
+   * shaped, and a person chooses (workItem.releaseChoice). Absent otherwise.
+   */
+  releaseFlag: z
+    .object({ reason: z.string(), shapedUnder: z.number(), current: z.number() })
+    .optional(),
   /** The waits-for items that aren't done: what keeps it from being pulled. */
   blockedBy: z.array(
     z.object({
@@ -1197,6 +1576,18 @@ export const workItemBoard = defineOperation({
           createdAt: w.created_at,
           updatedAt: w.updated_at,
           waitsFor,
+          ...(() => {
+            const flag = releaseFlagOf(w.release_flag);
+            return flag
+              ? {
+                  releaseFlag: {
+                    reason: flag.reason,
+                    shapedUnder: flag.shapedUnder,
+                    current: flag.current,
+                  },
+                }
+              : {};
+          })(),
           blockedBy: waitsFor.filter((x) => x.status !== "done"),
         };
       }),
@@ -1264,11 +1655,16 @@ export const projectWorkflow = defineOperation({
     const named = policy.workflow
       ? policy.workflows.find((w) => w.name.toLowerCase() === policy.workflow?.toLowerCase())
       : undefined;
+    // On an org workflow the resolved config names it by id (`wf_…`) and carries its name as the
+    // description (spec 52 PR (d)): people read the name.
+    const org = onOrgWorkflow(ctx.scope.rawPolicy);
     const workflow = named
       ? {
           name: named.name,
-          label: named.name[0]?.toUpperCase() + named.name.slice(1),
-          description: named.description,
+          label: org
+            ? named.description || named.name
+            : named.name[0]?.toUpperCase() + named.name.slice(1),
+          description: org ? "" : named.description,
           builtIn: false,
         }
       : {
@@ -1314,6 +1710,8 @@ export async function resumeParked(
 ): Promise<"resumed" | "waiting" | "parked again" | null> {
   const marker = needsInfoOf(w.needs_info);
   if (!marker) return null;
+  // Triage parked it the most times it may: a person moves it on (release), not an answer.
+  if (marker.capped) return "waiting";
   const asked = marker.questionIds.length
     ? await ctx.db
         .selectFrom("core_questions")
@@ -1425,3 +1823,86 @@ function takeOverParked(ctx: HandlerContext, w: WorkItemRow, what: string) {
   );
   w.needs_info = null;
 }
+
+export const workItemParkForInfo = defineOperation({
+  name: "workItem.parkForInfo",
+  description:
+    "The Workflow parks a work item triage found not actionable (spec 23, ADR 0304): back in the Backlog with a needs-info marker and triage's questions to its requester. Its Workflow ends and it holds no slot. Answering them releases it again (or shapes it again, as it was heading), and triage runs again on a new Workflow with the answers in the request.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({
+    workItemId,
+    reason: z.string().min(1).max(2_000),
+    questions: z.array(questionDraftSchema).min(1).max(5),
+  }),
+  output: z.object({ status: z.string(), questionIds: z.array(z.string()) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    // Only the item's own Workflow, in triage, parks it (review of #125): checked here and guarded
+    // in the batch, so a stale or foreign instance can't.
+    const caller = ctx.origin.workflowId;
+    if (w.stage !== "triage" || !caller || w.workflow_id !== caller) {
+      throw new OperationError(
+        "conflict",
+        "only the work item's current Workflow, in triage, can park it",
+      );
+    }
+    ctx.guardExists(
+      "the item is still in triage on this Workflow",
+      ctx.db
+        .selectFrom("core_work_items")
+        .select("id")
+        .where("id", "=", w.id)
+        .where("stage", "=", "triage")
+        .where("workflow_id", "=", caller),
+    );
+    const heading = w.shaping_started_at && !w.pulled_at ? "shaping" : "queued";
+    // At the cap a person decides, with everything asked across the cycles (review of #125).
+    const generation = generationOf(w.id, w.workflow_id);
+    const capped = generation >= TRIAGE_PARK_CAP;
+    const earlier = capped
+      ? await ctx.db
+          .selectFrom("core_questions")
+          .select("prompt")
+          .where("work_item_id", "=", w.id)
+          .where("planning_session_id", "is", null)
+          .orderBy("created_at")
+          .limit(50)
+          .execute()
+      : [];
+    const marker = park(ctx, w, {
+      heading,
+      source: "triage",
+      reason: capped
+        ? `triage parked it ${generation} times; a person decides now. ${input.reason}`
+        : input.reason,
+      missing: [],
+      prompts: input.questions,
+      ...(capped
+        ? {
+            capped: true,
+            asked: [...earlier.map((q) => q.prompt), ...input.questions.map((q) => q.prompt)],
+          }
+        : {}),
+    });
+    // A fresh start: the next release or shape begins a new Workflow generation, from intake.
+    ctx.write(
+      ctx.db
+        .updateTable("core_work_items")
+        .set({
+          pulled_at: null,
+          shaping_started_at: null,
+          released_at: null,
+          released_by: null,
+          stage: "intake",
+          workflow_id: nextGeneration(w.id, w.workflow_id),
+          updated_at: ctx.now,
+        })
+        .where("id", "=", w.id),
+    );
+    // Its slot is free: the next queued item may start, after this commits.
+    requestPull(ctx, w.project_id);
+    return { status: "backlog", questionIds: marker.questionIds };
+  },
+});

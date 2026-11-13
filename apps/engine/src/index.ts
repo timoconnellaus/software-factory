@@ -1,5 +1,6 @@
 // sf-engine: one Workflow per work item, the signed runner channel, the GitHub App webhook, outbox
 // delivery, the minute cron and the runner host's web terminal socket (ADR 0440). sf-app calls operations through the `EngineApi` RPC entrypoint (service binding).
+
 import { GITHUB_INTAKE } from "@software-factory/connector-github";
 import {
   FOREMAN,
@@ -13,6 +14,7 @@ import {
 import { parseTerminalPath } from "@software-factory/runner-contract";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
+import { deliverDue } from "./deliver/deliverer.ts";
 import { invokeDeps } from "./deps.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
@@ -52,6 +54,8 @@ export default {
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
     await pullQueuedWork(env);
+    // The babysitter's deliverer, for queues due a look without an event (spec 53).
+    await deliverDue(env, now);
     await runAdjudicator(env);
     // Once an hour: the improver (ADR 0373) decides running trials and starts the next one.
     if (now.getUTCMinutes() === 23) await runImprover(env, now);

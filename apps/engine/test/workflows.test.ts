@@ -1,6 +1,7 @@
 // Spec 09 M2: workflows fill the skeleton's slots (Workflow v6, ADR 0371); agents are
 // harness-neutral and pick a model tier (ADR 0372).
 import { resolveModel } from "@software-factory/core";
+import { SOFTWARE } from "@software-factory/core/stages";
 import { describe, expect, it } from "vitest";
 import {
   definitionFor,
@@ -13,6 +14,7 @@ import {
   BALANCED,
   build,
   first,
+  gateHead,
   gateOpen,
   itemStatus,
   ok,
@@ -119,7 +121,15 @@ describe("workflows (spec 09 M2)", () => {
     await ok("approval.decide", { pendingActionId: gate.id, decision: "approved" }, w.human);
 
     await gateOpen(item.workItemId, "merge");
-    await ok("review.merge", { workItemId: item.workItemId, openedFullDiff: false }, w.human);
+    await ok(
+      "review.merge",
+      {
+        workItemId: item.workItemId,
+        openedFullDiff: false,
+        headSha: await gateHead(item.workItemId),
+      },
+      w.human,
+    );
     await itemStatus(item.workItemId, "done");
 
     // The slot steps ran as the compiled definition's slot stages say, and the agent check's
@@ -201,5 +211,64 @@ describe("the default builder", () => {
       expect(job.harness.model).toBe(resolveModel("implement"));
       return build();
     });
+  });
+
+  it("runs a project's org workflow (spec 52 PR (d)): the org's check, with the org agent's instructions", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    await ok(
+      "agent.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 0,
+        agent: {
+          name: "Security",
+          role: "review",
+          tier: "light",
+          instructions: "Org: check auth.",
+        },
+      },
+      w.human,
+    );
+    await ok(
+      "workflow.save",
+      {
+        orgId: w.orgId,
+        baseVersion: 1,
+        workflow: {
+          ...SOFTWARE,
+          id: "wf_ship_it",
+          name: "Ship it",
+          template: { id: SOFTWARE.id, version: 1 },
+          stages: [
+            ...SOFTWARE.stages.slice(0, 3),
+            {
+              id: "security",
+              type: "agent-check",
+              typeVersion: 1,
+              name: "Security review",
+              phase: "delivery",
+              settings: { instructions: "Look at the token handling." },
+              agent: "Security",
+            },
+            ...SOFTWARE.stages.slice(3),
+          ],
+        },
+      },
+      w.human,
+    );
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    await runStage(w, item.workItemId, "build", () => build());
+    await runStage(w, item.workItemId, "verify", (job) => {
+      expect(job.context.step).toMatchObject({ workflow: "wf_ship_it", id: "security" });
+      expect(job.harness.prompt).toContain("Org: check auth.");
+      expect(job.harness.prompt).toContain("Look at the token handling.");
+      return { result: { verdict: "pass", summary: "Fine" } };
+    });
+    const row = await first<{ workflow: string; org_config_version: number }>(
+      "SELECT workflow, org_config_version FROM core_work_items WHERE id = ?",
+      item.workItemId,
+    );
+    expect(row).toEqual({ workflow: "wf_ship_it", org_config_version: 2 });
   });
 });

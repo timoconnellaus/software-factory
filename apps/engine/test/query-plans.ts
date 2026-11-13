@@ -11,6 +11,8 @@ export const SMALL_TABLES = new Set([
   "core_factories",
   "core_projects",
   "core_repositories",
+  // One row per repository (spec 53): sized like core_repositories.
+  "core_main_health",
   "core_github_installations",
   "core_runners",
   "core_kill_switches",

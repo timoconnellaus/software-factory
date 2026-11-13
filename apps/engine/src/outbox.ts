@@ -3,6 +3,7 @@
 // Workflow ids and one-shot event types make a second delivery harmless.
 import type { OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
+import { deliverRepository } from "./deliver/deliverer.ts";
 import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
 
@@ -84,7 +85,13 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // deliver it, it would hold a slot for ever. Fail it, visibly, instead.
       if (!found || FINISHED.has(found.status)) {
         if (message.payload.type.startsWith("release-")) {
-          await failDeadRelease(env, message.payload.instanceId, found?.status ?? "missing");
+          // The item is named by the event (`release-<item>`): its instance may be a later one,
+          // after it was shaped again (spec 52, Q4).
+          await failDeadRelease(
+            env,
+            message.payload.type.slice("release-".length),
+            found?.status ?? "missing",
+          );
         }
         return;
       }
@@ -114,6 +121,14 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       if (found && !FINISHED.has(found.status)) await found.instance.terminate();
       return;
     }
+    case "delivery.wake":
+      // The babysitter's deliverer for that repository queue (spec 53, ADR 0580). A pass already
+      // running there is told to go round again instead.
+      // An item with no repository is never the babysitter's (one lease per repository, ADR 0586).
+      if (message.payload.repositoryId) {
+        await deliverRepository(env, message.payload.projectId, message.payload.repositoryId);
+      }
+      return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);

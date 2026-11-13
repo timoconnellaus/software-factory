@@ -12,6 +12,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { mergeBlocked } from "#/lib/merge-card";
 import type { Inbox } from "#/lib/ops";
 import { workItemQuery } from "#/lib/queries";
 import { NoteDialog, useDecide } from "./decisions.tsx";
@@ -223,9 +224,18 @@ function MergeGateCard({
         <Button
           size="sm"
           variant="outline"
-          disabled={!canMerge || pending !== null}
-          title={canMerge ? undefined : "Only an approver on this project can merge"}
-          onClick={() => decide({ kind: "review.merge", workItemId: id, openedFullDiff: false })}
+          disabled={!canMerge || !packet || pending !== null}
+          title={mergeBlocked({ loaded: d !== undefined, canMerge, packet: packet !== null })}
+          onClick={() =>
+            // For the commit the card shows (the packet's head): a push in between is refused.
+            packet &&
+            decide({
+              kind: "review.merge",
+              workItemId: id,
+              openedFullDiff: false,
+              headSha: packet.headSha,
+            })
+          }
           data-testid="merge"
         >
           Merge

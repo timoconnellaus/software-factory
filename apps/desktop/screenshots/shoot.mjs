@@ -77,6 +77,22 @@ export const SCREENS = [
     keys: ["f"],
     scrollTo: "your-edits",
   },
+  // Spec 23 part C: the critic's notes at the spec gate.
+  {
+    name: "plan-critic",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="critic-notes"]'],
+  },
+  // Review of #130: the files approving writes, one changed design opened (escaped, marked).
+  {
+    name: "plan-write-back",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    clicks: ['[data-testid="write-back-file"]:nth-child(3) button'],
+  },
   { name: "item-runs", path: "/work/wi_9?tab=runs", design: "ItemRuns.html" },
   { name: "item-review", path: "/work/wi_13?tab=review", design: "ItemReview.html" },
   // The factory's own checks and each criterion's proof (spec 51 PR B), below the fold.
@@ -119,6 +135,9 @@ export const SCREENS = [
     design: "WorkBacklog.html",
   },
   { name: "ready", path: "/work?view=ready", design: "WorkReady.html" },
+  // Spec 52, Q4: a shaped item whose workflow's shaping changed waits on a person's choice. No
+  // design of its own: it follows the Inbox's approval page.
+  { name: "inbox-release-flag", path: "/?item=wi_16", design: "InboxQuestion.html" },
   { name: "planning-empty", path: "/work?view=planning", design: "WorkReady.html" },
   { name: "item-backlog", path: "/work/wi_21", design: "ItemBacklog.html" },
   { name: "item-ready-blocked", path: "/work/wi_site_2", design: "ItemBacklog.html" },
@@ -194,6 +213,61 @@ export const SCREENS = [
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
   { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
+  // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
+  {
+    name: "this-mac-update-idle",
+    path: "/settings",
+    query: "?check=idle",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-checking",
+    path: "/settings",
+    query: "?check=checking",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-up-to-date",
+    path: "/settings",
+    query: "?check=up-to-date",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-downloading",
+    path: "/settings",
+    query: "?check=downloading",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-ready",
+    path: "/settings",
+    query: "?check=ready",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-jobs",
+    path: "/settings",
+    query: "?check=jobs",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-offline",
+    path: "/settings",
+    query: "?check=offline",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-refused",
+    path: "/settings",
+    query: "?check=refused",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-off",
+    path: "/settings",
+    query: "?check=off",
+    design: "SettingsDevices.html",
+  },
 ];
 
 const args = argv;

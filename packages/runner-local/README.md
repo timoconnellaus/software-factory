@@ -121,7 +121,8 @@ events and steering. A planning job goes to runner-local unchanged. For every ot
 - **collectArtifacts** adds `egress-log`. **release** removes the containers, network, job dir, run
   dir and attachments with file operations only. **manifest** adds `container-isolation`.
 - `reapContainers` / `diagnoseContainers` (`reap.ts`) find leftovers by the `software-factory.job`
-  label and the `sf-*` dirs. `checkRunningContainer(runDir)` is the check for `sf-runner doctor`.
+  label and the `sf-*` dirs, and take only what carries this runner's `software-factory.runner`
+  label (two runners can share a Docker daemon). `checkRunningContainer(runDir)` is the check for `sf-runner doctor`.
 - `runtime.ts` is the `ContainerRuntime` interface and `dockerRuntime` over the CLI.
 
 For tests, `@software-factory/runner-local/testing` also has a scripted `docker`

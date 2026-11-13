@@ -105,6 +105,14 @@ function pre(
   });
 }
 
+/** #16 was shaped, and its workflow's shaping stages changed before release (spec 52, Q4). */
+const RELEASE_FLAG_16 = {
+  reason:
+    "#16 was shaped under org config v3; its workflow's shaping stages changed in v5. Shape it again under the current workflow, or accept the shaping already done and deliver it under the current workflow.",
+  shapedUnder: 3,
+  current: 5,
+};
+
 export const ITEMS: Summary[] = [
   item(13, "Guard the tests in verify", "merge", "waiting", {
     statusReason: "Packet ready",
@@ -387,6 +395,16 @@ const INBOX: OpOutput<"inbox.list"> = {
   ],
   planning: [],
   wipHolds: [],
+  releaseFlags: [
+    {
+      workItemId: "wi_16",
+      projectId: FACTORY,
+      number: 16,
+      title: "Record usage for every run",
+      ...RELEASE_FLAG_16,
+      choices: ["reshape", "accept"],
+    },
+  ],
   protection: [
     {
       projectId: FACTORY,
@@ -399,6 +417,8 @@ const INBOX: OpOutput<"inbox.list"> = {
       files: [{ kind: "default-branch", filename: "software-factory-default-branch.json" }],
     },
   ],
+  // The "main is red" card (spec 53): no screen shows it yet.
+  mainRed: [],
 };
 
 // As main's verify run reports its checks (verifyResultSchema): the agent's own words in `detail`.
@@ -463,6 +483,7 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
         waitsFor,
+        ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
       };
     });
@@ -485,7 +506,7 @@ const STAGES_IN_ORDER = [
 ] as const;
 
 /**
- * `project.workflow`: Factory names its workflow, Website runs the built-in one, CRM defines
+ * `project.workflow`: Factory runs an org workflow, Website runs the built-in one, CRM defines
  * workflows and names none (it fails closed: work is captured, never released).
  */
 function workflowOf(projectId: string): OpOutput<"project.workflow"> {
@@ -500,12 +521,8 @@ function workflowOf(projectId: string): OpOutput<"project.workflow"> {
   }
   const workflow =
     projectId === FACTORY
-      ? {
-          name: "software",
-          label: "Software",
-          description: "Plan, build, verify, review",
-          builtIn: false,
-        }
+      ? // On an org workflow (spec 52 PR (d)): named by its id, read by its name.
+        { name: "wf_ship_it", label: "Ship it", description: "", builtIn: false }
       : {
           name: "software",
           label: "Software (built in)",
@@ -585,10 +602,10 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       headSha: atMerge ? "3f2a91c8d0e1b2a3c4d5e6f708192a3b4c5d6e7f" : null,
       prNumber: atMerge ? 51 : null,
       policySha: "5da8988",
-      workflow: "software",
+      workflow: "wf_ship_it",
       workflowReason: "the project's default",
     },
-    workflows: [{ name: "software", description: "Plan, build, verify, review" }],
+    workflows: [{ name: "wf_ship_it", description: "Ship it" }],
     stages,
     spec: {
       id: `spec_${n}`,
@@ -1203,6 +1220,18 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       status: live ? "draft" : "approved",
       createdAt: ago(1),
       createdBy: "agent",
+      // Spec 23 part C: the critic's notes on the plan going to the gate.
+      critique: live
+        ? {
+            status: "done",
+            notes: [
+              "The plan doesn't say what happens to an issue whose label is removed after it became an item.",
+              '"Within a minute" has no test: add one that measures the webhook to item time.',
+            ],
+            summary: "Two gaps; otherwise consistent with webhooks.ts.",
+            at: ago(1),
+          }
+        : null,
     },
     previousSpec: null,
     messages: live
@@ -1349,6 +1378,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_A.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(5),
           },
           {
@@ -1361,6 +1392,8 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
             keep: false,
             controls: ["--accent"],
             size: MOCKUP_B.length,
+            designType: null,
+            pulledPath: null,
             updatedAt: ago(9),
           },
         ]
@@ -1510,6 +1543,45 @@ export const ANSWERS: Answers = {
   "workItem.timeline": () => TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
+  // Review of #130: what approving the plan writes, listed at the gate.
+  "spec.writeBack": () => {
+    const spec = "# Archive old runs\n\n## Scope\n- Runs older than 90 days move to R2\n";
+    const base = "app -> d1: reads\napp -> queue: jobs\n";
+    return {
+      files: [
+        {
+          path: "docs/specs/wi-12-archive-old-runs.md",
+          kind: "spec",
+          status: "new",
+          content: spec,
+          base: null,
+        },
+        {
+          path: ".kim/plans/wi-12-archive-old-runs.md",
+          kind: "plan",
+          status: "new",
+          content: spec,
+          base: null,
+        },
+        {
+          path: ".kim/designs/system.d2",
+          kind: "design",
+          status: "changed",
+          content:
+            "app -> d1: reads\napp -> queue: archive jobs\nqueue -> r2: <old runs> & chunks\n",
+          base,
+        },
+        {
+          path: ".kim/mockups/archive-settings.html",
+          kind: "mockup",
+          status: "new",
+          content: "<section>\n  <h2>Archive</h2>\n  <p>Runs older than 90 days</p>\n</section>\n",
+          base: null,
+        },
+      ],
+      kimCount: 3,
+    };
+  },
   "artifact.get": (input) => ({
     artifactId: input.artifactId,
     kind: "mockup",

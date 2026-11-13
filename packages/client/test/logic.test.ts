@@ -273,7 +273,9 @@ describe("the inbox", () => {
       runners: [],
       planning: [],
       wipHolds: [{ projectId: "p2", waitingBuilds: 2 }],
+      releaseFlags: [],
       protection: [],
+      mainRed: [],
     };
     const groups = groupByProject(inbox);
     expect(

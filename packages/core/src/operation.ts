@@ -44,6 +44,11 @@ export type OutboxMessage =
    * pushes to open Planning tabs and wakes the agent's wait.
    */
   | { kind: "planning.changed"; payload: { workItemId: string } }
+  /**
+   * Run the babysitter's deliverer for one repository queue after this call commits (spec 53, ADR
+   * 0580). `repositoryId` null: the project's items that record no repository.
+   */
+  | { kind: "delivery.wake"; payload: { projectId: string; repositoryId: string | null } }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
@@ -87,13 +92,20 @@ export interface Scope {
    * project's only one. Null when none applies (no repository, or several and none named).
    */
   repository: RepositoryRow | null;
-  /** The project's policy at `policySha`; null when missing or malformed (fails closed). */
+  /**
+   * The project's policy at `policySha`, as the factory runs it: on an org workflow (spec 52 PR
+   * (d)), with the workflow and its overrides resolved into it (`effectivePolicy`). Null when
+   * missing, malformed or unresolvable (fails closed).
+   */
   policy: ProjectPolicy | null;
+  /** The project's config document as saved, before the org workflow is resolved into it. */
+  rawPolicy: ProjectPolicy | null;
   policySha: string | null;
   policyError: string | null;
   /**
    * The config version the work item was created under, when it differs from the current one
-   * (ADR 0370 §5): the gate uses the stricter of the two. Null otherwise, or when it isn't valid.
+   * (ADR 0370 §5): the gate uses the stricter of the two. On an org workflow it is resolved under
+   * the org config version the item pinned. Null otherwise, or when it isn't valid.
    */
   pinnedPolicy: ProjectPolicy | null;
 }
@@ -152,6 +164,14 @@ export interface HandlerContext {
    * a moved head, a cancelled item); `apply` marks an approved one carried out.
    */
   writePendingStatus(how: PendingStatusWrite, statement: Compilable | D1PreparedStatement): void;
+  /**
+   * Queue a write that records something that already happened outside the factory (GitHub merged
+   * the PR, spec 53 review). It commits with the batch; if a guard fails the batch, it commits
+   * anyway in a second batch with the approval marked used and an audit row saying what happened,
+   * so the record never says it didn't. Write it so it is right in both cases (it runs against the
+   * state the guard found changed).
+   */
+  happened(statement: Compilable | D1PreparedStatement): void;
   /** Abort the whole batch unless the previous write changed at least one row (ADR 0050). */
   guardChanged(name: string): void;
   /** Abort the whole batch unless `query` returns a row when the batch runs. */
@@ -184,6 +204,23 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
     input: z.output<I>,
     at: { scope: Scope; floor: FloorParse; db: Db },
   ) => RiskClass | Promise<RiskClass>;
+  /**
+   * A `review` answer that only an org owner or admin may decide, not the project's approvers (a
+   * project config save that loosens its org workflow, spec 52 Q6). The pending action is assigned
+   * to the org's admins and marked so `approval.decide` asks for one.
+   */
+  decidedByOrgAdmin?: (
+    input: z.output<I>,
+    at: { scope: Scope; floor: FloorParse; db: Db },
+  ) => Promise<boolean>;
+  /**
+   * The handler reads nothing an org workflow decides (stages, agents, spec size, retries, checks,
+   * review sections), and nor does the gate for it: a polled read. The scope then doesn't resolve
+   * the project's org workflow: `policy` is the project's config as saved (spec 52 PR (d), cost).
+   */
+  skipsOrgWorkflow?: true;
+  /** A permission that depends on the resolved scope (who may decide a pending action). */
+  permissionOf?: (input: z.output<I>, at: { scope: Scope; db: Db }) => Promise<Permission>;
   input: I;
   output: O;
   /** Actor types that may call it at all (checked before the gate). */
@@ -232,7 +269,9 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    *   (`ctx.presence`);
    * - `planning.finishAlone`: the standing form of that bulk accept, within the same limits;
    * - `planning.stop`, `planning.pause`, `planning.resume` and `chat.send` with `interrupt`: steering
-   *   the planner, which changes nothing it has decided.
+   *   the planner, which changes nothing it has decided;
+   * - `workItem.releaseChoice`: a person's choice for an item flagged at release (spec 52, Q4),
+   *   which holds work back or releases it under the gates that apply anyway.
    */
   desktopDecidable?: true;
   /**
@@ -264,6 +303,13 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
    * step, ADR 0371). `deny` still refuses.
    */
   alwaysReview?: boolean;
+  /**
+   * A write operation that, when its handler queued nothing (no write, event or change), commits
+   * nothing either: no audit row (spec 53 review, the Cloudflare cost rule). For observations
+   * repeated on every webhook (`main.observe`), where only a change is worth a row. Its
+   * idempotency key then records nothing, so a retry runs it again: it must be safe to repeat.
+   */
+  quietWhenUnchanged?: true;
   /** Who should decide a `review` (a GitHub login); falls back to the approvers. */
   assignee?: (input: z.output<I>) => string | null;
   /** Which inbox card a `review` answer becomes. Default `approval`. */

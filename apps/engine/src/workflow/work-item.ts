@@ -17,8 +17,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import {
   ATTACHED_SKIP_REASON,
   approvalEvent,
+  BRANCH_MOVED_AFTER_APPROVAL,
   ciEvent,
   DEFAULT_BUILDER,
+  type DeliveredEventPayload,
+  deliveredEvent,
   FOREMAN,
   type GateEventPayload,
   has,
@@ -29,10 +32,14 @@ import {
   parseProjectPolicy,
   type RunEventPayload,
   releaseEvent,
+  resolveOrgWorkflow,
   runEvent,
   SLOTS,
+  WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
+import { createDb } from "@software-factory/db";
 import {
+  critiqueResultSchema,
   type JobStage,
   type ModelRole,
   specResultSchema,
@@ -44,6 +51,7 @@ import { invokeDeps } from "../deps.ts";
 import {
   attachedTriagePrompt,
   buildPrompt,
+  criticPrompt,
   type ItemBrief,
   specPrompt,
   stepPrompt,
@@ -55,9 +63,14 @@ export interface WorkItemParams {
   workItemId: string;
 }
 
+/** A triage result as the Workflow reads it. */
+type TriageResult = ReturnType<typeof triageResultSchema.parse>;
+
 export type WorkItemOutcome =
   | { status: "done"; workItemId: string }
-  | { status: "failed" | "rejected"; workItemId: string; reason: string };
+  | { status: "failed" | "rejected"; workItemId: string; reason: string }
+  /** v8 (spec 23): triage parked it for its requester; the next release starts a new Workflow. */
+  | { status: "parked"; workItemId: string; reason: string };
 
 /**
  * The version new instances start on. Bump it for any step-name change (ADR 0053).
@@ -105,8 +118,29 @@ export type WorkItemOutcome =
  *   (`build #b: checks failing`: build again, or stop) instead of a cold build retry. A check the
  *   runner could not run is not a failure: the item goes on to verify and the merge gate, which say
  *   so and leave the criteria it would prove Not proven. The reviewer is told the checks' names.
+ * - v9 (spec 23 part B, ADR 0304; provisional: the next number above main's at merge): triage
+ *   scores readiness ("triage-readiness"). `not_actionable` parks the item (`triage: park`) and the
+ *   instance ends; answering re-releases it on a new generation. `needs_answers` on an item without
+ *   a spec asks triage's questions and re-triages on the answers (`triage #k: ask`, `#k: answers`,
+ *   `triage #k`, `#k: record`, at most two rounds); with a spec, the planning session opens with them
+ *   (`planning: triage questions`).
+ * - v10 (spec 23 part C; provisional): the spec critic ("spec-critic"). Before each planning gate,
+ *   `planning #k: critic` (`: spec`, `: yield`, `: enqueue`, `: wait`, `: result` or `: expire`,
+ *   `: record`)
+ *   runs a review-role job on the plan and records its notes; the gate follows either way.
  */
-export const WORKFLOW_VERSION = 8;
+/*
+ * v11 (spec 53, ADR 0580): approving the merge gate no longer
+ * makes the item land itself. It enters its repository's queue for the babysitter
+ * (`merge #b: deliver: enqueue`) and waits for `delivered-<item>` (`merge #b: deliver: wait #i`,
+ * re-reading its entry after each timeout, `merge #b: deliver: read #i`); the engine's deliverer
+ * updates, CIs and merges it. v11 has every feature of v10 (triage readiness and the spec critic). An incident's check-only auto-merge still lands itself, as v7.
+ */
+/** Whether the table has a row for `version`: an instance on any other version errors. */
+export const isKnownVersion = (version: number): boolean =>
+  Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
+
+export const WORKFLOW_VERSION = 12;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -190,6 +224,8 @@ interface Meta extends ItemBrief {
   retryLimit: number;
   gateTimeoutMs: number;
   questionTimeoutMs: number;
+  /** v10 (spec 23): how long the spec gate waits for the critic. */
+  criticTimeoutMs: number;
 }
 
 type SlotName = (typeof SLOTS)[number];
@@ -307,33 +343,17 @@ export class WorkItemWorkflow extends WorkflowEntrypoint<Env, WorkItemParams> {
       async (): Promise<number> => WORKFLOW_VERSION,
     );
     const flow = new ItemFlow(this.env, step, event.payload.workItemId, event.instanceId);
-    if (version >= 1 && version <= WORKFLOW_VERSION) {
-      // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
-      // (it merges directly, not through the merge queue: the App can't update a person's branch). "meta: item" is runV1's first step
-      // anyway and is read once, so every other item runs exactly the steps it ran before.
-      const meta = await flow.meta();
-      if (meta.kind === "attached") return flow.runAttached(version, meta);
+    if (!isKnownVersion(version)) {
+      throw new Error(`no implementation for Workflow version ${version}`);
     }
-    switch (version) {
-      case 1:
-        return flow.runV1(1);
-      case 2:
-        return flow.runV1(2);
-      case 3:
-        return flow.runV1(3);
-      case 4:
-        return flow.runV1(4);
-      case 5:
-        return flow.runV1(5);
-      case 6:
-        return flow.runV1(6);
-      case 7:
-        return flow.runV1(7);
-      case 8:
-        return flow.runV1(8);
-      default:
-        throw new Error(`no implementation for Workflow version ${version}`);
-    }
+    // An attached PR's own path (spec 05), chosen by kind, whatever version the item started on
+    // (it merges directly, not through the merge queue: the App can't update a person's branch).
+    // "meta: item" is runV1's first step anyway and is read once, so every other item runs exactly
+    // the steps it ran before.
+    const meta = await flow.meta();
+    if (meta.kind === "attached") return flow.runAttached(version, meta);
+    // Every version runs the same flow; what it does is its row of WORKFLOW_VERSION_FEATURES.
+    return flow.runV1(version);
   }
 }
 
@@ -350,7 +370,7 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
-  async runV1(version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 = 1): Promise<WorkItemOutcome> {
+  async runV1(version = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
     try {
       let meta = await this.meta();
@@ -364,20 +384,76 @@ class ItemFlow {
       // Triage: the foreman sizes the item on a runner; code decides the spec gate from policy.
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
+      const scores = has(version, "triage-readiness");
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta, options),
+        triagePrompt(meta, options, scores ? { answers: [] } : undefined),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
-      const triage = triageRun.parsed;
-      const recorded = await this.act("triage: record", "workItem.triage", {
+      let triage = triageRun.parsed;
+      let recorded = await this.act("triage: record", "workItem.triage", {
         workItemId: id,
         result: triage,
       });
+      // v8 (spec 23): triage's readiness. Not actionable parks the item for its requester, and this
+      // instance ends; needs answers on an item without a spec is a quick round of triage's
+      // questions, then triage again on the answers (at most two rounds, then it goes on).
+      if (scores) {
+        for (let k = 2; ; k++) {
+          if (triage.readiness === "not_actionable" && triage.questions.length) {
+            const reason = triage.readinessReason ?? triage.reason;
+            await this.act(
+              k === 2 ? "triage: park" : `triage #${k - 1}: park`,
+              "workItem.parkForInfo",
+              {
+                workItemId: id,
+                reason,
+                questions: triage.questions,
+              },
+            );
+            return { status: "parked", workItemId: id, reason };
+          }
+          const round =
+            triage.readiness === "needs_answers" &&
+            triage.questions.length > 0 &&
+            recorded.specRequired !== true &&
+            k <= 3;
+          if (!round) break;
+          const asked = await this.act(`triage #${k}: ask`, "question.ask", {
+            workItemId: id,
+            questions: triage.questions,
+          });
+          await this.waitForAnswers(meta, `triage #${k}`);
+          const ids = (asked.questionIds as string[]) ?? [];
+          const answers = await this.step.do(`triage #${k}: answers`, async () => {
+            if (!ids.length) return [];
+            const { results } = await this.env.DB.prepare(
+              `SELECT prompt, answer FROM core_questions WHERE id IN (${ids.map(() => "?").join(", ")}) AND status = 'answered'`,
+            )
+              .bind(...ids)
+              .all<{ prompt: string; answer: string }>();
+            return results;
+          });
+          const again = await this.runWithRetries(
+            meta,
+            `triage #${k}`,
+            "triage",
+            "triage",
+            triagePrompt(meta, options, { answers }),
+            {},
+            (r) => triageResultSchema.safeParse(r),
+          );
+          triage = again.parsed;
+          recorded = await this.act(`triage #${k}: record`, "workItem.triage", {
+            workItemId: id,
+            result: triage,
+          });
+        }
+      }
       let criteria = triage.acceptanceCriteria;
       let specPath: string | null = null;
 
@@ -386,7 +462,14 @@ class ItemFlow {
         let note: string | null = null;
         let answers: { prompt: string; answer: string }[] = [];
         // v5: the planning session (spec 20) instead of v1–v4's spec rounds below.
-        if (has(version, "planning-spec")) criteria = await this.planningStage(meta);
+        if (has(version, "planning-spec")) {
+          // v8: a medium or large item triage found needs answers opens planning with its questions.
+          const seed =
+            scores && triage.readiness === "needs_answers" && triage.questions.length
+              ? triage.questions
+              : null;
+          criteria = await this.planningStage(meta, seed, has(version, "spec-critic"));
+        }
         for (let k = 1; !has(version, "planning-spec"); k++) {
           const mayAsk = k <= QUESTION_ROUNDS;
           const specRun = await this.runWithRetries(
@@ -502,97 +585,125 @@ class ItemFlow {
         return reason;
       };
 
+      // v12: an approval withdrawn at delivery (ADR 0582) sends the item back to verify the head
+      // merging main made, without a build: nothing was carried to it, so it needs its own packet
+      // and `factory/verify` before a person decides again.
+      let withdrawn: string | null = null;
+      // v12: an approval that held over a clean merge of main (`reverify`, second review of #105):
+      // used again only if the new head passes its own verification in this round.
+      let carried: string | null = null;
       for (let b = 1; ; b++) {
-        const build = await this.runJob(
-          `build #${b}`,
-          "build",
-          "implement",
-          buildPrompt(meta, {
-            criteria,
-            specPath,
-            note,
-            attempt: b,
-            ...(plan?.build ? { instructions: plan.build.instructions } : {}),
-          }),
-          {
-            criteria,
-            specPath,
-            note,
-          },
-          plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
-        );
-        if (build.outcome === "cancelled") {
-          note = null;
-          continue; // stopped by a kill switch or a takeover: run it again, no failure counted
-        }
-        if (build.outcome !== "completed") {
-          note = await failed(
-            b,
-            `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
-            build,
-          );
-          continue;
-        }
-        const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
-          workItemId: id,
-          runId: build.runId,
-        });
-        if (advanced.ok !== true) {
-          note = await failed(
-            b,
-            `the run's branch could not be accepted: ${String(advanced.reason)}`,
-            build,
-          );
-          continue;
-        }
-        const headSha = String(advanced.sha);
-
-        // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
-        // failure back into the same session up to the retry limit; one still failing goes to a
-        // person, never a cold retry.
+        const carriedNow = carried;
+        carried = null;
+        let ran: RunResult | null = null;
+        let headSha: string;
         let checkNames: string[] = [];
-        if (has(version, "host-checks")) {
-          const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
-            workItemId: id,
-            headSha,
-          });
-          checkNames = (checked.declared as string[]) ?? [];
-          // Only a check that ran and failed (or didn't run on this head) sends the build back. One
-          // the runner could not run (no isolation, the sandbox could not start) is nothing a
-          // build can fix and burns no build attempt: the item goes on to verify and the merge
-          // gate, where it shows as not run and a person decides (third review, B3).
-          const failing = (checked.failing as string[] | undefined) ?? [];
-          if (failing.length > 0) {
-            await this.askChecksFailing(meta, b, headSha, failing);
-            note = [
-              "The factory's checks failed on your last head, and a person sent it back to build:",
-              ...failing.map((x) => `- ${x}`),
-            ].join("\n");
-            await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+        const reverify = withdrawn;
+        withdrawn = null;
+        if (reverify !== null) {
+          headSha = await this.head(`verify #${b}: head`);
+          // v8+: no build ran on this head, so the verify job runs the project's checks there
+          // (`runChecks`, as for an attached PR); the reviewer is told their names.
+          if (has(version, "host-checks")) {
+            const declared = await this.act(`verify #${b}: check names`, "checks.forHead", {
               workItemId: id,
-              stage: "build",
-              closeAs: "failed",
-              reason: `checks failed on ${headSha.slice(0, 7)}`,
+              headSha,
             });
+            checkNames = (declared.declared as string[]) ?? [];
+          }
+        } else {
+          const build = await this.runJob(
+            `build #${b}`,
+            "build",
+            "implement",
+            buildPrompt(meta, {
+              criteria,
+              specPath,
+              note,
+              attempt: b,
+              ...(plan?.build ? { instructions: plan.build.instructions } : {}),
+            }),
+            {
+              criteria,
+              specPath,
+              note,
+            },
+            plan?.build ? { tier: plan.build.tier, requires: plan.build.requires } : undefined,
+          );
+          if (build.outcome === "cancelled") {
+            note = null;
+            continue; // stopped by a kill switch or a takeover: run it again, no failure counted
+          }
+          if (build.outcome !== "completed") {
+            note = await failed(
+              b,
+              `the build run ${build.outcome}: ${build.summary ?? "no summary"}`,
+              build,
+            );
             continue;
           }
-        }
-
-        if (plan) {
-          const before = await this.runSlot(meta, plan, "beforeVerify", b, {
-            criteria,
-            specPath,
-            headSha,
+          const advanced = await this.act(`build #${b}: advance`, "branch.advance", {
+            workItemId: id,
+            runId: build.runId,
           });
-          if (before.kind === "sendBack") {
-            note = await failed(b, before.note, build);
+          if (advanced.ok !== true) {
+            note = await failed(
+              b,
+              `the run's branch could not be accepted: ${String(advanced.reason)}`,
+              build,
+            );
             continue;
+          }
+          headSha = String(advanced.sha);
+          ran = build;
+
+          // v8: the factory's own checks on the pushed head (ADR 0501). The host already sent any
+          // failure back into the same session up to the retry limit; one still failing goes to a
+          // person, never a cold retry.
+          if (has(version, "host-checks")) {
+            const checked = await this.act(`build #${b}: checks`, "checks.forHead", {
+              workItemId: id,
+              headSha,
+            });
+            checkNames = (checked.declared as string[]) ?? [];
+            // Only a check that ran and failed (or didn't run on this head) sends the build back.
+            // One the runner could not run (no isolation, the sandbox could not start) is nothing a
+            // build can fix and burns no build attempt: the item goes on to verify and the merge
+            // gate, where it shows as not run and a person decides (third review, B3).
+            const failing = (checked.failing as string[] | undefined) ?? [];
+            if (failing.length > 0) {
+              await this.askChecksFailing(meta, b, headSha, failing);
+              note = [
+                "The factory's checks failed on your last head, and a person sent it back to build:",
+                ...failing.map((x) => `- ${x}`),
+              ].join("\n");
+              await this.act(`build #${b}: checks failed`, "workItem.enterStage", {
+                workItemId: id,
+                stage: "build",
+                closeAs: "failed",
+                reason: `checks failed on ${headSha.slice(0, 7)}`,
+              });
+              continue;
+            }
+          }
+
+          if (plan) {
+            const before = await this.runSlot(meta, plan, "beforeVerify", b, {
+              criteria,
+              specPath,
+              headSha,
+            });
+            if (before.kind === "sendBack") {
+              note = await failed(b, before.note, build);
+              continue;
+            }
           }
         }
 
         await this.act(`verify #${b}: enter`, "workItem.enterStage", {
           workItemId: id,
           stage: "verify",
+          ...(reverify !== null ? { closeAs: "sent_back" as const, reason: reverify } : {}),
         });
         if (has(version, "verify-packet")) {
           // Open the PR first, so CI runs on this head while the reviewer works (spec 04). It
@@ -600,7 +711,7 @@ class ItemFlow {
           await this.act(`verify #${b}: open PR`, "pr.open", { workItemId: id, body: meta.body });
         }
         if (has(version, "conflicts") && (await this.unmergeable(b, headSha))) {
-          note = await conflicted(b, build);
+          note = await conflicted(b, ran);
           continue;
         }
         const verify = await this.runJob(
@@ -615,6 +726,8 @@ class ItemFlow {
           {
             criteria,
             headSha,
+            // A head no build ran on (re-verified at delivery): the host runs the checks there.
+            ...(reverify !== null && has(version, "host-checks") ? { runChecks: true } : {}),
           },
         );
         if (verify.outcome === "cancelled") {
@@ -709,7 +822,14 @@ class ItemFlow {
           stage: "merge",
         });
         if (has(version, "merge-queue")) {
-          const landed = await this.mergeV4(meta, b, headSha, pr.touchesFactoryConfig === true);
+          const landed = await this.mergeV4(
+            meta,
+            b,
+            headSha,
+            pr.touchesFactoryConfig === true,
+            version,
+            carriedNow,
+          );
           if (landed.kind === "done") {
             await this.act("end: done", "workItem.finish", {
               workItemId: id,
@@ -717,6 +837,15 @@ class ItemFlow {
               reason: landed.reason,
             });
             return { status: "done", workItemId: id };
+          }
+          if (landed.kind === "withdrawn") {
+            withdrawn = landed.reason;
+            continue;
+          }
+          if (landed.kind === "reverify") {
+            withdrawn = landed.reason;
+            carried = landed.approvalId;
+            continue;
           }
           if (landed.kind === "sent_back") {
             note = `Sent back at review: ${landed.note ?? ""}`;
@@ -881,7 +1010,7 @@ class ItemFlow {
           r.checks.every((c) => c.status !== "fail") &&
           r.criteria.every((c) => c.met) &&
           r.reviewer?.verdict !== "request_changes";
-        await this.waitForCi(b, headSha);
+        await this.waitForCi(b, headSha, 2);
         const packet = await this.act(`verify #${b}: packet`, "reviewPacket.record", {
           workItemId: id,
           runId: verify.runId,
@@ -934,7 +1063,9 @@ class ItemFlow {
             ? `Sent back at review: ${decided.note ?? ""}`.trim()
             : decided.decision === "withdrawn"
               ? (decided.note ?? "the pull request's head moved")
-              : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
+              : decided.note === BRANCH_MOVED_AFTER_APPROVAL
+                ? decided.note
+                : `the merge was refused (${decided.note ?? "no reason"}): push a fix to the PR`;
         await this.waitForHead(b, headSha, reason);
         close = { as: "sent_back", reason };
       }
@@ -1051,7 +1182,7 @@ class ItemFlow {
       if (!row.default_branch) throw new Error(`work item ${this.workItemId} has no repository`);
       let policy: {
         retryLimit?: number;
-        timeouts?: { gateHours?: number; questionHours?: number };
+        timeouts?: { gateHours?: number; questionHours?: number; criticMinutes?: number };
       } = {};
       try {
         policy = row.raw ? JSON.parse(row.raw) : {};
@@ -1070,6 +1201,7 @@ class ItemFlow {
         retryLimit: policy.retryLimit ?? 2,
         gateTimeoutMs: (policy.timeouts?.gateHours ?? 72) * 3_600_000,
         questionTimeoutMs: (policy.timeouts?.questionHours ?? 48) * 3_600_000,
+        criticTimeoutMs: (policy.timeouts?.criticMinutes ?? 20) * 60_000,
       };
     });
   }
@@ -1269,11 +1401,16 @@ class ItemFlow {
     b: number,
     headSha: string,
     touchesFactoryConfig: boolean,
+    version = 4,
+    /** v12: an approval carried over a clean merge of main, the new head now verified. */
+    carried: string | null = null,
   ): Promise<
     | { kind: "done"; reason: string }
     | { kind: "sent_back"; note: string | null }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
   > {
     const id = this.workItemId;
     if (meta.kind === "incident") {
@@ -1313,9 +1450,27 @@ class ItemFlow {
       headSha = auto.headSha; // refused (not check-only): the normal merge gate on the current head
     }
     const input = (at: string) => ({ workItemId: id, headSha: at, touchesFactoryConfig });
-    const decided = await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
-      apply: false,
-    });
+    // v12: the head a clean merge of main made passed its own verification, and the change is the
+    // approved one (mergeQueue.enter checks the digest again): the person's approval carries over.
+    const decided =
+      carried && has(version, "reverify-on-withdrawal")
+        ? { decision: "approved" as const, pendingActionId: carried }
+        : await this.gate(meta, `merge #${b}: gate`, "pr.merge", input(headSha), {
+            apply: false,
+          });
+    // v11: the approval only says this head may merge; the babysitter lands it (spec 53). v12: an
+    // approval it withdraws (ADR 0582) sends the item back to verify the new head; v11 has no
+    // such path, so a withdrawal ends its delivery as failed and it goes back, as any failure does.
+    if (has(version, "babysitter-delivery")) {
+      if (decided.decision !== "approved") return this.notApproved(decided);
+      if (!decided.pendingActionId) return { kind: "done", reason: "merged" };
+      const delivered = await this.deliverV11(b, headSha, decided.pendingActionId);
+      if (delivered.kind !== "withdrawn" && delivered.kind !== "reverify") return delivered;
+      if (!has(version, "reverify-on-withdrawal")) {
+        return { kind: "failed", reason: delivered.reason };
+      }
+      return delivered;
+    }
     if (decided.decision !== "approved") return this.notApproved(decided);
     if (!decided.pendingActionId) {
       // pr.merge ran without a gate (never for `merge` risk; a policy can't loosen it): it merged.
@@ -1447,6 +1602,69 @@ class ItemFlow {
     return { kind: "refused", message: landed.message, headSha: at };
   }
 
+  /**
+   * v11: hands the approved merge to the babysitter (spec 53, ADR 0580) and waits for how it ended.
+   * The entry carries the outcome too, so a missed `delivered-<item>` costs one QUEUE_WAIT.
+   */
+  async deliverV11(
+    b: number,
+    headSha: string,
+    approvalId: string,
+  ): Promise<
+    | { kind: "done"; reason: string }
+    | { kind: "conflict" }
+    | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
+    | { kind: "reverify"; reason: string; approvalId: string }
+  > {
+    const id = this.workItemId;
+    const p = `merge #${b}: deliver`;
+    await this.act(`${p}: enqueue`, "mergeQueue.enter", {
+      workItemId: id,
+      headSha,
+      pendingActionId: approvalId,
+      driver: "babysitter",
+    });
+    for (let i = 1; ; i++) {
+      let told: DeliveredEventPayload | null = null;
+      try {
+        const event = await this.step.waitForEvent<DeliveredEventPayload>(`${p}: wait #${i}`, {
+          type: deliveredEvent(id),
+          timeout: QUEUE_WAIT,
+        });
+        told = event.payload;
+      } catch (error) {
+        if (!isWaitTimeout(error)) throw error;
+        const read = await this.call(`${p}: read #${i}`, "mergeQueue.position", { workItemId: id });
+        if (read.status !== "ok") throw new Ended("failed", "the merge queue couldn't be read");
+        const o = read.output;
+        if (o.queued === true) continue;
+        if (
+          o.outcome === "merged" ||
+          o.outcome === "conflict" ||
+          o.outcome === "failed" ||
+          o.outcome === "withdrawn" ||
+          o.outcome === "reverify"
+        ) {
+          told = {
+            outcome: o.outcome,
+            reason: String(o.outcomeReason ?? ""),
+            ...(typeof o.headSha === "string" ? { headSha: o.headSha } : {}),
+          };
+        } else {
+          throw new Ended("failed", "the item left the merge queue");
+        }
+      }
+      if (told.outcome === "merged") return { kind: "done", reason: "merged by the babysitter" };
+      if (told.outcome === "conflict") return { kind: "conflict" };
+      if (told.outcome === "withdrawn") return { kind: "withdrawn", reason: told.reason };
+      if (told.outcome === "reverify") {
+        return { kind: "reverify", reason: told.reason, approvalId };
+      }
+      return { kind: "failed", reason: told.reason };
+    }
+  }
+
   /** v4: waits until the item is the head of its project's merge queue. */
   async waitTurn(p: string): Promise<void> {
     for (let i = 1; ; i++) {
@@ -1555,9 +1773,20 @@ class ItemFlow {
    * opens the spec gate. Changes requested go into the same session as the approver's message; a
    * decision ends the session. Returns the approved spec's acceptance criteria.
    */
-  async planningStage(meta: Meta): Promise<string[]> {
+  async planningStage(
+    meta: Meta,
+    seed: TriageResult["questions"] | null = null,
+    /** v10: the spec critic's notes before each gate. */
+    critic = false,
+  ): Promise<string[]> {
     const id = this.workItemId;
     await this.act("planning: start", "planning.start", { workItemId: id });
+    if (seed) {
+      await this.act("planning: triage questions", "planning.seedQuestions", {
+        workItemId: id,
+        questions: seed,
+      });
+    }
     for (let k = 1; ; k++) {
       const awaited = await this.act(`planning #${k}: await`, "planning.awaitReady", {
         workItemId: id,
@@ -1578,6 +1807,8 @@ class ItemFlow {
           });
         }
       }
+      // v10 (spec 23): the critic's notes first; the gate opens when it's done or timed out.
+      if (critic && specId) await this.critic(meta, k, specId);
       const decided = await this.gate(meta, `planning #${k}: gate`, "spec.accept", {
         workItemId: id,
         specId,
@@ -1621,6 +1852,88 @@ class ItemFlow {
         `spec ${decided.decision}${decided.note ? `: ${decided.note}` : ""}`,
       );
     }
+  }
+
+  /**
+   * The spec critic (v10, spec 23 part C): a review-role run in the light pool reads the plan going
+   * to the gate and the repository, and its notes are recorded (`spec.critique`), shown at the gate
+   * and given to the planner. It decides nothing: the gate follows whatever it says. If it isn't
+   * done within the policy's critic timeout, its run is expired and the gate opens without notes.
+   */
+  async critic(meta: Meta, k: number, specId: string): Promise<void> {
+    const name = `planning #${k}: critic`;
+    const spec = await this.step.do(`${name}: spec`, async () => {
+      const row = await this.env.DB.prepare(
+        "SELECT body_md, acceptance_criteria, critique FROM core_specs WHERE id = ?",
+      )
+        .bind(specId)
+        .first<{ body_md: string; acceptance_criteria: string; critique: string | null }>();
+      let criteria: string[] = [];
+      try {
+        criteria = JSON.parse(row?.acceptance_criteria ?? "[]") as string[];
+      } catch {
+        criteria = [];
+      }
+      return {
+        bodyMd: row?.body_md ?? "",
+        acceptanceCriteria: criteria,
+        // Asking for the gate again on the same version doesn't run the critic again (cost).
+        critiqued: row?.critique != null,
+      };
+    });
+    if (spec.critiqued) return;
+    // The planner, waiting at the gate, holds the item's lease: it yields so the critic can run.
+    await this.act(`${name}: yield`, "planning.requestYield", { workItemId: this.workItemId });
+    const { jobId } = (await this.act(`${name}: enqueue`, "job.enqueue", {
+      workItemId: this.workItemId,
+      stage: "spec",
+      role: "review",
+      prompt: criticPrompt(meta, spec),
+      context: { specId },
+      sessionTimeoutMs: meta.criticTimeoutMs,
+      tier: "light",
+    })) as { jobId: string };
+    let status: "done" | "timed_out" | "failed" = "done";
+    let notes: string[] = [];
+    let summary: string | null = null;
+    try {
+      const event = await this.step.waitForEvent<RunEventPayload>(`${name}: wait`, {
+        type: runEvent(jobId),
+        timeout: meta.criticTimeoutMs,
+      });
+      const result = await this.step.do(`${name}: result`, async () => {
+        const run = await this.env.DB.prepare("SELECT result FROM core_runs WHERE id = ?")
+          .bind(event.payload.runId)
+          .first<{ result: string | null }>();
+        return run?.result ?? null;
+      });
+      // Over the limits (more than 20 notes, a note over 1,000 characters) is clamped, not lost.
+      const parsed =
+        event.payload.outcome === "completed" && result
+          ? critiqueResultSchema.safeParse(clampCritique(JSON.parse(result)))
+          : null;
+      if (parsed?.success) {
+        notes = parsed.data.notes;
+        summary = parsed.data.summary ?? null;
+      } else {
+        status = "failed";
+      }
+    } catch (error) {
+      if (!isWaitTimeout(error)) throw error;
+      status = "timed_out";
+      await this.act(`${name}: expire`, "run.expire", {
+        jobId,
+        reason: "the spec critic ran past its time",
+        cancelQueued: true,
+      });
+    }
+    await this.act(`${name}: record`, "spec.critique", {
+      workItemId: this.workItemId,
+      specId,
+      status,
+      notes,
+      summary,
+    });
   }
 
   /** Waits until the open blocking questions are answered, escalating on each timeout. */
@@ -1736,19 +2049,36 @@ class ItemFlow {
     return JSON.parse(text) as WorkflowPlan;
   }
 
-  /** The config version the item was created under (ADR 0370 §5), parsed; null if there is none. */
+  /**
+   * The config version the item was created under (ADR 0370 §5), parsed; null if there is none. On
+   * an org workflow (spec 52 PR (d)), resolved under the org config version the item pinned.
+   */
   private async pinnedPolicy() {
     const row = await this.env.DB.prepare(
-      `SELECT p.raw FROM core_work_items w
+      `SELECT p.raw, w.org_id, w.project_id, w.org_config_version FROM core_work_items w
        JOIN core_project_policies p ON p.project_id = w.project_id
          AND p.sha = COALESCE(w.policy_sha, (SELECT policy_sha FROM core_projects WHERE id = w.project_id))
        WHERE w.id = ?`,
     )
       .bind(this.workItemId)
-      .first<{ raw: string }>();
+      .first<{
+        raw: string;
+        org_id: string;
+        project_id: string;
+        org_config_version: number | null;
+      }>();
     if (!row) return null;
     const parsed = parseProjectPolicy(row.raw);
-    return parsed.ok ? parsed.policy : null;
+    if (!parsed.ok) return null;
+    return (
+      await resolveOrgWorkflow(
+        createDb(this.env.DB),
+        row.org_id,
+        parsed.policy,
+        row.org_config_version,
+        row.project_id,
+      )
+    ).policy;
   }
 
   /**
@@ -1936,4 +2266,20 @@ class ItemFlow {
       }
     }
   }
+}
+
+/** A critic's raw result, clamped to what `spec.critique` takes (review of #126). */
+export function clampCritique(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const r = raw as { notes?: unknown; summary?: unknown };
+  return {
+    notes: Array.isArray(r.notes)
+      ? r.notes
+          .map((n) => String(n).trim())
+          .filter(Boolean)
+          .slice(0, 20)
+          .map((n) => (n.length > 1_000 ? `${n.slice(0, 999)}…` : n))
+      : [],
+    ...(typeof r.summary === "string" ? { summary: r.summary.slice(0, 2_000) } : {}),
+  };
 }

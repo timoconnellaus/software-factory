@@ -535,7 +535,7 @@ export const jobEnqueue = defineOperation({
     // A job that will carry the project's checks goes only to a runner that runs them (ADR 0501,
     // the compatibility rule of ADR 0520): an older one would hand back with none.
     if (
-      jobChecks(ctx.scope.policy ?? null, w, input.stage).checks &&
+      jobChecks(ctx.scope.policy ?? null, w, input.stage, input.context).checks &&
       !requires.includes("checks")
     ) {
       requires.push("checks");
@@ -1091,24 +1091,27 @@ async function buildJob(
     ...(job.stage === "planning" && planning ? { planning } : {}),
     requires: parseJson<Capability[]>(job.requires, []),
     limits: { sessionTimeoutMs: job.session_timeout_ms },
-    ...(runnerCaps.includes("checks") ? jobChecks(policy, item, job.stage) : {}),
+    ...(runnerCaps.includes("checks") ? jobChecks(policy, item, job.stage, context) : {}),
     lease: { fencingToken: run.fencing_token, expiresAt: leaseExpiresAt },
   };
 }
 
 /**
  * The checks the host runs for this job (ADR 0501), from the project's config version, never the
- * run's branch: after every build, and before an attached PR's review (it has no build). A factory
- * item's verify uses the build's results for the same head.
+ * run's branch: after every build, and before the review of a head no build ran on (an attached
+ * PR's; and, spec 53 PR c, a head a clean merge of main made, which the Workflow marks
+ * `runChecks`). A factory item's other verifies use the build's results for the same head.
  */
 function jobChecks(
   policy: ProjectPolicy | null,
   item: Pick<WorkItemRow, "kind" | "workflow" | "workflow_version">,
   stage: string,
+  context: Record<string, unknown> = {},
 ): { checks?: Job["checks"] } {
   // An item whose Workflow started before v8 has no checks step: its jobs carry none.
   if (!policy || !hostChecksOn(item)) return {};
-  if (stage !== "build" && !(stage === "verify" && item.kind === "attached")) return {};
+  const unbuilt = item.kind === "attached" || context.runChecks === true;
+  if (stage !== "build" && !(stage === "verify" && unbuilt)) return {};
   const commands = declaredChecks(policy, item.workflow);
   return commands.length
     ? { checks: { commands, fixRounds: stage === "build" ? policy.retryLimit : 0 } }
@@ -1883,7 +1886,15 @@ export const runExpire = defineOperation({
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
-  input: z.object({ jobId, reason: z.string().max(2_000) }),
+  input: z.object({
+    jobId,
+    reason: z.string().max(2_000),
+    /**
+     * Also cancel the job if no runner has claimed it yet (spec 23: the spec critic's timeout), so a
+     * job the Workflow no longer waits for isn't run later.
+     */
+    cancelQueued: z.boolean().default(false),
+  }),
   output: z.object({ expired: z.boolean(), jobStatus: z.string() }),
   async handler(input, ctx) {
     const job = await ctx.db
@@ -1892,6 +1903,17 @@ export const runExpire = defineOperation({
       .where("id", "=", input.jobId)
       .executeTakeFirst();
     if (!job) throw new OperationError("not_found", "no such job");
+    if (job.status === "queued" && input.cancelQueued) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_jobs")
+          .set({ status: "cancelled", wait_reason: input.reason })
+          .where("id", "=", job.id)
+          .where("status", "=", "queued"),
+      );
+      // Claimed meanwhile: then the run is expired below on the Workflow's next call, or finishes.
+      return { expired: true, jobStatus: "cancelled" };
+    }
     if (job.status !== "claimed" || !job.run_id) return { expired: false, jobStatus: job.status };
     const run = await ctx.db
       .selectFrom("core_runs")

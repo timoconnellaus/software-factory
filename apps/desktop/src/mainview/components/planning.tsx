@@ -76,6 +76,7 @@ import { setFocus, updateViewState } from "../lib/view-state.ts";
 import { OpenTerminal } from "./open-terminal.tsx";
 import { type Anchor, PlanBody, releaseEdit, YourEdits } from "./plan-body.tsx";
 import { CanvasPane, FullSize, MockupsPane, type Pin } from "./planning-visuals.tsx";
+import { approveLabel, useWriteBack, WriteBack } from "./write-back.tsx";
 
 /** How often an open Planning tab says it is still here. */
 const PRESENCE_MS = 20_000;
@@ -154,6 +155,8 @@ export function Planning({
     setChatOpen(true);
   };
   const showChat = focus || chatOpen;
+  // Designs (spec 22) are text in their own notation, not HTML: the mockup panes leave them out.
+  const visuals = { ...view, artifacts: view.artifacts.filter((x) => x.kind !== "design") };
 
   return (
     <div
@@ -201,7 +204,7 @@ export function Planning({
           ) : tab === "mockups" ? (
             <div className="min-h-0 flex-1 overflow-auto">
               <MockupsPane
-                view={view}
+                view={visuals}
                 workItemId={item.id}
                 preview={preview}
                 pinMode={pinMode}
@@ -220,11 +223,11 @@ export function Planning({
             </div>
           ) : (
             <div className="min-h-0 flex-1">
-              <CanvasPane view={view} workItemId={item.id} onOpen={setOpened} />
+              <CanvasPane view={visuals} workItemId={item.id} onOpen={setOpened} />
             </div>
           )}
           <FullSize
-            view={view}
+            view={visuals}
             workItemId={item.id}
             artifact={opened}
             onClose={() => setOpened(null)}
@@ -257,6 +260,9 @@ export function Planning({
           </button>
         )}
       </div>
+      {detail.gates.some((g) => g.kind === "spec" && g.status === "pending") && (
+        <WriteBack workItemId={item.id} view={view} />
+      )}
       <GateBar view={view} detail={detail} />
     </div>
   );
@@ -996,7 +1002,8 @@ function WorkspaceTabs({
   pinMode: boolean;
   onPinMode: () => void;
 }) {
-  const mockups = view.artifacts.length;
+  // Designs (spec 22) are text in their own notation, drawn in the System tab: not mockups.
+  const mockups = view.artifacts.filter((a) => a.kind !== "design").length;
   return (
     <div
       className="flex h-11 flex-none items-center gap-2 border-line-soft border-b px-4"
@@ -1599,6 +1606,8 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
   };
   const specGate = detail.gates.find((g) => g.kind === "spec" && g.status === "pending");
   const canApprove = !!specGate && detail.viewer.isApprover;
+  // What approving writes (review of #130): the person sees the list before the button is live.
+  const writeBack = useWriteBack(item.id, view, !!specGate);
   const partial = view.spec?.coverage.filter((c) => (c as { status: string }).status === "partial");
   return (
     <div
@@ -1609,6 +1618,7 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
         {gateSummary(view)}
       </span>
       <EditsNotKept view={view} workItemId={item.id} />
+      <CriticNotes view={view} />
       {specGate && partial && partial.length > 0 && (
         <span className="text-status-waiting text-xs">
           {partial.length} coverage categor{partial.length === 1 ? "y" : "ies"} still partial
@@ -1646,12 +1656,12 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
           </Button>
           <Button
             size="sm"
-            disabled={!canApprove || pending !== null}
+            disabled={!canApprove || pending !== null || !writeBack}
             title={canApprove ? undefined : "Only an approver on this project can approve the spec"}
             onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
             data-testid="approve-spec"
           >
-            Approve spec
+            {approveLabel(writeBack?.kimCount)}
           </Button>
         </>
       ) : (
@@ -1820,5 +1830,49 @@ function EditConfirm({
         )}
       </span>
     </div>
+  );
+}
+
+/**
+ * The spec critic's notes on the plan at the gate (spec 23 part C): a second agent's reading, shown
+ * to the person deciding. Notes only: they open and close nothing.
+ */
+function CriticNotes({ view }: { view: PlanningView }) {
+  const critique = view.spec?.critique;
+  if (!critique) return null;
+  const label =
+    critique.status === "timed_out"
+      ? "Critic: didn't finish in time"
+      : critique.status === "failed"
+        ? "Critic: no notes (its run failed)"
+        : `Critic: ${critique.notes.length} note${critique.notes.length === 1 ? "" : "s"}`;
+  if (critique.status !== "done" || critique.notes.length === 0) {
+    return (
+      <span className="text-muted-foreground text-xs" data-testid="critic-notes">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="link" size="xs" className="h-auto p-0" data-testid="critic-notes">
+          {label}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="grid w-[26rem] gap-2 text-sm" data-testid="critic-notes-list">
+        <div className="text-muted-foreground text-xs">
+          A second agent read the plan and the repository. Its notes are for you and the planner;
+          they decide nothing.
+        </div>
+        {critique.summary && <div className="font-medium">{critique.summary}</div>}
+        <ul className="grid list-disc gap-1 pl-4">
+          {critique.notes.map((n, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: notes are fixed text; two may read the same.
+            <li key={i}>{n}</li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }

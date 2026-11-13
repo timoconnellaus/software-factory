@@ -38,7 +38,10 @@ describe("every page's loader asks for everything the page renders", () => {
 
   it("finds the pages", () => {
     expect(pages.length).toBeGreaterThanOrEqual(5);
-    expect(shell).toEqual(new Set(["meQuery", "projectsQuery", "inboxQuery", "workListsQuery"]));
+    // Setup's status (the dots on Settings and Setup) is started by the shell, not waited for.
+    expect(shell).toEqual(
+      new Set(["meQuery", "projectsQuery", "inboxQuery", "workListsQuery", "setupStatusQuery"]),
+    );
   });
 
   for (const file of pages) {

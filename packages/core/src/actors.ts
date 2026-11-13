@@ -75,3 +75,9 @@ export interface Origin {
 export const FOREMAN: Actor = { type: "agent", id: "foreman" };
 /** The pull (ADR 0491): starts released work under the active limit. Never reviewable by default. */
 export const SCHEDULER: Actor = { type: "scheduler", id: "pull" };
+/**
+ * The babysitter's deliverer (spec 53, ADR 0580): engine code, no model, that lands approved merges
+ * per repository. It acts with the item Workflow's actor type, so a merge approval's checks
+ * (operation, actor type, work item, used once) hold for it unchanged.
+ */
+export const BABYSITTER: Actor = { type: "agent", id: "babysitter" };

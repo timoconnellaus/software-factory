@@ -170,7 +170,8 @@ describe("org scope", () => {
     expect(waitingCount(client)).toBe(0);
     expect(client.running.map((i) => i.number)).toEqual([3]);
     const personal = scopeInbox(inbox, orgOf, "org_personal");
-    expect(waitingCount(personal)).toBe(3);
+    // Two gates, a question and #16's release flag (spec 52, Q4).
+    expect(waitingCount(personal)).toBe(4);
     const global = {
       ...inbox,
       gates: [{ ...(inbox.gates[0] as Inbox["gates"][number]), projectId: null }],
@@ -218,20 +219,25 @@ describe("status bar", () => {
 });
 
 describe("the Inbox list", () => {
-  const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" }) ?? null;
-  const entries = inboxEntries(inbox, setup);
+  const entries = inboxEntries(inbox);
 
-  it("groups merges, specs, questions, then notices", () => {
+  it("groups merges, specs, questions, approvals, then notices", () => {
     expect(entries.map((e) => `${e.group}:${e.key}`)).toEqual([
       "Merges:wi_13",
       "Specs:wi_12",
       "Questions:wi_11",
+      "Approvals:wi_16",
       "Notices:protection-prj_factory",
-      "Notices:setup",
     ]);
-    expect(
-      inboxEntries(inbox, { ...(setup as NonNullable<typeof setup>), complete: true }),
-    ).toHaveLength(4);
+  });
+
+  it("never lists setup, and its count is only what waits on you, with setup unfinished", () => {
+    const setup = ANSWERS["setup.status"]?.({ orgId: "org_personal" });
+    expect(setup?.complete).toBe(false);
+    expect(entries.some((e) => e.key === "setup")).toBe(false);
+    expect(waitingCount(inbox)).toBe(
+      inbox.gates.length + inbox.questions.length + (inbox.releaseFlags?.length ?? 0),
+    );
   });
 
   it("selects ?item=, else the first; nothing when empty", () => {
@@ -254,7 +260,7 @@ describe("the Inbox list", () => {
 
   it("gives a second question on one item its own key", () => {
     const q = inbox.questions[0] as Inbox["questions"][number];
-    const two = inboxEntries({ ...inbox, gates: [], questions: [q, { ...q, id: "q_2" }] }, null);
+    const two = inboxEntries({ ...inbox, gates: [], questions: [q, { ...q, id: "q_2" }] });
     expect(two.filter((e) => e.kind === "question").map((e) => e.key)).toEqual(["wi_11", "q_2"]);
   });
 });

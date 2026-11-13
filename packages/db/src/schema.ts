@@ -309,9 +309,19 @@ export interface CoreWorkItemsTable {
   workflow_id: string;
   workflow_version: number | null;
   policy_sha: string | null;
+  /**
+   * 0282 (spec 52 PR (d)): the org config version the item runs its org workflow under, pinned with
+   * `policy_sha` when shaping starts and again at the pull. Null: the org's current one (an item
+   * from before, or an org with no config).
+   */
+  org_config_version: number | null;
   parent_work_item_id: string | null;
   /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
   needs_info: string | null;
+  /** A shaped item's release flag (spec 52 Q4, migration 0285): JSON, null when not flagged. */
+  release_flag: string | null;
+  /** Who must choose for a flagged item (migration 0285); null when not flagged. */
+  release_flag_user_id: string | null;
   created_at: Iso;
   updated_at: Iso;
   closed_at: Iso | null;
@@ -333,6 +343,8 @@ export interface CoreWorkItemsTable {
   /** 0262: when the shaping stages finished, and the default branch's head then. */
   shaped_at: Iso | null;
   shaped_base_sha: string | null;
+  /** 0351 (spec 53, ADR 0581): its merge repairs a red default branch; it lands while held. */
+  repairs_main: Generated<number>;
 }
 
 /** 0261 (ADR 0491): `work_item_id` waits for `waits_for_id` to be done. */
@@ -453,6 +465,13 @@ export interface CoreSpecsTable {
   coverage: Generated<JsonText>;
   clarifications: Generated<JsonText>;
   summary: string | null;
+  /** 0372 (spec 23): the spec critic's notes, JSON; null until the critic ran. */
+  critique: string | null;
+  /**
+   * 0373 (spec 22, review of #130): the `.kim/` files a person approved at the gate, JSON
+   * [{path, artifactId, revision, sha256}]; spec.commit writes exactly these. Null: none.
+   */
+  kim_files: string | null;
 }
 
 export type PendingActionKind = "spec" | "merge" | "approval";
@@ -485,6 +504,20 @@ export interface CorePendingActionsTable {
   note: string | null;
   opened_full_diff: Bool | null;
   gate_open_ms: number | null;
+  /** `org-admin`: only an org owner or admin decides it (a project's org workflow loosened, migration 0282). */
+  decider: "org-admin" | null;
+}
+
+/** An org admin's approval of a looser project override, for one org version (migration 0282). */
+export interface CoreOverrideApprovalsTable {
+  project_id: string;
+  org_id: string;
+  org_version: number;
+  stage_id: string;
+  setting: string;
+  value: JsonText;
+  approved_by: string;
+  approved_at: Iso;
 }
 
 export interface CoreReviewPacketsTable {
@@ -901,6 +934,81 @@ export interface CoreMergeQueueTable {
   enqueued_at: Iso;
   updated_at: Iso;
   ended_at: Iso | null;
+  /** 0350 (spec 53, ADR 0580): who lands it, its own Workflow or the babysitter's deliverer. */
+  driver: Generated<MergeQueueDriver>;
+  /** 0350: how it ended, as told to the Workflow; null while queued (and for `workflow` entries). */
+  outcome: DeliveryOutcome | null;
+  /** 0350: when GitHub was last asked to merge the default branch in (update-branch). */
+  update_asked_at: Iso | null;
+  /** 0350: how many times GitHub was asked to (the babysitter bounds it, spec 53 review). */
+  updates: Generated<number>;
+  /** 0352 (ADR 0582): the digest of the change that was approved; null when it can't be read. */
+  approved_digest: string | null;
+  /** 0352: the head the queue asked GitHub to update from, and main's head when it asked. */
+  update_from_sha: string | null;
+  update_base_sha: string | null;
+  /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
+  merging_at: Iso | null;
+  /** 0350: the question asked at the update bound, while it is open or not yet read back. */
+  hold_question_id: string | null;
+  /** 0350: update-branch requests a person allowed beyond the bound. */
+  updates_granted: Generated<number>;
+  /** 0350: the person asked to wait until then before the next update. */
+  held_until: Iso | null;
+}
+
+export type MergeQueueDriver = "workflow" | "babysitter";
+/** `withdrawn`: the approval no longer holds for the head (spec 53, ADR 0582). */
+/** `reverify`: the approval holds once the new head passes its own verification (spec 53 PR c). */
+export type DeliveryOutcome = "merged" | "conflict" | "failed" | "withdrawn" | "reverify";
+
+// ---- 0350: the babysitter's deliverer (spec 53, ADR 0580, 0585) ----
+
+/** One row per repository queue: the deliverer's one-pass-at-a-time bookkeeping. */
+export interface CoreDeliveryStateTable {
+  /** `<project id>:<repository id>`, or `<project id>:` for items with no repository recorded. */
+  key: string;
+  project_id: string;
+  repository_id: string | null;
+  rev: Generated<number>;
+  /** A pass is running until then (a pass that died frees it when it passes). */
+  running_until: Iso | null;
+  /** Something changed while a pass ran: it goes round again. */
+  dirty: Generated<number>;
+  /** When the minute cron passes again without an event. */
+  next_check_at: Iso | null;
+  updated_at: Iso;
+}
+
+// ---- 0351: main health (spec 53, ADR 0581) ----
+
+export type MainHealthState = "green" | "red" | "pending";
+
+/** One row per repository: its default branch head's CI and the open red episode. */
+export interface CoreMainHealthTable {
+  repository_id: string;
+  project_id: string;
+  head_sha: string;
+  state: MainHealthState;
+  /** JSON array of failing check names. */
+  failing: Generated<string>;
+  last_green_sha: string | null;
+  /** The open red episode's start: the line is stopped while it is set. */
+  red_since: Iso | null;
+  first_red_sha: string | null;
+  checked_at: Iso;
+  /**
+   * The observation's place in time, by what the engine knows (second review of #104): when it read
+   * the branch (`observed_at`), then GitHub's newest check run id on the head as a tiebreak. Never
+   * commit dates. An older observation never overwrites a newer one.
+   */
+  observed_at: Generated<string>;
+  attempt: Generated<number>;
+  /**
+   * Who is told about the open episode (JSON user ids, fixed when it opens): the project's
+   * approvers, owner question 4's recommendation (`mainRedAudience`). The Inbox card shows to them.
+   */
+  audience: Generated<string>;
 }
 
 // ---- 0120: planning, the loop (spec 20, ADR 0300, 0350) ----
@@ -988,7 +1096,7 @@ export interface CorePlanningMessagesTable {
 export interface CorePlanningArtifactsTable {
   id: string;
   work_item_id: string;
-  kind: "mockup" | "diagram" | "document";
+  kind: "mockup" | "diagram" | "document" | "design";
   title: string;
   description: string | null;
   revision: Generated<number>;
@@ -997,6 +1105,11 @@ export interface CorePlanningArtifactsTable {
   created_at: Iso;
   updated_at: Iso;
   deleted_at: Iso | null;
+  /** 0373 (spec 22): a design's type; null for other kinds. */
+  design_type: string | null;
+  /** 0373: the `.kim/` path it was pulled from, and the default branch's head then. */
+  pulled_path: string | null;
+  pulled_base_sha: string | null;
 }
 
 /** One revision of a planning artifact's content (spec 21). */
@@ -1186,6 +1299,7 @@ export interface CoreDatabase {
   core_questions: CoreQuestionsTable;
   core_specs: CoreSpecsTable;
   core_pending_actions: CorePendingActionsTable;
+  core_override_approvals: CoreOverrideApprovalsTable;
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;
@@ -1210,6 +1324,8 @@ export interface CoreDatabase {
   core_runner_device_codes: CoreRunnerDeviceCodesTable;
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
+  core_delivery_state: CoreDeliveryStateTable;
+  core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;
   core_planning_messages: CorePlanningMessagesTable;

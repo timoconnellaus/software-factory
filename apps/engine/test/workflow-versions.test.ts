@@ -2,6 +2,7 @@
 // matches steps by name, so v1's step names are frozen: changing one means adding runV2.
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { has, WORKFLOW_VERSION_FEATURES } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { isWaitTimeout, WORKFLOW_VERSION } from "../src/workflow/work-item.ts";
 import { first, ok, waitFor, world } from "./helpers.ts";
@@ -75,6 +76,10 @@ const V7_STEPS = [
   "`release: wait #${k}`",
   "`release: check #${k}`",
 ];
+// The steps v11 adds (spec 53, ADR 0580): the babysitter delivers the approved merge.
+const V11_STEPS = ["{p}: enqueue", "{p}: wait #{i}", "{p}: read #{i}", "merge #{b}: deliver"].map(
+  (name) => `${name.replaceAll("{", "$" + "{")}`,
+);
 // The steps v8 adds (spec 51, ADR 0501): the factory's checks on the build's head, the question when
 // they still fail, and the attached PR's check names for its reviewer.
 const V8_STEPS = [
@@ -83,12 +88,33 @@ const V8_STEPS = [
   "verify #{b}: check names",
   "build #{b}: checks failing",
 ].map((name) => `\`${name.replaceAll("{", "$" + "{")}\``);
+// The steps v9 adds (spec 23 part B, ADR 0304): triage's readiness, its quick rounds and parking.
+const V9_STEPS = [
+  '"triage: park"',
+  "`triage #${k - 1}: park`",
+  "`triage #${k}: ask`",
+  "`triage #${k}: answers`",
+  "`triage #${k}`",
+  "`triage #${k}: record`",
+  '"planning: triage questions"',
+];
+// The steps v10 adds (spec 23 part C): the spec critic before each planning gate.
+const V10_STEPS = [
+  "`planning #${k}: critic`",
+  "`${name}: spec`",
+  "`${name}: yield`",
+  "`${name}: enqueue`",
+  "`${name}: wait`",
+  "`${name}: result`",
+  "`${name}: expire`",
+  "`${name}: record`",
+];
 // The tags v4 builds `{p}` from: frozen like the step names.
 const V4_TAGS = ['"queue"', '"auto-merge"', '"auto-merge landing"'];
 
 describe("Workflow versions", () => {
-  it("starts new instances on version 8 and records it on the work item", async () => {
-    expect(WORKFLOW_VERSION).toBe(8);
+  it("starts new instances on version 12 and records it on the work item", async () => {
+    expect(WORKFLOW_VERSION).toBe(12);
     const w = await world();
     const item = await ok<{ workItemId: string }>(
       "workItem.create",
@@ -101,7 +127,7 @@ describe("Workflow versions", () => {
         item.workItemId,
       ),
     );
-    expect(row.workflow_version).toBe(8);
+    expect(row.workflow_version).toBe(12);
   });
 
   it("an instance whose recorded version has no implementation errors instead of running the wrong code", async () => {
@@ -120,6 +146,25 @@ describe("Workflow versions", () => {
       return list.length > 0 ? list : null;
     });
     await expect(instance?.waitForStatus("errored")).resolves.toBeUndefined();
+  });
+
+  // v1–v7's rows are proven equal to the old `version >= N` switches in core's
+  // workflow-features.test.ts; v11 is v10 plus the babysitter's delivery (spec 53).
+  it("v11 is v10 plus the babysitter's delivery, v12 adds re-verifying a new head", () => {
+    for (let v = 1; v <= 10; v++) expect(has(v, "babysitter-delivery"), `v${v}`).toBe(false);
+    expect([...(WORKFLOW_VERSION_FEATURES[11] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[10] ?? []), "babysitter-delivery"].sort(),
+    );
+    // v12 is v11 plus re-verifying a new head at delivery (spec 53 PR c).
+    expect([...(WORKFLOW_VERSION_FEATURES[12] ?? [])].sort()).toEqual(
+      [...(WORKFLOW_VERSION_FEATURES[11] ?? []), "reverify-on-withdrawal"].sort(),
+    );
+    // A new item keeps v9's triage readiness and v10's spec critic.
+    for (const v of [11, 12]) {
+      expect(has(v, "triage-readiness"), `v${v}`).toBe(true);
+      expect(has(v, "spec-critic"), `v${v}`).toBe(true);
+    }
+    expect(Math.max(...Object.keys(WORKFLOW_VERSION_FEATURES).map(Number))).toBe(WORKFLOW_VERSION);
   });
 
   it("only treats a real timeout as a timeout", () => {
@@ -142,18 +187,13 @@ describe("Workflow versions", () => {
     for (const name of V5_STEPS) expect(source, name).toContain(name);
     for (const name of V6_STEPS) expect(source, name).toContain(name);
     for (const name of V7_STEPS) expect(source, name).toContain(name);
-    // v6 instances still dispatch to the same flow, with v7's release wait switched off.
-    expect(source).toContain("return flow.runV1(6);");
+    for (const name of V11_STEPS) expect(source, name).toContain(name);
+    // Every version dispatches to the same flow; its row of WORKFLOW_FEATURES switches the rest.
+    expect(source).toContain("return flow.runV1(version);");
+    // No feature is switched by comparing version numbers (spec 53, Workflow versions).
+    expect(source).not.toMatch(/version\s*(>=|<=|>|<)\s*\d/);
     for (const name of V8_STEPS) expect(source, name).toContain(name);
-    // v5 instances still dispatch to the same flow, with v6's workflow slots switched off.
-    expect(source).toContain("return flow.runV1(5);");
-    // v4 instances still dispatch to the same flow, with v5's planning session switched off.
-    expect(source).toContain("return flow.runV1(4);");
-    // v3 instances still dispatch to the same flow, with v4's merge queue switched off.
-    expect(source).toContain("return flow.runV1(3);");
-    // v2 instances still dispatch to the same flow, with v3's extra steps switched off.
-    expect(source).toContain("return flow.runV1(2);");
-    // v1 instances still dispatch to the same flow, with v2's extra steps switched off.
-    expect(source).toContain("return flow.runV1(1);");
+    for (const name of V9_STEPS) expect(source, name).toContain(name);
+    for (const name of V10_STEPS) expect(source, name).toContain(name);
   });
 });

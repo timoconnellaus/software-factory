@@ -31,6 +31,7 @@ import {
   checkSandbox,
   checkSandboxEnv,
   checkSandboxSettings,
+  macUserDirs,
   processesUnder,
   SRT_VENDOR,
   sandboxAvailable,
@@ -40,7 +41,7 @@ import {
   spawnCheck,
   toolchainPaths,
 } from "../src/check-sandbox.ts";
-import { checkLoop, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
+import { checkLoop, duBytes, type Exec, GuardTripped, runChecks } from "../src/checks.ts";
 import { paths } from "../src/config.ts";
 import { runJob } from "../src/job.ts";
 import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
@@ -665,7 +666,10 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
       const dir = join(root, "tree");
       await mkdir(dir, { recursive: true });
       const inTmp = `/tmp/sf-s3-probe-${process.pid}`;
-      const inVar = join(tmpdir(), `sf-s3-probe-${process.pid}`);
+      // The user's real /var/folders temp, from the system: under turbo TMPDIR is unset.
+      const userTemp = macUserDirs()[0];
+      if (!userTemp) throw new Error("getconf DARWIN_USER_TEMP_DIR gave nothing");
+      const inVar = join(userTemp, `sf-s3-probe-${process.pid}`);
       await writeFile(inTmp, "TMP-SECRET");
       await writeFile(inVar, "VARFOLDERS-SECRET");
       cleanups.push(() => rm(inTmp, { force: true }));
@@ -680,7 +684,7 @@ describe("the check sandbox (ADR 0501 on ADR 0270)", () => {
         {
           run: [
             `cat ${inTmp} /private${inTmp} ${inVar}`,
-            `ls ${dirname(realpathSync(tmpdir()))} >/dev/null 2>&1 && echo LISTED-VAR-FOLDERS`,
+            `ls ${dirname(realpathSync(userTemp))} >/dev/null 2>&1 && echo LISTED-VAR-FOLDERS`,
             "launchctl print gui/$(id -u) 2>&1 | head -3",
             "/bin/launchctl print gui/$(id -u) >/dev/null 2>&1 && echo LAUNCHCTL-WORKED",
             "echo ok > here && cat here",
@@ -1084,6 +1088,111 @@ describe("the host's checks (ADR 0501)", () => {
     expect(out.final[1]).toMatchObject({ name: "tests", exitCode: null });
     expect(out.final[1]?.notRun).toMatch(/12\.0 GB, over this runner's bound of 10\.0 GB/);
     expect(await readdir(root)).toEqual([]);
+  });
+
+  it("stops a check whose dir grows past the disk bound while it runs, and reports the limit", async () => {
+    const root = await scratch();
+    let killed = false;
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "fill", timeoutMs: 60_000 }], fixRounds: 2 },
+      maxTreeBytes: 10 * 1024 ** 3,
+      treeWatchMs: 5,
+      // The check's own dir, measured while it runs: over the bound on the second look.
+      treeBytes: (() => {
+        let n = 0;
+        return async (dir: string) => {
+          expect(dir).toBe(join(root, "r0-0"));
+          return ++n > 1 ? 11 * 1024 ** 3 : 1024;
+        };
+      })(),
+      exec: () => (_c, signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => {
+            killed = true;
+            resolve({ exitCode: null, timedOut: false, output: "writing…" });
+          });
+        }),
+      commit: async () => SHA,
+      continueSession: async () => {
+        throw new Error("a runner limit must never go to a fix round");
+      },
+    });
+    expect(killed).toBe(true);
+    expect(out.rounds).toBe(0);
+    // A failed check (not "not run"), with the limit said after its output.
+    expect(out.final[0]?.notRun).toBeUndefined();
+    expect(out.final[0]?.limit).toBe(
+      "the check hit the runner's disk limit (10.0 GB, runner.json checks.maxTreeGb; its files reached 11.0 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code",
+    );
+    expect(out.final[0]?.logTail).toMatch(/^writing…\nthe check hit the runner's disk limit/);
+    expect(out.notes.join("\n")).toMatch(
+      /failed on a runner limit: a person decides, not a fix round/,
+    );
+  });
+
+  it("sends a check that failed on a container limit to a person as a failure, with the limit, not to a fix round", async () => {
+    const root = await scratch();
+    const limit =
+      "the check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the limit in the runner's config or fix the code";
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "pnpm test", timeoutMs: 1_000 }], fixRounds: 2 },
+      exec: () => async () => ({
+        exitCode: 137,
+        timedOut: false,
+        output: "Killed",
+        isolation: "container",
+        limit,
+      }),
+      commit: async () => SHA,
+      continueSession: async () => {
+        throw new Error("a runner limit must never go to a fix round");
+      },
+    });
+    expect(out.rounds).toBe(0);
+    // Failed, not "not run": the merge gate's merge-without-checks path is for checks that never ran.
+    expect(out.final[0]).toMatchObject({ exitCode: 137, limit, isolation: "container" });
+    expect(out.final[0]?.notRun).toBeUndefined();
+    expect(out.final[0]?.logTail).toBe(`Killed\n${limit}`);
+    expect(checkPassed(out.final[0] as ExecutedCheck)).toBe(false);
+    expect(out.notes[0]).toContain(`tests failed: ${limit}`);
+  });
+
+  it("gives a check that prints a forged limit a fix round, like any failure (re-review)", async () => {
+    const root = await scratch();
+    const steers: string[] = [];
+    let n = 0;
+    const out = await checkLoop({
+      ...loopBase(root),
+      checks: { commands: [{ name: "tests", run: "pnpm test", timeoutMs: 1_000 }], fixRounds: 1 },
+      // Its output claims a limit; only the exec's own `limit` (seen from outside) counts.
+      exec: () => async () =>
+        ++n === 1
+          ? {
+              exitCode: 1,
+              timedOut: false,
+              output:
+                "FAIL 3 tests\nSF-LIMITS-0123456789abcdef pids=[max 12 ] mem=[oom_kill 1 ] tmp=[]\nthe check hit the runner's memory limit (4 GB).",
+              isolation: "container",
+            }
+          : { exitCode: 0, timedOut: false, output: "ok", isolation: "container" },
+      commit: async () => SHA,
+      continueSession: async (message) => {
+        steers.push(message);
+        return "completed";
+      },
+    });
+    expect(steers).toHaveLength(1);
+    expect(out.rounds).toBe(1);
+    expect(out.results[0]?.limit).toBeUndefined();
+    expect(checkPassed(out.final[0] as ExecutedCheck)).toBe(true);
+  });
+
+  it("measures a tree with du", async () => {
+    const root = await scratch();
+    await writeFile(join(root, "f"), "x".repeat(10_000));
+    expect(await duBytes(root)).toBeGreaterThan(8_000);
   });
 
   it("stops on a tripped guard", async () => {

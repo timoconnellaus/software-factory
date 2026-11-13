@@ -289,7 +289,11 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     expect(
       (
         await refusal(
-          ok("review.merge", { workItemId: created.workItemId, openedFullDiff: true }, w.human),
+          ok(
+            "review.merge",
+            { workItemId: created.workItemId, openedFullDiff: true, headSha: pr.headSha },
+            w.human,
+          ),
         )
       ).code,
     ).toBe("conflict");
@@ -300,6 +304,51 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     // A late delivery for an older head doesn't move the item back.
     await refresh(w, { headSha: pr.headSha, prNumber: pr.number, trigger: "pull_request" });
     expect((await item(created.workItemId)).head_sha).toBe(newHead);
+  });
+
+  it("closes an approved merge when GitHub refuses it because the branch moved after the engine's check", async () => {
+    const w = await world();
+    const pr = await github.openOutsidePull(w.repo, { branch: "tim/race", title: "Race" });
+    const created = await attach(w, pr.number);
+    await env.DB.prepare("UPDATE core_work_items SET stage = 'verify' WHERE id = ?")
+      .bind(created.workItemId)
+      .run();
+    const input = {
+      workItemId: created.workItemId,
+      headSha: pr.headSha,
+      touchesFactoryConfig: false,
+    };
+    const gated = await call("pr.merge", input, FOREMAN);
+    const pendingId = gated.status === "pending" ? gated.pendingActionId : "";
+    await ok(
+      "review.merge",
+      { workItemId: created.workItemId, openedFullDiff: true, headSha: pr.headSha },
+      w.human,
+    );
+    // A push lands on GitHub before its webhook reaches the engine: the engine's head check passes,
+    // GitHub refuses the merge.
+    await github.push(w.repo, "tim/race");
+    const refused = await refusal(call("pr.merge", input, FOREMAN, { approvalId: pendingId }));
+    expect([refused.code, refused.message]).toEqual([
+      "conflict",
+      "the branch moved after you approved: review the new commit",
+    ]);
+    // Said in details too, so no caller has to match the message text.
+    expect(refused.details).toMatchObject({ closeApproval: true, mergeRefused: "headMoved" });
+    // The approval is closed with why, not left `approved` for a commit that won't merge.
+    expect(
+      await first(
+        "SELECT status, decision, note FROM core_pending_actions WHERE id = ?",
+        pendingId,
+      ),
+    ).toEqual({
+      status: "rejected",
+      decision: "withdrawn",
+      note: "the branch moved after you approved: review the new commit",
+    });
+    expect((await github.state(w.repo)).pulls.find((p) => p.number === pr.number)?.state).toBe(
+      "open",
+    );
   });
 
   it("puts a waiting attached item back to running on a push", async () => {
@@ -335,17 +384,29 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     expect(moved.moved).toBe(true);
   });
 
-  it("cancels an attached item when its PR closes without merging (criterion 7)", async () => {
+  it("ends an attached item Done when its PR is merged on GitHub outside the factory", async () => {
     const w = await world();
-    const pr = await github.openOutsidePull(w.repo, { branch: "tim/close", title: "Close" });
+    const pr = await github.openOutsidePull(w.repo, { branch: "tim/merged", title: "Merged" });
     const created = await attach(w, pr.number);
-    const merged = await refresh(w, {
+    const r = await refresh(w, {
       headSha: pr.headSha,
       prNumber: pr.number,
       trigger: "closed",
       merged: true,
+      mergedBy: "octo",
     });
-    expect(merged.outcome).toBe("ignored");
+    expect(r).toMatchObject({ outcome: "merged", workItemId: created.workItemId });
+    expect(await item(created.workItemId)).toMatchObject({
+      status: "done",
+      stage: "done",
+      status_reason: "merged outside the factory by octo",
+    });
+  });
+
+  it("cancels an attached item when its PR closes without merging (criterion 7)", async () => {
+    const w = await world();
+    const pr = await github.openOutsidePull(w.repo, { branch: "tim/close", title: "Close" });
+    const created = await attach(w, pr.number);
     const before = delivered.length;
     const r = await refresh(w, {
       headSha: pr.headSha,
@@ -377,7 +438,7 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     expect(again.outcome).toBe("created");
     expect(again.workItemId).not.toBe(created.workItemId);
 
-    // A factory PR closing is left to its Workflow.
+    // A factory PR closed on GitHub ends its item too (it used to be left running and verified).
     const own = await ok<{ workItemId: string }>(
       "workItem.create",
       { state: "queued", projectId: w.projectId, title: "Own work", eventId: uid("e") },
@@ -386,14 +447,14 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
     await env.DB.prepare("UPDATE core_work_items SET pr_number = 77 WHERE id = ?")
       .bind(own.workItemId)
       .run();
-    const ignored = await refresh(w, {
+    const closed = await refresh(w, {
       headSha: pr.headSha,
       prNumber: 77,
       trigger: "closed",
       merged: false,
     });
-    expect(ignored.outcome).toBe("ignored");
-    expect((await item(own.workItemId)).status).toBe("running");
+    expect(closed.outcome).toBe("cancelled");
+    expect((await item(own.workItemId)).status).toBe("cancelled");
   });
 
   it("skips spec and build in triage for an attached item, whatever its size (criterion 2)", async () => {

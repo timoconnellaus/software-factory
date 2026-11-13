@@ -22,6 +22,9 @@ export interface CheckRunInfo {
   /** The App that posted it (`github-actions` for Actions), when GitHub says. */
   appSlug: string | null;
   url: string | null;
+  /** When GitHub started and completed the run, if it says (spec 53: orders `main` observations). */
+  startedAt?: string | null;
+  completedAt?: string | null;
 }
 
 /** What `factory/verify` (or any check the App posts) should say about one head SHA. */
@@ -51,6 +54,21 @@ export interface ChangedFile {
   patch?: string;
   /** Lines added plus removed, as GitHub counts them (0 for a pure rename). */
   changes?: number;
+}
+
+/** A tree entry: the file's mode (`100644`, `100755`, `120000`, `160000`) and its blob SHA. */
+export interface TreeEntry {
+  mode: string;
+  sha: string;
+}
+/** A commit's files by path. */
+export type Tree = Record<string, TreeEntry>;
+
+export interface CommitInfo {
+  parents: string[];
+  committer: { name: string; email: string } | null;
+  /** GitHub verified the commit's signature (its own web-flow signs update-branch merges). */
+  verified: boolean;
 }
 
 /** One rule of a repository ruleset, as GitHub reports it. */
@@ -135,6 +153,8 @@ export interface PullRequestInfo {
   /** `repo` is the head repository's `owner/name` (a fork's differs); null when it was deleted. */
   head: { ref: string; sha: string; repo: string | null };
   base: { ref: string };
+  /** The merge commit once merged (GitHub's `merge_commit_sha`); null or absent otherwise. */
+  mergeCommitSha?: string | null;
 }
 
 export interface GitHubService {
@@ -159,6 +179,15 @@ export interface GitHubService {
   commitFile(
     repo: RepoRef,
     input: { branch: string; path: string; content: string; message: string },
+  ): Promise<{ commitSha: string }>;
+  /**
+   * Commits several files to `branch` in ONE commit (spec 22: the spec and its `.kim/` artifacts
+   * land together); returns the new commit SHA. Through the Git Data API: blobs, a tree on the
+   * branch's head, a commit, and a fast-forward of the branch.
+   */
+  commitFiles(
+    repo: RepoRef,
+    input: { branch: string; files: { path: string; content: string }[]; message: string },
   ): Promise<{ commitSha: string }>;
   /** Opens a PR from `head` into `base`, or returns the open one for `head`. */
   openPullRequest(
@@ -230,6 +259,29 @@ export interface GitHubService {
   ): Promise<{ aheadBy: number; behindBy: number }>;
   /** A commit's parents, in order (`GET /commits/{sha}`). */
   commitParents(repo: RepoRef, sha: string): Promise<string[]>;
+  /** The commit's committer date as GitHub gives it (ISO), or null when it isn't there. */
+  commitTime(repo: RepoRef, sha: string): Promise<string | null>;
+  /**
+   * A commit's parents, its committer and whether GitHub verified its signature (spec 53: a merge
+   * of the default branch counts only when GitHub's update-branch made it). Null: no such commit.
+   */
+  commitInfo(repo: RepoRef, sha: string): Promise<CommitInfo | null>;
+  /**
+   * The paths that differ between `base`'s merge base with `head` and `head` (GitHub's compare,
+   * renames' old paths included), and that merge base. `complete` is false when GitHub may have left
+   * paths out (it lists at most 300 files): a caller then can't rely on it (spec 53, fail closed).
+   */
+  changedPaths(
+    repo: RepoRef,
+    base: string,
+    head: string,
+  ): Promise<{ mergeBase: string | null; paths: string[]; complete: boolean }>;
+  /**
+   * The entries (mode and blob SHA) of just these paths in the commit's tree; a path that isn't
+   * there is left out. Reads only the paths' directories, never the whole tree (second review of
+   * #105: large repositories).
+   */
+  pathEntries(repo: RepoRef, sha: string, paths: readonly string[]): Promise<Tree>;
   /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
@@ -239,11 +291,16 @@ export interface GitHubService {
     repo: RepoRef,
     input: { number: number; expectedHeadSha: string },
   ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
-  /** Merges the PR if its head is still `sha`. */
+  /**
+   * Merges the PR if its head is still `sha`. `headMoved`: refused because the head is no longer
+   * `sha` (GitHub's 409 "Head branch was modified").
+   */
   mergePullRequest(
     repo: RepoRef,
     input: { number: number; sha: string; method: "merge" | "squash" },
-  ): Promise<{ merged: true; sha: string } | { merged: false; reason: string }>;
+  ): Promise<
+    { merged: true; sha: string } | { merged: false; reason: string; headMoved?: boolean }
+  >;
 }
 
 export interface FactoryServices {

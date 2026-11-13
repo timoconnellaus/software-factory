@@ -1,6 +1,6 @@
 // Home is the Inbox (spec 12; restyled for spec 41, design InboxMerge/InboxQuestion): the nested
 // list of what waits on you (merges, specs, questions, approvals, notices), and the selected one's
-// page with its decision. `/?item=<key>` selects one (a work item id for anything on an item, as
+// page with its decision. Unfinished setup isn't here: it is the orange dot on Settings. `/?item=<key>` selects one (a work item id for anything on an item, as
 // `sf://` links send); without it, the first is selected.
 
 import { errorMessage } from "@software-factory/client/format";
@@ -9,13 +9,17 @@ import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { StatusDot } from "@software-factory/ui/components/status-dot";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createRoute, Link } from "@tanstack/react-router";
-import { FinishSetupCard } from "../components/finish-setup.tsx";
-import { GateDetail, PlanningDetail, QuestionDetail } from "../components/inbox-cards.tsx";
+import {
+  GateDetail,
+  PlanningDetail,
+  QuestionDetail,
+  ReleaseFlagDetail,
+} from "../components/inbox-cards.tsx";
 import { ProtectionChangedCard } from "../components/protection-card.tsx";
 import { ListGroup, ListItem, NestedList, PageArea } from "../components/shell-list.tsx";
 import { useScopedInbox } from "../components/shell-sidebar.tsx";
 import { entryText, GROUP_ORDER, inboxEntries, selectedEntry } from "../lib/inbox-list.ts";
-import { inboxQuery, setupStatusQuery, workItemQuery, workListsQuery } from "../lib/queries.ts";
+import { inboxQuery, workItemQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { appRoute } from "./_app.tsx";
 
@@ -25,11 +29,8 @@ export const Route = createRoute({
   validateSearch: (s: Record<string, unknown>): { item?: string } =>
     typeof s.item === "string" ? { item: s.item } : {},
   // Everything the page renders, in one request: the inbox, the work lists (item numbers) and the
-  // work items behind the gates. Setup's status asks GitHub, so it is started here but not waited
-  // for: the Finish setup notice shows when it arrives.
+  // work items behind the gates.
   loader: async ({ context: { queryClient, session } }) => {
-    const orgId = session.personalOrgId;
-    if (orgId) void queryClient.prefetchQuery(setupStatusQuery(orgId));
     const [inbox] = await Promise.all([
       queryClient.ensureQueryData(inboxQuery()),
       queryClient.ensureQueryData(workListsQuery(session.orgs.map((o) => o.id))).catch(() => null),
@@ -55,17 +56,13 @@ function InboxPage() {
   const session = useSession();
   useSuspenseQuery(inboxQuery());
   const { inbox } = useScopedInbox();
-  const setup = useQuery({
-    ...setupStatusQuery(session.personalOrgId ?? ""),
-    enabled: !!session.personalOrgId,
-  });
   const work = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
   const projects = useProjects();
   const projectName = (id: string | null) =>
     projects.data?.find((p) => p.id === id)?.name ?? (id ? "project" : "the factory");
   const numberOf = (id: string) => work.data?.find((i) => i.id === id)?.number ?? null;
 
-  const entries = inbox ? inboxEntries(inbox, setup.data) : [];
+  const entries = inbox ? inboxEntries(inbox) : [];
   const selected = selectedEntry(entries, item);
   const gone = !!item && !entries.some((e) => e.key === item);
 
@@ -150,8 +147,13 @@ function InboxPage() {
                 projectName={projectName(selected.planning.projectId)}
               />
             )}
+            {selected.kind === "release" && (
+              <ReleaseFlagDetail
+                flag={selected.flag}
+                projectName={projectName(selected.flag.projectId)}
+              />
+            )}
             {selected.kind === "protection" && <ProtectionChangedCard drift={selected.drift} />}
-            {selected.kind === "setup" && <FinishSetupCard orgId={session.personalOrgId ?? ""} />}
           </>
         )}
       </PageArea>

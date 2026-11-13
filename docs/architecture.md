@@ -75,13 +75,22 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
   holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
   `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
-  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one.
-  Projects keep running their own config until PR (d). The **reconciler** (ADR 0511) is
+  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
+  project may name an org workflow by id (`workflow: "wf_…"`) with
+  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
+  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
+  operations read `rawPolicy`), under the org config version the item pinned
+  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
+  org's value and the project's, unless an org admin approved that looser value for that org
+  version (`core_override_approvals`, written only by the approve path; carried to a new version only
+  where the org left the value unchanged). The parsed org
+  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
   `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
   path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
   its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
   stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
-  migration 0281; `reconcile.report`). It drives nothing. It compares stage order and skips only;
+  migration 0281; `reconcile.report`). An item on an org workflow is compared with the org workflow
+  it pinned (its `org_config_version`), resolved with the project's overrides as the engine ran it. It drives nothing. It compares stage order and skips only;
   everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
   as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
   is compared. Known differences are reported by name and count as divergences until settled: the
@@ -104,10 +113,12 @@ Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
   to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
   ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
   head is updated with the default branch (GitHub's update-branch), CI runs once on that head,
-  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). Designed, not built (spec 53, ADRs 0580–0585): from Workflow v11 an approval only says the
-  head may merge, and the **babysitter** delivers it: a per-repository reconcile pass in the engine
-  (no model) orders, updates and merges approved PRs and holds them while `main` is red, and starts a
-  `babysit` job on a runner only for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
+  and the approval and review packet carry over the clean update (Workflow v4, ADR 0330). From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
+  **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
+  model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
+  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. Designed, not yet built:
+  holding while `main` is red, the approval across a merge of `main` checked by change digest, and a
+  `babysit` job on a runner for judgement (a conflict, a failed check, a red `main`). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
   a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
   auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
   superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the

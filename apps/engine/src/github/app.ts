@@ -60,6 +60,9 @@ const toRepo = (r: GitHubRepoJson): InstallationRepo => ({
   defaultBranch: r.default_branch,
 });
 
+/** GitHub lists at most this many files in one compare (spec 53: a fuller change fails closed). */
+const COMPARE_FILES_CAP = 300;
+
 export function githubApp(config: GitHubAppConfig): GitHubService & {
   appJwt(): Promise<string>;
   installationToken(
@@ -175,6 +178,27 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       json = text;
     }
     return { status: response.status, json };
+  }
+  /** A GraphQL query as the repository's control-plane token (read-only uses). */
+  async function graphql(
+    repo: RepoRef,
+    query: string,
+    variables: Record<string, string>,
+  ): Promise<unknown> {
+    const response = await withCachedToken(
+      controlKey(repo, CONTROL_PLANE_PERMISSIONS),
+      () => controlToken(repo, CONTROL_PLANE_PERMISSIONS),
+      (token) =>
+        doFetch(`${API}/graphql`, {
+          method: "POST",
+          headers: headers(`token ${token}`),
+          body: JSON.stringify({ query, variables }),
+        }),
+    );
+    if (response.status !== 200) {
+      throw new Error(`GitHub GraphQL: HTTP ${response.status} ${await response.text()}`);
+    }
+    return response.json();
   }
   const fail = (what: string, r: { status: number; json: unknown }): never => {
     throw new Error(`GitHub ${what}: HTTP ${r.status} ${JSON.stringify(r.json)}`);
@@ -398,6 +422,38 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200 && r.status !== 201) fail(`commit ${path}`, r);
       return { commitSha: (r.json as { commit: { sha: string } }).commit.sha };
     },
+    async commitFiles(repo, { branch, files, message }) {
+      const ref = await api(repo, "GET", `/git/ref/heads/${encodeURIComponent(branch)}`);
+      if (ref.status !== 200) fail(`read ${branch}`, ref);
+      const head = (ref.json as { object: { sha: string } }).object.sha;
+      const parent = await api(repo, "GET", `/git/commits/${head}`);
+      if (parent.status !== 200) fail(`read commit ${head}`, parent);
+      const baseTree = (parent.json as { tree: { sha: string } }).tree.sha;
+      const tree = await api(repo, "POST", "/git/trees", {
+        base_tree: baseTree,
+        tree: files.map((f) => ({
+          path: f.path,
+          mode: "100644",
+          type: "blob",
+          content: f.content,
+        })),
+      });
+      if (tree.status !== 201) fail("create tree", tree);
+      const made = await api(repo, "POST", "/git/commits", {
+        message,
+        tree: (tree.json as { sha: string }).sha,
+        parents: [head],
+      });
+      if (made.status !== 201) fail("create commit", made);
+      const commitSha = (made.json as { sha: string }).sha;
+      // A fast-forward only: a branch that moved meanwhile fails, rather than losing a commit.
+      const moved = await api(repo, "PATCH", `/git/refs/heads/${encodeURIComponent(branch)}`, {
+        sha: commitSha,
+        force: false,
+      });
+      if (moved.status !== 200) fail(`update ${branch}`, moved);
+      return { commitSha };
+    },
     async openPullRequest(repo, { head, base, title, body }) {
       const open = await api(
         repo,
@@ -455,6 +511,95 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`commit ${sha}`, r);
       return ((r.json as { parents?: { sha: string }[] }).parents ?? []).map((p) => p.sha);
     },
+    async commitTime(repo, sha) {
+      // The git data API: no file list, unlike /commits/{sha}.
+      const r = await api(repo, "GET", `/git/commits/${encodeURIComponent(sha)}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`commit ${sha}`, r);
+      return (r.json as { committer?: { date?: string } }).committer?.date ?? null;
+    },
+    async commitInfo(repo, sha) {
+      const r = await api(repo, "GET", `/git/commits/${encodeURIComponent(sha)}`);
+      if (r.status === 404) return null;
+      if (r.status !== 200) fail(`commit ${sha}`, r);
+      const c = r.json as {
+        parents?: { sha: string }[];
+        committer?: { name?: string; email?: string } | null;
+        verification?: { verified?: boolean } | null;
+      };
+      return {
+        parents: (c.parents ?? []).map((p) => p.sha),
+        committer: c.committer
+          ? { name: String(c.committer.name ?? ""), email: String(c.committer.email ?? "") }
+          : null,
+        verified: c.verification?.verified === true,
+      };
+    },
+    async changedPaths(repo, base, head) {
+      const r = await api(
+        repo,
+        "GET",
+        `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`,
+      );
+      if (r.status === 404) return { mergeBase: null, paths: [], complete: false };
+      if (r.status !== 200) fail(`compare ${base}...${head}`, r);
+      const body = r.json as {
+        merge_base_commit?: { sha?: string };
+        files?: { filename: string; previous_filename?: string }[];
+      };
+      const files = body.files ?? [];
+      const paths = new Set<string>();
+      for (const f of files) {
+        paths.add(f.filename);
+        if (f.previous_filename) paths.add(f.previous_filename);
+      }
+      return {
+        mergeBase: body.merge_base_commit?.sha ?? null,
+        paths: [...paths].sort(),
+        // GitHub lists at most 300 files in a compare: at the cap some may be missing.
+        complete: files.length < COMPARE_FILES_CAP,
+      };
+    },
+    async pathEntries(repo, sha, paths) {
+      // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
+      // never the whole tree. GraphQL gives the mode as a number: 33188 is 100644 in octal.
+      const dirs = [...new Set(paths.map((p) => p.slice(0, Math.max(0, p.lastIndexOf("/")))))];
+      const out: Record<string, { mode: string; sha: string }> = {};
+      for (let i = 0; i < dirs.length; i += 50) {
+        const batch = dirs.slice(i, i + 50);
+        const fields = batch
+          .map(
+            (_, k) =>
+              `d${k}: object(expression: $e${k}) { ... on Tree { entries { name mode oid } } }`,
+          )
+          .join(" ");
+        const vars = batch.map((_, k) => `$e${k}: String!`).join(", ");
+        const variables: Record<string, string> = { owner: repo.owner, name: repo.repo };
+        batch.forEach((d, k) => {
+          variables[`e${k}`] = `${sha}:${d}`;
+        });
+        const r = await graphql(
+          repo,
+          `query($owner: String!, $name: String!, ${vars}) { repository(owner: $owner, name: $name) { ${fields} } }`,
+          variables,
+        );
+        const data = (r as { data?: { repository?: Record<string, unknown> } }).data?.repository;
+        if (!data) fail(`tree entries ${sha}`, { status: 200, json: r });
+        batch.forEach((d, k) => {
+          const tree = (
+            data as Record<
+              string,
+              { entries?: { name: string; mode: number; oid: string }[] } | null
+            >
+          )[`d${k}`];
+          for (const e of tree?.entries ?? []) {
+            const path = d ? `${d}/${e.name}` : e.name;
+            if (paths.includes(path)) out[path] = { mode: e.mode.toString(8), sha: e.oid };
+          }
+        });
+      }
+      return out;
+    },
     async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
       const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
         expected_head_sha: expectedHeadSha,
@@ -474,10 +619,10 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });
       if (r.status === 200) return { merged: true, sha: (r.json as { sha: string }).sha };
       if ([405, 409, 422].includes(r.status)) {
-        return {
-          merged: false,
-          reason: (r.json as { message?: string })?.message ?? `HTTP ${r.status}`,
-        };
+        const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
+        // 409: the `sha` we sent is no longer the head ("Head branch was modified").
+        const headMoved = r.status === 409 || /head branch was modified/i.test(reason);
+        return { merged: false, reason, ...(headMoved ? { headMoved } : {}) };
       }
       return fail(`merge #${number}`, r);
     },
@@ -546,6 +691,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
             conclusion: string | null;
             html_url: string | null;
             app: { slug: string } | null;
+            started_at?: string | null;
+            completed_at?: string | null;
           }[];
         };
         for (const c of body.check_runs) {
@@ -556,6 +703,8 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
             conclusion: c.conclusion,
             appSlug: c.app?.slug ?? null,
             url: c.html_url,
+            startedAt: c.started_at ?? null,
+            completedAt: c.completed_at ?? null,
           });
         }
         if (out.length >= body.total_count || body.check_runs.length === 0) break;
@@ -782,6 +931,7 @@ interface GitHubPull {
   state: "open" | "closed";
   merged?: boolean;
   merged_at?: string | null;
+  merge_commit_sha?: string | null;
   draft?: boolean;
   user?: { login: string } | null;
   head: { ref: string; sha: string; repo: { full_name: string } | null };
@@ -801,5 +951,7 @@ function pullInfo(p: GitHubPull): PullRequestInfo {
     author: p.user?.login ?? null,
     head: { ref: p.head.ref, sha: p.head.sha, repo: p.head.repo?.full_name ?? null },
     base: { ref: p.base.ref },
+    // Before a merge GitHub reports a test-merge commit here: only a merged PR's is its merge.
+    mergeCommitSha: (p.merged ?? Boolean(p.merged_at)) ? (p.merge_commit_sha ?? null) : null,
   };
 }

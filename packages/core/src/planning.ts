@@ -40,7 +40,7 @@ export const USER_EVENTS = [
 /** User events after which a wait settles at once instead of waiting for a pause in answers. */
 const SETTLE_AT_ONCE = ["chat.message", "planning.resumed", "finish.alone", "spec.edited"];
 /** Events the agent is told about (spec 20: answers, revisions, chat, presence). */
-export const NEWS_EVENTS = [...USER_EVENTS, "presence.changed"] as const;
+export const NEWS_EVENTS = [...USER_EVENTS, "presence.changed", "spec.critiqued"] as const;
 /** Someone with the Planning view open heartbeats at least this often. */
 export const PRESENCE_TTL_MS = 60_000;
 
@@ -469,6 +469,16 @@ export async function readNews(
         lineEnd: e.line_end,
         before: e.before,
         after: e.after,
+      });
+    } else if (r.type === "spec.critiqued") {
+      events.push({
+        type: "spec.critiqued",
+        cursor: r.id,
+        at: r.at,
+        specId: String(p.specId ?? ""),
+        status: p.status === "timed_out" || p.status === "failed" ? p.status : "done",
+        notes: Array.isArray(p.notes) ? p.notes.map(String) : [],
+        summary: typeof p.summary === "string" ? p.summary : null,
       });
     } else if (r.type === "finish.alone") {
       events.push({

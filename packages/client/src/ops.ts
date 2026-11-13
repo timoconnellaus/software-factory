@@ -43,6 +43,7 @@ export interface OpMap {
   "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
   "spec.edit": Def<typeof operations.specEdit>;
   "artifact.get": Def<typeof operations.artifactGet>;
+  "spec.writeBack": Def<typeof operations.specWriteBack>;
   "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
   "chat.send": Def<typeof operations.chatSend>;
   "run.live": Def<typeof operations.runLive>;
@@ -109,6 +110,7 @@ export interface OpMap {
   "workItem.update": Def<typeof operations.workItemUpdate>;
   "workItem.move": Def<typeof operations.workItemMove>;
   "workItem.release": Def<typeof operations.workItemRelease>;
+  "workItem.releaseChoice": Def<typeof operations.workItemReleaseChoice>;
   "workItem.reorder": Def<typeof operations.workItemReorder>;
   "workItem.link": Def<typeof operations.workItemLink>;
   "workItem.unlink": Def<typeof operations.workItemUnlink>;

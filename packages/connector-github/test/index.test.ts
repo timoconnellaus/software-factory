@@ -42,7 +42,7 @@ describe("routing GitHub App webhooks", () => {
   });
 
   it("tells verify.refresh when a PR closes, and whether it merged (spec 05)", () => {
-    const close = (merged: boolean) =>
+    const close = (merged: boolean, by?: string) =>
       routeGitHubEvent(
         "pull_request",
         {
@@ -51,6 +51,7 @@ describe("routing GitHub App webhooks", () => {
           pull_request: {
             number: 7,
             merged,
+            merged_by: by ? { login: by } : null,
             head: { sha: sha("a"), ref: "tim/x" },
             base: { ref: "main" },
           },
@@ -60,10 +61,28 @@ describe("routing GitHub App webhooks", () => {
     expect(close(false)).toEqual([
       {
         op: "verify.refresh",
-        input: { repo, headSha: sha("a"), prNumber: 7, trigger: "closed", merged: false },
+        input: {
+          repo,
+          headSha: sha("a"),
+          prNumber: 7,
+          trigger: "closed",
+          merged: false,
+          mergedBy: null,
+          mergedByApp: false,
+        },
       },
     ]);
-    expect(close(true)[0]?.input).toMatchObject({ trigger: "closed", merged: true });
+    expect(close(true, "octo")[0]?.input).toMatchObject({
+      trigger: "closed",
+      merged: true,
+      mergedBy: "octo",
+      mergedByApp: false,
+    });
+    // The factory's own App merged it: the Workflow finishes the item, not the webhook.
+    expect(close(true, `${SLUG}[bot]`)[0]?.input).toMatchObject({
+      merged: true,
+      mergedByApp: true,
+    });
   });
 
   it("re-evaluates when CI's check suite completes, but never for the factory's own checks", () => {
@@ -218,5 +237,37 @@ describe("routing GitHub App webhooks", () => {
     expect(routeGitHubEvent("ping", { zen: "x" }, SLUG).ignored).toBe("ping");
     expect(routeGitHubEvent("issues", {}, SLUG).ignored).toMatch(/isn't used/);
     expect(routeGitHubEvent("push", { nope: true }, SLUG).ignored).toMatch(/unreadable/);
+  });
+
+  it("observes main's health on CI or a push on the default branch only (spec 53)", () => {
+    const withDefault = { ...repository, default_branch: "main" };
+    const suite = (branch: string) =>
+      routeGitHubEvent(
+        "check_suite",
+        {
+          action: "completed",
+          repository: withDefault,
+          check_suite: {
+            head_sha: sha("d"),
+            head_branch: branch,
+            status: "completed",
+            app: { slug: "github-actions" },
+          },
+        },
+        SLUG,
+      ).calls.map((c) => c.op);
+    expect(suite("main")).toEqual(["verify.refresh", "main.observe"]);
+    expect(suite("factory/1-x")).toEqual(["verify.refresh"]);
+    const push = (ref: string) =>
+      routeGitHubEvent(
+        "push",
+        { ref, before: sha("e"), after: sha("f"), repository: withDefault },
+        SLUG,
+      ).calls;
+    expect(push("refs/heads/main")[1]).toEqual({
+      op: "main.observe",
+      input: { repo, headSha: sha("f"), trigger: "push" },
+    });
+    expect(push("refs/heads/factory/1-x").map((c) => c.op)).toEqual(["push.observe"]);
   });
 });
