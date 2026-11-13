@@ -19,6 +19,7 @@ import { babysitPrompt } from "../babysit/prompt.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
+import { MERGE_BASE_UNKNOWN } from "../verify/merge-base.ts";
 import {
   createWorkItem,
   repoRef,
@@ -556,10 +557,10 @@ async function readResolution(
     return {
       summary: unreadable(
         headSha,
-        ambiguous === null ? "incomplete" : "unclean",
-        ambiguous === null
-          ? "too many commits to find the merge base"
-          : "the item and the default branch have more than one merge base",
+        ambiguous === true ? "unclean" : ambiguous === "unreadable" ? "failed" : "incomplete",
+        ambiguous === true
+          ? "the item and the default branch have more than one merge base"
+          : MERGE_BASE_UNKNOWN[ambiguous],
         itemHead,
         main,
       ),

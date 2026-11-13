@@ -16,21 +16,40 @@ export interface SinceBase {
   commits: { sha: string; parents: string[] }[];
 }
 
-/** Most boundary parents checked (one compare each); past it, it can't tell. */
-export const MAX_BOUNDARY_CHECKS = 20;
+/**
+ * Most boundary parents checked (one compare each, `BOUNDARY_BATCH` at a time); past it, it can't
+ * tell. A Worker may make 1,000 subrequests per request: this keeps one judgement well inside that.
+ */
+export const MAX_BOUNDARY_CHECKS = 60;
+/** Boundary parents checked at once. */
+export const BOUNDARY_BATCH = 10;
 
 /**
- * True: more than one merge base. False: one. Null: it can't tell (a listing truncated, no base,
- * too many boundary parents, or an ancestry it couldn't read): callers treat null as ambiguous.
+ * Why it can't tell (review of #175): GitHub's listing stops before the merge base (`truncated`),
+ * more boundary parents than are checked (`too-many`), or GitHub didn't answer (`unreadable`: no
+ * merge base, an error). A string, never `false`, so a caller that asks `!== false` fails closed.
+ */
+export type MergeBaseUnknown = "truncated" | "too-many" | "unreadable";
+
+/** What a person reads for `MergeBaseUnknown`. */
+export const MERGE_BASE_UNKNOWN: Record<MergeBaseUnknown, string> = {
+  truncated: "too many commits to find the merge base",
+  "too-many": "too many merges between the item and the default branch to find the merge base",
+  unreadable: "GitHub couldn't be read to find the merge base",
+};
+
+/**
+ * True: more than one merge base. False: one. Otherwise why it can't tell (`MergeBaseUnknown`):
+ * callers treat anything but `false` as ambiguous.
  */
 export async function mergeBaseAmbiguousFrom(
-  a: SinceBase,
-  b: SinceBase,
+  a: SinceBase | null,
+  b: SinceBase | null,
   isAncestorOfBase: (sha: string, base: string) => Promise<boolean | null>,
-): Promise<boolean | null> {
-  if (!a.base || !b.base) return null;
+): Promise<boolean | MergeBaseUnknown> {
+  if (!a?.base || !b?.base) return "unreadable";
   if (a.base !== b.base) return true;
-  if (a.total > a.commits.length || b.total > b.commits.length) return null;
+  if (a.total > a.commits.length || b.total > b.commits.length) return "truncated";
   const base = a.base;
   const boundary = new Set<string>();
   for (const side of [a, b]) {
@@ -39,11 +58,15 @@ export async function mergeBaseAmbiguousFrom(
       for (const p of c.parents) if (!listed.has(p) && p !== base) boundary.add(p);
     }
   }
-  if (boundary.size > MAX_BOUNDARY_CHECKS) return null;
-  for (const p of boundary) {
-    const behind = await isAncestorOfBase(p, base);
-    if (behind === null) return null;
-    if (!behind) return true;
+  if (boundary.size > MAX_BOUNDARY_CHECKS) return "too-many";
+  const all = [...boundary];
+  // In batches, in parallel (review of #175): one round trip per batch, not per parent.
+  for (let i = 0; i < all.length; i += BOUNDARY_BATCH) {
+    const answers = await Promise.all(
+      all.slice(i, i + BOUNDARY_BATCH).map((p) => isAncestorOfBase(p, base)),
+    );
+    if (answers.includes(false)) return true;
+    if (answers.includes(null)) return "unreadable";
   }
   return false;
 }

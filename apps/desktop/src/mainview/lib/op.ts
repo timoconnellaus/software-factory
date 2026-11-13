@@ -82,7 +82,8 @@ export type ReadOpName =
   | "workflow.get"
   | "workflow.list"
   | "incident.listArchiveMissing"
-  | "delivery.status";
+  | "delivery.status"
+  | "babysit.resolutionPatches";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,
