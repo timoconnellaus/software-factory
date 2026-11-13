@@ -4,6 +4,7 @@
 import { env } from "cloudflare:workers";
 import {
   clearOrgConfigCache,
+  FOREMAN,
   invoke,
   r2AttachmentBlobs,
   recentOutcomes,
@@ -139,6 +140,37 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
           .bind(was, job.jobId)
           .run();
       }
+    },
+  },
+  {
+    // Spec 44 part A3: the held planning wait polls planning.peek in the Worker (the session by its
+    // job, the events after the cursor on (work_item_id, id), the open questions), every 3 s.
+    name: "the held planning wait's poll (planning.peek, spec 44)",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "Plan the guard" },
+        w.human,
+      );
+      await ok("planning.start", { workItemId: item.workItemId }, FOREMAN);
+      const c = await channel(env, w.runner.runnerId);
+      let planningJob: { jobId: string; fencingToken: number } | null = null;
+      for (let i = 0; i < 200 && !planningJob; i++) {
+        const { job: got } = await c.claim({
+          claimId: uid("claim-"),
+          manifest: MANIFEST,
+          capacity: { max: 4, inUse: 1, accepting: true, light: { max: 6, inUse: 0 } },
+        });
+        if (got?.stage === "planning") {
+          planningJob = { jobId: got.jobId, fencingToken: got.lease.fencingToken };
+        } else if (!got) await new Promise((r) => setTimeout(r, 50));
+      }
+      if (!planningJob) throw new Error("no planning job");
+      return (await channel(e, w.runner.runnerId)).planning?.(planningJob.jobId, {
+        fencingToken: planningJob.fencingToken,
+        op: "planning.wait",
+        input: { timeoutMs: 3_500 },
+      });
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
