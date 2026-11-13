@@ -253,7 +253,7 @@ async function planningReply(
             WHERE e.work_item_id = s.work_item_id AND e.id > max(?, s.delivered_cursor)
               AND e.type IN (${USER_EVENTS.map(() => "?").join(", ")})) AS pending
          FROM core_planning_sessions s
-         WHERE s.work_item_id = ? AND s.status NOT IN ('ended', 'moved')`,
+         WHERE s.work_item_id = ? AND s.status NOT IN ('ended', 'moved') LIMIT 1`,
       )
         .bind(body.cursor ?? 0, ...USER_EVENTS, body.workItemId)
         .first<{ status: string; yield_requested_at: string | null; pending: number | null }>();
@@ -321,7 +321,16 @@ async function steerReply(
   const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
   const deadline = Date.now() + timeout;
   const actor: Actor = { type: "runner", id: runner };
-  const take = () => invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+  // A take that lost a race to another (two calls read the same queued steer; the guard lets one
+  // hand it over) is tried again: the host never sees that 409, which it would take as "this job
+  // can't be steered" and stop asking (review of #179).
+  const take = async () => {
+    for (let attempt = 0; ; attempt++) {
+      const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+      if (!(reply.body as { raced?: boolean } | undefined)?.raced) return reply;
+      if (attempt >= 3) return { body: { runId: "", workItemId: "", steers: [] } };
+    }
+  };
   const first = await take();
   if (first.status && first.status !== 200) return first;
   const { runId, steers } = first.body as { runId: string; steers: unknown[] };
@@ -337,8 +346,7 @@ async function steerReply(
       .first();
     if (!queued) continue;
     const reply = await take();
-    // Another take got them first (run.takeSteers hands a steer over once): keep waiting.
-    if (reply.status === 409 && (reply.body as { code?: string })?.code === "conflict") continue;
+    // Any refusal (fenced, killed, the run ended) ends the hold: no re-take every 3 s.
     if (reply.status && reply.status !== 200) return reply;
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
   }
@@ -453,6 +461,8 @@ async function invokeReply(
           error: error.message,
           code: error.code,
           ...(error.code === "invalid_input" ? { details: error.details } : {}),
+          // A lost race (a batch guard or unique key), which a retry may win.
+          ...(error.details?.raced === true ? { raced: true } : {}),
         },
       };
     }

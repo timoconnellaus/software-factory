@@ -19,21 +19,45 @@ const PENDING: Record<string, string> = {
   "../src/planning-hub.ts": "spec 44 PR 3: the website Planning tab's SSE keepalive (setInterval)",
 };
 
-/** The alarms objects set, each with why it stops re-arming when there is nothing to do. */
-const ALARMS: Record<string, string> = {
-  "../src/terminal-relay.ts":
-    "re-checks connected viewers every VIEWER_RECHECK_MS; re-armed only while a viewer is connected",
+/**
+ * Every alarm an object sets, one entry per `setAlarm(` call site in its file, each with why it
+ * stops re-arming when there is nothing to do. A new call site fails until it is listed here.
+ */
+const ALARMS: Record<string, string[]> = {
+  "../src/terminal-relay.ts": [
+    "the first viewer arms the viewer re-check (VIEWER_RECHECK_MS) when none is set",
+    "the re-check re-arms only while a viewer is still connected",
+  ],
 };
 
 const strip = (text: string) => text.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
-/** The file and the src/ helpers it imports directly (`./x.ts`). */
+/** Resolves a relative import of `from` (a key of `sources`) to its key, when it is in src/. */
+function resolve(from: string, spec: string): string | null {
+  const parts = from.split("/").slice(0, -1);
+  for (const p of spec.split("/")) {
+    if (p === "..") parts.pop();
+    else if (p !== ".") parts.push(p);
+  }
+  const key = parts.join("/");
+  return key in sources ? key : null;
+}
+
+/** The file and every src/ module it imports, transitively (another Durable Object's file aside). */
 function withHelpers(file: string): [string, string][] {
-  const text = sources[file] ?? "";
-  const helpers = [...text.matchAll(/from "\.\/([\w-]+\.ts)"/g)]
-    .map((m) => `../src/${m[1]}`)
-    .filter((f) => f in sources && !/class \w+ extends DurableObject\b/.test(sources[f] ?? ""));
-  return [[file, text], ...helpers.map((f): [string, string] => [f, sources[f] ?? ""])];
+  const seen = new Set<string>([file]);
+  const queue = [file];
+  while (queue.length > 0) {
+    const f = queue.shift() as string;
+    for (const m of (sources[f] ?? "").matchAll(/from "(\.\.?\/[^"]+\.ts)"/g)) {
+      const key = resolve(f, m[1] as string);
+      if (!key || seen.has(key)) continue;
+      if (/class \w+ extends DurableObject\b/.test(sources[key] ?? "")) continue;
+      seen.add(key);
+      queue.push(key);
+    }
+  }
+  return [...seen].map((f): [string, string] => [f, sources[f] ?? ""]);
 }
 
 const durableObjects = Object.entries(sources).filter(([, text]) =>
@@ -45,6 +69,8 @@ describe("Durable Objects are never held awake (spec 44)", () => {
     expect(durableObjects.map(([file]) => file)).toEqual(
       expect.arrayContaining(["../src/terminal-relay.ts", "../src/client-hub.ts"]),
     );
+    // Imports are followed, transitively: the relay's invoke() wiring and what it imports.
+    expect(withHelpers("../src/terminal-relay.ts").map(([f]) => f)).toContain("../src/deps.ts");
   });
 
   for (const [file, text] of durableObjects) {
@@ -61,9 +87,11 @@ describe("Durable Objects are never held awake (spec 44)", () => {
       expect(waits).toEqual([]);
     });
 
-    it(`${file}: every alarm it sets is listed with why it stops`, () => {
-      const sets = /\bsetAlarm\s*\(/.test(strip(text));
-      if (sets) expect(ALARMS[file], `${file} sets an alarm: list it in ALARMS`).toBeTruthy();
+    it(`${file}: every alarm call site is listed with why it stops`, () => {
+      const sites = [...strip(text).matchAll(/\bsetAlarm\s*\(/g)].length;
+      expect(sites, `${file}: list each setAlarm call in ALARMS with why it stops`).toBe(
+        ALARMS[file]?.length ?? 0,
+      );
     });
 
     it(`${file}: answers its ping without waking when it accepts sockets`, () => {

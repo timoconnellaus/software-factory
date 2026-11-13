@@ -669,6 +669,89 @@ describe("held calls wait in the Worker, not in a Durable Object (spec 44 part A
     expect(row).not.toBeNull();
   });
 
+  it("hands a steer over once when two takes race, and the loser keeps waiting (no 409)", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const fence = job.lease.fencingToken;
+    for (let round = 0; round < 3; round++) {
+      await ok("run.steer", { workItemId: item.workItemId, runId, text: `race ${round}` }, w.human);
+      const answers = await Promise.all([
+        c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 }),
+        c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 }),
+        c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0 }),
+      ]);
+      // Every call answers (none refused), and the steer is in exactly one answer.
+      const got = answers.flatMap((a) => a?.steers ?? []);
+      expect(got.map((s) => s.text)).toEqual([`race ${round}`]);
+    }
+  });
+
+  it("a held steer call whose host has gone stops polling and takes nothing", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const gone = new AbortController();
+    const held = c.steers?.(
+      job.jobId,
+      { fencingToken: job.lease.fencingToken, waitMs: 20_000 },
+      gone.signal,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    gone.abort();
+    await held?.catch(() => {});
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "for a live host" }, w.human);
+    // Longer than a poll: an orphaned loop would have taken it by now.
+    await new Promise((r) => setTimeout(r, HELD_POLL_MS + 1_500));
+    const queued = await env.DB.prepare(
+      "SELECT delivered_at FROM core_run_steers WHERE run_id = ? AND text = 'for a live host'",
+    )
+      .bind(runId)
+      .first<{ delivered_at: string | null }>();
+    expect(queued).toEqual({ delivered_at: null });
+  });
+
+  it("closeStale closes only attaches older than twice a ticket's life, whatever it is told", async () => {
+    const w = await world();
+    const { job, item, runId } = await running(w);
+    const attach = async (minutesAgo: number) => {
+      const id = uid("ta_");
+      await env.DB.prepare(
+        "INSERT INTO core_run_terminal_attaches (id, run_id, work_item_id, user_id, mode, opened_at) VALUES (?, ?, ?, ?, 'type', ?)",
+      )
+        .bind(
+          id,
+          runId,
+          item.workItemId,
+          w.human.id,
+          new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+        )
+        .run();
+      return id;
+    };
+    const fresh = await attach(1);
+    const old = await attach(10);
+    const closed = await ok<{ closed: number }>(
+      "run.terminal.closeStale",
+      { jobId: job.jobId, fencingToken: job.lease.fencingToken, before: new Date().toISOString() },
+      w.runnerActor,
+    );
+    expect(closed.closed).toBe(1);
+    const open = await env.DB.prepare(
+      "SELECT id FROM core_run_terminal_attaches WHERE run_id = ? AND closed_at IS NULL",
+    )
+      .bind(runId)
+      .all<{ id: string }>();
+    expect(open.results.map((r) => r.id)).toContain(fresh);
+    expect(open.results.map((r) => r.id)).not.toContain(old);
+  });
+
   it("refuses a stale fencing token on both holds before any wait", async () => {
     const w = await world();
     const { job } = await running(w, [...MANIFEST.capabilities, "terminal", "steer"]);
