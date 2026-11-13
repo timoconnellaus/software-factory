@@ -71,7 +71,10 @@ export async function exactInverse(
     github.compareFiles(repo, before, mergeSha),
     github.changedPaths(repo, defaultBranch, revertHead),
   ]);
-  const paths = [...new Set(culprit.map((f) => f.path))].sort();
+  // A rename's old path too: the inverse must put it back (review of #178).
+  const paths = [
+    ...new Set(culprit.flatMap((f) => (f.previousPath ? [f.path, f.previousPath] : [f.path]))),
+  ].sort();
   if (!pr.complete || !pr.mergeBase || paths.length === 0 || culprit.length >= 300) return false;
   if (pr.paths.length !== paths.length || pr.paths.some((p) => !paths.includes(p))) return false;
   const [atBefore, atMerge, atBase, atRevert] = await Promise.all([
@@ -147,21 +150,23 @@ export const mainRedRevert = defineOperation({
     if (claim && claim.status !== "claimed" && claim.status !== "calling") {
       throw new OperationError("conflict", `#${w.number}'s revert is ${claim.status}`);
     }
-    if (!claim) {
-      if (by === "agent") {
-        if (Date.parse(ctx.now) - Date.parse(health.red_since) < REVERT_AFTER_MS) {
-          throw new OperationError("conflict", "main hasn't been red for 30 minutes");
-        }
-        // core_work_items_repair_idx: an open repair means someone is on it.
-        const repair = await ctx.db
-          .selectFrom("core_work_items")
-          .select("id")
-          .where("repository_id", "=", repository.id)
-          .where("repairs_main", "=", 1)
-          .where("status", "in", [...OPEN])
-          .executeTakeFirst();
-        if (repair) throw new OperationError("conflict", "a repair is already under way");
+    // The babysitter acts only while nobody else is on it: checked at every step, not only the
+    // claim (review of #178). core_work_items_repair_idx: an open repair means someone is.
+    if (by === "agent") {
+      if (Date.parse(ctx.now) - Date.parse(health.red_since) < REVERT_AFTER_MS) {
+        throw new OperationError("conflict", "main hasn't been red for 30 minutes");
       }
+      const repair = await ctx.db
+        .selectFrom("core_work_items")
+        .select("id")
+        .where("repository_id", "=", repository.id)
+        .where("repairs_main", "=", 1)
+        .where("status", "in", [...OPEN])
+        .where("id", "!=", claim?.revert_work_item_id ?? "")
+        .executeTakeFirst();
+      if (repair) throw new OperationError("conflict", "a repair is already under way");
+    }
+    if (!claim) {
       // The chain's root: a culprit that is itself a reland carries its original's root.
       const relandOf = await ctx.db
         .selectFrom("core_reverts")
@@ -200,6 +205,18 @@ export const mainRedRevert = defineOperation({
         throw new OperationError("conflict", `#${w.number}'s revert is being asked of GitHub`);
       }
       if (claim.attempts >= MAX_ATTEMPTS) {
+        // A try that died after GitHub answered may have left the revert PR open: close it, so
+        // nothing stays open that no item tracks (review of #178).
+        const repo = await repoRef(ctx, repository);
+        const left = await findRevertPr(
+          ctx,
+          repo,
+          repository.default_branch,
+          w.pr_number,
+          claim.revert_branch,
+        );
+        if (left)
+          await ctx.services.github.closePullRequest(repo, left.number).catch(() => undefined);
         return giveUp(
           ctx,
           w,
@@ -239,15 +256,12 @@ export const mainRedRevert = defineOperation({
     // Asked before and not recorded (a call that died after GitHub's answer): GitHub's own revert
     // PR, from this repository (never a fork), by the App, into the default branch, on the branch
     // GitHub named when that is known; take it rather than open a second one.
-    const own = `${repo.owner}/${repo.repo}`.toLowerCase();
-    const prior = (await github.listOpenPullRequests(repo)).find(
-      (p) =>
-        p.head.repo?.toLowerCase() === own &&
-        p.author === `${github.app.slug}[bot]` &&
-        p.base.ref === repository.default_branch &&
-        (claim.revert_branch
-          ? p.head.ref === claim.revert_branch
-          : p.head.ref.startsWith(`revert-${w.pr_number}-`)),
+    const prior = await findRevertPr(
+      ctx,
+      repo,
+      repository.default_branch,
+      w.pr_number,
+      claim.revert_branch,
     );
     let made: { number: number; branch: string; headSha: string; url: string };
     if (prior) {
@@ -258,6 +272,23 @@ export const mainRedRevert = defineOperation({
         url: prior.url,
       };
     } else {
+      // The lease again, just before GitHub is asked (review of #178): a caller that took it over
+      // meanwhile refuses this one.
+      const still = await ctx.db
+        .selectFrom("core_reverts")
+        .select(["status", "attempts", "lease_until"])
+        .where("id", "=", claim.id)
+        .executeTakeFirst();
+      if (
+        still?.status !== "calling" ||
+        still.attempts !== _input.attempt ||
+        (still.lease_until ?? "") <= ctx.now
+      ) {
+        throw new OperationError(
+          "conflict",
+          `#${w.number}'s revert lease is no longer this call's`,
+        );
+      }
       try {
         made = await github.revertPullRequest(repo, {
           number: w.pr_number,
@@ -278,6 +309,25 @@ export const mainRedRevert = defineOperation({
           `GitHub couldn't revert: ${why}`,
         );
       }
+    }
+    if (!prior) {
+      // GitHub's answer is committed on its own (review of #178): the branch and PR are recorded
+      // before anything else, so a call that dies after this finds that PR by its exact branch.
+      ctx.write(
+        ctx.db
+          .updateTable("core_reverts")
+          .set({ revert_branch: made.branch, revert_pr_number: made.number, updated_at: ctx.now })
+          .where("id", "=", claim.id)
+          .where("status", "=", "calling")
+          .where("attempts", "=", _input.attempt),
+      );
+      ctx.guardChanged("this caller still holds the lease");
+      return {
+        status: "calling" as const,
+        attempt: _input.attempt,
+        revertWorkItemId: null,
+        prNumber: made.number,
+      };
     }
     const exact = await exactInverse(
       ctx,
@@ -355,6 +405,28 @@ export const mainRedRevert = defineOperation({
     };
   },
 });
+
+/**
+ * GitHub's own revert PR for `prNumber`: from this repository (never a fork), by the App, into the
+ * default branch, on `branch` when GitHub's answer recorded it, else on `revert-<pr>-…`.
+ */
+async function findRevertPr(
+  ctx: HandlerContext,
+  repo: RepoRef,
+  defaultBranch: string,
+  prNumber: number,
+  branch: string | null,
+) {
+  const github = ctx.services.github;
+  const own = `${repo.owner}/${repo.repo}`.toLowerCase();
+  return (await github.listOpenPullRequests(repo)).find(
+    (p) =>
+      p.head.repo?.toLowerCase() === own &&
+      p.author === `${github.app.slug}[bot]` &&
+      p.base.ref === defaultBranch &&
+      (branch ? p.head.ref === branch : p.head.ref.startsWith(`revert-${prNumber}-`)),
+  );
+}
 
 /** Not tried again for this episode: recorded once, an incident opened, the owner told. */
 async function giveUp(
