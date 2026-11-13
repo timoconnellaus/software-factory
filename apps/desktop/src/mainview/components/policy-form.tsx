@@ -674,33 +674,35 @@ function PacketEditor({
         return (
           <li
             key={key}
-            className="flex items-center gap-2 border-line-soft border-b py-2 last:border-b-0"
+            className="flex flex-wrap items-center gap-2 border-line-soft border-b py-2 last:border-b-0"
           >
-            <div className="flex flex-col">
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-5"
-                aria-label={`Move ${meta?.[1]} up`}
-                disabled={!on}
-                onClick={() => move(key, -1)}
-              >
-                <ChevronUpIcon />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="size-5"
-                aria-label={`Move ${meta?.[1]} down`}
-                disabled={!on}
-                onClick={() => move(key, 1)}
-              >
-                <ChevronDownIcon />
-              </Button>
-            </div>
-            <div className={cn("min-w-0 grow", !on && "opacity-50")}>
-              <div className="font-medium text-[13px]">{meta?.[1]}</div>
-              <div className="text-ink-3 text-xs">{meta?.[2]}</div>
+            <div className="flex min-w-[min(100%,220px)] flex-1 items-center gap-2">
+              <div className="flex flex-col">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  aria-label={`Move ${meta?.[1]} up`}
+                  disabled={!on}
+                  onClick={() => move(key, -1)}
+                >
+                  <ChevronUpIcon />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  aria-label={`Move ${meta?.[1]} down`}
+                  disabled={!on}
+                  onClick={() => move(key, 1)}
+                >
+                  <ChevronDownIcon />
+                </Button>
+              </div>
+              <div className={cn("min-w-0 flex-1", !on && "opacity-50")}>
+                <div className="font-medium text-[13px]">{meta?.[1]}</div>
+                <div className="text-ink-3 text-xs">{meta?.[2]}</div>
+              </div>
             </div>
             <Segmented
               label={`Show ${meta?.[1]}`}
