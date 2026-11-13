@@ -839,6 +839,8 @@ export interface CoreRunSteersTable {
   interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
+  /** 0369: until when an acking host has been offered it (spec 44 host ack); null otherwise. */
+  offered_until: Iso | null;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
@@ -1051,6 +1053,27 @@ export interface CoreDeliveryStateTable {
   babysit_fence: Generated<number>;
   /** 0390: JSON `BabysitReason[]` the deliverer waits on the job for. */
   babysit_reasons: Generated<JsonText>;
+}
+
+/** 0393 (spec 53 §5): the engine's revert of a red main's culprit, claimed, then opened. */
+export interface CoreRevertsTable {
+  id: string;
+  original_work_item_id: string;
+  repository_id: string;
+  project_id: string;
+  red_since: string;
+  status: "claimed" | "calling" | "opened" | "failed" | "abandoned" | "relanded";
+  attempts: Generated<number>;
+  lease_until: string | null;
+  revert_branch: string | null;
+  root_work_item_id: string;
+  revert_pr_number: number | null;
+  revert_work_item_id: string | null;
+  exact_inverse: number | null;
+  reason: string | null;
+  reland_work_item_id: string | null;
+  created_at: Iso;
+  updated_at: Iso;
 }
 
 /** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
@@ -1455,6 +1478,7 @@ export interface CoreDatabase {
   core_ci_reruns: CoreCiRerunsTable;
   core_flakes: CoreFlakesTable;
   core_flake_fixes: CoreFlakeFixesTable;
+  core_reverts: CoreRevertsTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

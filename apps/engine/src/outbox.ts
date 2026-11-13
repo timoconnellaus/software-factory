@@ -5,7 +5,6 @@ import { BABYSITTER, invoke, type OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
 import { invokeDeps } from "./deps.ts";
-import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 
@@ -141,18 +140,31 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
         { actor: BABYSITTER, origin: { surface: "cron", step: "verify.recheck" } },
       );
       return;
+    case "github.comment":
+      // After the call that asked for it committed (spec 53, the reland's note on the original PR).
+      await invokeDeps(env).services.github.commentOnPullRequest(
+        message.payload.repo,
+        message.payload.number,
+        message.payload.body,
+      );
+      return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);
       return;
     case "planning.changed": {
-      // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
-      await planningHub(env, message.payload.workItemId).notify();
+      // Open Planning views hear it on their ClientHub socket (spec 26; spec 44 PR 3 deleted the
+      // PlanningHub, the website's stream).
       await notifyPlanningViewers(env, message.payload.workItemId);
       // Last, and only a wake: the planning job's line, when its runner keeps one (spec 44 part B).
-      // A failed push never holds up the rest; the host's safety poll covers it.
-      const planningJob = await activeJob(env, message.payload.workItemId, "planning");
-      if (planningJob) await pushLine(env, planningJob, "planning");
+      // Nothing here may fail the delivery after the notifications went out (a retry would send
+      // them again): a failed lookup or push is logged, and the host's safety poll covers it.
+      try {
+        const planningJob = await activeJob(env, message.payload.workItemId, "planning");
+        if (planningJob) await pushLine(env, planningJob, "planning");
+      } catch (error) {
+        console.warn(`job line lookup for ${message.payload.workItemId} failed: ${String(error)}`);
+      }
       return;
     }
     case "run.steered": {
@@ -180,7 +192,7 @@ const PLANNING_VIEWER_MS = 60_000;
 
 /**
  * Tells the desktop apps of everyone with this work item's Planning view open that it changed (spec
- * 26), so the desktop re-reads instead of polling; sf-app hears it from the PlanningHub's stream.
+ * 26), so the desktop re-reads instead of polling. The website's tab re-reads every 15 s.
  */
 export async function notifyPlanningViewers(env: Env, workItemId: string): Promise<string[]> {
   const since = new Date(Date.now() - PLANNING_VIEWER_MS).toISOString();

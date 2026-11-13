@@ -1,5 +1,5 @@
 // Workflow v5's spec stage is a planning session (spec 20, ADR 0300, 0350), end to end against real
-// D1, the real Workflow and the PlanningHub, with the runner's side played by operation calls as
+// D1 and the real Workflow, with the runner's side played by operation calls as
 // the planning job's runner.
 import type { Job, PlanningNews } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
