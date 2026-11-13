@@ -122,6 +122,17 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   },
   {
     match:
+      /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" (?:= \?|in \([?, ]+\)) and "q"\."status" = \?/,
+    why: "delivery.status, mergeQueue.list, and the board and list for their items in merge (waiting-on.ts): the open queue entries of those projects (core_merge_queue_project_idx on project and status), a handful each",
+  },
+  {
+    match:
+      /^select \*, CASE WHEN NOT \(core_work_items\.source = 'planning'.* from "core_work_items" where "org_id" = \? and "status" in \([?, ]+\)(?: and "project_id" = \?)? order by "priority", "rank", "released_at", "created_at" limit \?$/s,
+    // Not capped at 500 in what it reads: the LIMIT applies after the sort.
+    why: "workItem.board: every item of the org in the states asked for (core_work_items_org_idx on org and status; by default backlog, ready, queued and active, never done or cancelled) is read and sorted, then 500 are returned. So a poll reads the org's whole open backlog, which grows with it; no index can give this order across an IN list of states. The waitingOn subqueries (waiting-on.ts) run only for running and waiting rows, which the WIP limits keep few",
+  },
+  {
+    match:
       /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" = \? and "w"\."repository_id" = \? and "q"\."status" = \?/,
     why: "workItem.get at the merge stage: one repository's queued merges (the merge queue's depth, a handful)",
   },
