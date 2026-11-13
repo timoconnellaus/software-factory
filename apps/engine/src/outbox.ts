@@ -1,6 +1,7 @@
 // Outbox delivery (ADR 0012; CRM ADR 0171): rows are written in an operation's batch, delivered
 // right after commit, and retried by the minute cron with backoff. Delivery is at least once;
 // Workflow ids and one-shot event types make a second delivery harmless.
+import { GITHUB_INTAKE } from "@software-factory/connector-github";
 import { BABYSITTER, invoke, type OutboxMessage } from "@software-factory/core";
 import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
@@ -40,6 +41,11 @@ export async function retryOutbox(env: Env, now = new Date()): Promise<number> {
 }
 
 async function deliverRow(env: Env, row: OutboxRow, now = new Date()): Promise<void> {
+  // A message held until a time of its own (push.recheck): left for the cron once it is due.
+  if (row.kind === "push.recheck") {
+    const notBefore = Date.parse(String(JSON.parse(row.payload).notBefore ?? ""));
+    if (!Number.isNaN(notBefore) && notBefore > now.getTime()) return;
+  }
   try {
     await dispatch(env, { kind: row.kind, payload: JSON.parse(row.payload) } as OutboxMessage);
     await env.DB.prepare("DELETE FROM core_outbox WHERE id = ?").bind(row.id).run();
@@ -147,6 +153,18 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
         message.payload.number,
         message.payload.body,
       );
+      return;
+    case "push.recheck":
+      // An App push the engine hadn't recorded making when it arrived (#190 review): judged again
+      // as the GitHub intake, now that any write of the engine's own has committed.
+      await invoke(invokeDeps(env), "push.observe", message.payload.input, {
+        actor: GITHUB_INTAKE,
+        origin: {
+          surface: "connector",
+          requestId: `push.recheck:${String(message.payload.input.after ?? "")}`,
+        },
+        idempotencyKey: `push.recheck:${String(message.payload.input.ref ?? "")}:${String(message.payload.input.after ?? "")}`,
+      });
       return;
     case "queue.pull":
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).

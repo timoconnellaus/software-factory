@@ -68,7 +68,7 @@ type RunRow = {
 export const pushObserve = defineOperation({
   name: "push.observe",
   description:
-    "The GitHub connector saw a push. To the default branch: nothing to do (config lives in the app, ADR 0370; `.factory/policy.json` there is no longer read). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch; anything else fails the work item's active run (bumping its fencing token) and is audited. A person's push to the branch of a factory-built work item in verify or at its merge gate (ADR 0587), when GitHub shows it is the branch's head: the item records the new head, an open merge gate or an approval the babysitter holds for the old head is withdrawn, and (Workflow v14) the item verifies the new head again without a build (`reverify`); with nothing open to withdraw on an older version, the push is only recorded (`told`). People's other pushes are ignored here (`factory/verify` guards their PRs).",
+    "The GitHub connector saw a push. To the default branch: nothing to do (config lives in the app, ADR 0370; `.factory/policy.json` there is no longer read). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch (a head the engine itself made: a handed-back run's, a spec commit, the merge queue's own merge); anything else fails the work item's active run (bumping its fencing token) and is audited. With no run active, an App push the engine doesn't know is judged again after two minutes (`push.recheck`, the engine records its SHAs only once GitHub answers), and then, still unknown, it is a violation: the approval is withdrawn as for a person's push, the head verified again, and the requester told. A person's push to the branch of a factory-built work item in verify or at its merge gate (ADR 0587), when GitHub shows it is the branch's head: the item records the new head, an open merge gate or an approval the babysitter holds for the old head is withdrawn, and (Workflow v14) the item verifies the new head again without a build (`reverify`); with nothing open to withdraw on an older version, the push is only recorded (`told`). People's other pushes are ignored here (`factory/verify` guards their PRs).",
   risk: "write",
   actors: ["intake"],
   permission: "signed-in",
@@ -83,6 +83,8 @@ export const pushObserve = defineOperation({
     after: z.string().regex(/^[0-9a-f]{40}$/),
     pusher: z.string().max(200),
     pusherIsApp: z.boolean(),
+    /** The delayed second look at an App push the engine hadn't recorded (`push.recheck`). */
+    recheck: z.boolean().default(false),
   }),
   output: z.object({
     outcome: z.enum(["policy", "ok", "violation", "ignored", "reverify", "told"]),
@@ -173,24 +175,106 @@ export const pushObserve = defineOperation({
     }
 
     // The work item's branch moves only by the control plane (ADR 0052 item 3): to a handed-back
-    // run's head, or a spec commit. A head no handed-back run had, while a run is active, is a run
-    // pushing where it may not.
+    // run's head, a spec commit, or the merge queue's own merge of the default branch. A head the
+    // engine didn't make, while a run is active, is a run pushing where it may not.
     const accepted = runs.some((r) => r.status === "handed_back" && r.head_sha === input.after);
-    if (accepted || item.head_sha === input.after || active.length === 0) {
+    if (accepted || item.head_sha === input.after || (await engineMade(ctx, item, input.after))) {
       return {
         outcome: "ok" as const,
         detail: accepted ? "advanced to a handed-back run" : "a control-plane move",
         ...none,
       };
     }
-    return violation(
-      ctx,
-      item,
-      active,
-      `the App pushed the work item's branch ${branch} to ${input.after.slice(0, 7)}, which only the control plane moves`,
-    );
+    if (active.length > 0) {
+      return violation(
+        ctx,
+        item,
+        active,
+        `the App pushed the work item's branch ${branch} to ${input.after.slice(0, 7)}, which only the control plane moves`,
+      );
+    }
+    // With no run of this item active, a head the engine didn't make is still never "a control-plane
+    // move" (#190 review): another job's token of the same App can push here. The engine records
+    // the SHAs it makes only once GitHub answers, so a delivery can arrive first: judged again
+    // after PUSH_RECHECK_MS, then a violation unless the engine made it by then.
+    if (!input.recheck) {
+      ctx.emit({
+        kind: "push.recheck",
+        payload: {
+          input: { ...input, recheck: true },
+          notBefore: new Date(Date.parse(ctx.now) + PUSH_RECHECK_MS).toISOString(),
+        },
+      });
+      return {
+        outcome: "ok" as const,
+        detail: `the App pushed ${input.after.slice(0, 7)}, which the engine hasn't recorded making yet: checked again shortly`,
+        ...none,
+      };
+    }
+    return foreignPush(ctx, item, input.after, branch);
   },
 });
+
+/** How long an App push the engine doesn't know yet waits before it is judged a violation. */
+export const PUSH_RECHECK_MS = 2 * 60_000;
+
+/**
+ * Whether the engine itself made `sha` on the item's branch, from its own records: the merge
+ * queue's merge of the default branch (its recorded `update_merge_sha`, or the head it accepted)
+ * or a spec commit. A handed-back run's head and the item's head are checked by the caller.
+ */
+async function engineMade(ctx: HandlerContext, item: WorkItemRow, sha: string): Promise<boolean> {
+  const [queued, spec] = await Promise.all([
+    ctx.db
+      .selectFrom("core_merge_queue")
+      .select("id")
+      // core_merge_queue_item_idx (work_item_id, enqueued_at): the item's few entries.
+      .where("work_item_id", "=", item.id)
+      .where((eb) => eb.or([eb("update_merge_sha", "=", sha), eb("head_sha", "=", sha)]))
+      .limit(1)
+      .executeTakeFirst(),
+    ctx.db
+      .selectFrom("core_specs")
+      .select("id")
+      .where("id", "=", item.current_spec_id ?? "")
+      .where("commit_sha", "=", sha)
+      .executeTakeFirst(),
+  ]);
+  return !!queued || !!spec;
+}
+
+/**
+ * An App push to an item's branch that the engine didn't make and no run of the item made: a
+ * branch-confinement violation (#190 review). If it is still the branch's head, it is treated as a
+ * person's push would be (the approval withdrawn, the new head verified again), and the requester
+ * is told; a head that has moved on is left to that newer push's own delivery.
+ */
+async function foreignPush(ctx: HandlerContext, item: WorkItemRow, sha: string, branch: string) {
+  const none = { failedRuns: [] as string[], policy: null };
+  const head = await ctx.services.github
+    .getBranchSha(await repoRef(ctx, requireRepository(ctx)), branch)
+    .catch(() => null);
+  const why = `the App pushed ${branch} to ${sha.slice(0, 7)}, which neither the engine nor a run of #${item.number} made`;
+  ctx.emit({
+    kind: "notify",
+    payload: {
+      event: "run.confinement",
+      userId: item.requester_user_id,
+      workItemId: item.id,
+      title: `A push the factory didn't make reached #${item.number}'s branch`,
+      url: `/work/${item.id}`,
+    },
+  });
+  if (head !== sha) {
+    return {
+      outcome: "violation" as const,
+      detail: `${why}; the branch has moved on to ${head?.slice(0, 7) ?? "an unknown head"}`,
+      ...none,
+    };
+  }
+  const pushed = await personPushed(ctx, item, sha, "an App push no run made");
+  return { outcome: "violation" as const, detail: `${why}; ${pushed.detail}`, ...none };
+}
 
 /**
  * A push by someone other than the factory's App (ADR 0587): to a factory-built item's own branch

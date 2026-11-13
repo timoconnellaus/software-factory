@@ -69,6 +69,11 @@ export type OutboxMessage =
         body: string;
       };
     }
+  /**
+   * Judge an App push again after `notBefore` (#190 review): `push.observe` with `recheck`, for a
+   * head the engine hadn't recorded making when the push arrived. Held in the outbox until then.
+   */
+  | { kind: "push.recheck"; payload: { input: Record<string, unknown>; notBefore: string } }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
