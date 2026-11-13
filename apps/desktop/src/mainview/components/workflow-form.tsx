@@ -16,7 +16,13 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { ChevronDownIcon, ChevronUpIcon, LockIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { type ConfigEditor, type Doc, EditSection, Segmented } from "./config-editor.tsx";
+import {
+  CharCount,
+  type ConfigEditor,
+  type Doc,
+  EditSection,
+  Segmented,
+} from "./config-editor.tsx";
 import { Chip, Panel } from "./shell-list.tsx";
 
 const ROLES = ["triage", "implement", "review", "summarise"] as const;
@@ -97,16 +103,21 @@ export function WorkflowsForm({
   editor,
   selected,
   onSelect,
+  orgWorkflows,
 }: {
   editor: ConfigEditor;
-  selected: number;
-  onSelect: (i: number) => void;
+  /** The chosen workflow by name, never by position: a version that moves can reorder them. */
+  selected: string | null;
+  onSelect: (name: string | null) => void;
+  /** The org's workflows a project may run instead (`workflow.list`), id and name. */
+  orgWorkflows: { id: string; name: string }[];
 }) {
   const { doc, set } = editor;
   if (!doc) return null;
   const agents = list<Agent>(doc.agents);
   const workflows = list<Workflow>(doc.workflows);
-  const index = Math.min(selected, Math.max(workflows.length - 1, 0));
+  const found = workflows.findIndex((w) => w.name === selected);
+  const index = found >= 0 ? found : 0;
   const wf = workflows[index];
   const setWorkflow = (fn: (w: Workflow) => void) =>
     set((d) => {
@@ -121,14 +132,39 @@ export function WorkflowsForm({
       note="Pick one to edit. With none, every item follows the skeleton alone. Workflows only add steps: the gates in the skeleton always run."
       testId="workflows-form"
     >
-      <div className="flex flex-wrap items-center gap-1.5 py-2.5" data-testid="workflow-picker">
+      <div className="flex flex-wrap items-center gap-2 py-2.5" data-testid="workflow-runs">
+        <span className="font-medium text-[13px]">This project runs</span>
+        <Pick
+          label="The workflow this project runs"
+          className="w-[220px]"
+          value={typeof doc.workflow === "string" ? doc.workflow : ""}
+          options={[
+            { value: "", label: "None: the stages alone" },
+            ...workflows.map((w) => ({ value: w.name, label: w.name })),
+            ...orgWorkflows.map((w) => ({ value: w.id, label: `${w.name} (the org's)` })),
+          ]}
+          onChange={(v) =>
+            set((d) => {
+              if (v) d.workflow = v;
+              else delete d.workflow;
+            })
+          }
+        />
+        <span className="text-ink-3 text-xs">
+          Switching to a workflow without a check another has loosens: it waits for an approver.
+        </span>
+      </div>
+      <div
+        className="flex flex-wrap items-center gap-1.5 border-line-soft border-t py-2.5"
+        data-testid="workflow-picker"
+      >
         {workflows.map((w, i) => (
           <Button
             // biome-ignore lint/suspicious/noArrayIndexKey: names can repeat while being edited; position is the identity.
             key={`${w.name}-${i}`}
             size="sm"
             variant={i === index ? "default" : "outline"}
-            onClick={() => onSelect(i)}
+            onClick={() => onSelect(w.name)}
           >
             {w.name || "(unnamed)"}
           </Button>
@@ -145,7 +181,7 @@ export function WorkflowsForm({
                 { name: `Workflow ${all.length + 1}`, description: "", slots: {}, core: {} },
               ];
             });
-            onSelect(workflows.length);
+            onSelect(`Workflow ${workflows.length + 1}`);
           }}
         >
           New workflow
@@ -155,12 +191,25 @@ export function WorkflowsForm({
         <WorkflowEditor
           workflow={wf}
           agents={agents}
-          onChange={setWorkflow}
+          onChange={(fn) => {
+            // A rename keeps it chosen, and the project keeps running it if it did.
+            const before = wf.name;
+            const probe = structuredClone(wf);
+            fn(probe);
+            if (probe.name !== before) {
+              onSelect(probe.name);
+              if (doc.workflow === before)
+                set((d) => {
+                  d.workflow = probe.name;
+                });
+            }
+            setWorkflow(fn);
+          }}
           onRemove={() => {
             set((d) => {
               d.workflows = list<Workflow>(d.workflows).filter((_, i) => i !== index);
             });
-            onSelect(0);
+            onSelect(null);
           }}
         />
       )}
@@ -313,7 +362,7 @@ function SlotView({
         <span className="font-medium">{meta?.[1]}</span>
         <span className="text-ink-3">{meta?.[2]}</span>
         <span className="grow" />
-        <span className="flex gap-1.5">
+        <span className="flex flex-wrap gap-1.5">
           <Button size="sm" variant="outline" className="h-7" onClick={() => onAdd(slot, "work")}>
             Add a work step
           </Button>
@@ -420,6 +469,7 @@ function StepEditor({
           })
         }
       />
+      <CharCount value={step.instructions ?? ""} />
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-ink-3">Only when</span>
         <Pick
@@ -434,7 +484,7 @@ function StepEditor({
         />
         <Input
           className="h-8 w-44 text-xs"
-          placeholder="Touches domain (optional)"
+          placeholder="Domain (optional)"
           aria-label="Touches domain"
           value={step.when?.domain ?? ""}
           onChange={(e) => setWhen("domain", e.target.value.trim())}
@@ -549,6 +599,7 @@ export function AgentsForm({ editor }: { editor: ConfigEditor }) {
               })
             }
           />
+          <CharCount value={a.instructions ?? ""} />
         </div>
       ))}
       <div className="py-2.5">

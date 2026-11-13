@@ -14,7 +14,7 @@ const sources = import.meta.glob("../src/**/*.ts", {
  * new one needs a reason this short list can't give.
  */
 const PENDING: Record<string, string> = {
-  "../src/planning-hub.ts": "spec 44 PR 2 (planning.wait in the Worker) and PR 3 (the SSE stream)",
+  "../src/planning-hub.ts": "spec 44 PR 3: the website Planning tab's SSE keepalive (setInterval)",
 };
 
 const durableObjects = Object.entries(sources).filter(([, text]) =>

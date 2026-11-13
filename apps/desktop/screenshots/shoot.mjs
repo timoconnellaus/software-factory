@@ -211,6 +211,13 @@ export const SCREENS = [
     scrollTo: "decision",
   },
   { name: "item-activity", path: "/work/wi_13?tab=activity", design: "ItemActivity.html" },
+  // ADR 0591: the item's archived entries read back from the audit archive.
+  {
+    name: "item-activity-archived",
+    path: "/work/wi_13?tab=activity",
+    design: "ItemActivity.html",
+    clicks: ['[data-testid="show-archived"]'],
+  },
   { name: "new-item", path: "/new", design: "WorkNew.html" },
   { name: "setup", path: "/setup", design: "Setup.html" },
   { name: "this-mac", path: "/settings", design: "SettingsDevices.html" },
