@@ -15,6 +15,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { useMemo } from "react";
 import { lineDiff } from "../lib/line-diff.ts";
 import { read } from "../lib/op.ts";
+import { planningLayout, useMedia, WIDE_PLANNING } from "../lib/use-media.ts";
 
 /** The write-back for the plan as it stands: keyed on the spec and each artifact's revision. */
 const writeBackQuery = (workItemId: string, view: PlanningView) =>
@@ -43,6 +44,9 @@ export function approveLabel(kimCount: number | undefined): string {
 
 export function WriteBack({ workItemId, view }: { workItemId: string; view: PlanningView }) {
   const data = useWriteBack(workItemId, view, true);
+  // In a narrow window the list starts folded to its one line, so the panes keep their room
+  // (review of #130); the approve button still says how many files it writes.
+  const roomy = planningLayout(true, useMedia(WIDE_PLANNING)).writeBackOpen;
   if (!data) {
     return (
       <div
@@ -55,8 +59,8 @@ export function WriteBack({ workItemId, view }: { workItemId: string; view: Plan
   }
   return (
     <Collapsible
-      defaultOpen
-      className="flex max-h-[40vh] flex-none flex-col border-line-soft border-t bg-panel"
+      defaultOpen={roomy}
+      className="flex max-h-[30vh] flex-none flex-col border-line-soft border-t bg-panel"
       data-testid="write-back"
     >
       <CollapsibleTrigger className="group flex items-center gap-1.5 px-[22px] pt-2.5 pb-1.5 text-left font-semibold text-sm">
