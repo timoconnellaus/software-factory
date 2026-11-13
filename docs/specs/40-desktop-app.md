@@ -74,7 +74,8 @@ The build lands as five milestones, each one PR (or more), in order.
    - an expired challenge;
    - a signature from another device or a revoked device.
 5. `cli.approveDevice`, `desktop.approveDevice`, runner registration and turning a kill switch off
-   stay refused on `desktop` even with a proof.
+   stay refused on `desktop` even with a proof. *(Amended 2026-11-13, ADR 0610: turning a kill
+   switch off is decided on the desktop with a proof; the rest stay refused.)*
 6. A proof from a device with a software key is refused, unless the engine runs with
    `DESKTOP_ALLOW_SOFTWARE_KEYS=1`. The default refuses.
 7. A CLI token can't ask for a challenge (`presence.challenge` is desktop-only). Its gate calls are
@@ -515,6 +516,13 @@ the profile never ships a helper that failed a check.
   and the website show the same key fingerprint, and it then holds a Secure Enclave key; an
   unsigned dev build still signs in with a declared software key.
 - `DESKTOP_ALLOW_SOFTWARE_KEYS` is empty in every deployed config (the existing test still passes).
+
+**Note, 2026-11-13 (ADR 0610): a new decision needs a new helper build.** The key helper signs
+only the operations in its generated list (`PresenceOps.swift`, from the registry's desktop
+presence-decidable operations; `test/keys-helper.test.ts` fails until it is regenerated). So every
+operation newly made decidable on the desktop needs that list regenerated **and a new canary** of
+the app before any Mac can approve it; until a person has installed that build, the helper refuses
+the prompt and the decision can only be made where else it is allowed.
 
 ## M5: the website shrinks to auth
 `apps/app` keeps sign-in, Connect GitHub, the device approval pages, device management and
