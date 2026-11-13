@@ -7,6 +7,7 @@ import Electrobun, {
   ApplicationMenu,
   BrowserView,
   BrowserWindow,
+  Screen,
   Tray,
   Updater,
   Utils,
@@ -30,6 +31,7 @@ import { titleBarDoubleClick } from "./title-bar.ts";
 import { bunExec, runningAppPath } from "./update-verify.ts";
 import { type UpdaterLike, Updates } from "./updates.ts";
 import { viewUrl } from "./view-url.ts";
+import { DEFAULT_SIZE, FrameKeeper, fileStore, restoreFrame } from "./window-frame.ts";
 
 const ENGINE_URL = process.env.SF_ENGINE_URL ?? "https://sf-engine.zerobsai.com";
 /** The inbox count's fallback refresh; the live socket brings changes the moment they happen. */
@@ -68,6 +70,8 @@ await auth.init();
 
 const VIEW_URL = viewUrl(await Updater.localInfo.channel(), process.env.SF_VIEW_URL);
 let win: BrowserWindow | null = null;
+// Where the person left the window, restored on every launch (and after an update's relaunch).
+const frames = new FrameKeeper(fileStore(dataDir));
 let pendingPath: string | null = null;
 let inboxCount = 0;
 let seenGates = new Set<string>();
@@ -198,11 +202,21 @@ function openWindow(path?: string) {
     if (path) toView("navigate", { path });
     return;
   }
+  // The saved frame if it still fits a connected display; else the default size, centred.
+  let displays: { x: number; y: number; width: number; height: number }[] = [];
+  try {
+    displays = Screen.getAllDisplays().map((d) => d.workArea);
+  } catch {
+    // No display list: the default, centred.
+  }
+  const restored = restoreFrame(frames.saved(), displays);
   win = new BrowserWindow({
     title: "Software Factory",
     url: VIEW_URL,
     rpc,
-    frame: { width: 1200, height: 800, x: 120, y: 80 },
+    frame: restored
+      ? { x: restored.x, y: restored.y, width: restored.width, height: restored.height }
+      : { ...DEFAULT_SIZE },
     // The view draws the toolbar under the traffic lights and marks it as the drag region (spec 41).
     titleBarStyle: "hiddenInset",
     trafficLightOffset: { x: 5, y: 6 },
@@ -215,7 +229,13 @@ function openWindow(path?: string) {
     if (pendingPath) toView("navigate", { path: pendingPath });
     pendingPath = null;
   });
+  if (restored?.fullScreen) win.setFullScreen(true);
+  else if (restored?.zoomed) win.maximize();
+  const w = win;
+  w.on("move", () => frames.changed(w));
+  w.on("resize", () => frames.changed(w));
   win.on("close", () => {
+    frames.flush(w);
     win = null;
     terminals.closeAll();
   });
@@ -630,6 +650,7 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 });
 
 async function quit() {
+  frames.flush(win);
   // A decision waiting for Touch ID: take the sheet down with the app (spec 40 M4b).
   helper.cancel();
   live.stop();
@@ -638,6 +659,7 @@ async function quit() {
   Utils.quit();
 }
 Electrobun.events.on("before-quit", async () => {
+  frames.flush(win);
   helper.cancel();
   await runner.stop();
 });
