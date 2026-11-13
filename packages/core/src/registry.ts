@@ -7,6 +7,7 @@ import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
@@ -194,8 +195,13 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.mainObserve,
   delivery.workItemMarkRepair,
   delivery.deliveryStatus,
+  delivery.mainRedAttribute,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
+  babysit.babysitWake,
+  babysit.babysitNext,
+  babysit.ciRerun,
+  babysit.flakeRecord,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,
@@ -207,6 +213,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   connector.pushObserve,
   connector.githubInstallation,
   incidents.incidentOpen,
+  incidents.incidentListArchiveMissing,
+  incidents.incidentResolve,
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,
@@ -229,6 +237,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   terminal.runTerminalAttach,
   terminal.runTerminalDetach,
   terminal.runTerminalHost,
+  terminal.runTerminalCloseStale,
   runners.runAddArtifact,
   runners.runHandBack,
   runners.runRelease,

@@ -85,7 +85,8 @@ export type ReadOpName =
   | "stageType.list"
   | "workflow.preview"
   | "killSwitch.list"
-  | "orgConfig.previewRollback";
+  | "orgConfig.previewRollback"
+  | "incident.listArchiveMissing";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

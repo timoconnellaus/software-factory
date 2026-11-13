@@ -15,6 +15,7 @@ import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
 import { checkSummary } from "../shared/update-check.ts";
 import { Auth } from "./auth.ts";
 import { parseDeepLink } from "./deeplink.ts";
+import { helper } from "./device-key.ts";
 import { Door } from "./door.ts";
 import { acquireInstanceLock, watchParent } from "./instance.ts";
 import { Live, liveUrl } from "./live.ts";
@@ -93,6 +94,9 @@ const ops = operationHandlers({
   },
 });
 const guarded = ops.guarded;
+// While a decision waits for Touch ID the view shows "Waiting for Touch ID: <summary>" (the sheet's
+// words) with Cancel (spec 40 M4b).
+helper.watch({ waiting: (summary) => toView("touchIdChanged", { summary }) });
 // Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
 const terminals = new Terminals(
   ENGINE_URL,
@@ -124,6 +128,20 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         setBadge(0);
         return auth.session();
       },
+      signInAgain: async () => {
+        try {
+          const url = await auth.signInAgain(() => {
+            live.stop();
+            terminals.closeAll();
+            setBadge(0);
+          });
+          Utils.openExternal(url);
+        } catch (error) {
+          auth.error = error instanceof Error ? error.message : "couldn't start the sign-in";
+        }
+        return auth.session();
+      },
+      cancelTouchId: () => ({ cancelled: helper.cancel() }),
       // Operations through the client door; gate decisions only through decide (operations.ts).
       call: ops.call,
       batch: ops.batch,
@@ -612,12 +630,15 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 });
 
 async function quit() {
+  // A decision waiting for Touch ID: take the sheet down with the app (spec 40 M4b).
+  helper.cancel();
   live.stop();
   terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }
 Electrobun.events.on("before-quit", async () => {
+  helper.cancel();
   await runner.stop();
 });
 // If the launcher dies, don't linger as an orphan with a runner (ADR 0390).

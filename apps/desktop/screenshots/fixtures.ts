@@ -1071,6 +1071,8 @@ function run(
       : null,
     startedAt: ago(startedMin),
     endedAt: endedMin === null ? null : ago(endedMin),
+    log: "kept",
+    archiveIncident: null,
   };
 }
 
@@ -1722,7 +1724,54 @@ const released = (input: { workItemId: string }) => {
   return { status: "queued", blockedBy: [] };
 };
 
+/**
+ * #9's first two runs show where an old run's log is (AGENTS.md "Cloudflare cost"): the triage
+ * run's archived to R2, the spec run's lost from the archive with its incident open. (Real runs are
+ * archived 30 days after they end; the fixture's are recent, for the shot.)
+ */
+function withArchivedLogs(d: OpOutput<"workItem.get">): OpOutput<"workItem.get"> {
+  if (d.item.id !== "wi_9") return d;
+  return {
+    ...d,
+    runs: d.runs.map((r) =>
+      r.runNo === 1
+        ? { ...r, log: "archived" as const }
+        : r.runNo === 2
+          ? {
+              ...r,
+              log: "missing" as const,
+              archiveIncident: { id: "incident_lost", resolvedAt: null },
+            }
+          : r,
+    ),
+  };
+}
+
+/** One open archive incident: #4's run 2 lost an object from sf-archive. */
+const ARCHIVE_INCIDENTS = () => {
+  const four = ITEMS.find((i) => i.number === 4);
+  return four
+    ? [
+        {
+          id: "incident_lost",
+          projectId: four.projectId,
+          workItemId: four.id,
+          workItemNumber: four.number,
+          workItemTitle: four.title,
+          runId: "run_2",
+          reason: `run 2's archived log: runs/run_2/events/0-199.ndjson is missing from sf-archive`,
+          createdAt: ago(60 * 5),
+        },
+      ]
+    : [];
+};
+
 export const ANSWERS: Answers = {
+  "incident.listArchiveMissing": (input) => ({
+    incidents: input.orgId === PERSONAL ? ARCHIVE_INCIDENTS() : [],
+    more: false,
+  }),
+  "incident.resolve": () => ({ resolved: true }),
   "org.list": () => ({
     userId: ME,
     orgs: [
@@ -1754,7 +1803,7 @@ export const ANSWERS: Answers = {
   "workItem.list": (input) => ({
     items: [...ITEMS, ...FACTORY_ITEMS].filter((i) => !input.orgId || i.orgId === input.orgId),
   }),
-  "workItem.get": (input) => detail(input.workItemId),
+  "workItem.get": (input) => withArchivedLogs(detail(input.workItemId)),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
   "workItem.timeline": () => TIMELINE,

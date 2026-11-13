@@ -12,6 +12,7 @@
     },
     "test": {
       "dependsOn": ["^typecheck"],
+      "passThroughEnv": ["VITEST_MAX_WORKERS"],
       "outputs": []
     },
     "types": {

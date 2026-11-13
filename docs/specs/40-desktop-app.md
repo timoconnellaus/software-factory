@@ -390,7 +390,7 @@ the profile never ships a helper that failed a check.
   `MACOS_KEYS_PROFILE`. It goes where the spike says (`Contents/Helpers/SF Keys.app` unless the
   spike shows Electrobun re-signs it there); `device-key.ts` runs `…/SF Keys.app/Contents/MacOS/sf-keys`.
 - **The helper's signature.** The Developer ID, `--options runtime`, `--timestamp`, and exactly these
-  entitlements (`native/sf-keys.entitlements`, Team ID filled in at build time):
+  entitlements (`native/sf-keys-app/sf-keys.entitlements`, Team ID filled in at build time):
   `com.apple.application-identifier` and `keychain-access-groups` =
   `<TeamID>.com.software-factory.desktop.keys`, `com.apple.developer.team-identifier` = `<TeamID>`.
   No JIT, no `disable-library-validation`. The app's own entitlements stay JIT-only.
@@ -408,8 +408,8 @@ the profile never ships a helper that failed a check.
   `.userPresence`, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, and no
   `touchIDAuthenticationAllowableReuseDuration`.
 - **The prompt.** `sign` sets `localizedReason` from the summary line, worded to complete macOS's
-  sentence "SF Keys is trying to …" (for example "SF Keys is trying to merge 3f2a91c "Fix the inbox
-  count" into main of acme/widgets"). The summary is the engine's (`describeDecision`); the helper
+  sentence "SF Keys is trying to …" (for example "SF Keys is trying to merge 3f2a91c into main of
+  acme/widgets: "Fix the inbox count""). The summary is the engine's (`describeDecision`); the helper
   takes no prompt text from its caller.
 - **Timeouts and cancel.** A presence challenge lives 60 s. The app kills the helper (`SIGTERM`, then
   `SIGKILL` after 2 s) when the challenge expires or the person cancels in the app; the helper
@@ -435,6 +435,10 @@ the profile never ships a helper that failed a check.
     profile's values, where `<TeamID>.*` allows the group), and the profile's certificate is the
     signing certificate;
   - the step prints the profile's `ExpirationDate`, and warns when it is under 60 days away.
+- **In the app (2026-11-13):** `device-key.ts` runs `Contents/Helpers/SF Keys.app/Contents/MacOS/sf-keys`
+  (the bare `sf-keys` in `Resources` is gone); "Waiting for Touch ID: \<summary\>" is a toast with
+  Cancel; the re-enrol offer is a toast on launch and a button on This Mac; the sign-in screen shows
+  the new key's fingerprint while it waits for the browser.
 - **Migration.** A Mac signed in with a software key on an earlier signed build: on launch, when the
   helper works and the stored key is `software`, the app says "This Mac can now keep its key in the
   Secure Enclave: sign in again". Choosing it signs out as today (`desktopDevice.revoke` on its own
@@ -486,9 +490,17 @@ the profile never ships a helper that failed a check.
   prompt that shows the call's summary; the app shows `keyStorage: "secure-enclave"`, and a gate
   decided from the desktop is recorded with its presence proof.
 - **What the prompt shows.** The summary of a merge names the repository, the commit being merged
-  (short SHA) and the work item's title, and says so plainly when the merge is without checks
-  (`mergeWithoutChecks`): `Merge 3f2a91c "Fix the inbox count" into main of acme/widgets, without
-  its checks`. Every client sends `headSha` with `review.merge`, so the proof binds the commit.
+  (short SHA) and the work item's title, and says so plainly, **first**, when the merge is without
+  checks (`mergeWithoutChecks`): `Merge WITHOUT its checks: 3f2a91c into main of acme/widgets: "Fix
+  the inbox count"`. Every client sends `headSha` with `review.merge`, so the proof binds the
+  commit. **The engine's facts come first and any title last** (amended 2026-11-13, reviews of
+  #150): a title is agent-written, so it is quoted last with double quotes, format characters (Cf)
+  and line breaks removed, and gets only the room the facts leave under 120 characters (`titled`,
+  `MAX_SUMMARY`); **the facts are never cut** (only a merge's branch name is shortened, in the
+  middle, if the facts alone would pass 280 characters, `MAX_FACTS`, under the helper's 300). A
+  title can't pose as the repository or push the facts off the sheet, an unusual condition is in
+  the first words, and a title can't make an item undecidable (the helper refuses Cf, Zl, Zp and
+  control characters). Every `describeDecision` case follows this, new ones included.
 - Killing the helper on expiry or cancel takes the Touch ID sheet down; each exit code above maps to
   its own message in the app; a second decision while one waits is refused; the app shows "Waiting
   for Touch ID: \<summary\>".

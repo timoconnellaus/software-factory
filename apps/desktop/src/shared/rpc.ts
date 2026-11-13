@@ -26,6 +26,16 @@ export interface Session {
   keyStorage: "secure-enclave" | "software" | null;
   signingIn: boolean;
   error: string | null;
+  /**
+   * While signing in: the new device key's fingerprint, which the website's approval page shows
+   * too. The person approves only when they match (spec 40 M4b).
+   */
+  keyFingerprint: string | null;
+  /**
+   * This Mac has a software key but its build has a working key helper: it can keep its key in the
+   * Secure Enclave by signing in again (spec 40 M4b, migration).
+   */
+  keyUpgrade: boolean;
 }
 
 /**
@@ -91,6 +101,10 @@ export type AppRPC = {
       session: { params: Record<string, never>; response: Session };
       signIn: { params: Record<string, never>; response: Session };
       signOut: { params: Record<string, never>; response: Session };
+      /** Sign out and straight back in, making a Secure Enclave key (spec 40 M4b, migration). */
+      signInAgain: { params: Record<string, never>; response: Session };
+      /** The person cancelled the decision waiting for Touch ID: the sheet goes away. */
+      cancelTouchId: { params: Record<string, never>; response: { cancelled: boolean } };
       /** One operation; a form submit passes an idempotency key so a retry runs once. */
       call: {
         params: { op: string; input: unknown; idempotencyKey?: string };
@@ -153,6 +167,8 @@ export type AppRPC = {
     requests: Record<string, never>;
     messages: {
       sessionChanged: Session;
+      /** A decision is waiting for Touch ID (its summary, the sheet's words), or none is (null). */
+      touchIdChanged: { summary: string | null };
       runnerChanged: RunnerState;
       inboxChanged: { count: number };
       planningChanged: { workItemId: string };

@@ -49,6 +49,14 @@ export type OutboxMessage =
    * 0580). `repositoryId` null: the project's items that record no repository.
    */
   | { kind: "delivery.wake"; payload: { projectId: string; repositoryId: string | null } }
+  /**
+   * Re-evaluate `factory/verify` on a head after this call commits (`verify.refresh`): a red episode
+   * opened or closed (spec 53, decision 7), so its "held: main is red" goes on or comes off.
+   */
+  | {
+      kind: "verify.recheck";
+      payload: { repo: { owner: string; name: string }; headSha: string; prNumber: number | null };
+    }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
