@@ -1,6 +1,6 @@
 # ADR 0580: Approval and delivery are separate; the babysitter delivers
 
-Status: proposed, 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md));
+Status: accepted, 2026-11-13; proposed 2026-11-12 (spec [53](../specs/53-the-babysitter-delivers-approved-work.md));
 the owner asked for it, the open points are spec 53's questions. Amends
 [ADR 0330](0330-the-factory-runs-its-own-merge-queue.md) and [ADR 0006](0006-work-item-workflows.md);
 fits ADR 0515 (dark factory mode, PR #98) and [ADR 0511](0511-a-reconciler-runs-the-stage-list.md).
@@ -42,3 +42,6 @@ the factory.
 - Throughput stays one merge per CI run per repository; batching is a later choice.
 - Under spec 52 this is the built-in `deliver` stage type, the last delivery stage of any workflow
   that merges into a repository; tighten-only.
+
+> Amended 2026-11-13: the owner answered spec 53's eight questions and accepted every
+> recommendation (spec 53, **Decisions**). This ADR is accepted as written.
