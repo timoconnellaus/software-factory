@@ -72,6 +72,7 @@ export {
   PLANNING_SESSION_TIMEOUT_MS,
   PRESENCE_TTL_MS,
   planningReadyEvent,
+  USER_EVENTS,
 } from "./planning.ts";
 export * from "./policy/gate.ts";
 export * from "./policy/impact.ts";

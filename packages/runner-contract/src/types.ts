@@ -105,6 +105,12 @@ export const CAPABILITIES = [
    * only on a runner that declares it: an older host would read the stage as unknown.
    */
   "babysit",
+  /**
+   * The runner host keeps one hibernatable WebSocket per running job to the job's relay, the job
+   * line (spec 44 part B, ADR 0592), and makes its steer, terminal and planning calls when the line
+   * says so instead of holding them. Used only when the engine's heartbeat also declares it.
+   */
+  "job-line",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
