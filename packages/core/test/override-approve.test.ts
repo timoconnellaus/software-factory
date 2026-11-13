@@ -81,14 +81,51 @@ async function member(w: W, role: "member" | "admin") {
   return { type: "human" as const, id };
 }
 
+/** What the person was shown: the override's value and the project's config version. */
+async function seen(w: Awaited<ReturnType<typeof world>>) {
+  const got = await ok<{ current: { version: number } | null }>(
+    "config.get",
+    { projectId: w.projectId },
+    w.human,
+  );
+  return { value: "medium", configVersion: got.current?.version ?? 0 };
+}
+
 describe("override.approve", () => {
+  it("binds the value and the config version the person was shown (review of #156)", async () => {
+    const w = await world();
+    await unapprovedOverride(w);
+    const base = {
+      projectId: w.projectId,
+      stageId: "spec",
+      setting: "requiredFrom",
+      orgVersion: 2,
+    };
+    const s = await seen(w);
+    const otherValue = await refusal(
+      call("override.approve", { ...base, ...s, value: "small" }, w.human),
+    );
+    expect(otherValue.code).toBe("conflict");
+    const otherVersion = await refusal(
+      call("override.approve", { ...base, ...s, configVersion: s.configVersion + 1 }, w.human),
+    );
+    expect(otherVersion.code).toBe("conflict");
+    expect(await requiredFrom(w)).toBe("small");
+  });
+
   it("an org admin approves an existing looser override for the current org version, in one step", async () => {
     const w = await world();
     await unapprovedOverride(w);
     expect(await requiredFrom(w)).toBe("small");
     const out = await ok<{ approved: boolean; orgVersion: number; value: unknown }>(
       "override.approve",
-      { projectId: w.projectId, stageId: "spec", setting: "requiredFrom", orgVersion: 2 },
+      {
+        projectId: w.projectId,
+        stageId: "spec",
+        setting: "requiredFrom",
+        orgVersion: 2,
+        ...(await seen(w)),
+      },
       w.human,
     );
     expect(out).toEqual({ approved: true, orgVersion: 2, value: "medium" });
@@ -101,7 +138,13 @@ describe("override.approve", () => {
     const stale = await refusal(
       call(
         "override.approve",
-        { projectId: w.projectId, stageId: "spec", setting: "requiredFrom", orgVersion: 1 },
+        {
+          projectId: w.projectId,
+          stageId: "spec",
+          setting: "requiredFrom",
+          orgVersion: 1,
+          ...(await seen(w)),
+        },
         w.human,
       ),
     );
@@ -109,7 +152,13 @@ describe("override.approve", () => {
     const nothing = await refusal(
       call(
         "override.approve",
-        { projectId: w.projectId, stageId: "build", setting: "retryLimit", orgVersion: 2 },
+        {
+          projectId: w.projectId,
+          stageId: "build",
+          setting: "retryLimit",
+          orgVersion: 2,
+          ...(await seen(w)),
+        },
         w.human,
       ),
     );
@@ -119,7 +168,13 @@ describe("override.approve", () => {
     const forbidden = await refusal(
       call(
         "override.approve",
-        { projectId: w.projectId, stageId: "spec", setting: "requiredFrom", orgVersion: 2 },
+        {
+          projectId: w.projectId,
+          stageId: "spec",
+          setting: "requiredFrom",
+          orgVersion: 2,
+          ...(await seen(w)),
+        },
         plain,
       ),
     );
@@ -129,7 +184,13 @@ describe("override.approve", () => {
     const admin = await member(w, "admin");
     await ok(
       "override.approve",
-      { projectId: w.projectId, stageId: "spec", setting: "requiredFrom", orgVersion: 2 },
+      {
+        projectId: w.projectId,
+        stageId: "spec",
+        setting: "requiredFrom",
+        orgVersion: 2,
+        ...(await seen(w)),
+      },
       admin,
     );
     expect(await requiredFrom(w)).toBe("medium");
@@ -143,7 +204,13 @@ describe("override.approve", () => {
         invoke(
           deps,
           "override.approve",
-          { projectId: w.projectId, stageId: "spec", setting: "requiredFrom", orgVersion: 2 },
+          {
+            projectId: w.projectId,
+            stageId: "spec",
+            setting: "requiredFrom",
+            orgVersion: 2,
+            ...(await seen(w)),
+          },
           { actor: w.human, origin: { surface } },
         ),
       );

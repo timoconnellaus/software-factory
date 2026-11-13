@@ -4,9 +4,11 @@
 // deliverer lands only repairs, and every other approved delivery is held. `delivery.status` is the
 // Factory Overview's Babysitter line; `workItem.markRepair` is how a person says a fix repairs main.
 import type { CoreDatabase, MainHealthState } from "@software-factory/db";
-import type { Selectable } from "kysely";
+import { type Selectable, sql } from "kysely";
 import { z } from "zod";
+import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
+import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { approverIds } from "../scope.ts";
 import type { CheckRunInfo } from "../services.ts";
@@ -36,7 +38,25 @@ const mainHealth = z.object({
   redSince: z.string().nullable(),
   firstRedSha: z.string().nullable(),
   checkedAt: z.string(),
+  /** The open episode's suspects: the factory's landings since main was last green. */
+  suspects: z.array(
+    z.object({
+      workItemId: z.string(),
+      number: z.number(),
+      title: z.string(),
+      prNumber: z.number().nullable(),
+      mergeSha: z.string(),
+    }),
+  ),
+  /** The culprit, once proven (or named by a person), and why. Never a guess. */
+  culpritWorkItemId: z.string().nullable(),
+  attribution: z.string().nullable(),
+  /** Who named it: proven in code (it reproduced), a person, or the babysit job. */
+  attributedBy: z.enum(["proven", "person", "agent"]).nullable(),
+  /** A single landing waiting on its failing checks' rerun: not a culprit until it reproduces. */
+  candidateWorkItemId: z.string().nullable(),
 });
+type Suspect = z.infer<typeof mainHealth>["suspects"][number];
 
 function strings(text: string | null | undefined): string[] {
   try {
@@ -56,7 +76,187 @@ export function mainHealthOf(row: MainHealthRow): z.infer<typeof mainHealth> {
     redSince: row.red_since,
     firstRedSha: row.first_red_sha,
     checkedAt: row.checked_at,
+    suspects: parseSuspects(row.suspects),
+    culpritWorkItemId: row.culprit_work_item_id,
+    attribution: row.attribution,
+    attributedBy: row.attributed_by,
+    candidateWorkItemId: row.candidate_work_item_id,
   };
+}
+
+function parseSuspects(text: string | null | undefined): Suspect[] {
+  try {
+    const v = JSON.parse(text ?? "[]");
+    return Array.isArray(v) ? (v as Suspect[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Most suspects an episode keeps. */
+const MAX_SUSPECTS = 20;
+
+/**
+ * An episode's suspects (spec 53 §5): the factory's landings in the repository since main was last
+ * seen green, newest first. core_work_items_project_idx (project_id, status, updated_at): a range
+ * of the project's done items, at most MAX_SUSPECTS.
+ */
+async function suspectsSince(
+  ctx: HandlerContext,
+  projectId: string,
+  repositoryId: string,
+  since: string | null,
+): Promise<Suspect[]> {
+  if (!since) return [];
+  const rows = await ctx.db
+    .selectFrom("core_work_items")
+    .select(["id", "number", "title", "pr_number", "merge_sha"])
+    .where("project_id", "=", projectId)
+    .where("status", "=", "done")
+    .where("updated_at", ">=", since)
+    .where("repository_id", "=", repositoryId)
+    .where("merge_sha", "is not", null)
+    .orderBy("updated_at", "desc")
+    .limit(MAX_SUSPECTS)
+    .execute();
+  return rows.map((r) => ({
+    workItemId: r.id,
+    number: r.number,
+    title: r.title,
+    prNumber: r.pr_number,
+    mergeSha: String(r.merge_sha),
+  }));
+}
+
+/**
+ * The candidate culprit (ADR 0584: never revert a guess): exactly one landing since green, its merge
+ * commit is the first red head, and that commit's first parent is the last green head. It is proven
+ * only once the failing checks, rerun once on that head, fail again (`redReproduced`). Anything
+ * else (several landings, someone else's push in between) is left to the babysit job or a person.
+ */
+async function provenCulprit(
+  ctx: HandlerContext,
+  repo: Awaited<ReturnType<typeof repoRef>>,
+  suspects: Suspect[],
+  firstRed: string,
+  lastGreen: string | null,
+): Promise<{ workItemId: string; why: string } | null> {
+  const [only] = suspects;
+  if (suspects.length !== 1 || !only || only.mergeSha !== firstRed || !lastGreen) return null;
+  const parents = await ctx.services.github.commitParents(repo, firstRed).catch(() => []);
+  if (parents[0] !== lastGreen) return null;
+  return {
+    workItemId: only.workItemId,
+    why: `#${only.number}'s merge (${firstRed.slice(0, 7)}) is the only landing since ${lastGreen.slice(0, 7)} was green, and main went red on it`,
+  };
+}
+
+/**
+ * What `factory/verify` reads on a non-repair factory item's head while its repository's line is
+ * stopped (spec 53, decision 7): pending, so GitHub refuses a person's merge there too.
+ */
+export const HELD_TITLE = "held: main is red";
+/**
+ * An attached PR (opened outside the factory) while main is red: held too, saying the owner
+ * decides (decision 7 as written; the owner is asked whether attached PRs should be).
+ */
+export const ATTACHED_HELD_TITLE = "main is red: ask the owner";
+/** The one switch: whether an attached PR's `factory/verify` is held while main is red. */
+export const HOLD_ATTACHED = true;
+export const HELD_TITLES: ReadonlySet<string> = new Set([HELD_TITLE, ATTACHED_HELD_TITLE]);
+
+/**
+ * A red episode opened or closed: every open factory PR in the repository at its merge gate or in
+ * delivery gets `factory/verify` evaluated again (held, or released). The project's active items
+ * through core_work_items_project_idx (project_id, status), at most 50: the WIP limit keeps them few.
+ */
+async function recheckHeads(
+  ctx: HandlerContext,
+  projectId: string,
+  repository: { id: string; owner: string; name: string },
+): Promise<void> {
+  // Only heads in an open delivery state in this repository: the babysitter's queue
+  // (core_merge_queue_babysitter_idx, partial: queued babysitter entries) and open merge gates
+  // (core_pending_actions_open_merge_idx (project_id), partial: pending merge gates). Each at most 50.
+  const queued = await ctx.db
+    .selectFrom("core_merge_queue")
+    .innerJoin("core_work_items", "core_work_items.id", "core_merge_queue.work_item_id")
+    .select(["core_work_items.head_sha", "core_work_items.pr_number"])
+    .where("core_merge_queue.project_id", "=", projectId)
+    .where("core_merge_queue.status", "=", "queued")
+    .where("core_merge_queue.driver", "=", "babysitter")
+    .where("core_work_items.repository_id", "=", repository.id)
+    .limit(50)
+    .execute();
+  const gated = await ctx.db
+    .selectFrom("core_pending_actions")
+    .innerJoin("core_work_items", "core_work_items.id", "core_pending_actions.work_item_id")
+    .select(["core_work_items.head_sha", "core_work_items.pr_number"])
+    .where("core_pending_actions.project_id", "=", projectId)
+    .where("core_pending_actions.kind", "=", "merge")
+    .where("core_pending_actions.status", "=", "pending")
+    .where("core_work_items.repository_id", "=", repository.id)
+    .limit(50)
+    .execute();
+  const seen = new Set<string>();
+  for (const i of [...queued, ...gated]) {
+    if (!i.head_sha || !i.pr_number || seen.has(i.head_sha)) continue;
+    seen.add(i.head_sha);
+    ctx.emit({
+      kind: "verify.recheck",
+      payload: {
+        repo: { owner: repository.owner, name: repository.name },
+        headSha: i.head_sha,
+        prNumber: i.pr_number,
+      },
+    });
+  }
+}
+
+/** Whether check run `id` is newer than the rerun one (ids compared as numbers when they are). */
+function newerRun(id: string, rerun: string | null): boolean {
+  if (!rerun) return false;
+  const [a, b] = [Number(id), Number(rerun)];
+  return Number.isSafeInteger(a) && Number.isSafeInteger(b) ? a > b : id !== rerun;
+}
+
+/** How an unproven candidate's attribution starts (shown as such until it reproduces). */
+const CANDIDATE_PREFIX = "candidate, not proven: ";
+
+/** Failed conclusions for a rerun's proof. */
+const RED = new Set(["failure", "timed_out", "cancelled", "action_required"]);
+
+/**
+ * Whether the red on `head` reproduced (finding 3 of #162's review): the failing checks were each
+ * rerun once (core_ci_reruns, primary-key prefix) and every rerun has completed red after it was
+ * asked. A rerun still running, or one that passed, proves nothing.
+ */
+async function redReproduced(
+  ctx: HandlerContext,
+  repositoryId: string,
+  head: string,
+  runs: readonly CheckRunInfo[],
+): Promise<boolean> {
+  const reruns = await ctx.db
+    .selectFrom("core_ci_reruns")
+    .select(["check_name", "asked_at", "passed", "check_run_id"])
+    .where("repository_id", "=", repositoryId)
+    .where("head_sha", "=", head)
+    .limit(20)
+    .execute();
+  if (reruns.length === 0) return false;
+  return reruns.every((r) =>
+    runs.some(
+      (c) =>
+        c.name === r.check_name &&
+        c.status === "completed" &&
+        RED.has(c.conclusion ?? "") &&
+        !!c.completedAt &&
+        Date.parse(c.completedAt) > Date.parse(r.asked_at) &&
+        // A run newer than the one rerun (GitHub's rerun is a new check run with a higher id).
+        newerRun(c.id, r.check_run_id),
+    ),
+  );
 }
 
 export async function lineStopped(
@@ -164,6 +364,20 @@ export const mainObserve = defineOperation({
     const opens = state === "red" && !before?.red_since;
     const closes = state === "green" && !!before?.red_since;
     const audience = opens ? await mainRedAudience(ctx, project.org_id) : null;
+    // Who turned it red (spec 53 §5): the landings since the last green, fixed when it opens.
+    const suspects = opens
+      ? await suspectsSince(ctx, project.id, repository.id, before?.green_at ?? null)
+      : null;
+    const lastGreen = before?.last_green_sha ?? null;
+    // A single landing that fits is only a candidate: its failing checks are rerun once on the red
+    // head, and it is proven only if they fail again (a flake proves nothing).
+    const candidate = suspects ? await provenCulprit(ctx, repo, suspects, head, lastGreen) : null;
+    const reproduced =
+      state === "red" &&
+      !opens &&
+      !!before?.candidate_work_item_id &&
+      head === before.first_red_sha &&
+      (await redReproduced(ctx, repository.id, head, counted));
     const row: MainHealthRow = {
       repository_id: repository.id,
       project_id: project.id,
@@ -181,13 +395,52 @@ export const mainObserve = defineOperation({
         : state === "green"
           ? "[]"
           : (before?.audience ?? "[]"),
+      green_at: state === "green" ? ctx.now : (before?.green_at ?? null),
+      suspects: suspects
+        ? JSON.stringify(suspects)
+        : state === "green"
+          ? "[]"
+          : (before?.suspects ?? "[]"),
+      culprit_work_item_id:
+        state === "green"
+          ? null
+          : reproduced
+            ? (before?.candidate_work_item_id ?? null)
+            : opens
+              ? null
+              : (before?.culprit_work_item_id ?? null),
+      candidate_work_item_id:
+        state === "green" || reproduced
+          ? null
+          : opens
+            ? (candidate?.workItemId ?? null)
+            : (before?.candidate_work_item_id ?? null),
+      attribution:
+        state === "green"
+          ? null
+          : opens
+            ? candidate
+              ? `${CANDIDATE_PREFIX}${candidate.why}; rerunning the failing checks to see whether the red reproduces`
+              : null
+            : reproduced
+              ? `${(before?.attribution ?? "").replace(CANDIDATE_PREFIX, "").replace(/; rerunning.*$/, "")}, and the red reproduced on a rerun`
+              : (before?.attribution ?? null),
+      attributed_by:
+        state === "green"
+          ? null
+          : reproduced
+            ? "proven"
+            : opens
+              ? null
+              : (before?.attributed_by ?? null),
     };
     const changed =
       !before ||
       before.head_sha !== row.head_sha ||
       before.state !== row.state ||
       before.failing !== row.failing ||
-      before.red_since !== row.red_since;
+      before.red_since !== row.red_since ||
+      reproduced;
     // The same state seen again writes nothing, not even its time (no row, no audit: Cloudflare
     // cost rule 12). The cost: a read that started before this one and saw another state can still
     // commit after it; that needs main to flap within one read's few seconds, and the next check
@@ -220,6 +473,19 @@ export const mainObserve = defineOperation({
             observed_at: row.observed_at,
             attempt: row.attempt,
             audience: row.audience,
+            green_at: row.green_at,
+            suspects: row.suspects,
+            // Who turned it red changes only when the episode opens, closes or its candidate is
+            // proven: otherwise the stored columns stand, so a person's attribution made while
+            // this observation was read is never wiped by it.
+            ...(opens || state === "green" || reproduced
+              ? {
+                  culprit_work_item_id: row.culprit_work_item_id,
+                  attribution: row.attribution,
+                  attributed_by: row.attributed_by,
+                  candidate_work_item_id: row.candidate_work_item_id,
+                }
+              : {}),
           }),
         ),
     );
@@ -259,6 +525,89 @@ export const mainObserve = defineOperation({
         if (contains) ctx.write(ctx.db.deleteFrom("core_meta").where("key", "=", key));
       }
     }
+    // The candidate's proof: each failing check rerun once on the red head (once per check per
+    // SHA, core_ci_reruns' key), as the babysitter does for a flake.
+    if (opens && candidate) {
+      for (const run of counted.filter((c) => RED.has(c.conclusion ?? "")).slice(0, 5)) {
+        const asked = await github.rerequestCheckRun(repo, run.id).catch(() => null);
+        if (!asked?.ok) continue;
+        ctx.write(
+          ctx.db
+            .insertInto("core_ci_reruns")
+            .values({
+              repository_id: repository.id,
+              head_sha: head,
+              check_name: run.name,
+              work_item_id: candidate.workItemId,
+              test_name: null,
+              run_url: run.url,
+              check_run_id: run.id,
+              asked_at: ctx.now,
+              passed: null,
+            })
+            .onConflict((oc) => oc.doNothing()),
+        );
+      }
+    }
+    if (reproduced) {
+      ctx.write(
+        ctx.db
+          .updateTable("core_ci_reruns")
+          .set({ passed: 0 })
+          .where("repository_id", "=", repository.id)
+          .where("head_sha", "=", head),
+      );
+    }
+    // Green on the red head itself, with each rerun check now green after it was asked: a flake,
+    // recorded as one (decision 3). Green on another head (a repair or revert landed before the
+    // rerun reported) proves nothing about the red one: no flake is recorded.
+    if (closes && before?.first_red_sha && head === before.first_red_sha) {
+      const asked = await ctx.db
+        .selectFrom("core_ci_reruns")
+        .select(["check_name", "run_url", "work_item_id", "asked_at"])
+        .where("repository_id", "=", repository.id)
+        .where("head_sha", "=", before.first_red_sha)
+        .where("passed", "is", null)
+        .limit(20)
+        .execute();
+      const flaked = asked.filter((r) =>
+        counted.some(
+          (c) =>
+            c.name === r.check_name &&
+            c.status === "completed" &&
+            c.conclusion === "success" &&
+            !!c.completedAt &&
+            Date.parse(c.completedAt) > Date.parse(r.asked_at),
+        ),
+      );
+      for (const f of flaked) {
+        ctx.write(
+          ctx.db.insertInto("core_flakes").values({
+            id: newId("flake"),
+            project_id: project.id,
+            repository_id: repository.id,
+            check_name: f.check_name,
+            test_name: null,
+            head_sha: before.first_red_sha,
+            run_url: f.run_url,
+            work_item_id: f.work_item_id,
+            seen_at: ctx.now,
+          }),
+        );
+      }
+      for (const f of flaked) {
+        ctx.write(
+          ctx.db
+            .updateTable("core_ci_reruns")
+            .set({ passed: 1 })
+            .where("repository_id", "=", repository.id)
+            .where("head_sha", "=", before.first_red_sha)
+            .where("check_name", "=", f.check_name),
+        );
+      }
+    }
+    // Decision 7: `factory/verify` on waiting heads goes to held (or back) with the line.
+    if (opens || closes) await recheckHeads(ctx, project.id, repository);
     if (opens) {
       for (const userId of audience ?? []) {
         ctx.emit({
@@ -356,6 +705,99 @@ export const workItemMarkRepair = defineOperation({
       payload: { projectId: w.project_id, repositoryId: w.repository_id },
     });
     return { repair: input.repair };
+  },
+});
+
+/** How strong an attribution is: a weaker one never overwrites a stronger one. */
+const ATTRIBUTION_RANK = { agent: 1, person: 2, proven: 3 } as const;
+
+export const mainRedAttribute = defineOperation({
+  name: "mainRed.attribute",
+  description:
+    "Name the landing that turned a repository's default branch red (spec 53 §5, ADR 0584): one of the open red episode's suspects (the factory's landings since main was last green), with why. The factory names one itself only when it is proven (a single landing whose merge commit is the first red head, and the red reproduced on a rerun); otherwise a person, or the repository's babysit job through the babysitter (with its current delivery fence), says which. Recorded with who named it; a weaker attribution (agent < person < proven) never overwrites a stronger one. It never reverts anything by itself. Refused when the line isn't stopped or the item isn't a suspect.",
+  risk: "write",
+  actors: ["human", "agent"],
+  permission: "approver",
+  input: z.object({
+    workItemId,
+    why: z.string().trim().min(1).max(2_000),
+    /** An agent's call: the repository's babysit job's delivery fence (the babysitter only). */
+    deliveryFence: z.number().int().min(1).optional(),
+  }),
+  output: z.object({ culpritWorkItemId: z.string(), attributedBy: z.enum(["person", "agent"]) }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    if (!w.repository_id) throw new OperationError("conflict", `#${w.number} has no repository`);
+    const by: "person" | "agent" = ctx.actor.type === "human" ? "person" : "agent";
+    if (by === "agent") {
+      // Only the babysitter, for the repository's babysit job, with its current fence.
+      if (ctx.actor.type !== BABYSITTER.type || ctx.actor.id !== BABYSITTER.id) {
+        throw new OperationError(
+          "forbidden",
+          "only a person or the repository's babysit job names a culprit",
+        );
+      }
+      const state = await ctx.db
+        .selectFrom("core_delivery_state")
+        .innerJoin("core_jobs", "core_jobs.id", "core_delivery_state.babysit_job_id")
+        .select(["core_delivery_state.babysit_fence", "core_jobs.stage"])
+        .where("core_delivery_state.key", "=", `${w.project_id}:${w.repository_id}`)
+        .executeTakeFirst();
+      if (state?.stage !== "babysit" || state.babysit_fence !== input.deliveryFence) {
+        throw new OperationError("fenced", "not the repository's current babysit job");
+      }
+    }
+    const row = await ctx.db
+      .selectFrom("core_main_health")
+      .select(["red_since", "suspects", "culprit_work_item_id", "attributed_by"])
+      .where("repository_id", "=", w.repository_id)
+      .executeTakeFirst();
+    if (!row?.red_since) {
+      throw new OperationError(
+        "conflict",
+        "the default branch isn't red: there is no culprit to name",
+      );
+    }
+    if (!parseSuspects(row.suspects).some((x) => x.workItemId === w.id)) {
+      throw new OperationError(
+        "conflict",
+        `#${w.number} didn't land since main was last green: it isn't a suspect`,
+      );
+    }
+    if (row.attributed_by && ATTRIBUTION_RANK[row.attributed_by] > ATTRIBUTION_RANK[by]) {
+      throw new OperationError(
+        "conflict",
+        `the culprit was already named (${row.attributed_by}): ${by === "agent" ? "an agent" : "a person"} can't overwrite it`,
+      );
+    }
+    ctx.write(
+      ctx.db
+        .updateTable("core_main_health")
+        .set({
+          culprit_work_item_id: w.id,
+          attribution: input.why,
+          attributed_by: by,
+          // A person's naming ends the candidate's proof; an agent's leaves it running, so a
+          // reproduced red can still prove (and outrank) it.
+          ...(by === "person" ? { candidate_work_item_id: null } : {}),
+        })
+        .where("repository_id", "=", w.repository_id)
+        .where("red_since", "=", row.red_since)
+        // Atomic: refused if a stronger attribution committed since it was read.
+        .where(
+          sql<number>`CASE attributed_by WHEN 'agent' THEN 1 WHEN 'person' THEN 2 WHEN 'proven' THEN 3 ELSE 0 END`,
+          "<=",
+          ATTRIBUTION_RANK[by],
+        ),
+    );
+    ctx.guardChanged("the episode is open and no stronger attribution was made");
+    ctx.change({
+      entity: "main_health",
+      id: w.repository_id,
+      before: { culprit: row.culprit_work_item_id, by: row.attributed_by },
+      after: { culprit: w.id, why: input.why, by },
+    });
+    return { culpritWorkItemId: w.id, attributedBy: by };
   },
 });
 

@@ -16,6 +16,7 @@ import {
   lastCheckedText,
 } from "../../shared/update-check.ts";
 import { bun, onRunner } from "../bridge.ts";
+import { SignInAgainDialog } from "../components/key-notices.tsx";
 import { PageArea, PageHeader } from "../components/shell-list.tsx";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 import { settingsLayout } from "./_settings.tsx";
@@ -41,6 +42,7 @@ const RUNNER_TEXT: Record<RunnerState["status"], string> = {
 export function SettingsPage() {
   const client = useQueryClient();
   const session = useDesktopSession();
+  const [confirmSignIn, setConfirmSignIn] = useState(false);
   const runner = useQuery({ queryKey: ["runner"], queryFn: () => bun.runnerState({}) });
   const login = useQuery({ queryKey: ["login-item"], queryFn: () => bun.loginItem({}) });
   useEffect(() => onRunner((s) => client.setQueryData(["runner"], s)), [client]);
@@ -95,8 +97,24 @@ export function SettingsPage() {
           <div className="text-muted-foreground text-sm">
             {session?.keyStorage === "secure-enclave"
               ? "Decisions are signed by a key in this Mac's Secure Enclave: approving asks for Touch ID."
-              : "This build has a software key (not signed for the Secure Enclave)."}
+              : session?.keyUpgrade
+                ? "This Mac signs with a software key, which can't approve gates."
+                : "This build has a software key (not signed for the Secure Enclave)."}
           </div>
+          {session?.keyUpgrade && (
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span>This Mac can now keep its key in the Secure Enclave: sign in again.</span>
+              <Button
+                size="sm"
+                className="w-fit"
+                data-testid="sign-in-again"
+                onClick={() => setConfirmSignIn(true)}
+              >
+                Sign in again…
+              </Button>
+              <SignInAgainDialog open={confirmSignIn} onOpenChange={setConfirmSignIn} />
+            </div>
+          )}
           <Label className="flex items-center gap-2 font-normal">
             <Checkbox
               checked={login.data?.enabled ?? false}

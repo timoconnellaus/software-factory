@@ -13,10 +13,12 @@ import {
   TERMINAL_MAX_VIEWERS,
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
+import { HELD_POLL_MS } from "../src/channel.ts";
 import worker from "../src/index.ts";
 import { EngineApi } from "../src/rpc.ts";
 import { terminalRelay } from "../src/terminal-relay.ts";
 import { all, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
+import { type Recorded, recordingEnv } from "./query-plans.ts";
 
 const base = "https://sf-engine.example";
 const engineFetch: typeof fetch = async (input, init) =>
@@ -543,5 +545,143 @@ describe("the web terminal relay", () => {
     expect(await relay.recheck()).toBe(1);
     await mine.until("closed", (e) => e.closed !== null);
     expect((await relay.state()).viewers).toEqual([]);
+  });
+});
+
+/**
+ * The engine as a runner host reaches it, counting what the held calls touch: every D1 statement,
+ * and every Durable Object stub they get (spec 44: an idle hold gets none).
+ */
+function counting() {
+  const seen: Recorded[] = [];
+  const objects: string[] = [];
+  const counted = (ns: DurableObjectNamespace, name: string) =>
+    new Proxy(ns, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop);
+        if (prop === "get" && typeof value === "function") {
+          return (...args: unknown[]) => {
+            objects.push(name);
+            return value.apply(target, args);
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  const e = {
+    ...recordingEnv(env, seen),
+    PLANNING_HUB: counted(env.PLANNING_HUB as never, "PlanningHub"),
+    TERMINAL_RELAY: counted(env.TERMINAL_RELAY as never, "TerminalRelay"),
+  } as Env;
+  const fetchVia: typeof fetch = async (input, init) => worker.fetch(new Request(input, init), e);
+  return { e, seen, objects, fetchVia };
+}
+
+async function channelAs(w: World, fetchVia: typeof fetch) {
+  return httpControlPlane({
+    baseUrl: base,
+    runnerId: w.runner.runnerId,
+    key: await runnerChannelKey("test-channel-secret", w.runner.runnerId, 1),
+    fetch: fetchVia,
+  });
+}
+
+describe("held calls wait in the Worker, not in a Durable Object (spec 44 part A)", () => {
+  it("an idle job's steer and terminal holds wake no object and read only the partial indexes", async () => {
+    const w = await world();
+    const { job } = await running(w, [...MANIFEST.capabilities, "terminal", "steer"]);
+    const fence = job.lease.fencingToken;
+    const { seen, objects, fetchVia } = counting();
+    const c = await channelAs(w, fetchVia);
+    const hold = 7_000;
+    const started = Date.now();
+    const [steers, terminal] = await Promise.all([
+      c.steers?.(job.jobId, { fencingToken: fence, waitMs: hold }),
+      c.terminal?.(job.jobId, { fencingToken: fence, waitMs: hold }),
+    ]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(hold - 100);
+    expect(steers).toEqual({ steers: [] });
+    expect(terminal).toEqual({ connect: null });
+    // Not one Durable Object was touched while nothing happened.
+    expect(objects).toEqual([]);
+    const polls = seen.filter((s) =>
+      /delivered_at IS NULL LIMIT 1|closed_at IS NULL ORDER BY opened_at/.test(s.sql),
+    );
+    // A poll every HELD_POLL_MS (3 s) for each hold, give or take one at either end.
+    expect(polls.length).toBeGreaterThanOrEqual(4);
+    expect(polls.length).toBeLessThanOrEqual(8);
+    console.log(
+      `spec 44 measure: ${hold} ms of both holds = ${seen.length} D1 statements (${polls.length} polls), ${objects.length} object calls`,
+    );
+  });
+
+  it("a viewer who attaches mid-hold gets the host a ticket within HELD_POLL_MS + 1 s", async () => {
+    const w = await world();
+    const { job, item, runId } = await running(w);
+    const fence = job.lease.fencingToken;
+    const { objects, fetchVia } = counting();
+    const c = await channelAs(w, fetchVia);
+    const holding = c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 20_000 });
+    await new Promise((r) => setTimeout(r, 500));
+    const attachedAt = Date.now();
+    const viewer = await view(item.workItemId, runId, w.human);
+    const answer = await holding;
+    expect(Date.now() - attachedAt).toBeLessThan(HELD_POLL_MS + 1_000);
+    expect(answer?.connect?.url).toMatch(/ticket=[0-9a-f]{64}/);
+    expect(objects).toEqual(["TerminalRelay"]);
+    const h = await host(answer?.connect?.url ?? "");
+    await viewer.end.until("the host joined", (e) =>
+      e.texts.some((m) => m.t === "viewers" && m.host === true),
+    );
+    h.ws.close();
+    viewer.end.ws.close();
+  });
+
+  it("closes an attach a deploy left open within one poll, and asks the relay only once", async () => {
+    const w = await world();
+    const { job, item, runId } = await running(w);
+    const fence = job.lease.fencingToken;
+    // An attach whose viewer is gone (the relay restarted): opened well before any ticket's TTL.
+    const stale = uid("ta_");
+    await env.DB.prepare(
+      "INSERT INTO core_run_terminal_attaches (id, run_id, work_item_id, user_id, mode, opened_at) VALUES (?, ?, ?, ?, 'type', ?)",
+    )
+      .bind(
+        stale,
+        runId,
+        item.workItemId,
+        w.human.id,
+        new Date(Date.now() - 10 * 60_000).toISOString(),
+      )
+      .run();
+    const { objects, fetchVia } = counting();
+    const c = await channelAs(w, fetchVia);
+    expect(await c.terminal?.(job.jobId, { fencingToken: fence, waitMs: 7_000 })).toEqual({
+      connect: null,
+    });
+    // Asked once, then closed, so the next polls didn't ask again; no ticket for a gone viewer.
+    expect(objects).toEqual(["TerminalRelay"]);
+    const row = await env.DB.prepare(
+      "SELECT closed_at FROM core_run_terminal_attaches WHERE id = ?",
+    )
+      .bind(stale)
+      .first<string | null>("closed_at");
+    expect(row).not.toBeNull();
+  });
+
+  it("refuses a stale fencing token on both holds before any wait", async () => {
+    const w = await world();
+    const { job } = await running(w, [...MANIFEST.capabilities, "terminal", "steer"]);
+    const { objects, fetchVia } = counting();
+    const c = await channelAs(w, fetchVia);
+    const started = Date.now();
+    for (const call of [
+      () => c.steers?.(job.jobId, { fencingToken: job.lease.fencingToken + 5, waitMs: 20_000 }),
+      () => c.terminal?.(job.jobId, { fencingToken: job.lease.fencingToken + 5, waitMs: 20_000 }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ code: "fenced" });
+    }
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(objects).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@
 // Depth limit: an incident's own failures don't open further incidents.
 import { sql } from "kysely";
 import { z } from "zod";
+import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { classifyIncident, ROOT_CAUSES } from "../incidents/classify.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
@@ -91,40 +92,19 @@ export async function openIncident(
 
 /**
  * A run's archived log is lost (an object the chunk index names is gone from sf-archive): an
- * incident for a person, never one that starts an agent's fix, since no agent can bring the object
- * back. Its record is a work item of kind `incident` left in the backlog (nothing runs until a
- * person releases it; it shows in Checks and incidents) and a core_incidents row of kind
- * `archive_missing`. One per run: the row is written only while the run has none, and the batch
+ * incident for a person, recorded and nothing more. No agent can bring the object back, so there is
+ * no work item at all (nothing a person could release into the incident workflow, whose fixes can
+ * auto-merge): the record is a core_incidents row of kind `archive_missing` with no fix item, listed
+ * on the desktop's Checks and incidents page (incident.listArchiveMissing) until a person resolves
+ * it (incident.resolve). One per run: the row is written only while the run has none, and the batch
  * aborts otherwise (a viewer and the daily sample racing each other).
  */
 export function openArchiveIncident(
   ctx: HandlerContext,
   input: { runId: string; runNo: number; key: string },
-): { incidentId: string; workItemId: string; number: number } {
+): { incidentId: string } {
   const w = requireWorkItem(ctx);
-  const project = requireProject(ctx);
   const incidentId = newId("incident");
-  const fix = createWorkItem(ctx, {
-    project,
-    repositoryId: w.repository_id,
-    title: `Factory incident: #${w.number} run ${input.runNo}'s archived log is missing`,
-    body: [
-      `Run ${input.runNo} of work item #${w.number} (${w.title}) was archived, and part of its log`,
-      `is no longer in the archive: \`${input.key}\` is missing from sf-archive.`,
-      "",
-      "This needs a person: an agent can't bring the object back. Check the bucket (a lifecycle",
-      "rule, a manual delete, a restore from a backup) and close this item when it is resolved.",
-      "",
-      `Incident: ${incidentId}`,
-    ].join("\n"),
-    source: "incident",
-    kind: "incident",
-    requesterUserId: w.requester_user_id,
-    parentWorkItemId: w.id,
-    number: project.next_number,
-    // Left in the backlog: nothing runs until a person releases it (ADR 0491).
-    state: "backlog",
-  });
   ctx.subject({ workItemId: w.id });
   ctx.write(
     ctx.db
@@ -137,7 +117,6 @@ export function openArchiveIncident(
         "run_id",
         "kind",
         "reason",
-        "fix_work_item_id",
         "created_by",
         "created_at",
       ])
@@ -152,8 +131,9 @@ export function openArchiveIncident(
             sql<string>`${w.id}`.as("source_work_item_id"),
             sql<string>`${input.runId}`.as("run_id"),
             sql<string>`'archive_missing'`.as("kind"),
-            sql<string>`${`${input.key} is missing from sf-archive`}`.as("reason"),
-            sql<string>`${fix.id}`.as("fix_work_item_id"),
+            sql<string>`${`run ${input.runNo}'s archived log: ${input.key} is missing from sf-archive`}`.as(
+              "reason",
+            ),
             sql<string>`${ctx.actor.id}`.as("created_by"),
             sql<string>`${ctx.now}`.as("created_at"),
           ])
@@ -167,10 +147,121 @@ export function openArchiveIncident(
   ctx.change({
     entity: "incident",
     id: incidentId,
-    after: { kind: "archive_missing", runId: input.runId, fixWorkItemId: fix.id },
+    after: { kind: "archive_missing", runId: input.runId, key: input.key },
   });
-  return { incidentId, workItemId: fix.id, number: fix.number };
+  return { incidentId };
 }
+
+/** How many open archive incidents incident.listArchiveMissing returns at most. */
+export const ARCHIVE_INCIDENTS_MAX = 50;
+
+export const incidentListArchiveMissing = defineOperation({
+  name: "incident.listArchiveMissing",
+  description:
+    "The org's open archive incidents, newest first: runs whose archived log lost an object in sf-archive. Each is a record for a person (no work item, no agent): check the bucket, then resolve it with incident.resolve. Read when the Checks and incidents page opens, not polled.",
+  risk: "read",
+  actors: ["human"],
+  permission: "member",
+  input: z.object({ orgId: z.string().min(1) }),
+  output: z.object({
+    incidents: z.array(
+      z.object({
+        id: z.string(),
+        projectId: z.string(),
+        workItemId: z.string(),
+        workItemNumber: z.number(),
+        workItemTitle: z.string(),
+        runId: z.string().nullable(),
+        reason: z.string(),
+        createdAt: z.string(),
+      }),
+    ),
+    /** More are open than were returned. */
+    more: z.boolean(),
+  }),
+  async handler(input, ctx) {
+    // core_incidents_open_archive_idx: (org_id, created_at) over the open archive incidents only.
+    const rows = await ctx.db
+      .selectFrom("core_incidents as i")
+      .innerJoin("core_work_items as w", "w.id", "i.source_work_item_id")
+      .select([
+        "i.id",
+        "i.project_id",
+        "i.source_work_item_id",
+        "w.number",
+        "w.title",
+        "i.run_id",
+        "i.reason",
+        "i.created_at",
+      ])
+      .where("i.org_id", "=", input.orgId)
+      .where("i.kind", "=", "archive_missing")
+      .where("i.resolved_at", "is", null)
+      .orderBy("i.created_at", "desc")
+      .limit(ARCHIVE_INCIDENTS_MAX + 1)
+      .execute();
+    return {
+      incidents: rows.slice(0, ARCHIVE_INCIDENTS_MAX).map((r) => ({
+        id: r.id,
+        projectId: r.project_id,
+        workItemId: r.source_work_item_id,
+        workItemNumber: r.number,
+        workItemTitle: r.title,
+        runId: r.run_id,
+        reason: r.reason,
+        createdAt: r.created_at,
+      })),
+      more: rows.length > ARCHIVE_INCIDENTS_MAX,
+    };
+  },
+});
+
+export const incidentResolve = defineOperation({
+  name: "incident.resolve",
+  description:
+    "Close an archive incident (a run's archived log lost an object) once an org admin has dealt with it: restored the object, or accepted the loss. Says what was done. Only for archive incidents (one recorded before migration 0365 also has a backlog work item: cancel that by hand); other incidents close with their fix item.",
+  risk: "write",
+  actors: ["human"],
+  permission: "admin",
+  input: z.object({
+    workItemId,
+    incidentId: z.string().min(1),
+    resolution: z.string().trim().min(1).max(2_000),
+  }),
+  output: z.object({ resolved: z.boolean() }),
+  async handler(input, ctx) {
+    const w = requireWorkItem(ctx);
+    const row = await ctx.db
+      .selectFrom("core_incidents")
+      .select(["id", "kind", "resolved_at"])
+      .where("id", "=", input.incidentId)
+      .where("source_work_item_id", "=", w.id)
+      .executeTakeFirst();
+    if (!row) throw new OperationError("not_found", "no such incident on this work item");
+    if (row.kind !== "archive_missing") {
+      throw new OperationError(
+        "conflict",
+        "only an archive incident is resolved by itself; this one closes with its fix work item",
+      );
+    }
+    if (row.resolved_at !== null) return { resolved: false };
+    ctx.write(
+      ctx.db
+        .updateTable("core_incidents")
+        .set({ resolved_at: ctx.now, resolved_by: ctx.actor.id, resolution: input.resolution })
+        .where("id", "=", row.id)
+        .where("resolved_at", "is", null),
+    );
+    ctx.guardChanged("the incident is still open");
+    ctx.change({
+      entity: "incident",
+      id: row.id,
+      before: { resolvedAt: null },
+      after: { resolvedAt: ctx.now, resolution: input.resolution },
+    });
+    return { resolved: true };
+  },
+});
 
 export const incidentOpen = defineOperation({
   name: "incident.open",

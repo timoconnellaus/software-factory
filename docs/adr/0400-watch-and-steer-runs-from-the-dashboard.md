@@ -60,3 +60,16 @@ standing authority.
   same way, so the operation, the table and the events carry over.
 - The web terminal (piece 6) replaces the polled terminal log with a live relay; until then the
   terminal view is the `log` events (scrolled-off lines plus a screen every ~10 s).
+
+## Amended, 2026-11-13 (spec 44, part A)
+The held call no longer waits inside a Durable Object. It waits in the Worker, which is billed for
+CPU and not wall time, and re-checks every `HELD_POLL_MS` (3 s) with one indexed read on a partial
+index that is empty while nothing is due:
+- the steer call reads `core_run_steers_undelivered_idx`;
+- the terminal call reads `core_run_terminal_attaches_open_idx`, and asks the job's TerminalRelay
+  for a host ticket (`hostTicket()`, answered at once) only when an attach is open. An attach the
+  relay holds no viewer for, older than a ticket lives, is closed by `run.terminal.closeStale`.
+
+The fenced operation still runs first, and delivery state stays in D1. A steer or a viewer is
+noticed within 3 s instead of at once. `TerminalRelay.waitForViewer` and the hub wait for steers are
+gone. Spec 44 (block AQ, migration 0367).

@@ -938,6 +938,10 @@ export const killSwitchSet = defineOperation({
   actors: ["human"],
   permission: "member",
   browserOnly: (input) => !input.on, // turning a kill switch on is fine from a terminal
+  // Off: on the desktop with a presence proof for this exact call (ADR 0610); never the phone, the
+  // CLI, MCP or an agent.
+  presenceDecidable: true,
+  presenceSurfaces: ["desktop"],
   input: z.object({
     scope: z.enum(["org", "project"]),
     id: z.string().min(1),
