@@ -62,8 +62,8 @@ interface RepoState {
   mergeable?: Record<number, boolean | null>;
   /** One-shot refusals of a PR's next merge, as GitHub gives one (a moved base, a merged PR). */
   refuseMerge?: Record<number, string>;
-  /** Update-branch requests waiting for `completeUpdate` (`deferUpdates`), by PR number. */
-  pendingUpdates?: number[];
+  /** Merges made but not yet seen on the branch (`deferUpdates`), by PR number. */
+  pendingMerges?: Record<number, string>;
   deferUpdates?: boolean;
   /** A merge commit's second parent (what `update-branch` merged in), by merge commit SHA. */
   merged?: Record<string, string>;
@@ -71,6 +71,10 @@ interface RepoState {
   times?: Record<string, string>;
   /** Commits GitHub itself made and signed (update-branch merges), for `commitInfo`. */
   byGitHub?: Record<string, true>;
+  /** `setMergeBaseAmbiguous`: the answer `mergeBaseAmbiguous` gives, whatever the graph. */
+  ambiguousOverride?: boolean | null;
+  /** Of those, the ones a person made in GitHub's web conflict editor (authored by them). */
+  webEditor?: Record<string, true>;
   /** A commit's tree as a test set it (a crafted merge), instead of the one its history gives. */
   trees?: Record<string, Record<string, { mode: string; sha: string }>>;
   /** Commits whose compare GitHub can't give in full (`changedPaths`: too many files). */
@@ -132,7 +136,7 @@ export interface FakeGitHub extends GitHubService {
   completeUpdate(repo: RepoRef, number: number): Promise<string | null>;
   /** Sets what CI reports on SHAs with no check runs of their own (null: one green `ci`). */
   setCiDefault(repo: RepoRef, checks: Omit<CheckRunInfo, "id">[] | null): Promise<void>;
-  /** Makes `updatePullRequestBranch` accept without moving the head until `completeUpdate`. */
+  /** Makes `mergeIntoBranch` merge without moving the branch until `completeUpdate`. */
   deferUpdates(repo: RepoRef, on: boolean): Promise<void>;
   /** Sets what GitHub says about a PR's mergeability (false: conflicts; null: still computing). */
   setMergeable(repo: RepoRef, number: number, mergeable: boolean | null): Promise<void>;
@@ -148,7 +152,8 @@ export interface FakeGitHub extends GitHubService {
     branch: string,
     mergedIn: string,
     opts?: {
-      byGitHub?: boolean;
+      /** `"web-editor"`: signed by GitHub, but made by a person in its web conflict editor. */
+      byGitHub?: boolean | "web-editor";
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
       /** What the compare reports for the merge commit's paths (patches, renames). */
       touches?: Touch[];
@@ -156,6 +161,11 @@ export interface FakeGitHub extends GitHubService {
   ): Promise<string>;
   /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
   truncateTree(repo: RepoRef, at: string): Promise<void>;
+  /**
+   * Overrides `mergeBaseAmbiguous` for the repo (undefined: judged from the graph again), for a
+   * caller's fail-closed test where a real criss-cross can't be built around a fixed head.
+   */
+  setMergeBaseAmbiguous(repo: RepoRef, answer: boolean | null | undefined): Promise<void>;
   /** Points a branch at an existing commit, as a force-push does. */
   forcePush(repo: RepoRef, branch: string, sha: string): Promise<void>;
   /** Sets a commit's committer date, as whoever pushed it chose (past or future). */
@@ -290,18 +300,6 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       if (other) todo.push(other);
     }
     return seen;
-  };
-  const updateHead = async (state: RepoState, number: number) => {
-    const pull = state.pulls.find((p) => p.number === number);
-    if (!pull) return null;
-    const head = state.refs[pull.head];
-    const base = state.refs[pull.base];
-    if (!head || !base) return null;
-    const next = await commit(state, head, `update-${number}`);
-    state.merged = { ...(state.merged ?? {}), [next]: base };
-    state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
-    state.refs[pull.head] = next;
-    return next;
   };
   type Entry = { mode: string; sha: string };
   const sameEntry = (a: Entry | undefined, b: Entry | undefined) =>
@@ -582,8 +580,18 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const first = state.parents[at];
       const second = state.merged?.[at];
       const github = state.byGitHub?.[at] === true;
+      const person = { name: "A Person", email: "person@example.com" };
       return {
         parents: [...(first ? [first] : []), ...(second ? [second] : [])],
+        // GitHub's update-branch merge for the App is authored by the App's bot; one made in the web
+        // conflict editor (`craftMerge`'s `byGitHub: "web-editor"`) by the person who resolved it.
+        author:
+          github && !state.webEditor?.[at]
+            ? {
+                name: `${FAKE_APP.slug}[bot]`,
+                email: `1001+${FAKE_APP.slug}[bot]@users.noreply.github.com`,
+              }
+            : person,
         committer: github
           ? { name: "GitHub", email: "noreply@github.com" }
           : { name: "A Person", email: "person@example.com" },
@@ -608,6 +616,7 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       // As GitHub answers: one merge base, the same both ways (even for a criss-cross), and each
       // side's commits since it with their parents; the judgement is the client's.
       const state = await load(r);
+      if (state.ambiguousOverride !== undefined) return state.ambiguousOverride;
       const x = state.refs[a] ?? a;
       const y = state.refs[b] ?? b;
       const base = mergeBaseOf(state, x, y);
@@ -640,6 +649,9 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const next = await commit(state, head, `crafted-${branch}`);
       state.merged = { ...(state.merged ?? {}), [next]: state.refs[mergedIn] ?? mergedIn };
       if (opts.byGitHub) state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
+      if (opts.byGitHub === "web-editor") {
+        state.webEditor = { ...(state.webEditor ?? {}), [next]: true };
+      }
       if (opts.tree) {
         // The paths it sets differ from the merged-in side: the compare lists them, as GitHub's does.
         state.touched = {
@@ -658,6 +670,12 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       await save(r, state);
       return next;
     },
+    async setMergeBaseAmbiguous(r, answer) {
+      const state = await load(r);
+      if (answer === undefined) delete state.ambiguousOverride;
+      else state.ambiguousOverride = answer;
+      await save(r, state);
+    },
     async truncateTree(r, at) {
       const state = await load(r);
       state.truncatedTrees = { ...(state.truncatedTrees ?? {}), [state.refs[at] ?? at]: true };
@@ -672,28 +690,44 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const second = state.merged?.[at];
       return [...(first ? [first] : []), ...(second ? [second] : [])];
     },
-    async updatePullRequestBranch(r, { number, expectedHeadSha }) {
+    async mergeIntoBranch(r, { branch, head }) {
+      // As the App client: never into the default branch.
+      if (branch === defaultBranch) {
+        return { status: "refused", reason: `won't merge into the default branch (${branch})` };
+      }
       const state = await load(r);
-      const pull = state.pulls.find((p) => p.number === number);
-      if (pull?.state !== "open") return { status: "refused", reason: "not an open PR" };
-      if (state.refs[pull.head] !== expectedHeadSha) {
-        return { status: "refused", reason: "expected head sha didn't match current head ref" };
+      const at = state.refs[branch];
+      if (!at) return { status: "refused", reason: "Base does not exist" };
+      const pull = state.pulls.find((p) => p.head === branch && p.state === "open");
+      if (pull && state.mergeable?.[pull.number] === false) {
+        return { status: "conflict", reason: "Merge conflict" };
       }
-      if (state.mergeable?.[number] === false) {
-        return { status: "conflict", reason: "merge conflict between base and head" };
+      const into = state.refs[head] ?? head;
+      // Already merged in, even where the branch isn't seen at the merge yet: GitHub's 204.
+      const pending = pull ? state.pendingMerges?.[pull.number] : undefined;
+      if (reachable(state, at).has(into) || (pending && reachable(state, pending).has(into))) {
+        return { status: "current" };
       }
-      if (state.deferUpdates) {
-        state.pendingUpdates = [...(state.pendingUpdates ?? []), number];
+      const next = await commit(state, at, `merge-${branch}`);
+      state.merged = { ...(state.merged ?? {}), [next]: into };
+      state.byGitHub = { ...(state.byGitHub ?? {}), [next]: true };
+      // `deferUpdates`: the merge is made, but the branch isn't seen at it until `completeUpdate`
+      // (a slow ref update): a test can race another commit onto the branch in between.
+      if (state.deferUpdates && pull) {
+        state.pendingMerges = { ...(state.pendingMerges ?? {}), [pull.number]: next };
       } else {
-        await updateHead(state, number);
+        state.refs[branch] = next;
       }
       await save(r, state);
-      return { status: "requested" };
+      return { status: "merged", sha: next, parents: [at, into] };
     },
     async completeUpdate(r, number) {
       const state = await load(r);
-      state.pendingUpdates = (state.pendingUpdates ?? []).filter((n) => n !== number);
-      const next = await updateHead(state, number);
+      const pull = state.pulls.find((p) => p.number === number);
+      const next = state.pendingMerges?.[number];
+      if (!pull || !next) return null;
+      delete state.pendingMerges?.[number];
+      state.refs[pull.head] = next;
       await save(r, state);
       return next;
     },

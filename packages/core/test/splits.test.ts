@@ -7,7 +7,7 @@ import {
   type Job,
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
-import { FOREMAN } from "../src/index.ts";
+import { FOREMAN, type VerifiedHead } from "../src/index.ts";
 import {
   call,
   first,
@@ -197,7 +197,8 @@ describe("splits (spec 24)", () => {
     );
     await services.github.mergePullRequest(w.repo, {
       number: pr.number,
-      sha: committed.commitSha,
+      // Merged on GitHub outside the factory: nothing verified it.
+      sha: committed.commitSha as VerifiedHead,
       method: "merge",
     });
     const released = await ok<{ released: number }>(

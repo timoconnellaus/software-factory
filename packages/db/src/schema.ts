@@ -1041,6 +1041,8 @@ export interface CoreMergeQueueTable {
   /** 0352: the head the queue asked GitHub to update from, and main's head when it asked. */
   update_from_sha: string | null;
   update_base_sha: string | null;
+  /** 0394 (#190 review): the merge commit the queue made (POST /merges); only it is accepted. */
+  update_merge_sha: string | null;
   /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
   merging_at: Iso | null;
   /** 0350: the question asked at the update bound, while it is open or not yet read back. */

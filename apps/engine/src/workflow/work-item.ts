@@ -28,6 +28,7 @@ import {
   has,
   invoke,
   isOperationError,
+  MOVED_WHILE_WAITING,
   mergeQueueEvent,
   type ProjectPolicy,
   parseProjectPolicy,
@@ -196,6 +197,8 @@ export const QUEUE_WAIT = "1 hour";
 /** v4: reads of the head while GitHub makes the update-branch merge commit, and the pause between. */
 export const UPDATE_READS = 8;
 export const UPDATE_WAIT = "15 seconds";
+/** While the owner is asked whether to merge main in again (the loop guard), look again this often. */
+export const HOLD_WAIT = "10 minutes";
 /** How long a step refused by a kill switch waits for it to be turned off. */
 export const PARK_TIMEOUT = "365 days";
 /** Slack on top of a job's session timeout before the run counts as stalled. */
@@ -1706,7 +1709,9 @@ class ItemFlow {
       }));
       if (auto.kind === "done")
         return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
-      if (auto.kind === "conflict" || auto.kind === "failed") return auto;
+      if (auto.kind === "conflict" || auto.kind === "failed" || auto.kind === "withdrawn") {
+        return auto;
+      }
       if (auto.kind === "pending") {
         // The project's policy asks a person to approve the auto-merge: wait, then land with it.
         const decided = await this.awaitDecision(
@@ -1727,7 +1732,9 @@ class ItemFlow {
         );
         if (landed.kind === "done")
           return { kind: "done", reason: "auto-merged: a check-only incident fix (ADR 0230)" };
-        if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+        if (landed.kind === "conflict" || landed.kind === "failed" || landed.kind === "withdrawn") {
+          return landed;
+        }
         return {
           kind: "failed",
           reason: `pr.autoMerge after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
@@ -1767,7 +1774,9 @@ class ItemFlow {
       input: input(at),
     }));
     if (landed.kind === "done") return { kind: "done", reason: "merged through the merge queue" };
-    if (landed.kind === "conflict" || landed.kind === "failed") return landed;
+    if (landed.kind === "conflict" || landed.kind === "failed" || landed.kind === "withdrawn") {
+      return landed;
+    }
     throw new Ended(
       "failed",
       `pr.merge failed after approval: ${landed.kind === "refused" ? landed.message : "still pending"}`,
@@ -1829,6 +1838,7 @@ class ItemFlow {
     | { kind: "done" }
     | { kind: "conflict" }
     | { kind: "failed"; reason: string }
+    | { kind: "withdrawn"; reason: string }
     | { kind: "pending"; pendingActionId: string; headSha: string }
     | { kind: "refused"; message: string; headSha: string }
   > {
@@ -1871,6 +1881,24 @@ class ItemFlow {
       if (state === "conflict") {
         await leave("left", String(u.reason ?? "conflict"));
         return { kind: "conflict" };
+      }
+      // Main had to be merged in (#190 review, round 3): no packet is carried to the new head, so
+      // the approval is closed and the item verifies that head, without a build (the path a
+      // withdrawn approval takes at any version), then a person decides again.
+      if (state === "moved") {
+        const why = `${MOVED_WHILE_WAITING}${String(u.reason ?? "")}`;
+        await leave("left", why);
+        return { kind: "withdrawn", reason: why };
+      }
+      // The loop guard held it (#190 review, round 3): the owner is asked whether to merge main in
+      // once more; until they answer, it waits at the head of the queue.
+      if (state === "held") {
+        const h = await this.act(`${p}: hold${sfx}`, "mergeQueue.hold", {
+          workItemId: id,
+          reason: String(u.reason ?? ""),
+        });
+        if (h.state !== "resumed") await this.step.sleep(`${p}: hold wait${sfx}`, HOLD_WAIT);
+        continue;
       }
       const reason =
         state === "updating"

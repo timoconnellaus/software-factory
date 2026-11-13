@@ -25,6 +25,9 @@ const LATE_BLOCKS: [number, number][] = [
   // The babysitter's resolutions (block AT, spec 53 decision 1) land after 0400–0402: 0392 only
   // creates core_babysit_resolutions, which nothing later touches.
   [392, 392],
+  // The merge queue's own merge commit (block AT, #190 review) lands after 0400–0402: 0394 only adds
+  // a column to core_merge_queue, which nothing later rebuilds.
+  [394, 394],
 ];
 
 const late = (name: string) => {
