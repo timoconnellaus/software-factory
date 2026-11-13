@@ -2063,6 +2063,24 @@ export const ANSWERS: Answers = {
       { projectId: SITE, on: true, reason: "Deploys are failing on the host", changedAt: ago(45) },
     ],
   }),
+  "orgConfig.previewRollback": () => ({
+    impact: {
+      class: "neutral" as const,
+      changes: [
+        {
+          path: "wf_release",
+          class: "neutral" as const,
+          summary: "Archives the workflow Release notes.",
+        },
+      ],
+    },
+    currentVersion: 4,
+    before: [
+      { id: "wf_software", name: "Software" },
+      { id: "wf_release", name: "Release notes" },
+    ],
+    after: [{ id: "wf_software", name: "Software" }],
+  }),
   "stageType.list": () => ({
     types: [
       ["interview-planning", "Planning", ["shaping"]],

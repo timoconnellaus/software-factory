@@ -73,3 +73,39 @@ describe("a waiting org change, as an approver sees it", () => {
     expect(["loosens", "tightens", "neutral"]).toContain(preview.impact.class);
   });
 });
+
+describe("the rollback preview and agent saves are bound to a version (review of #159)", () => {
+  it("names the version it compared against, and refuses a member of another org", async () => {
+    const { w, made } = await orgWithWorkflow();
+    await ok(
+      "workflow.archive",
+      { orgId: w.orgId, baseVersion: made.version, workflowId: made.workflowId },
+      w.human,
+    );
+    const preview = await ok<{ currentVersion: number }>(
+      "orgConfig.previewRollback",
+      { orgId: w.orgId, toVersion: made.version },
+      w.human,
+    );
+    expect(preview.currentVersion).toBe(made.version + 1);
+    const other = await world();
+    const refused = await call(
+      "orgConfig.previewRollback",
+      { orgId: w.orgId, toVersion: made.version },
+      other.human,
+    ).catch((e: { code: string }) => e);
+    expect((refused as { code: string }).code).toBe("forbidden");
+  });
+
+  it("refuses an agent save drafted on an older version instead of replacing the newer one", async () => {
+    const { w, made } = await orgWithWorkflow();
+    const agent = { name: "Writer", role: "implement", tier: "standard", instructions: "" };
+    await ok("agent.save", { orgId: w.orgId, baseVersion: made.version, agent }, w.human);
+    const stale = await call(
+      "agent.save",
+      { orgId: w.orgId, baseVersion: made.version, agent: { ...agent, tier: "light" } },
+      w.human,
+    ).catch((e: { code: string }) => e);
+    expect((stale as { code: string }).code).toBe("conflict");
+  });
+});

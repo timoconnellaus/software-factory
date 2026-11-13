@@ -1074,14 +1074,21 @@ export const orgConfigPreviewRollback = defineOperation({
   input: z.object({ orgId, toVersion: z.number().int().positive() }),
   output: z.object({
     impact: impactView,
+    /** The version this was compared against: the rollback names it as its base. */
+    currentVersion: z.number(),
     before: z.array(z.object({ id: z.string(), name: z.string() })),
     after: z.array(z.object({ id: z.string(), name: z.string() })),
   }),
   async handler(input, ctx) {
-    const { config } = await currentOrgConfig(ctx.db, input.orgId);
+    const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
     const target = await storedOrgConfig(ctx.db, input.orgId, input.toVersion);
     if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
     const names = (c: OrgConfig) => c.workflows.map((w) => ({ id: w.id, name: w.name }));
-    return { impact: orgConfigImpact(config, target), before: names(config), after: names(target) };
+    return {
+      impact: orgConfigImpact(config, target),
+      currentVersion: version,
+      before: names(config),
+      after: names(target),
+    };
   },
 });

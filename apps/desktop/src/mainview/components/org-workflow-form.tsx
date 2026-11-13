@@ -20,6 +20,7 @@ import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { useState } from "react";
 import { stageTypesQuery } from "../lib/factory-queries.ts";
 import { read } from "../lib/op.ts";
+import { workflowDiff } from "../lib/org-diff.ts";
 import { usePolicyDecide } from "../lib/policy-decide.ts";
 import { useCanDecide } from "./cannot-approve.tsx";
 import {
@@ -32,6 +33,7 @@ import {
   saveLabel,
   useDebounced,
 } from "./config-editor.tsx";
+import { DiffRows } from "./diff-rows.tsx";
 import { Chip, Panel } from "./shell-list.tsx";
 
 export type Stage = {
@@ -133,11 +135,14 @@ export function OrgWorkflowForm({
   const settled = useDebounced(draft, PREVIEW_DEBOUNCE_MS);
   const typing = JSON.stringify(settled) !== JSON.stringify(draft);
   const preview = useQuery({
-    queryKey: ["workflow", orgId, "preview", settled],
+    queryKey: ["workflow", orgId, "preview", baseVersion, settled],
     queryFn: () => read("workflow.preview", { orgId, workflow: settled as never }),
     enabled: dirty && !typing,
   });
-  const fresh = !typing && preview.data && !preview.isFetching ? preview.data : null;
+  const fresh =
+    !typing && preview.data && !preview.isFetching && preview.data.currentVersion === draftBase
+      ? preview.data
+      : null;
   const loosens = fresh?.impact?.class === "loosens";
   const edit = (fn: (w: OrgWorkflow) => void) =>
     setDraft((prev) => {
@@ -384,10 +389,13 @@ export function OrgWorkflowForm({
           </div>
           {moved && (
             <div className="flex flex-wrap items-center gap-2 text-[13px]" data-testid="org-moved">
-              <span className="min-w-[min(100%,280px)] flex-1">
-                The workflow changed while you were editing (v{draftBase} → v{baseVersion}): review
-                the difference below, then keep your changes on v{baseVersion}.
+              <span className="min-w-[min(100%,280px)] basis-full">
+                The workflow changed while you were editing (v{draftBase} → v{baseVersion}). What
+                the other change did, which keeping yours on v{baseVersion} replaces:
               </span>
+              <div className="basis-full">
+                <DiffRows rows={workflowDiff(savedBase, saved)} testId="org-moved-diff" />
+              </div>
               <Button
                 size="sm"
                 variant="outline"
