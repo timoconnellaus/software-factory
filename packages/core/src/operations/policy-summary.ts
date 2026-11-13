@@ -203,6 +203,7 @@ export async function describeOverrideApprove(
   _floor: FloorParse,
   raw: Record<string, unknown>,
   orgValue: unknown,
+  verb = "Approve",
 ): Promise<string> {
   const p =
     typeof raw.projectId === "string"
@@ -214,10 +215,31 @@ export async function describeOverrideApprove(
       : undefined;
   const v = (x: unknown) =>
     cut(cleanTitle(x === undefined ? "unset" : typeof x === "string" ? x : JSON.stringify(x)), 40);
+  // Lists (required checks, sections): what the override drops and adds, so two long lists that
+  // share a prefix don't read the same (review of #185).
+  const differs =
+    Array.isArray(orgValue) && Array.isArray(raw.value)
+      ? (() => {
+          const was = orgValue.map((x) => JSON.stringify(x));
+          const now = (raw.value as unknown[]).map((x) => JSON.stringify(x));
+          const list = (xs: string[]) =>
+            cut(cleanTitle(xs.map((x) => (x.startsWith('"') ? JSON.parse(x) : x)).join(", ")), 60);
+          const dropped = was.filter((x) => !now.includes(x));
+          const added = now.filter((x) => !was.includes(x));
+          return [
+            dropped.length ? `drops ${list(dropped)}` : "",
+            added.length ? `adds ${list(added)}` : "",
+          ]
+            .filter(Boolean)
+            .join(", ");
+        })()
+      : "";
   return titled(
     facts(
-      `Approve a looser override (config v${Number(raw.configVersion)})`,
-      `loosens: ${idOf(raw.stageId)} ${idOf(raw.setting)} from the org's ${v(orgValue)} to ${v(raw.value)}`,
+      `${verb} a looser override (config v${Number(raw.configVersion)}, org v${Number(raw.orgVersion)})`,
+      differs
+        ? `loosens: ${idOf(raw.stageId)} ${idOf(raw.setting)}: ${differs} against the org's value`
+        : `loosens: ${idOf(raw.stageId)} ${idOf(raw.setting)} from the org's ${v(orgValue)} to ${v(raw.value)}`,
     ),
     p?.name ?? String(raw.projectId),
   );

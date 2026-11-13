@@ -309,8 +309,10 @@ _Avoid_: draft policy
 
 **Merge queue**
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
-open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
-it once, and it merges; then the next head goes. The approval carries over that clean update. A
+open entry) is brought up to date with the default branch by the queue's own merge (`POST /merges`), CI runs on
+it once, and it merges; then the next head goes. The approval carries over that clean update only
+for the babysitter, which verifies the new head first; nothing is carried to a head it wasn't made
+for (#190). A
 conflict or red CI at the head sends the item back to build. From Workflow v11 the babysitter's deliverer runs it per
 repository, and the queue is its delivery table (spec 53).
 _Avoid_: merge train, landing queue

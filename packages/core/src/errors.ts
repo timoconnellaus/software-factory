@@ -8,6 +8,11 @@ export const REFUSAL_CODES = [
   "forbidden",
   /** The gate check said deny (including a missing or malformed policy: fail closed). */
   "denied",
+  /**
+   * The work item's pinned workflow version can't be read (#185): agents and runners on it may only
+   * read, ask a person, wait and end it; a v17 Workflow parks on this and asks.
+   */
+  "workflow_unreadable",
   /** A kill switch covers the work item; non-human writes are refused (ADR 0044). */
   "killed",
   /** The write carried a stale fencing token (ADR 0035). */

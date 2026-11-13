@@ -19,6 +19,7 @@ import { useState } from "react";
 import { NoteDialog, useDecide } from "../lib/decisions.tsx";
 import { op } from "../lib/op.ts";
 import { useRefreshAfterDecision, workItemQuery } from "../lib/queries.ts";
+import { type Withdrawal, withdrawnBefore, withdrawnText } from "../lib/withdrawn.ts";
 import { CriteriaList, MergeDecision, useOpenedFullDiff, VerdictPanel } from "./review-parts.tsx";
 import { Chip, Field, PageHeader, Panel, SectionTitle } from "./shell-list.tsx";
 
@@ -82,6 +83,11 @@ function MergeDetail({
         sub="Everything below was checked at this commit. A new push withdraws it."
         testId="inbox-title"
       />
+      {d && withdrawnBefore(d.gates) && (
+        <Panel needsYou data-testid="approval-withdrawn">
+          {withdrawnText(withdrawnBefore(d.gates) as Withdrawal, ago)}
+        </Panel>
+      )}
       {!d ? (
         <Skeleton className="h-48 w-full" />
       ) : !packet ? (

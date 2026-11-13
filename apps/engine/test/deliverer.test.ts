@@ -4,9 +4,13 @@
 // what is the deliverer's own: who lands it, the outcome read back, and one pass at a time.
 
 import { env } from "cloudflare:workers";
-import { BABYSITTER, FOREMAN, operations } from "@software-factory/core";
+import { BABYSITTER, FOREMAN, operations, type VerifiedHead } from "@software-factory/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { deliverRepository, deliverTestSeams } from "../src/deliver/deliverer.ts";
+import {
+  deliverRepository,
+  deliverTestSeams,
+  UNVERIFIED_GIVE_UP_MS,
+} from "../src/deliver/deliverer.ts";
 import { mobileTestSeams } from "../src/mobile.ts";
 import {
   all,
@@ -169,6 +173,38 @@ describe("the babysitter's deliverer (v11)", () => {
     expect(approval).toEqual({ status: "rejected", decision: "withdrawn" });
   });
 
+  it("an item whose workflow version can't be read leaves the head of the queue; the one behind it lands (review of #185)", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Stops reading", "src/a.ts");
+    const b = await toMergeGate(w, "Healthy", "src/b.ts");
+    deliverTestSeams.beforeMark = async (id) => {
+      if (id !== a) return;
+      deliverTestSeams.beforeMark = null;
+      // At the head, about to merge: the config it started under stops reading, and B queues behind.
+      await env.DB.prepare("UPDATE core_work_items SET policy_sha = ? WHERE id = ?")
+        .bind("f".repeat(40), a)
+        .run();
+      await approve(w, b);
+    };
+    await approve(w, a);
+    await itemStatus(b, "done");
+    expect(await merges(b)).toHaveLength(1);
+    expect(await merges(a)).toEqual([]);
+    const entry = await first<{ status: string; outcome: string }>(
+      "SELECT status, outcome FROM core_merge_queue WHERE work_item_id = ? ORDER BY rowid LIMIT 1",
+      a,
+    );
+    expect(entry?.status).toBe("left");
+    // Its owner is asked (once), and it doesn't merge.
+    const asked = await waitFor("the owner's question", () =>
+      all<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable'",
+        a,
+      ).then((r) => (r.length ? r : null)),
+    );
+    expect(asked).toHaveLength(1);
+  });
+
   it("pr.merge refuses a cancelled item even with its approval, whoever calls it", async () => {
     const w = await world();
     const u = await updatedAndWaiting(w, "Cancelled, then merged by hand");
@@ -278,11 +314,19 @@ describe("the babysitter's deliverer (v11)", () => {
     const u = await updatedAndWaiting(w, "Merged by a pass that died");
     // A pass merged on GitHub and died before anything was recorded.
     expect(
-      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+      await github.mergePullRequest(w.repo, {
+        number: u.pr,
+        sha: u.head_sha as VerifiedHead,
+        method: "merge",
+      }),
     ).toMatchObject({ merged: true });
     // GitHub refuses a second merge, as the real API does (405).
     expect(
-      await github.mergePullRequest(w.repo, { number: u.pr, sha: u.head_sha, method: "merge" }),
+      await github.mergePullRequest(w.repo, {
+        number: u.pr,
+        sha: u.head_sha as VerifiedHead,
+        method: "merge",
+      }),
     ).toEqual({ merged: false, reason: "Pull Request is not mergeable" });
     const r = await call(
       "pr.merge",
@@ -588,6 +632,22 @@ describe("the approval across a merge of main (ADR 0582)", () => {
         a,
       ),
     );
+  const updateAsked = (a: string) =>
+    waitFor("update asked", () =>
+      first(
+        "SELECT 1 AS q FROM core_merge_queue WHERE work_item_id = ? AND update_from_sha IS NOT NULL",
+        a,
+      ),
+    );
+  const branchOf = async (a: string) =>
+    String(
+      (await first<{ branch: string }>("SELECT branch FROM core_work_items WHERE id = ?", a))
+        ?.branch,
+    );
+  const deliverAgain = async (a: string) => {
+    const at = await ids(a);
+    await deliverRepository(env, at.projectId, at.repositoryId);
+  };
   /** What a withdrawal must leave: the approval closed, nothing carried, nothing merged. */
   async function expectWithdrawn(w: World, a: string) {
     const ended = await withdrawnEntry(a);
@@ -788,13 +848,40 @@ describe("the approval across a merge of main (ADR 0582)", () => {
 
   // Review of #105 (1): the same lines in a different file version hashed the same; a file both
   // sides changed now withdraws, and the item verifies the new head before a person decides again.
-  it("is withdrawn when main changed a file the PR changed; the item verifies the new head again", async () => {
-    const w = await world();
-    const a = await toMergeGateWith(w, "Both sides", files("src/a.ts"));
-    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+  // #190 review, round 2: the queue makes the merge itself (POST /merges) and accepts only the exact
+  // commit GitHub returned. Here GitHub's view of the branch lags (`deferUpdates`), so another commit
+  // can reach the branch first. A file both sides changed is GitHub's three-way result only in the
+  // queue's own merge, verified again on the new head.
+  const forgedTwin = async (
+    w: World,
+    a: string,
+    tree?: { set?: Record<string, { mode: string; sha: string }> },
+  ) => {
+    const approved = String(
+      (await first<{ head_sha: string }>("SELECT head_sha FROM core_work_items WHERE id = ?", a))
+        ?.head_sha,
+    );
+    await github.deferUpdates(w.repo, true);
     await approve(w, a);
-    const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/src\/a\.ts|not the one approved/);
+    await updateAsked(a);
+    // Another holder of an App token writes a commit beside the queue's merge: same parents,
+    // authored by the App's bot and signed by GitHub, like the real one.
+    const branch = await branchOf(a);
+    await github.forcePush(w.repo, branch, approved);
+    await github.craftMerge(w.repo, branch, "main", { byGitHub: true, ...(tree ? { tree } : {}) });
+    await deliverAgain(a);
+    return expectWithdrawn(w, a);
+  };
+
+  it("withdraws a forged twin of the queue's merge: the right parents, bot-authored, GitHub-signed, foreign content in a both-changed file", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Forged twin", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    const ended = await forgedTwin(w, a, {
+      set: { "src/a.ts": { mode: "100644", sha: "a-not-what-github-merged" } },
+    });
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
     // v12: back to verify on the new head (no build), then the merge gate, then it lands.
     await runStage(w, a, "verify", (job) => {
       expect(job.harness.prompt).toContain(ended.head_sha);
@@ -804,6 +891,332 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     await approve(w, a);
     await itemStatus(a, "done");
     expect(await merges(a)).toHaveLength(1);
+  });
+
+  it("withdraws a merge made in GitHub's web conflict editor in place of the queue's", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Web editor", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    const branch = await branchOf(a);
+    await github.craftMerge(w.repo, branch, "main", { byGitHub: "web-editor" });
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
+  });
+
+  it("withdraws a GitHub-made merge of an older main in place of the queue's", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Older main", files("src/a.ts"));
+    const older = await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.push(w.repo, "main", undefined, ["docs/b.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    await github.craftMerge(w.repo, await branchOf(a), older, { byGitHub: true });
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
+  });
+
+  it("withdraws when a commit was pushed after the queue's merge", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Extra commit", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    const at = await ids(a);
+    await github.completeUpdate(w.repo, at.pr);
+    await github.push(w.repo, await branchOf(a), undefined, ["src/a.ts"]);
+    await deliverAgain(a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
+    await github.deferUpdates(w.repo, false);
+  });
+
+  it("carries the approval once GitHub's view catches up with the queue's own merge", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Slow ref", files("src/a.ts"));
+    await github.push(w.repo, "main", undefined, ["src/a.ts"]);
+    await github.deferUpdates(w.repo, true);
+    await approve(w, a);
+    await updateAsked(a);
+    // Polled again before GitHub shows the merge (round 3): no second merge, and the recorded merge
+    // stays. GitHub itself would answer a second merge with 204, nothing to merge.
+    await deliverAgain(a);
+    const recorded = await first<{ update_merge_sha: string | null }>(
+      "SELECT update_merge_sha FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued'",
+      a,
+    );
+    expect(recorded?.update_merge_sha).toBeTruthy();
+    expect(
+      await github.mergeIntoBranch(w.repo, {
+        branch: await branchOf(a),
+        head: "main",
+        message: "",
+      }),
+    ).toEqual({ status: "current" });
+    await github.completeUpdate(w.repo, (await ids(a)).pr);
+    await github.deferUpdates(w.repo, false);
+    await deliverAgain(a);
+    const ended = await waitFor("reverify", () =>
+      first<{ outcome: string }>(
+        "SELECT outcome FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+  });
+
+  it("a renamed file: the update keeps the approval, re-verifies and lands", async () => {
+    const w = await world();
+    await github.push(w.repo, "main", undefined, ["src/old-name.ts"]);
+    const a = await toMergeGateWith(w, "Rename", [
+      { path: "src/new-name.ts", status: "renamed", previousPath: "src/old-name.ts" },
+    ]);
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{ outcome: string }>(
+        "SELECT outcome FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+  });
+
+  it("withdraws when main brought in more files than are read (300), rather than judge a part", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Main moved a lot", files("src/a.ts"));
+    await github.push(
+      w.repo,
+      "main",
+      undefined,
+      Array.from({ length: 300 }, (_, i) => `vendor/m${i}.ts`),
+    );
+    await approve(w, a);
+    const ended = await expectWithdrawn(w, a);
+    expect(ended.end_reason).toMatch(/its files couldn't be read in full/);
+  });
+
+  // #190 review (3): an ambiguous merge base (a criss-cross) leaves "the side that changed a path"
+  // undefined: withdrawn, as is "can't tell". The judgement itself is #175's (merge-base.test.ts,
+  // from a recorded GitHub compare); here only that the update fails closed on it.
+  for (const answer of [true, null] as const) {
+    it(`withdraws an update whose merge base is ${answer ? "ambiguous" : "unknown"}`, async () => {
+      const w = await world();
+      const a = await toMergeGateWith(w, `Criss-cross ${answer}`, files("src/a.ts"));
+      await github.push(w.repo, "main", undefined, ["README.md"]);
+      await github.setMergeBaseAmbiguous(w.repo, answer);
+      try {
+        await approve(w, a);
+        const ended = await expectWithdrawn(w, a);
+        expect(ended.end_reason).toMatch(/merge base is ambiguous/);
+      } finally {
+        await github.setMergeBaseAmbiguous(w.repo, undefined);
+      }
+    });
+  }
+
+  // #190 review: nothing merges on a head the factory hasn't verified, whatever the ruleset says.
+  // #190 review, round 3: a verified head whose factory/verify stays waiting doesn't hold the queue
+  // for ever. The wait is measured from when verify passed, which the merging mark doesn't move.
+  it("gives up on a head whose factory/verify never becomes a success", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Check stuck waiting", files("src/a.ts"));
+    const head = String(
+      (await first<{ head_sha: string }>("SELECT head_sha FROM core_work_items WHERE id = ?", a))
+        ?.head_sha,
+    );
+    // Just before each merge, the check reads as still waiting (its CI result not processed).
+    deliverTestSeams.beforeLand = async () => {
+      await env.DB.prepare(
+        "UPDATE core_verify_checks SET status = 'in_progress', conclusion = NULL WHERE head_sha = ?",
+      )
+        .bind(head)
+        .run();
+    };
+    await approve(w, a);
+    await waitFor("refused as pending", () =>
+      first(
+        "SELECT 1 AS q FROM core_audit WHERE operation = 'pr.merge' AND work_item_id = ? AND actor_id = 'babysitter' AND outcome != 'ok'",
+        a,
+      ),
+    );
+    const at = await ids(a);
+    // Another pass soon after: still waiting, still queued (the mark moved updated_at meanwhile).
+    await deliverRepository(env, at.projectId, at.repositoryId);
+    expect(
+      await first<{ status: string }>(
+        "SELECT status FROM core_merge_queue WHERE work_item_id = ? ORDER BY enqueued_at DESC LIMIT 1",
+        a,
+      ),
+    ).toEqual({ status: "queued" });
+    // Past the bound since verify passed: the delivery ends, saying why, and the queue moves on.
+    const later = new Date(Date.now() + UNVERIFIED_GIVE_UP_MS + 60_000);
+    await deliverRepository(env, at.projectId, at.repositoryId, () => later);
+    const ended = await waitFor("left", () =>
+      first<{ end_reason: string }>(
+        "SELECT end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.end_reason).toMatch(/factory\/verify never became a success/);
+    expect(await merges(a)).toHaveLength(0);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
+  });
+
+  it("a carried approval doesn't merge while the new head's verification is pending, nor with no packet or a failing one", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Pending re-verify", files("src/a.ts"));
+    await github.setCiDefault(w.repo, CI(null));
+    await github.push(w.repo, "main", undefined, ["README.md"]);
+    await approve(w, a);
+    const ended = await waitFor("reverify", () =>
+      first<{ head_sha: string; pending_action_id: string }>(
+        "SELECT head_sha, pending_action_id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'reverify'",
+        a,
+      ),
+    );
+    const merge = () =>
+      call(
+        "pr.merge",
+        { workItemId: a, headSha: ended.head_sha, touchesFactoryConfig: false },
+        BABYSITTER,
+        { approvalId: ended.pending_action_id },
+      ).catch((e: unknown) => e);
+    // While the re-verify is pending the entry has left the queue: pr.merge refuses (queue head).
+    expect(await merge()).toMatchObject({ message: expect.stringMatching(/not in the/) });
+    // Put back in the queue before verify ran (mergeQueue.enter doesn't check verification):
+    // pr.merge itself refuses a head the factory hasn't verified, whatever GitHub's ruleset says.
+    await call(
+      "mergeQueue.enter",
+      {
+        workItemId: a,
+        headSha: ended.head_sha,
+        pendingActionId: ended.pending_action_id,
+        driver: "babysitter",
+      },
+      BABYSITTER,
+    );
+    expect(await merge()).toMatchObject({
+      message: expect.stringMatching(/hasn't verified .* \(no review packet for this commit\)/),
+      details: { mergeRefused: "unverified" },
+    });
+    // A failing packet for that head refuses it too.
+    await env.DB.prepare(
+      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES ('rp_fail', ?, ?, 'fail', ?)",
+    )
+      .bind(a, ended.head_sha, new Date().toISOString())
+      .run();
+    expect(await merge()).toMatchObject({ message: expect.stringMatching(/verify failed on/) });
+    // A pass packet with factory/verify still waiting: refused as pending.
+    await env.DB.prepare(
+      "UPDATE core_review_packets SET verdict = 'pass' WHERE id = 'rp_fail'",
+    ).run();
+    expect(await merge()).toMatchObject({
+      message: expect.stringMatching(/factory\/verify isn't a success/),
+      details: { mergeRefused: "unverified" },
+    });
+    expect(await merges(a)).toHaveLength(0);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
+    await github.setCiDefault(w.repo, null);
+  });
+
+  // Work item #61 (2026-11-13): both sides changed one file in different hunks, GitHub's
+  // update-branch merged it cleanly (its content is neither side's), and the approval was
+  // withdrawn every time, in a loop. The PR's own change is identical, so it survives: the new
+  // head is verified again and lands with no second approval.
+  it("#61: a clean merge of main into other hunks of a file the PR changed keeps the approval, re-verifies and lands", async () => {
+    const w = await world();
+    const path = "apps/desktop/screenshots/fixtures.ts";
+    const mine = "@@ -10,3 +10,4 @@\n ctx\n+  item: the PR's line,\n ctx";
+    const a = await toMergeGateWith(w, "#61 shape", [{ path, status: "modified", patch: mine }]);
+    // Main changes the same file elsewhere (another desktop PR landing).
+    await github.push(w.repo, "main", undefined, [
+      { path, status: "modified", patch: "@@ -500,3 +500,4 @@\n ctx\n+  main: another PR,\n ctx" },
+    ]);
+    await approve(w, a);
+    const ended = await waitFor("reverify, not withdrawn", () =>
+      first<{ outcome: string; head_sha: string; end_reason: string }>(
+        "SELECT outcome, head_sha, end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left'",
+        a,
+      ),
+    );
+    expect(ended.outcome).toBe("reverify");
+    expect(ended.end_reason).toMatch(/merged in cleanly and the change is the one approved/);
+    await runStage(w, a, "verify", () => verifyPass);
+    await itemStatus(a, "done");
+    expect(await merges(a)).toHaveLength(1);
+    // One approval, never withdrawn: nothing looped.
+    expect(
+      await all<{ decision: string }>(
+        "SELECT decision FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge'",
+        a,
+      ),
+    ).toEqual([{ decision: "approved" }]);
+  });
+
+  it("the loop guard: an approval withdrawn twice for the same reason isn't updated a third time on its own; a person is asked, with the reason", async () => {
+    const w = await world();
+    const a = await toMergeGateWith(w, "Keeps being withdrawn", files("src/a.ts"));
+    let n = 0;
+    // Main brings in more files than are read: withdrawn for the same reason each time.
+    const mainMovesALot = () =>
+      github.push(
+        w.repo,
+        "main",
+        undefined,
+        Array.from({ length: operations.MAX_CHANGED_PATHS + 1 }, () => `vendor/m${n++}.ts`),
+      );
+    const round = async () => {
+      await mainMovesALot();
+      await approve(w, a);
+      await waitFor("withdrawn", () =>
+        first(
+          "SELECT id FROM core_merge_queue WHERE work_item_id = ? AND outcome = 'withdrawn' AND status = 'left' AND ended_at >= ?",
+          a,
+          new Date(Date.now() - 60_000).toISOString(),
+        ),
+      );
+      await runStage(w, a, "verify", () => verifyPass);
+      await gateOpen(a, "merge");
+    };
+    await round();
+    await round();
+    // A third time: main moves again; the head is held and a person asked, no third withdrawal.
+    await mainMovesALot();
+    await approve(w, a);
+    const held = await waitFor("held, a person asked", () =>
+      first<{ hold_question_id: string | null }>(
+        "SELECT hold_question_id FROM core_merge_queue WHERE work_item_id = ? AND status = 'queued' AND hold_question_id IS NOT NULL",
+        a,
+      ),
+    );
+    const q = await first<{ prompt: string }>(
+      "SELECT prompt FROM core_questions WHERE id = ?",
+      held.hold_question_id,
+    );
+    expect(q?.prompt).toMatch(/withdrawn twice in a row for the same reason/);
+    expect(q?.prompt).toMatch(/couldn't be read in full/);
+    expect(
+      await all(
+        "SELECT id FROM core_pending_actions WHERE work_item_id = ? AND kind = 'merge' AND decision = 'withdrawn'",
+        a,
+      ),
+    ).toHaveLength(2);
+    await ok("workItem.cancel", { workItemId: a, reason: "end of test" }, w.human);
   });
 
   // Review of #105 (1): fail closed. A tree GitHub truncates has no digest, and no digest never
@@ -862,7 +1275,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     const at = await ids(a);
     await deliverRepository(env, at.projectId, at.repositoryId);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/isn't GitHub's update-branch merge/);
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
   });
 
   it("withdraws a GitHub-made merge that holds a third thing (a mode change)", async () => {
@@ -890,7 +1303,8 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     const at = await ids(a);
     await deliverRepository(env, at.projectId, at.repositoryId);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/beyond a merge of its two sides \(src\/a\.ts\)/);
+    // Beside the queue's own merge: not the commit GitHub returned, whatever it holds.
+    expect(ended.end_reason).toMatch(/not the merge the queue made/);
     await github.setCiDefault(w.repo, null);
   });
 
@@ -914,7 +1328,7 @@ describe("the approval across a merge of main (ADR 0582)", () => {
     };
     await approve(w, a);
     const ended = await expectWithdrawn(w, a);
-    expect(ended.end_reason).toMatch(/didn't ask for this merge/);
+    expect(ended.end_reason).toMatch(/didn't make this merge/);
     await github.setCiDefault(w.repo, null);
   });
 });

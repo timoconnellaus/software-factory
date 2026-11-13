@@ -72,6 +72,7 @@ import { useProjects, useSession } from "../lib/session.ts";
 import { isTypingTarget } from "../lib/shortcuts.ts";
 import { readFailedStore, stageWait } from "../lib/stage-wait.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
+import { type Withdrawal, withdrawnBefore, withdrawnText } from "../lib/withdrawn.ts";
 import { workLayout } from "./_work.tsx";
 
 export const TABS = ["overview", "plan", "runs", "review", "activity"] as const;
@@ -755,6 +756,11 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
               Verify {packet.verdict === "pass" ? "passed" : "failed"}. The packet was built at
               commit {packet.headSha.slice(0, 7)}.
             </div>
+            {withdrawnBefore(detail.gates) && (
+              <div className="text-ink-2" data-testid="approval-withdrawn">
+                {withdrawnText(withdrawnBefore(detail.gates) as Withdrawal, ago)}
+              </div>
+            )}
             <Button className="w-fit" onClick={() => onTab("review")}>
               Open the review
             </Button>

@@ -34,6 +34,8 @@ export const UPDATE_GIVE_UP_MS = 2 * 60_000;
 export const CI_RECHECK_MS = 10 * 60_000;
 export const CI_GIVE_UP_MS = 12 * CI_RECHECK_MS;
 export const CI_MISSING_GIVE_UP_MS = 3 * CI_RECHECK_MS;
+/** A verified head whose factory/verify still waits at the merge (#190 review): bounded like CI. */
+export const UNVERIFIED_GIVE_UP_MS = CI_GIVE_UP_MS;
 /** A held queue: `main.observe` wakes it when main is green; this is only the safety look. */
 const HELD_RECHECK_MS = 30 * 60_000;
 /** A queue whose head is someone else's (a v4–v7 Workflow) or empty: a slow safety look. */
@@ -71,6 +73,18 @@ interface Lease {
 
 /** Another pass took the repository over: this one stops, changing nothing more. */
 class LeaseLost extends Error {}
+/**
+ * An item's pinned workflow can't be read (fourth review of #185): that item, and only that item,
+ * leaves; the rest go on.
+ */
+class Unreadable extends Error {
+  constructor(
+    message: string,
+    readonly workItemId: string | null,
+  ) {
+    super(message);
+  }
+}
 
 interface HeadRow {
   id: string;
@@ -199,7 +213,31 @@ async function pass(
     if (!head || head.driver !== "babysitter") return head ? later(clock, IDLE_RECHECK_MS) : null;
     // A paused item (a kill switch) holds the head, as it did when it landed itself.
     if (head.item_status === "paused") return later(clock, IDLE_RECHECK_MS);
-    const waitMs = await deliverHead(env, lease, head, clock);
+    let waitMs: number | null;
+    try {
+      waitMs = await deliverHead(env, lease, head, clock);
+    } catch (error) {
+      if (!(error instanceof Unreadable)) throw error;
+      // Never blame the head for another item's refusal (fifth review of #185): the pass stops and
+      // the next one looks again.
+      if (error.workItemId !== head.work_item_id) throw new Error(error.message);
+      // It leaves the queue, sent back as withdrawn: its Workflow (v17) parks on the owner's
+      // question, an older row ends; either way the items behind it go on.
+      const left = await call(
+        env,
+        lease,
+        "mergeQueue.leave",
+        {
+          workItemId: head.work_item_id,
+          outcome: "left",
+          reason: `its workflow version can't be read: ${error.message}`,
+          delivery: "withdrawn",
+        },
+        { idempotencyKey: `deliver:${head.id}:leave` },
+      );
+      if (left.status === "refused") throw new Error(`mergeQueue.leave refused: ${left.message}`);
+      waitMs = null;
+    }
     if (waitMs !== null) return later(clock, waitMs);
   }
   return later(clock, 60_000);
@@ -263,6 +301,10 @@ async function call(
   } catch (error) {
     if (!isOperationError(error)) throw error;
     if (error.code === "fenced") throw new LeaseLost(error.message);
+    if (error.code === "workflow_unreadable" && op !== "mergeQueue.leave") {
+      const about = (input as { workItemId?: unknown } | null)?.workItemId;
+      throw new Unreadable(error.message, typeof about === "string" ? about : null);
+    }
     return {
       status: "refused",
       code: error.code,
@@ -475,8 +517,9 @@ async function deliverHead(
     return end("left", "failed", "the babysitter lands only an approved merge");
   }
   const touchesFactoryConfig = await approvedFlag(env, head.pending_action_id);
-  // A head held while main was red (decision 7) reads pending until it is evaluated again: release
-  // it now, or GitHub would refuse the merge for its required check.
+  // A head held while main was red (decision 7), or still waiting on CI the deliverer just read as
+  // green, reads pending until it is evaluated again: evaluate it now, or pr.merge (and GitHub's
+  // required check) would refuse the merge.
   await releaseHeld(env, lease, head, at);
   // Marked merging first, so a cancel from here until GitHub answers is refused ("this is
   // merging") rather than racing the merge (spec 53 review).
@@ -503,6 +546,20 @@ async function deliverHead(
   // nothing changed goes back (spec 53 review; asking a person is PR d's). A moved head is the
   // babysitter's to handle on a v11 item: pr.merge leaves the approval to it.
   const mergeRefused = landed.status === "refused" ? landed.details?.mergeRefused : undefined;
+  // Verified, but its factory/verify hasn't caught up with CI yet (#190 review): wait, then retry,
+  // as long as CI may take (UNVERIFIED_GIVE_UP_MS since verify passed on this head: the merging
+  // mark moves the entry's updated_at every pass), then end.
+  if (mergeRefused === "unverified" && landed.status === "refused" && landed.details?.pending) {
+    const since = Date.parse(String(landed.details.passedAt ?? ""));
+    // No time to measure from: don't wait on it at all.
+    const waited = Number.isNaN(since) ? Number.POSITIVE_INFINITY : clock().getTime() - since;
+    if (waited < UNVERIFIED_GIVE_UP_MS) return CI_RECHECK_MS;
+    return end(
+      "left",
+      "failed",
+      `factory/verify never became a success on ${at.slice(0, 7)}: ${why}`,
+    );
+  }
   if (mergeRefused === "headMoved" || mergeRefused === "refused") {
     const again = await snapshot();
     if ("wait" in again) return again.wait;
@@ -668,6 +725,9 @@ async function settleBabysit(
           : null;
     if (job.status === "queued" && why && reason) {
       if (!(await next(true))) return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+      // The job was another item's (it left the head meanwhile): closed, and the head goes on; the
+      // head is never ended for another item's job (sixth review of #185).
+      if (job.work_item_id !== head.work_item_id) return { kind: "go" };
       return {
         kind: "end",
         delivery: reason.kind === "conflict" ? "conflict" : "failed",
@@ -771,19 +831,27 @@ async function settleBabysit(
 
 /**
  * When `factory/verify` on the head still says "held: main is red" (main went green and the
- * re-evaluation hasn't run yet), evaluates it again now. Primary-key reads: core_verify_checks
+ * re-evaluation hasn't run yet), or still waits for CI that the deliverer has just read as green
+ * (the check-suite webhook not processed yet), evaluates it again now: pr.merge requires it to be a
+ * success on this exact head (#190 review). Primary-key reads: core_verify_checks
  * (project_id, head_sha), then the item and its repository.
  */
 async function releaseHeld(env: Env, lease: Lease, head: HeadRow, at: string): Promise<void> {
   const row = await env.DB.prepare(
-    `SELECT v.held_at, r.owner, r.name, w.pr_number FROM core_verify_checks v
+    `SELECT v.held_at, v.status, r.owner, r.name, w.pr_number FROM core_verify_checks v
      JOIN core_work_items w ON w.id = ?3
      JOIN core_repositories r ON r.id = w.repository_id
      WHERE v.project_id = ?1 AND v.head_sha = ?2`,
   )
     .bind(head.project_id, at, head.work_item_id)
-    .first<{ held_at: string | null; owner: string; name: string; pr_number: number | null }>();
-  if (!row?.held_at) return;
+    .first<{
+      held_at: string | null;
+      status: string;
+      owner: string;
+      name: string;
+      pr_number: number | null;
+    }>();
+  if (!row || (!row.held_at && row.status === "completed")) return;
   await call(env, lease, "verify.refresh", {
     repo: { owner: row.owner, name: row.name },
     headSha: at,
