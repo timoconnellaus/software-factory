@@ -298,6 +298,14 @@ export interface GitHubService {
    */
   pathEntries(repo: RepoRef, sha: string, paths: readonly string[]): Promise<Tree>;
   /**
+   * Whether two commits have more than one merge base (a criss-cross: each side merged the other),
+   * so a three-way judgement from GitHub's single `merge_base_commit` could be wrong: the merge bases
+   * GitHub reports each way differ, or a commit is new on both sides (a second merge base is
+   * reachable from both heads but not from the first). Null when it can't tell (more commits than a
+   * compare lists): treat that as ambiguous too.
+   */
+  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | null>;
+  /**
    * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
    * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
    * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.

@@ -550,9 +550,27 @@ async function readResolution(
       patches: {},
     };
   }
+  // More than one merge base (a criss-cross): no single base to judge from (review of #175).
+  const ambiguous = await github.mergeBaseAmbiguous(repo, itemHead, main);
+  if (ambiguous !== false) {
+    return {
+      summary: unreadable(
+        headSha,
+        ambiguous === null ? "incomplete" : "unclean",
+        ambiguous === null
+          ? "too many commits to find the merge base"
+          : "the item and the default branch have more than one merge base",
+        itemHead,
+        main,
+      ),
+      patches: {},
+    };
+  }
   const both = new Set(ours.paths.filter((p) => theirs.paths.includes(p)));
   const byPath = new Map(touched.map((f) => [f.path, f]));
-  const paths = [...new Set([...ours.paths, ...theirs.paths, ...byPath.keys()])];
+  // A rename's old path too: a deletion GitHub shows as a rename is still a path to judge.
+  const renamedFrom = touched.flatMap((f) => (f.previousPath ? [f.previousPath] : []));
+  const paths = [...new Set([...ours.paths, ...theirs.paths, ...byPath.keys(), ...renamedFrom])];
   if (paths.length > RESOLUTION_PATHS_MAX) {
     return {
       summary: unreadable(headSha, "incomplete", "too large to read in full", itemHead, main),

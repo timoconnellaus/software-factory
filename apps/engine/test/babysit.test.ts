@@ -685,6 +685,41 @@ describe("the resolution at the reopened gate (decision 1)", () => {
     ).toBeNull();
   });
 
+  it("a deletion GitHub shows as a rename is still judged: the deleted file is listed", async () => {
+    const { w, a } = await directResolution("Renamed away");
+    // x.ts was on main before the item branched; main now adds y.ts with the same content.
+    const r = await w.craft(async (branch) =>
+      github.craftMerge(w.w.repo, branch, "main", {
+        tree: {
+          set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } },
+          remove: ["src/x.ts"],
+        },
+        touches: [{ path: "src/y.ts", status: "renamed", previousPath: "src/x.ts" }],
+      }),
+    );
+    const view = await w.record(r);
+    expect(view?.status).toBe("clean");
+    expect(view?.outside).toContain("src/x.ts");
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.w.human);
+  });
+
+  it("an item and main with more than one merge base (a criss-cross) are unclean: review the whole diff", async () => {
+    const { w, a } = await directResolution("Criss-crossed");
+    // Each side merged the other: the item merged main, and main merged the item's commit.
+    const first = a.head;
+    await w.craft(async (branch) => github.craftMerge(w.w.repo, branch, "main"));
+    await github.craftMerge(w.w.repo, "main", first);
+    const r = await w.craft(async (branch) =>
+      github.craftMerge(w.w.repo, branch, "main", {
+        tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+      }),
+    );
+    const view = await w.record(r);
+    expect(view).toMatchObject({ status: "unclean", files: [] });
+    expect(view?.reason).toMatch(/more than one merge base/);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.w.human);
+  });
+
   it("a merge whose first parent isn't the approved head is unclean: review the whole diff", async () => {
     const { w, a, view } = await resolvedAs("Changed before merging", async (w_, a_, branch) => {
       // The agent commits on top of the approved head, then merges main: its change would pass
@@ -741,3 +776,44 @@ describe("the resolution at the reopened gate (decision 1)", () => {
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 });
+
+/**
+ * An item at its merge gate whose branch the test shapes itself, then `babysit.resolution` called
+ * as the deliverer calls it: for histories the delivery flow can't make in the fake.
+ */
+async function directResolution(title: string) {
+  const w = await world();
+  await github.push(w.repo, "main", undefined, ["src/x.ts"]);
+  const a = await toMergeGate(w, title, "src/a.ts");
+  await github.push(w.repo, "main", undefined, ["src/a.ts", "src/y.ts"]);
+  const key = `${a.projectId}:${a.repositoryId}`;
+  await env.DB.prepare(
+    "INSERT INTO core_delivery_state (key, project_id, repository_id, updated_at, babysit_fence) VALUES (?, ?, ?, ?, 1) ON CONFLICT (key) DO UPDATE SET babysit_fence = 1",
+  )
+    .bind(key, a.projectId, a.repositoryId, new Date().toISOString())
+    .run();
+  let approved = a.head;
+  const craft = async (make: (branch: string) => Promise<string>) => {
+    const sha = await make(a.branch);
+    return sha;
+  };
+  const record = async (resolution: string) => {
+    approved = (await github.commitParents(w.repo, resolution))[0] ?? approved;
+    await ok(
+      "babysit.resolution",
+      { workItemId: a.id, headSha: resolution, approvedHead: approved, deliveryFence: 1 },
+      BABYSITTER,
+    );
+    await env.DB.prepare("UPDATE core_work_items SET head_sha = ? WHERE id = ?")
+      .bind(resolution, a.id)
+      .run();
+    return (
+      await ok<{ babysitResolution: ResolutionView | null }>(
+        "workItem.get",
+        { workItemId: a.id },
+        w.human,
+      )
+    ).babysitResolution;
+  };
+  return { w: { w, craft, record }, a };
+}

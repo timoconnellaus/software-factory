@@ -595,6 +595,18 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const complete = !state.truncatedTrees?.[m] && !state.truncatedTrees?.[h];
       return { mergeBase: m, paths, complete };
     },
+    async mergeBaseAmbiguous(r, a, b) {
+      const state = await load(r);
+      const x = state.refs[a] ?? a;
+      const y = state.refs[b] ?? b;
+      const xs = reachable(state, x);
+      const ys = reachable(state, y);
+      const common = [...xs].filter((c) => ys.has(c));
+      // The common ancestors that no other common ancestor descends from: more than one is a
+      // criss-cross.
+      const best = common.filter((c) => !common.some((d) => d !== c && reachable(state, d).has(c)));
+      return best.length > 1;
+    },
     async pathEntries(r, at, paths) {
       const state = await load(r);
       const tree = treeAt(state, state.refs[at] ?? at);

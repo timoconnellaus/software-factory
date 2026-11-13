@@ -563,6 +563,32 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         complete: files.length < COMPARE_FILES_CAP,
       };
     },
+    async mergeBaseAmbiguous(repo, a, b) {
+      const side = async (base: string, head: string) => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=250`,
+        );
+        if (r.status !== 200) return null;
+        const body = r.json as {
+          merge_base_commit?: { sha?: string };
+          total_commits?: number;
+          commits?: { sha: string }[];
+        };
+        const commits = body.commits ?? [];
+        if ((body.total_commits ?? 0) > commits.length) return null;
+        return {
+          base: body.merge_base_commit?.sha ?? null,
+          shas: new Set(commits.map((c) => c.sha)),
+        };
+      };
+      const [ab, ba] = await Promise.all([side(a, b), side(b, a)]);
+      if (!ab || !ba || !ab.base || !ba.base) return null;
+      if (ab.base !== ba.base) return true;
+      for (const s of ab.shas) if (ba.shas.has(s)) return true;
+      return false;
+    },
     async pathEntries(repo, sha, paths) {
       // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
       // never the whole tree. GraphQL gives the mode as a number: 33188 is 100644 in octal.
