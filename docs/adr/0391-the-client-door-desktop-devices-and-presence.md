@@ -125,3 +125,8 @@ cut (`titled` in `packages/core`): `Merge 3f2a91c into main of acme/widgets, wit
 characters (spec 40 M4b). Every `describeDecision` case follows the same rule, the config save and
 rollback summaries included (the project's name last: `Approve a change to the policy (v2 to v3):
 loosens: …; project "Acme"`).
+
+Later the same day (review of the follow-up): the facts are never cut, only the title is, to the
+room the facts leave; and a merge without checks says so first, `Merge WITHOUT its checks: 3f2a91c
+into main of acme/widgets: "Fix the inbox count"`, so the condition is in the first words even
+where a sheet can't show the whole line.
