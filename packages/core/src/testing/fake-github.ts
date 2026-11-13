@@ -724,8 +724,24 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       if (pull?.state !== "merged" || !pull.mergeSha) throw new Error("only a merged PR reverts");
       const branch = `revert-${input.number}-${pull.head.replace(/\//g, "-")}`;
       const base = state.refs[pull.base] ?? null;
+      if ((state.failPosts ?? 0) > 0) {
+        state.failPosts = (state.failPosts ?? 0) - 1;
+        await save(r, state);
+        throw new Error("GitHub couldn't revert: a merge conflict");
+      }
       const headSha = await commit(state, base, branch);
       state.touched = { ...(state.touched ?? {}), [headSha]: state.touched?.[pull.mergeSha] ?? [] };
+      // The exact inverse: every path the merge changed goes back to its first parent's content.
+      const before = state.parents[pull.mergeSha];
+      if (before) {
+        const tree = { ...treeAt(state, base ?? before) };
+        const was = treeAt(state, before);
+        for (const p of touchesBetween(state, before, pull.mergeSha).keys()) {
+          if (was[p]) tree[p] = was[p];
+          else delete tree[p];
+        }
+        state.trees = { ...(state.trees ?? {}), [headSha]: tree };
+      }
       state.refs[branch] = headSha;
       const number = state.pulls.length + 1;
       state.pulls.push({

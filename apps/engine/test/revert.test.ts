@@ -18,6 +18,7 @@ import {
   triage,
   uid,
   verifyPass,
+  waitFor,
   world,
 } from "./helpers.ts";
 
@@ -135,8 +136,14 @@ const backdate = (w: World, minutes: number) =>
     .run();
 
 const revertOf = (id: string) =>
-  first<{ revert_work_item_id: string; reland_work_item_id: string | null }>(
-    "SELECT revert_work_item_id, reland_work_item_id FROM core_reverts WHERE original_work_item_id = ?",
+  first<{
+    status: string;
+    revert_work_item_id: string;
+    reland_work_item_id: string | null;
+    exact_inverse: number | null;
+    reason: string | null;
+  }>(
+    "SELECT status, revert_work_item_id, reland_work_item_id, exact_inverse, reason FROM core_reverts WHERE original_work_item_id = ?",
     id,
   );
 
@@ -150,7 +157,10 @@ describe("the engine's revert (spec 53 §5)", () => {
     await backdate(w, 31);
     await repairRedMain(env);
     const made = await revertOf(a.id);
-    expect(made).not.toBeNull();
+    // Claimed, then opened in the same pass; whether GitHub's revert is the exact inverse is
+    // checked in code and recorded (the check itself: packages/core/test/revert-verdict.test.ts).
+    expect(made).toMatchObject({ status: "opened" });
+    expect(made?.exact_inverse).not.toBeNull();
     const revertId = String(made?.revert_work_item_id);
     const revert = await first<{
       kind: string;
@@ -161,7 +171,7 @@ describe("the engine's revert (spec 53 §5)", () => {
     expect(revert).toMatchObject({
       kind: "attached",
       repairs_main: 1,
-      title: 'Revert "Breaks main"',
+      title: "Revert “Breaks main”",
     });
     // GitHub made it: the inverse of the culprit's PR, no code from the factory.
     const state = await github.state(w.repo);
@@ -196,7 +206,71 @@ describe("the engine's revert (spec 53 §5)", () => {
     expect(await first("SELECT status FROM core_work_items WHERE id = ?", a.id)).toEqual({
       status: "done",
     });
-    expect((await github.state(w.repo)).comments?.map((c) => c.number)).toContain(a.pr);
+    // Posted once, after the reland committed (an outbox message), in inert text.
+    const comments = await waitFor("the comment", async () => {
+      const c = (await github.state(w.repo)).comments ?? [];
+      return c.length ? c : null;
+    });
+    expect(comments.map((c) => c.number)).toEqual([a.pr]);
+    expect(comments[0]?.body).toMatch(/`Reland: Breaks main`/);
+    // Attaching the revert PR again finds its item: no second one.
+    const again = await ok<{ workItemId: string; outcome: string }>(
+      "workItem.attachPr",
+      { projectId: w.projectId, prNumber: Number(revert?.pr_number) },
+      w.human,
+    ).catch((e: { code?: string }) => ({ workItemId: "", outcome: e.code ?? "" }));
+    expect(again.workItemId === revertId || again.outcome === "denied").toBe(true);
+  });
+
+  it("a claim asked of GitHub but not recorded finds GitHub's revert PR instead of opening another", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Asked twice");
+    await backdate(w, 31);
+    // The claim commits; then GitHub made the revert, and the call that asked lost track of it.
+    expect(
+      await ok<{ status: string }>("mainRed.revert", { workItemId: a.id }, w.human),
+    ).toMatchObject({ status: "claimed" });
+    await github.revertPullRequest(w.repo, { number: a.pr, title: "Revert", body: "" });
+    const pulls = (await github.state(w.repo)).pulls.length;
+    expect(
+      await ok<{ status: string }>("mainRed.revert", { workItemId: a.id }, w.human),
+    ).toMatchObject({ status: "opened" });
+    expect((await github.state(w.repo)).pulls.length).toBe(pulls);
+    // A second claim for the same culprit and episode is refused.
+    await expect(call("mainRed.revert", { workItemId: a.id }, w.human)).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it("GitHub refusing the revert is recorded once, with an incident, and not tried again", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Can't be reverted");
+    await backdate(w, 31);
+    await github.failNextPosts(w.repo, 1);
+    await repairRedMain(env);
+    expect(await revertOf(a.id)).toMatchObject({ status: "failed" });
+    expect((await revertOf(a.id))?.reason).toMatch(/GitHub couldn't revert/);
+    expect(
+      await first("SELECT id FROM core_incidents WHERE source_work_item_id = ?", a.id),
+    ).not.toBeNull();
+    const pulls = (await github.state(w.repo)).pulls.length;
+    await repairRedMain(env);
+    expect((await github.state(w.repo)).pulls.length).toBe(pulls);
+  });
+
+  it("a revert whose item ends without merging is closed, and nothing relands", async () => {
+    const w = await world();
+    const a = await provenCulprit(w, "Revert abandoned");
+    await backdate(w, 31);
+    await repairRedMain(env);
+    const made = await revertOf(a.id);
+    await ok(
+      "workItem.cancel",
+      { workItemId: String(made?.revert_work_item_id), reason: "not this way" },
+      w.human,
+    );
+    await repairRedMain(env);
+    expect(await revertOf(a.id)).toMatchObject({ status: "abandoned", reland_work_item_id: null });
   });
 
   it("never reverts a guess: a candidate not yet proven, or a culprit an agent named", async () => {

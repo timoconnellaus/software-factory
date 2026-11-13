@@ -998,15 +998,21 @@ export interface CoreDeliveryStateTable {
   babysit_reasons: Generated<JsonText>;
 }
 
-/** 0393 (spec 53 §5): the engine's revert of a red main's culprit, and its reland item. */
+/** 0393 (spec 53 §5): the engine's revert of a red main's culprit, claimed, then opened. */
 export interface CoreRevertsTable {
-  revert_work_item_id: string;
+  id: string;
   original_work_item_id: string;
   repository_id: string;
   project_id: string;
   red_since: string;
+  status: "claimed" | "opened" | "failed" | "abandoned" | "relanded";
+  revert_pr_number: number | null;
+  revert_work_item_id: string | null;
+  exact_inverse: number | null;
+  reason: string | null;
   reland_work_item_id: string | null;
   created_at: Iso;
+  updated_at: Iso;
 }
 
 /** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */

@@ -172,19 +172,28 @@ export async function repairRedMain(env: Env, now = new Date(), limit = 10): Pro
       `SELECT h.culprit_work_item_id AS id FROM core_main_health h
        WHERE h.red_since IS NOT NULL AND h.red_since <= ?1
          AND h.culprit_work_item_id IS NOT NULL AND h.attributed_by IN ('proven', 'person')
-         AND NOT EXISTS (SELECT 1 FROM core_reverts r WHERE r.original_work_item_id = h.culprit_work_item_id)
+         AND NOT EXISTS (SELECT 1 FROM core_reverts r
+           WHERE r.original_work_item_id = h.culprit_work_item_id AND r.red_since = h.red_since
+             AND r.status <> 'claimed')
        LIMIT ?2`,
     ).bind(due, limit),
     env.DB.prepare(
       `SELECT r.revert_work_item_id AS id FROM core_reverts r
        CROSS JOIN core_work_items w ON w.id = r.revert_work_item_id
-       WHERE r.reland_work_item_id IS NULL AND w.status = 'done'
+       WHERE r.status = 'opened' AND w.status = 'done'
        ORDER BY r.created_at LIMIT ?1`,
     ).bind(limit),
+    // A revert whose item ended without merging leaves the open index (review of #178).
+    env.DB.prepare(
+      `UPDATE core_reverts SET status = 'abandoned', updated_at = ?2 WHERE id IN
+         (SELECT r.id FROM core_reverts r CROSS JOIN core_work_items w ON w.id = r.revert_work_item_id
+          WHERE r.status = 'opened' AND w.status IN ('cancelled', 'failed', 'rejected')
+          ORDER BY r.created_at LIMIT ?1)`,
+    ).bind(limit, now.toISOString()),
   ]);
   const act = async (op: string, id: string) => {
     try {
-      await invoke(
+      const r = await invoke(
         invokeDeps(env),
         op,
         { workItemId: id },
@@ -193,13 +202,19 @@ export async function repairRedMain(env: Env, now = new Date(), limit = 10): Pro
           origin: { surface: "cron", step: op },
         },
       );
+      return r.status === "ok" ? (r.output as { status?: string }) : null;
     } catch (error) {
       if (!isOperationError(error)) console.error(`${op} ${id} failed`, error);
+      return null;
     }
   };
   const c = (culprits?.results ?? []) as { id: string }[];
   const m = (merged?.results ?? []) as { id: string }[];
-  for (const r of c) await act("mainRed.revert", r.id);
+  for (const r of c) {
+    // The first call commits the claim; the next asks GitHub (or finds what it already made).
+    const first = await act("mainRed.revert", r.id);
+    if (first?.status === "claimed") await act("mainRed.revert", r.id);
+  }
   for (const r of m) await act("mainRed.reland", r.id);
   return c.length + m.length;
 }

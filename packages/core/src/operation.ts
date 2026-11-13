@@ -57,6 +57,18 @@ export type OutboxMessage =
       kind: "verify.recheck";
       payload: { repo: { owner: string; name: string }; headSha: string; prNumber: number | null };
     }
+  /**
+   * Comment on a PR as the App after this call commits (spec 53: a reverted change's PR is told
+   * once, never from a call whose batch then failed).
+   */
+  | {
+      kind: "github.comment";
+      payload: {
+        repo: { installationId: string; owner: string; repo: string };
+        number: number;
+        body: string;
+      };
+    }
   /** Run `queue.pull` for a project after this call commits (ADR 0491). */
   | { kind: "queue.pull"; payload: { projectId: string } }
   /**
