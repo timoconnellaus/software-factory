@@ -173,13 +173,29 @@ function SpecDetail({
         side={
           <Panel needsYou className="gap-2.5" data-testid="decision">
             <h2 className="m-0 font-semibold text-[13px]">Your decision</h2>
-            <Button
-              disabled={pending !== null}
-              onClick={() => decide({ kind: "spec.approve", workItemId })}
-              data-testid="approve-spec"
-            >
-              Approve the spec
-            </Button>
+            {(d?.spec?.splitInto ?? 0) !== 0 ? (
+              // A split is approved where its work items are shown (spec 24, review of #173).
+              <>
+                <p className="m-0 font-medium" data-testid="inbox-split">
+                  {(d?.spec?.splitInto ?? 0) > 0
+                    ? `A plan and ${d?.spec?.splitInto} work items`
+                    : "A plan whose split can't be read"}
+                </p>
+                <Button asChild>
+                  <Link to="/work/$id" params={{ id: workItemId }} search={{ tab: "plan" }}>
+                    Open the plan to approve
+                  </Link>
+                </Button>
+              </>
+            ) : (
+              <Button
+                disabled={pending !== null}
+                onClick={() => decide({ kind: "spec.approve", workItemId })}
+                data-testid="approve-spec"
+              >
+                Approve the spec
+              </Button>
+            )}
             <Button variant="outline" disabled={pending !== null} onClick={() => setChanges(true)}>
               Request changes
             </Button>

@@ -17,7 +17,9 @@ import {
   planningWaitInputSchema,
   rekeyFootprint,
   sameFootprint,
+  specChildSchema,
   specReviseInputSchema,
+  splitDigest,
   structureMoves,
   whyNotKept,
 } from "@software-factory/runner-contract";
@@ -54,6 +56,8 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
+import { childrenOf } from "../splits.ts";
+import { has } from "../workflow-features.ts";
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -467,6 +471,20 @@ export const specRevise = defineOperation({
         "the spec is waiting at the gate: wait for a decision (changes arrive in the chat)",
       );
     }
+    // An item on a Workflow without `splits` can't build a split (review of #171).
+    if (input.children?.length && !has(w.workflow_version, "splits")) {
+      throw new OperationError(
+        "invalid_input",
+        "this item's Workflow can't split work: plan it as one piece of work",
+      );
+    }
+    // Depth 1 (spec 24, ADR 0303): a child's plan can't split again.
+    if (input.children?.length && w.parent_work_item_id) {
+      throw new OperationError(
+        "invalid_input",
+        "this item was split off a parent's plan, and a child can't split again (depth 1): plan it as one piece of work, or ask in the chat to change the parent's plan",
+      );
+    }
     // A person's edit stays word for word (ADR 0471): the planner asks before changing it.
     const dropped = droppedEdits(input.specMd, await standingEdits(ctx, w.id));
     if (dropped.length) {
@@ -502,6 +520,7 @@ export const specRevise = defineOperation({
         coverage: json(input.coverage),
         clarifications: json(input.clarifications),
         summary: input.summary ?? null,
+        children: input.children?.length ? json(input.children) : null,
         status: "draft",
         created_by: ctx.actor.id,
         created_at: ctx.now,
@@ -1352,6 +1371,7 @@ export const specEdit = defineOperation({
         assumptions: spec.assumptions,
         coverage: spec.coverage,
         clarifications: spec.clarifications,
+        children: spec.children,
         summary: "edited by a person",
         status: "draft",
         created_by: ctx.actor.id,
@@ -1544,6 +1564,12 @@ const specView = z.object({
   assumptions: z.array(z.string()),
   coverage: z.array(z.record(z.string(), z.unknown())),
   clarifications: z.array(z.record(z.string(), z.unknown())),
+  /** Spec 24: the work items this version splits into, approved with it. */
+  children: z.array(specChildSchema).default([]),
+  /** The stored split can't be read: approving is refused until the planner revises it. */
+  childrenUnreadable: z.boolean().default(false),
+  /** Spec 24: the digest of `children`, sent back with the approval. Null: no split. */
+  splitDigest: z.string().nullable().optional(),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1773,6 +1799,14 @@ export const planningGet = defineOperation({
       assumptions: parseJson<string[]>(s.assumptions, []),
       coverage: parseJson<Record<string, unknown>[]>(s.coverage, []),
       clarifications: parseJson<Record<string, unknown>[]>(s.clarifications, []),
+      ...(() => {
+        // An unreadable split is said, not shown as no split (review of #173).
+        try {
+          return { children: childrenOf(s.children), childrenUnreadable: false };
+        } catch {
+          return { children: [], childrenUnreadable: true };
+        }
+      })(),
       summary: s.summary,
       status: s.status,
       createdAt: s.created_at,
@@ -1865,7 +1899,17 @@ export const planningGet = defineOperation({
         escalated: q.escalated_at !== null,
         planning: q.planning_session_id !== null,
       })),
-      spec: current ? toSpec(current) : null,
+      spec: current
+        ? await (async () => {
+            const out = toSpec(current);
+            // The digest the plan's screen sends back with its approval (review of #173): the app
+            // hashes nothing, it returns what it was given with what it showed.
+            return {
+              ...out,
+              splitDigest: out.children.length ? await splitDigest(out.children) : null,
+            };
+          })()
+        : null,
       previousSpec: previous ? toSpec(previous) : null,
       messages: messages.map((m) => ({
         id: m.id,

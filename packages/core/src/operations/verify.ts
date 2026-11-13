@@ -3,6 +3,7 @@
 // whenever CI or the PR changes, the onboarding check, and the check-only auto-merge (ADR 0230).
 import { checkResultSchema } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { sha256Hex } from "../attachments.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { reviewerMatchesImplementer } from "../model-roles.ts";
@@ -14,6 +15,7 @@ import {
 } from "../operation.ts";
 import { declaredChecks, declaredProof, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
+import { childEnded, releaseSplitChildren, splitFiles } from "../splits.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -236,7 +238,29 @@ export const reviewPacketRecord = defineOperation({
       // The primary key (work_item_id, head_sha, name) of migration 0270; one row per check.
       .limit(CHECK_ROWS_MAX)
       .execute();
-    const hostChecks = hostChecksOn(w);
+    // Spec 24: a split parent's PR is the approved plan's files only, decided from the diff.
+    const split = await splitFiles(ctx, w);
+    // Each approved file's content at the head (GitHub reads; at most the plan's files).
+    const splitAtHead: Record<string, string | null> = {};
+    // Each must be a plain file at the head (review of #171): a link to identical content isn't.
+    const modes = split?.length
+      ? await ctx.services.github.pathEntries(
+          repo,
+          input.headSha,
+          split.map((f) => f.path),
+        )
+      : {};
+    for (const f of split ?? []) {
+      const mode = modes[f.path]?.mode;
+      if (mode && mode !== "100644" && mode !== "100755") {
+        splitAtHead[f.path] = `mode:${mode}`;
+        continue;
+      }
+      const content = await ctx.services.github.readFile(repo, f.path, input.headSha);
+      splitAtHead[f.path] =
+        content === null ? null : await sha256Hex(new TextEncoder().encode(content));
+    }
+    const hostChecks = split ? false : hostChecksOn(w);
     // With whether each may prove a criterion (setup and static checks never do).
     const declared = hostChecks ? declaredProof(ctx.scope.policy ?? null, w.workflow) : [];
     // The approved spec's criteria: the links to checks a person approved (ADR 0501).
@@ -286,6 +310,8 @@ export const reviewPacketRecord = defineOperation({
       hostChecks,
       specCriteria,
       linksFrom,
+      splitFiles: split,
+      splitAtHead,
       declaredChecks: declared,
       requiredCi: ctx.scope.policy?.protection.requiredChecks ?? [],
       checksRun: ran.map(checkRunOf),
@@ -673,6 +699,10 @@ export const verifyRefresh = defineOperation({
         : "the pull request was closed without merging";
       await releaseMergeQueue(ctx, item, input.merged ? "merged" : "left", reason);
       endWorkItem(ctx, item, reason, input.merged ? "done" : "cancelled");
+      // A split's child or parent ended here too (review of #171): siblings and parent hear now,
+      // and a parent whose plan merged this way still releases the children it held.
+      if (input.merged) await releaseSplitChildren(ctx, item);
+      await childEnded(ctx, item, input.merged ? "done" : "cancelled");
       if (input.merged) {
         ctx.change({
           entity: "work_item",
