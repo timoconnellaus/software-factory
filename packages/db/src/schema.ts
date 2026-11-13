@@ -667,7 +667,7 @@ export interface CoreRunnerSharesTable {
   created_at: Iso;
 }
 
-export type JobStage = "triage" | "spec" | "planning" | "build" | "verify";
+export type JobStage = "triage" | "spec" | "planning" | "build" | "verify" | "babysit";
 export type JobStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
 
 export interface CoreJobsTable {
@@ -997,6 +997,46 @@ export interface CoreDeliveryStateTable {
   /** When the minute cron passes again without an event. */
   next_check_at: Iso | null;
   updated_at: Iso;
+  /** 0390 (ADR 0585): the repository's open `babysit` job, if any. */
+  babysit_job_id: string | null;
+  /** 0390: goes up once per `babysit` job; its result's writes carry it. */
+  babysit_fence: Generated<number>;
+  /** 0390: JSON `BabysitReason[]` the deliverer waits on the job for. */
+  babysit_reasons: Generated<JsonText>;
+}
+
+/** 0390 (spec 53 §4): a check rerun as a flake, once per check per SHA. */
+export interface CoreCiRerunsTable {
+  repository_id: string;
+  head_sha: string;
+  check_name: string;
+  work_item_id: string;
+  test_name: string | null;
+  run_url: string | null;
+  asked_at: Iso;
+  /** 1 when the rerun passed, 0 when it failed again, null until known. */
+  passed: number | null;
+}
+
+/** 0390 (spec 53, decision 3): the known-flake list. */
+export interface CoreFlakesTable {
+  id: string;
+  project_id: string;
+  repository_id: string;
+  check_name: string;
+  test_name: string | null;
+  head_sha: string;
+  run_url: string | null;
+  work_item_id: string | null;
+  seen_at: Iso;
+}
+
+/** 0390: the backlog item opened to fix a check that keeps flaking. */
+export interface CoreFlakeFixesTable {
+  repository_id: string;
+  check_name: string;
+  work_item_id: string;
+  created_at: Iso;
 }
 
 // ---- 0351: main health (spec 53, ADR 0581) ----
@@ -1345,6 +1385,9 @@ export interface CoreDatabase {
   core_attachments: CoreAttachmentsTable;
   core_merge_queue: CoreMergeQueueTable;
   core_delivery_state: CoreDeliveryStateTable;
+  core_ci_reruns: CoreCiRerunsTable;
+  core_flakes: CoreFlakesTable;
+  core_flake_fixes: CoreFlakeFixesTable;
   core_main_health: CoreMainHealthTable;
   core_planning_sessions: CorePlanningSessionsTable;
   core_planning_events: CorePlanningEventsTable;

@@ -2,6 +2,7 @@
 // the workflow's `autoApprove` setting is on and every condition holds, each checked here in code.
 // It only approves: the babysitter (spec 53) lands approved work, whoever approved it.
 import { z } from "zod";
+import { type CriterionProof, everyCriterionProven } from "../verify/proof.ts";
 
 /**
  * The merge stage's setting (ADR 0515 §4): off by default. Turning it on, raising a limit or
@@ -13,7 +14,7 @@ export const autoApproveSettings = z
       .boolean()
       .default(false)
       .describe(
-        "Dark factory mode: merges are approved with no person when every condition holds (the packet passed on this commit with every criterion proven by a check a person tied to it, tests intact, the adjudicator approved having earned it, inside these limits, low risk, and never a change to the factory itself). It only approves; the babysitter lands the merge. Turning it on is a loosening an org admin approves; it counts for an item only while it is on in both the version the item pinned and the current one. A project is held automatically after an incident, a revert, red CI or a person's 'should not have merged'. Small items never qualify: their criteria are tied to checks by triage, an agent, not by a person; nor do items whose spec the adjudicator approved: a person must approve the spec whose ties count. On the factory's own repository it covers only docs/screenshots and docs/design: everything else there always goes to a person.",
+        "Dark factory mode: a merge is approved with no person only when every condition holds: the packet passed on this commit with every criterion proven by a check tied to it in a spec a person approved; tests intact; the adjudicator approved, having earned it; inside the size limits; every changed path inside allowPaths (the places an unattended change may touch: nothing qualifies without them) and none on the built-in risk and self-modify lists, which can't be removed; and never a change to the factory itself. It only approves; the babysitter lands the merge. Turning it on, raising a limit or widening allowPaths is a loosening an org admin approves; it counts for an item only while it is on in both the version the item pinned and the current one. A project is held automatically after an incident, a revert, red CI after one of its merges or a person's 'should not have merged'; only an org admin lifts a hold. Small items never qualify (triage, an agent, ties their criteria). On the factory's own repository it covers at most docs/design, whatever allowPaths says.",
       ),
     maxChangedLines: z
       .number()
@@ -30,6 +31,17 @@ export const autoApproveSettings = z
       .max(100)
       .default(10)
       .describe("Most merges auto-approved in one project in a day (UTC), across its workflows."),
+    /**
+     * The places an unattended change may touch (review of #152): every changed path must match one.
+     * No default: empty means nothing qualifies, and the setting can't be turned on without them.
+     */
+    allowPaths: z
+      .array(z.string().min(1).max(200))
+      .max(100)
+      .default([])
+      .describe(
+        "Globs of the paths an auto-approved change may touch (src/components/**, docs/**): every path a change touches must match one. Required to turn auto-approval on; nothing qualifies without them.",
+      ),
     /** Globs no auto-approved change may touch, on top of the floors. */
     forbiddenPaths: z
       .array(z.string().min(1).max(200))
@@ -43,7 +55,12 @@ export const autoApproveSettings = z
       .default([])
       .describe("Paths that make a change risky, on top of the built-in risk paths."),
   })
-  .strict();
+  .strict()
+  .refine((s) => !s.enabled || s.allowPaths.length > 0, {
+    message:
+      "auto-approval needs allowPaths: the places an unattended change may touch (src/components/**, docs/**). Nothing qualifies without them.",
+    path: ["allowPaths"],
+  });
 export type AutoApproveSettings = z.infer<typeof autoApproveSettings>;
 export const AUTO_APPROVE_OFF: AutoApproveSettings = autoApproveSettings.parse({});
 
@@ -132,6 +149,54 @@ export const RISK_PATHS = [
   "**/*.mm",
   "**/*.entitlements",
   "**/*.plist",
+  // Manifests in every ecosystem (review of #152: what installs and runs).
+  "**/requirements*.txt",
+  "**/pyproject.toml",
+  "**/setup.py",
+  "**/setup.cfg",
+  "**/Pipfile",
+  "**/go.mod",
+  "**/Cargo.toml",
+  "**/Gemfile",
+  "**/*.gemspec",
+  "**/build.gradle*",
+  "**/settings.gradle*",
+  "**/pom.xml",
+  "**/composer.json",
+  "**/*.csproj",
+  // Build scripts by any name.
+  "**/build.*",
+  "**/esbuild*",
+  "**/rollup*",
+  "**/webpack*",
+  "**/gulpfile*",
+  "**/Gruntfile*",
+  // CI, deploy and hooks, wherever they're configured.
+  "**/Jenkinsfile",
+  "**/azure-pipelines*",
+  ".buildkite/**",
+  "**/bitbucket-pipelines*",
+  "**/.travis.yml",
+  "**/.drone.yml",
+  "**/appveyor.yml",
+  "**/vercel.json",
+  "**/netlify.toml",
+  "**/fly.toml",
+  "**/Procfile",
+  "**/app.yaml",
+  "**/render.yaml",
+  "**/railway.json",
+  "**/serverless.*",
+  ".husky/**",
+  ".githooks/**",
+  "**/.pre-commit-config.yaml",
+  "**/lefthook*",
+  // Instructions other agents read.
+  "**/.cursorrules",
+  "**/GEMINI.md",
+  "**/.windsurfrules",
+  "**/copilot-instructions.md",
+  "**/.aider*",
   // Lock files: what installs, whatever the manifest says.
   "**/pnpm-lock.yaml",
   "**/package-lock.json",
@@ -147,7 +212,7 @@ export const RISK_PATHS = [
  * On the factory's own repository auto-approval is default-deny (review of #152, ADR 0515 amended):
  * a change qualifies only when every path it touches is on this list. Widening it takes an ADR.
  */
-export const FACTORY_SOURCE_ALLOW = ["docs/screenshots/**", "docs/design/**"] as const;
+export const FACTORY_SOURCE_ALLOW = ["docs/design/**"] as const;
 
 /** Generated files: what made them isn't in the diff, so they aren't low risk. */
 export const GENERATED_PATHS = [
@@ -367,29 +432,11 @@ export function autoApproveVerdict(
   const paths = changes?.map((c) => c.path) ?? [];
   const lines = changes?.reduce((n, c) => n + (c.changes ?? Number.POSITIVE_INFINITY), 0) ?? null;
   const forbidden = matching(setting.forbiddenPaths, paths);
+  // Every path inside allowPaths (and inside the other version's, after `stricterAutoApprove`).
+  const allow = [setting.allowPaths, ...((setting as { alsoAllow?: string[][] }).alsoAllow ?? [])];
+  const outside = paths.filter((p) => allow.some((list) => !list.some((g) => globMatch(g, p))));
   const today = facts.today ?? 0;
-  add(
-    "limits",
-    !!changes &&
-      changes.length <= setting.maxFiles &&
-      lines !== null &&
-      lines <= setting.maxChangedLines &&
-      forbidden.length === 0 &&
-      today < setting.maxPerDay,
-    !changes
-      ? "the change couldn't be read from GitHub"
-      : today >= setting.maxPerDay
-        ? `${today} merges were auto-approved in this project today (the limit is ${setting.maxPerDay})`
-        : changes.length > setting.maxFiles
-          ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
-          : lines === null || !Number.isFinite(lines)
-            ? "a file's changed lines couldn't be counted"
-            : lines > setting.maxChangedLines
-              ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
-              : forbidden.length
-                ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
-                : "inside the size and path limits",
-  );
+
   const self = matching(SELF_MODIFY_PATHS, paths);
   const risky = [
     ...matching([...RISK_PATHS, ...GENERATED_PATHS, ...setting.riskPaths], paths),
@@ -412,6 +459,31 @@ export function autoApproveVerdict(
           : risky.length
             ? `touches a risk path: ${[...new Set(risky)].slice(0, 5).join(", ")}`
             : "low risk",
+  );
+  add(
+    "limits",
+    !!changes &&
+      changes.length <= setting.maxFiles &&
+      lines !== null &&
+      lines <= setting.maxChangedLines &&
+      forbidden.length === 0 &&
+      outside.length === 0 &&
+      today < setting.maxPerDay,
+    !changes
+      ? "the change couldn't be read from GitHub"
+      : today >= setting.maxPerDay
+        ? `${today} merges were auto-approved in this project today (the limit is ${setting.maxPerDay})`
+        : changes.length > setting.maxFiles
+          ? `${changes.length} files changed (the limit is ${setting.maxFiles})`
+          : lines === null || !Number.isFinite(lines)
+            ? "a file's changed lines couldn't be counted"
+            : lines > setting.maxChangedLines
+              ? `${lines} lines changed (the limit is ${setting.maxChangedLines})`
+              : forbidden.length
+                ? `touches a forbidden path: ${forbidden.slice(0, 5).join(", ")}`
+                : outside.length
+                  ? `outside allowPaths: ${outside.slice(0, 5).join(", ")}`
+                  : "inside the size and path limits",
   );
   const failed = conditions.find((c) => !c.ok);
   return {
@@ -441,6 +513,22 @@ export function autoApproveImpact(
       class: after[key] > before[key] ? "loosens" : "tightens",
       summary: `Auto-approval ${key === "maxFiles" ? "file" : key === "maxPerDay" ? "daily" : "changed-line"} limit ${before[key]} → ${after[key]}.`,
     });
+  }
+  {
+    const widened = after.allowPaths.filter((x) => !before.allowPaths.includes(x));
+    const narrowed = before.allowPaths.filter((x) => !after.allowPaths.includes(x));
+    if (widened.length)
+      out.push({
+        path: `${path}.allowPaths`,
+        class: "loosens",
+        summary: `Auto-approved changes may also touch: ${widened.join(", ")}.`,
+      });
+    if (narrowed.length)
+      out.push({
+        path: `${path}.allowPaths`,
+        class: "tightens",
+        summary: `Auto-approved changes may no longer touch: ${narrowed.join(", ")}.`,
+      });
   }
   for (const key of ["forbiddenPaths", "riskPaths"] as const) {
     const dropped = before[key].filter((x) => !after[key].includes(x));
@@ -476,7 +564,10 @@ export function stricterAutoApprove(
     maxPerDay: Math.min(a.maxPerDay, b.maxPerDay),
     forbiddenPaths: [...new Set([...a.forbiddenPaths, ...b.forbiddenPaths])],
     riskPaths: [...new Set([...a.riskPaths, ...b.riskPaths])],
-  };
+    // A path must be inside both versions' allowPaths.
+    allowPaths: a.allowPaths,
+    alsoAllow: [b.allowPaths, ...((a as { alsoAllow?: string[][] }).alsoAllow ?? [])],
+  } as AutoApproveSettings;
 }
 
 /**
@@ -488,8 +579,9 @@ export function stricterAutoApprove(
 export function criteriaProven(sections: Record<string, unknown>): boolean {
   const proof = sections.proof;
   if (!Array.isArray(proof) || proof.length === 0) return false;
-  return proof.every((p) => {
-    const x = p as { proven?: unknown; linkedBy?: unknown; fromTriage?: unknown };
-    return x.proven === true && x.linkedBy === "spec" && x.fromTriage !== true;
-  });
+  // #146's own rule (only a person-approved tie, never triage's), and the spec's links only.
+  return (
+    everyCriterionProven(proof as CriterionProof[]) &&
+    proof.every((p) => (p as { linkedBy?: unknown }).linkedBy === "spec")
+  );
 }

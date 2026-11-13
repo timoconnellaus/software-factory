@@ -8,6 +8,7 @@ import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
 import * as autoApprove from "./operations/auto-approve.ts";
+import * as babysit from "./operations/babysit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
@@ -208,6 +209,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   delivery.deliveryStatus,
   mergeQueue.mergeQueueMerging,
   mergeQueue.mergeQueueHold,
+  babysit.babysitWake,
+  babysit.babysitNext,
+  babysit.ciRerun,
+  babysit.flakeRecord,
   verify.reviewPacketRecord,
   verify.ciRead,
   verify.checksForHead,

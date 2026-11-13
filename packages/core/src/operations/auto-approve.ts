@@ -271,23 +271,35 @@ async function specApprovedByPerson(ctx: HandlerContext, workItemId: string): Pr
   return !!gate?.person;
 }
 
+/** Files only the factory's own source has: any one of them present means it is (any name). */
+export const FACTORY_MARKERS = [
+  "apps/engine/package.json",
+  "packages/core/package.json",
+  "packages/runner-contract/package.json",
+  "local/runner-host/package.json",
+  "packages/harness-claude/package.json",
+] as const;
+
 /**
  * Whether the project's repository is the factory's own source (review of #152): the project says
- * so, or (`auto`) the repository holds the engine's package. Any doubt is yes: default-deny.
+ * so (`yes`, set explicitly on the factory's own project by migration 0286), or says it isn't
+ * (`no`, an org admin's loosening). `auto` answers "not the factory" only on a positive result: every
+ * marker read cleanly and none is there. A marker present (whatever its package is called, wherever
+ * the engine moved), a read that fails or any doubt is yes: default-deny.
  */
 async function isFactorySource(
   ctx: HandlerContext,
-  project: ProjectRow,
+  _project: ProjectRow,
   repo: Awaited<ReturnType<typeof repoRef>>,
   branch: string,
 ): Promise<boolean> {
   const said = ctx.scope.rawPolicy?.factorySource ?? "auto";
   if (said !== "auto") return said === "yes";
-  void project;
   try {
-    const text = await ctx.services.github.readFile(repo, "apps/engine/package.json", branch);
-    if (text === null) return false;
-    return (JSON.parse(text) as { name?: unknown }).name === "@software-factory/engine";
+    const reads = await Promise.all(
+      FACTORY_MARKERS.map((path) => ctx.services.github.readFile(repo, path, branch)),
+    );
+    return reads.some((r) => r !== null);
   } catch {
     return true;
   }

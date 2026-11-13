@@ -20,6 +20,7 @@ import {
   type ModelRole,
   PLANNING_YIELD_AFTER_MS,
   type Pool,
+  pushesRunBranch,
   RUNNER_COMPAT,
   type RunnerAccounts,
   redactSecrets,
@@ -594,12 +595,22 @@ export const jobEnqueue = defineOperation({
 
 /** The wait reason of a build that carries checks when no online runner declares `checks`. */
 export const NO_CHECKS_RUNNER = "no runner that can run this project's checks is online";
+/** Why a `babysit` job waits when no online runner declares `babysit` (spec 53, ADR 0620). */
+export const NO_BABYSIT_RUNNER = "no runner that can babysit is online";
 
 /**
  * Whether any online runner declares `checks` (fifth review). Reads core_runners, which is sized by
  * configuration (a handful of rows), only when a claim is refused for missing `checks`.
  */
 async function checksRunnerOnline(ctx: Pick<HandlerContext, "db" | "now">): Promise<boolean> {
+  return runnerOnlineWith(ctx, "checks");
+}
+
+/** Whether an online, unrevoked runner declares `capability` (at most 100 runners read). */
+async function runnerOnlineWith(
+  ctx: Pick<HandlerContext, "db" | "now">,
+  capability: Capability,
+): Promise<boolean> {
   const since = new Date(Date.parse(ctx.now) - RUNNER_OFFLINE_MS).toISOString();
   const rows = await ctx.db
     .selectFrom("core_runners")
@@ -609,7 +620,9 @@ async function checksRunnerOnline(ctx: Pick<HandlerContext, "db" | "now">): Prom
     .limit(100)
     .execute();
   return rows.some((r) =>
-    (parseJson<CapabilityManifest | null>(r.manifest, null)?.capabilities ?? []).includes("checks"),
+    (parseJson<CapabilityManifest | null>(r.manifest, null)?.capabilities ?? []).includes(
+      capability,
+    ),
   );
 }
 
@@ -706,6 +719,13 @@ export async function placementRefusal(
       !(await memoised(facts, "checksRunnerOnline", () => checksRunnerOnline(ctx)))
     ) {
       return { reason: fit.reason, waitReason: NO_CHECKS_RUNNER };
+    }
+    if (
+      job.requires.includes("babysit") &&
+      !manifest.capabilities.includes("babysit") &&
+      !(await memoised(facts, "babysitRunnerOnline", () => runnerOnlineWith(ctx, "babysit")))
+    ) {
+      return { reason: fit.reason, waitReason: NO_BABYSIT_RUNNER };
     }
     return { reason: fit.reason };
   }
@@ -1442,7 +1462,16 @@ export const runIssueToken = defineOperation({
     if (!isActive(run.status)) throw new OperationError("conflict", `run is ${run.status}`);
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);
-    const minted = await ctx.services.github.mintRepoToken(repo);
+    // A babysit job that pushes nothing (it judges a failed check) gets a read-only token.
+    const job = await ctx.db
+      .selectFrom("core_jobs")
+      .select(["stage", "context"])
+      .where("id", "=", run.job_id)
+      .executeTakeFirst();
+    const readOnly =
+      job?.stage === "babysit" &&
+      !pushesRunBranch({ stage: "babysit", context: parseJson(job.context, {}) });
+    const minted = await ctx.services.github.mintRepoToken(repo, { readOnly });
     return {
       token: minted.token,
       expiresAt: minted.expiresAt,
@@ -1667,6 +1696,17 @@ export function finishRun(
   );
   // A planning run's session stops holding a slot: yielded, or interrupted (ADR 0350).
   if (run.stage === "planning") planningRunEnded(ctx, run);
+  // A babysit job belongs to the deliverer, not the item's Workflow (spec 53 §4): its end wakes the
+  // repository's queue, which acts on the result.
+  const w = ctx.scope.workItem;
+  if (run.stage === "babysit") {
+    ctx.emit({
+      kind: "delivery.wake",
+      payload: { projectId: w?.project_id ?? "", repositoryId: w?.repository_id ?? null },
+    });
+    ctx.change({ entity: "run", id: run.id, after: { status, outcome } });
+    return;
+  }
   ctx.emit({
     kind: "workflow.event",
     payload: {
@@ -1723,7 +1763,9 @@ export const runHandBack = defineOperation({
     if (input.branch !== run.branch) {
       return fail(`pushed ${input.branch}, but this run may only push ${run.branch}`);
     }
-    if (input.outcome === "completed" && run.stage === "build") {
+    // A babysit job that resolved a conflict pushed its run branch too (spec 53 §4).
+    const pushes = run.stage === "build" || (run.stage === "babysit" && !!input.headSha);
+    if (input.outcome === "completed" && pushes) {
       if (!input.headSha) return fail("a build hand-back needs the pushed head SHA");
       const pushed = await ctx.services.github.getBranchSha(
         await repoRef(ctx, requireRepository(ctx)),
