@@ -65,8 +65,8 @@ interface ItemRow {
   workflow_id: string | null;
   /** When the org config version it pinned was saved. */
   org_created_at: string | null;
-  /** Set when the item adopted only a newer version's tightenings (#139 follow-up). */
-  org_config_floor: number | null;
+  /** Set when the item adopted only newer versions' tightenings (#139 follow-up). */
+  org_config_adopted: string | null;
   questions: number;
   /** The approved plan's kept `.kim/` files (spec 22), JSON. */
   kim_files: string | null;
@@ -110,7 +110,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   const reads = await env.DB.batch(
     ids.flatMap((id) => [
       env.DB.prepare(
-        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, w.org_config_floor,
+        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, w.org_config_adopted,
            w.shaping_started_at, w.release_flag, w.needs_info, w.workflow_id, p.raw,
            c.created_at AS org_created_at,
            -- Questions put to a person on the item (core_questions_position_idx (work_item_id leading), one row is enough).
@@ -275,7 +275,7 @@ function eventsOf(row: ItemRow): EventRow[] {
     row.org_created_at > row.pulled_at
   )
     out.push({ kind: "repin", at });
-  else if (row.org_config_floor !== null) out.push({ kind: "repin", at });
+  else if (row.org_config_adopted !== null) out.push({ kind: "repin", at });
   if (
     (row.shaping_started_at && row.org_created_at && row.org_created_at > row.shaping_started_at) ||
     /_r[0-9a-z]+$/.test(row.workflow_id ?? "")

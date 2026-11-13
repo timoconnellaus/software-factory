@@ -65,3 +65,16 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > Amended 2026-11-13 (review of #139): a version that both tightens and loosens reaches a running item
 > as its tightenings only, stage by stage; the loosenings never do. A tightening of a stage the item
 > has already passed sends it back to verify (Workflow v16) rather than skipping it.
+>
+> Amended 2026-11-13 (review of #185): what an item runs is its pinned version with each adopted
+> version folded in, in order (`org_config_adopted`); a later version is compared against that, so
+> it never takes away a tightening the item adopted, and a list that can't be resolved fails closed.
+> At the merge boundary only tightenings verify can act on (verify and the checks between the build
+> and it) send the item back; tightenings of triage, spec or the build are journaled as passed.
+> **Decided: no re-pin while the merge gate is open.** A tightening saved after the gate opened
+> reaches the item only if it goes round again (sent back, withdrawn, a new head); the gate is not
+> withdrawn for it. The person deciding the gate is the check at that point, re-verifying under them
+> would discard a decision in progress for a change they can see on the org's workflow, and every
+> boundary before the gate already applies tightenings. Dark factory mode (ADR 0515) re-checks its
+> own conditions at merge, against the settings then.
+

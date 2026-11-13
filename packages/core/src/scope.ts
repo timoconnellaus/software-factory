@@ -5,9 +5,8 @@ import type { Actor } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import type { ProjectRow, RepositoryRow, Scope, ScopeRef, WorkItemRow } from "./operation.ts";
 import { onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "./policy/project-policy.ts";
-import { EMPTY_ORG_CONFIG, parseOrgConfig } from "./stages/org-config.ts";
+import { EMPTY_ORG_CONFIG, type OrgConfig, parseOrgConfig } from "./stages/org-config.ts";
 import {
-  agentsAcross,
   effectivePolicy,
   type OverrideApprovals,
   policyFromDefinition,
@@ -15,6 +14,7 @@ import {
   runsOnToday,
   stricterDefinition,
 } from "./stages/project-workflow.ts";
+import type { WorkflowDefinition } from "./stages/workflow.ts";
 
 const EMPTY: Scope = {
   orgId: null,
@@ -350,7 +350,7 @@ export async function withOrgWorkflow(
   orgId: string,
   raw: { policy: ProjectPolicy | null; policyError: string | null },
   pinnedRaw: ProjectPolicy | null,
-  workItem: Pick<WorkItemRow, "org_config_version" | "org_config_floor"> | null,
+  workItem: Pick<WorkItemRow, "org_config_version" | "org_config_adopted"> | null,
   projectId: string | null = null,
 ): Promise<{
   policy: ProjectPolicy | null;
@@ -369,7 +369,7 @@ export async function withOrgWorkflow(
           pinnedBase,
           pinnedVersion,
           projectId,
-          workItem?.org_config_floor ?? null,
+          workItem?.org_config_adopted ?? null,
         )
       : null;
   return {
@@ -458,8 +458,8 @@ export async function resolveOrgWorkflow(
   version: number | null,
   /** Whose override approvals apply; null: none (every looser override takes the stricter value). */
   projectId: string | null = null,
-  /** A newer org version whose tightenings the item adopted (Q3, `org_config_floor`). */
-  floor: number | null = null,
+  /** The newer org versions whose tightenings the item adopted (Q3, `org_config_adopted`). */
+  adopted: string | null = null,
 ): Promise<{ policy: ProjectPolicy | null; error: string | null }> {
   if (!policy || !onOrgWorkflow(policy)) return { policy, error: null };
   // The org's current version is one point read of its row; the document is read and parsed only
@@ -483,27 +483,13 @@ export async function resolveOrgWorkflow(
     projectId && at !== null && Object.keys(policy.workflowOverrides).length
       ? await overrideApprovals(db, projectId, at)
       : {};
-  if (floor !== null && at !== null && floor > at) {
-    // The pinned workflow with the newer version's tightenings, stage by stage (review of #139).
-    const newer = await orgConfigAt(db, orgId, floor);
-    const was = resolveProjectWorkflow(policy, org.config, { kind: "effective", approvals });
-    const now = newer.ok
-      ? resolveProjectWorkflow(policy, newer.config, {
-          kind: "effective",
-          approvals: projectId ? await overrideApprovals(db, projectId, floor) : {},
-        })
-      : null;
-    if (newer.ok && was?.ok && now?.ok) {
-      const { def } = stricterDefinition(was.value, now.value, {
-        before: agentsAcross(was.value, org.config, org.config),
-        after: agentsAcross(now.value, newer.config, newer.config),
-      });
-      if (!runsOnToday(def))
-        return {
-          policy: policyFromDefinition(policy, def, agentsAcross(def, org.config, newer.config)),
-          error: null,
-        };
-    }
+  if (adopted !== null && at !== null) {
+    // The pinned workflow with each adopted version's tightenings folded in (review of #139, #185).
+    // Anything unreadable fails closed: never the pinned workflow alone (review of #185).
+    const folded = await adoptedDefinition(db, orgId, policy, at, adopted, projectId);
+    if (!folded.ok)
+      return { policy: null, error: `the item's adopted tightenings: ${folded.error}` };
+    return { policy: policyFromDefinition(policy, folded.def, folded.agents), error: null };
   }
   const effective = effectivePolicy(policy, org.config, approvals);
   return effective.ok
@@ -672,4 +658,85 @@ export async function checkPermission(
   if (!approvers.includes(actor.id)) {
     throw new OperationError("forbidden", "not an approver on this project");
   }
+}
+
+/** Most newer versions a running item takes tightenings from before it waits for a person (Q3). */
+export const MAX_ADOPTED = 8;
+
+/** The adopted versions in `org_config_adopted`, or null when the column isn't a valid list. */
+export function parseAdopted(raw: string | null): number[] | null {
+  if (raw === null) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (
+      Array.isArray(v) &&
+      v.length <= MAX_ADOPTED &&
+      v.every((x) => Number.isInteger(x) && (x as number) > 0)
+    )
+      return v as number[];
+  } catch {
+    // not JSON: invalid
+  }
+  return null;
+}
+
+/**
+ * The definition a running item runs on an org workflow (Q3): its pinned version's, with each
+ * adopted version's tightenings folded in, in order (`stricterDefinition`), and the org agents it
+ * names (the earliest version's first). Fails closed: an unreadable version or list, or a result the
+ * factory can't run, is an error, never the pinned workflow alone.
+ */
+export async function adoptedDefinition(
+  db: Db,
+  orgId: string,
+  policy: ProjectPolicy,
+  pinned: number,
+  adoptedRaw: string | null,
+  projectId: string | null,
+): Promise<
+  | { ok: true; def: WorkflowDefinition; agents: OrgConfig["agents"]; versions: number[] }
+  | { ok: false; error: string }
+> {
+  const versions = parseAdopted(adoptedRaw);
+  if (!versions) return { ok: false, error: "the list of adopted versions isn't valid" };
+  const resolveAt = async (v: number) => {
+    const org = await orgConfigAt(db, orgId, v);
+    if (!org.ok) return null;
+    const approvals =
+      projectId && Object.keys(policy.workflowOverrides).length
+        ? await overrideApprovals(db, projectId, v)
+        : {};
+    const def = resolveProjectWorkflow(policy, org.config, { kind: "effective", approvals });
+    return def?.ok ? { def: def.value, config: org.config } : null;
+  };
+  const base = await resolveAt(pinned);
+  if (!base) return { ok: false, error: `the pinned org version v${pinned} can't be resolved` };
+  let def = base.def;
+  const configs = [base.config];
+  for (const v of versions) {
+    const next = await resolveAt(v);
+    if (!next) return { ok: false, error: `the adopted org version v${v} can't be resolved` };
+    def = stricterDefinition(def, next.def, {
+      before: agentsFrom(def, configs),
+      after: agentsFrom(next.def, [next.config]),
+    }).def;
+    configs.push(next.config);
+  }
+  const cant = versions.length ? runsOnToday(def) : null;
+  if (cant) return { ok: false, error: cant };
+  return { ok: true, def, agents: agentsFrom(def, configs), versions };
+}
+
+/** The org agents a definition names, from several org versions (the earliest's first, by name). */
+export function agentsFrom(
+  def: WorkflowDefinition,
+  configs: readonly OrgConfig[],
+): OrgConfig["agents"] {
+  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
+  const out = new Map<string, OrgConfig["agents"][number]>();
+  for (const c of configs)
+    for (const a of c.agents)
+      if (named.has(a.name.toLowerCase()) && !out.has(a.name.toLowerCase()))
+        out.set(a.name.toLowerCase(), a);
+  return [...out.values()];
 }

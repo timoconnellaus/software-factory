@@ -30,15 +30,18 @@ import {
 } from "../readiness.ts";
 import {
   activeKillSwitch,
+  adoptedDefinition,
+  agentsFrom,
   approverIds,
   loadPolicy,
+  MAX_ADOPTED,
   orgConfigAt,
   overrideApprovals,
+  parseAdopted,
 } from "../scope.ts";
+import { workflowImpact } from "../stages/impact.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
-  agentsAcross,
-  repinImpact,
   resolveProjectWorkflow,
   runsOnToday,
   shapingStagesOf,
@@ -1931,7 +1934,7 @@ export const workItemParkForInfo = defineOperation({
 export const workItemRepinWorkflow = defineOperation({
   name: "workItem.repinWorkflow",
   description:
-    "At a stage boundary, bring a running work item onto its org's current workflow version where it only tightens (spec 52, Q3). A version that only tightens moves the item onto it (`workflow: repinned`); one that tightens some stages and loosens others gives the item only its tightenings, stage by stage (`workflow: tightened parts adopted`, the item's `org_config_floor`). A loosening never reaches a running item. `behind` lists tightenings at stages the item has already passed, for the Workflow to verify again or show at the gate. The Workflow calls it.",
+    "At a stage boundary, bring a running work item onto its org's current workflow version where it only tightens (spec 52, Q3). A version that only tightens moves the item onto it (`workflow: repinned`); one that tightens some stages and loosens others gives the item only its tightenings, stage by stage, over what it already runs (`workflow: tightened parts adopted`, appended to the item's `org_config_adopted`). A loosening never reaches a running item, and a later version never takes away a tightening the item adopted. At the merge boundary `behind` lists adopted tightenings verify can act on (verify and the checks before it), for the Workflow to verify again; ones at triage, spec or the build are journaled as `passed`. The Workflow calls it.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -1956,7 +1959,7 @@ export const workItemRepinWorkflow = defineOperation({
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
     const pinned = w.org_config_version;
-    const floor = w.org_config_floor;
+    const adoptedRaw = w.org_config_adopted;
     const stay = (reason: string) => ({
       repinned: false,
       partial: false,
@@ -1968,6 +1971,8 @@ export const workItemRepinWorkflow = defineOperation({
     if (pinned === null) return stay("the item isn't on an org workflow");
     if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status))
       return stay("the item isn't running");
+    const adopted = parseAdopted(adoptedRaw);
+    if (!adopted) return stay("the item's adopted versions can't be read");
     // The org's current version: a point read of its row; documents through the per-isolate cache.
     const at = (
       await ctx.db
@@ -1976,102 +1981,110 @@ export const workItemRepinWorkflow = defineOperation({
         .where("id", "=", project.org_id)
         .executeTakeFirst()
     )?.config_version;
-    if (!at || at <= Math.max(pinned, floor ?? 0))
+    if (!at || at <= Math.max(pinned, ...adopted))
       return stay("the item is on the org's current version");
     const raw = (
       await loadPolicy(ctx.db, { id: project.id, policy_sha: w.policy_sha ?? project.policy_sha })
     ).policy;
     if (!raw || !onOrgWorkflow(raw)) return stay("the item's config isn't on an org workflow");
-    const [then, now] = await Promise.all([
-      orgConfigAt(ctx.db, project.org_id, pinned),
-      orgConfigAt(ctx.db, project.org_id, at),
-    ]);
-    if (!then.ok || !now.ok) return stay(`an org config version can't be read`);
-    const [approvalsThen, approvalsNow] = await Promise.all([
-      overrideApprovals(ctx.db, project.id, pinned),
-      overrideApprovals(ctx.db, project.id, at),
-    ]);
-    const impact = repinImpact(
+    // What the item runs now: its pinned workflow with every version it adopted folded in, and the
+    // newer version, compared stage by stage against that, never the pin alone (review of #185).
+    const current = await adoptedDefinition(
+      ctx.db,
+      project.org_id,
       raw,
-      { config: then.config, approvals: approvalsThen },
-      { config: now.config, approvals: approvalsNow },
+      pinned,
+      adoptedRaw,
+      project.id,
     );
-    const was = resolveProjectWorkflow(raw, then.config, {
-      kind: "effective",
-      approvals: approvalsThen,
-    });
+    if (!current.ok) return stay(`the item's workflow can't be resolved: ${current.error}`);
+    const now = await orgConfigAt(ctx.db, project.org_id, at);
+    if (!now.ok) return stay("an org config version can't be read");
     const nowDef = resolveProjectWorkflow(raw, now.config, {
       kind: "effective",
-      approvals: approvalsNow,
+      approvals: await overrideApprovals(ctx.db, project.id, at),
     });
-    if (!was?.ok || !nowDef?.ok) return stay("the project's workflow can't be resolved");
-    // Behind the item: a stage it has passed. Before verify, the build and what precedes it; before
-    // the merge gate, verify and what precedes it.
-    const passed = input.at.startsWith("merge") ? "verify" : "build";
-    // Positions in the definition the item moves onto, so a stage it adds (a check before verify)
-    // is placed where it runs.
-    const behindOf = (
+    if (!nowDef?.ok) return stay("the project's workflow can't be resolved");
+    const agents = {
+      before: current.agents,
+      after: agentsFrom(nowDef.value, [now.config]),
+    };
+    const impact = workflowImpact(current.def, nowDef.value, agents);
+    // At the merge boundary, the stages verify can act on again: verify and the checks between the
+    // build and it (review of #185). A tightening of triage, spec or the build itself is behind the
+    // item for good: journaled, never re-run.
+    const merge = input.at.startsWith("merge");
+    const split = (
       changes: { path: string; summary: string }[],
       def: { stages: readonly { id: string }[] },
     ) => {
-      const cut = def.stages.findIndex((s) => s.id === passed);
-      return changes
-        .filter((c) => {
-          const id = /^stages\.([^.]+)/.exec(c.path)?.[1];
-          const k = def.stages.findIndex((s) => s.id === id);
-          return k >= 0 && k <= cut;
-        })
-        .map((c) => c.summary);
+      const build = def.stages.findIndex((s) => s.id === "build");
+      const verify = def.stages.findIndex((s) => s.id === "verify");
+      const passed = merge ? verify : build;
+      const behind: string[] = [];
+      const past: string[] = [];
+      for (const c of changes) {
+        const id = /^stages\.([^.]+)/.exec(c.path)?.[1];
+        const k = def.stages.findIndex((s) => s.id === id);
+        if (k < 0 || k > passed) continue;
+        if (merge && k > build && k <= verify) behind.push(c.summary);
+        else past.push(c.summary);
+      }
+      return { behind, past };
     };
-    let movesOnto: { stages: readonly { id: string }[] } = nowDef.value;
     const loosening = impact.changes.filter((c) => c.class === "loosens");
-    let to = at;
     let partial = false;
-    let adopted = impact.changes.filter((c) => c.class === "tightens");
+    let tightens = impact.changes.filter((c) => c.class === "tightens");
+    let movesOnto: { stages: readonly { id: string }[] } = nowDef.value;
+    let nextAdopted: number[] | null = null;
     if (loosening.length) {
       // Only the tightened parts, stage by stage (review of #139).
-      const stricter = stricterDefinition(was.value, nowDef.value, {
-        before: agentsAcross(was.value, then.config, then.config),
-        after: agentsAcross(nowDef.value, now.config, now.config),
-      });
+      const stricter = stricterDefinition(current.def, nowDef.value, agents);
       if (stricter.adopted.length === 0 || runsOnToday(stricter.def))
         return stay(
-          `v${at} loosens against v${pinned}: ${loosening.map((c) => c.summary).join(" ")}`,
+          `v${at} loosens against what the item runs: ${loosening.map((c) => c.summary).join(" ")}`,
+        );
+      if (adopted.length >= MAX_ADOPTED)
+        return stay(
+          `the item already took tightenings from ${adopted.length} later versions: a person moves it (workItem.moveWorkflowVersion)`,
         );
       partial = true;
-      adopted = stricter.adopted;
+      tightens = stricter.adopted;
       movesOnto = stricter.def;
-      to = at;
+      nextAdopted = [...adopted, at];
     }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
         .set(
-          partial
-            ? { org_config_floor: to, updated_at: ctx.now }
-            : { org_config_version: to, org_config_floor: null, updated_at: ctx.now },
+          nextAdopted
+            ? { org_config_adopted: JSON.stringify(nextAdopted), updated_at: ctx.now }
+            : { org_config_version: at, org_config_adopted: null, updated_at: ctx.now },
         )
         .where("id", "=", w.id)
         .where("org_config_version", "=", pinned)
         .where((eb) =>
-          floor === null ? eb("org_config_floor", "is", null) : eb("org_config_floor", "=", floor),
+          adoptedRaw === null
+            ? eb("org_config_adopted", "is", null)
+            : eb("org_config_adopted", "=", adoptedRaw),
         ),
     );
-    // Exactly this item, at exactly the pin it read (review of #139).
+    // Exactly this item, at exactly the pin and adoptions it read (review of #139).
     ctx.guardChanged("the item is still at the org version it read");
-    const behind = behindOf(adopted, movesOnto);
+    const { behind, past } = split(tightens, movesOnto);
     ctx.change({
       entity: "work_item",
       id: w.id,
-      before: { orgConfigVersion: pinned, orgConfigFloor: floor },
+      before: { orgConfigVersion: pinned, orgConfigAdopted: adopted },
       after: {
         workflow: partial ? "tightened parts adopted" : "repinned",
-        ...(partial ? { orgConfigFloor: to } : { orgConfigVersion: to }),
+        ...(nextAdopted ? { orgConfigAdopted: nextAdopted } : { orgConfigVersion: at }),
         at: input.at,
-        tightens: adopted.map((c) => c.summary),
+        tightens: tightens.map((c) => c.summary),
         ...(behind.length ? { behind } : {}),
+        ...(past.length ? { passed: past } : {}),
       },
     });
-    return { repinned: true, partial, from: pinned, to, reason: null, behind };
+    return { repinned: true, partial, from: pinned, to: at, reason: null, behind };
   },
 });

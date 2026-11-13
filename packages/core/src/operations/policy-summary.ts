@@ -175,6 +175,7 @@ export async function describeOverrideApprove(
   _floor: FloorParse,
   raw: Record<string, unknown>,
   orgValue: unknown,
+  verb = "Approve",
 ): Promise<string> {
   const p =
     typeof raw.projectId === "string"
@@ -188,7 +189,7 @@ export async function describeOverrideApprove(
     cut(cleanTitle(x === undefined ? "unset" : typeof x === "string" ? x : JSON.stringify(x)), 40);
   return titled(
     facts(
-      `Approve a looser override (config v${Number(raw.configVersion)})`,
+      `${verb} a looser override (config v${Number(raw.configVersion)}, org v${Number(raw.orgVersion)})`,
       `loosens: ${idOf(raw.stageId)} ${idOf(raw.setting)} from the org's ${v(orgValue)} to ${v(raw.value)}`,
     ),
     p?.name ?? String(raw.projectId),

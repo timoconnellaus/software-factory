@@ -84,6 +84,7 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
           setting: "requiredFrom",
           value: HOSTILE,
           configVersion: 2,
+          orgVersion: 3,
         },
         "medium",
       ),
@@ -114,7 +115,7 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
       /^Approve a change to the policy \(drafted on v1, now v2\): loosens 5 things: Autonomy policy Balanced → Autonomous…/,
     );
     expect(summaries[8]).toMatch(
-      /^Approve a looser override \(config v2\): loosens: an unnamed one requiredFrom from the org's medium to Acme approved evil line x+…/,
+      /^Approve a looser override \(config v2, org v3\): loosens: an unnamed one requiredFrom from the org's medium to Acme approved evil line x+…/,
     );
   });
 

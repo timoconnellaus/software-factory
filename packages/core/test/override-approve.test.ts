@@ -255,4 +255,41 @@ describe("an org change's notices are bounded (review of #128)", () => {
     expect(recipients.length).toBe(NOTIFY_ADMINS);
     expect(recipients).toContain(w.userId);
   });
+
+  it("the decision that applies it names what it loosens in its Touch ID summary (review of #185)", async () => {
+    const w = await world();
+    await unapprovedOverride(w);
+    const asked = await call(
+      "override.approve",
+      {
+        projectId: w.projectId,
+        stageId: "spec",
+        setting: "requiredFrom",
+        orgVersion: 2,
+        ...(await seen(w)),
+      },
+      w.human,
+    );
+    if (asked.status !== "pending") throw new Error("expected the approval to wait");
+    const id = `dsk_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      "INSERT INTO core_desktop_devices (id, user_id, name, public_key, key_storage, created_at, last_seen_at, revoked_at) VALUES (?, ?, 'M5', 'key', 'secure-enclave', ?, NULL, NULL)",
+    )
+      .bind(id, w.userId, new Date().toISOString())
+      .run();
+    const challenge = await invoke(
+      deps,
+      "presence.challenge",
+      {
+        op: "approval.decide",
+        input: { pendingActionId: asked.pendingActionId, decision: "approved" },
+      },
+      { actor: w.human, origin: { surface: "desktop", deviceId: id } },
+    );
+    if (challenge.status !== "ok") throw new Error("expected a challenge");
+    const { summary } = challenge.output as { summary: string };
+    expect(summary).toMatch(
+      /^Approve a looser override \(config v\d+, org v2\): loosens: spec requiredFrom from the org's small to medium/,
+    );
+  });
 });

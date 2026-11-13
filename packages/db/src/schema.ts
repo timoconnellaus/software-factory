@@ -316,7 +316,7 @@ export interface CoreWorkItemsTable {
    */
   org_config_version: number | null;
   /** 0287: a newer org version whose tightenings the item adopted (Q3); null: none. */
-  org_config_floor: number | null;
+  org_config_adopted: string | null;
   parent_work_item_id: string | null;
   /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
   needs_info: string | null;

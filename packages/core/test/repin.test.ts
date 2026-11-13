@@ -207,7 +207,7 @@ describe("workItem.repinWorkflow", () => {
       FOREMAN,
     );
     expect(stayed.repinned).toBe(false);
-    expect(stayed.reason).toMatch(/loosens against v2: Removes Security review/);
+    expect(stayed.reason).toMatch(/loosens against what the item runs: Removes Security review/);
     expect(await pinOf(item.workItemId)).toBe(2);
     expect(await audits(item.workItemId)).toHaveLength(0);
     // A later version that also tightens: the item takes only that tightening, stage by stage, and
@@ -224,17 +224,89 @@ describe("workItem.repinWorkflow", () => {
     );
     expect(still).toMatchObject({ repinned: true, partial: true, from: 2, to: 4 });
     expect(await pinOf(item.workItemId)).toBe(2);
-    const row = await first<{ org_config_floor: number | null }>(
-      "SELECT org_config_floor FROM core_work_items WHERE id = ?",
+    const row = await first<{ org_config_adopted: string | null }>(
+      "SELECT org_config_adopted FROM core_work_items WHERE id = ?",
       item.workItemId,
     );
-    expect(row.org_config_floor).toBe(4);
+    expect(row.org_config_adopted).toBe("[4]");
     const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
     // The stricter spec threshold applies, and the dropped Security check is still there.
     expect(scope.pinnedPolicy?.spec.requiredFrom).toBe("small");
     expect(scope.pinnedPolicy?.workflows[0]?.slots.beforeVerify.map((x) => x.id)).toEqual([
       "security",
     ]);
+  });
+
+  it("a later version never takes away a tightening the item adopted (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    const E2E: StageInstance = { ...SECURITY, id: "e2e", name: "End-to-end check" };
+    const adoptedOf = async () =>
+      (
+        await first<{ org_config_adopted: string | null }>(
+          "SELECT org_config_adopted FROM core_work_items WHERE id = ?",
+          item.workItemId,
+        )
+      ).org_config_adopted;
+    // v3 drops Security and adds an e2e check: the item takes the e2e check only.
+    await orgSave(w, 2, {
+      ...SHIP,
+      stages: [...SOFTWARE.stages.slice(0, 3), E2E, ...SOFTWARE.stages.slice(3)],
+    });
+    const first3 = await ok<Repin>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "verify #1" },
+      FOREMAN,
+    );
+    expect(first3).toMatchObject({ repinned: true, partial: true, to: 3 });
+    expect(await adoptedOf()).toBe("[3]");
+    // v4 brings Security back without the e2e check and raises the spec threshold: against the pin
+    // it only tightens, but against what the item runs it drops the e2e check. It takes only the
+    // threshold, and keeps both checks.
+    await orgSave(w, 3, withSetting(SHIP, "spec", { requiredFrom: "small" }));
+    const then4 = await ok<Repin>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "verify #2" },
+      FOREMAN,
+    );
+    expect(then4).toMatchObject({ repinned: true, partial: true, to: 4 });
+    expect(await pinOf(item.workItemId)).toBe(2);
+    expect(await adoptedOf()).toBe("[3,4]");
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    expect(scope.pinnedPolicy?.spec.requiredFrom).toBe("small");
+    expect(scope.pinnedPolicy?.workflows[0]?.slots.beforeVerify.map((x) => x.id).sort()).toEqual([
+      "e2e",
+      "security",
+    ]);
+  });
+
+  it("at the merge boundary only tightenings verify can act on are behind (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    // A spec threshold: passed for good, journaled, not re-verified.
+    await orgSave(w, 2, withSetting(SHIP, "spec", { requiredFrom: "small" }));
+    const spec = await ok<Repin & { behind: string[] }>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "merge #1" },
+      FOREMAN,
+    );
+    expect(spec).toMatchObject({ repinned: true, behind: [] });
+    expect((await audits(item.workItemId))[0]?.diff).toMatch(/"passed":\[/);
+    // A check added before verify is behind (workflows.test.ts runs it at the merge boundary).
+  });
+
+  it("an adopted list that can't be resolved fails closed, never the pinned workflow alone", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    await rows(
+      "UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?",
+      item.workItemId,
+    );
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    expect(scope.pinnedPolicy).toBeNull();
   });
 
   it("leaves an item that isn't on an org workflow, or isn't running, where it is", async () => {

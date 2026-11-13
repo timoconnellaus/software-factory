@@ -528,17 +528,3 @@ export function stricterDefinition(
   });
   return { def: { ...pinned, stages }, adopted };
 }
-
-/** The org agents a definition names, from two org versions (the pinned one's first, by name). */
-export function agentsAcross(
-  def: WorkflowDefinition,
-  pinned: OrgConfig,
-  newer: OrgConfig,
-): OrgConfig["agents"] {
-  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
-  const out = new Map<string, OrgConfig["agents"][number]>();
-  for (const a of [...pinned.agents, ...newer.agents])
-    if (named.has(a.name.toLowerCase()) && !out.has(a.name.toLowerCase()))
-      out.set(a.name.toLowerCase(), a);
-  return [...out.values()];
-}
