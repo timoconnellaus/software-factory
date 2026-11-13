@@ -56,6 +56,27 @@ const ORDINARY: [string, string][] = [
       .join("\n"),
   ],
   ["One", "- [ ] Implement X"],
+  // Review of #169 (2): openings that only look like a filer's, and \b before / - . :
+  ...[
+    "I want CSV export",
+    "I am unable to log in after the update",
+    "We need rate limiting on the API",
+    "We should cache the list",
+    "My account page crashes on load",
+    "Read the config from env instead of the file",
+    "This is broken on Safari",
+    "The issue is that uploads over 2GB fail",
+    "This PR is where the fix lands",
+    "Checked exceptions should be wrapped",
+    "Searched results should paginate",
+    "I/O errors on save are swallowed",
+    "i.e. fix the footer",
+    "Yes/no toggle for notifications",
+    "Checked-in binaries removed",
+    "Agreed-upon schema migration",
+    "My-sql migration",
+    "We-chat login",
+  ].map((t): [string, string] => [`Task: ${t}`, `- [ ] ${t}`]),
   ["API", "[note]: we should drop the v1 API"],
 ];
 
@@ -71,6 +92,22 @@ const EMPTY: [string, string][] = [
   [
     "Bug report",
     "## Checklist\n- [ ] I searched existing issues\n- [ ] I read the docs\n* [ ] I can reproduce it",
+  ],
+  // Placeholders that drop (review of #169).
+  [
+    "Placeholders",
+    [
+      "TODO",
+      "N/A",
+      "Tests added",
+      "Not a duplicate",
+      "I have read the contributing guide",
+      "My code follows the style guidelines of this project",
+      "This issue is not a duplicate",
+      "I agree to the terms",
+    ]
+      .map((t) => `- [ ] ${t}`)
+      .join("\n"),
   ],
   ["Screenshot", "![screenshot](https://example.com/s.png)"],
   ["Look", '<img src="https://example.com/s.png" alt="the bug" width="400">'],

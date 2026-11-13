@@ -1363,6 +1363,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select([
@@ -1391,6 +1393,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select([
@@ -1457,6 +1461,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select((eb) => [

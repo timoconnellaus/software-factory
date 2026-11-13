@@ -63,22 +63,33 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
 }
 
 /**
- * An unticked box that is a template's, not a task (follow-up review of #160): empty, or a
- * filer's attestation ("I searched existing issues", "I have read the docs", "This is not a
- * duplicate"). `- [ ] Add dark mode` is a task and keeps its words.
+ * Placeholder sentences of issue and PR templates (review of #169): a filer's attestation, or an
+ * empty marker. Only these known shapes, as whole sentences; anything else is substance and goes to
+ * triage (when unsure, fail open).
  */
+const TEMPLATE_LABELS: RegExp[] = [
+  // "I have read the contributing guide", "I've searched existing issues", "I agree to the terms".
+  /^i(?: have|'ve)? (?:read|searched|checked|tested|added|updated|followed|reviewed|confirmed|looked)(?: (?:for|through|at))? (?:the |all |existing |any |for )?(?:docs|documentation|guide|guidelines|contributing(?: guide(?:lines)?)?|code of conduct|existing (?:issues|pull requests|prs)|open (?:issues|prs)|issues|faq|readme|changelog|tests?|my (?:code|changes))\b.*$/i,
+  /^i agree (?:to|with) (?:the |this )?(?:terms|code of conduct|cla|license)\b.*$/i,
+  /^i (?:have|'ve) (?:added|updated|written) (?:tests|docs|documentation|a changeset)\b.*$/i,
+  /^i can reproduce (?:this|it|the (?:issue|bug))(?: (?:on|in) .*)?\.?$/i,
+  // "My code follows the style guidelines", "My changes generate no new warnings".
+  /^my (?:code|changes|pr|commits?) (?:follows?|generates?|passe[sd]|has|have|is|are|includes?)\b.*$/i,
+  // "Read the docs", "Followed the contributing guide".
+  /^(?:read|followed) the (?:docs|documentation|guide|guidelines|contributing(?: guide)?|code of conduct|readme|faq)\.?$/i,
+  // "This issue is not a duplicate", "This PR is not a duplicate", "Not a duplicate".
+  /^(?:this (?:issue|pr|pull request) is )?not a duplicate\.?$/i,
+  /^(?:searched|checked) (?:for )?(?:existing|open|similar) (?:issues|prs|pull requests)\.?$/i,
+  /^(?:tests?|docs?|documentation|changelog) (?:added|updated|written)\.?$/i,
+  /^(?:todo|tbd|n\/a|na|none|-)\.?$/i,
+];
+
+/** An unticked box that is a template's placeholder, not a task. */
 function templateBox(line: string): boolean {
   const m = /^\s*([-*+]|\d+[.)])\s+\[ ?\](?:\s+(.*))?$/.exec(line);
   if (!m) return false;
-  const label = (m[2] ?? "").trim();
-  return (
-    label === "" ||
-    // Whole words only (review of #169): "Implement…", "Website…", "Mysql…", "Read replicas…"
-    // and "This issue tracker…" are tasks, not a filer's attestation.
-    /^(?:i|i've|i'm|i am|i have|we|we've|my|this (?:is|isn't|is not)|this (?:pr|issue) (?:is|has|was|does|doesn't)|the (?:issue|bug|problem) (?:is|has)|(?:have|did) you|yes|confirmed?|agreed?|checked|searched|read the)\b/i.test(
-      label,
-    )
-  );
+  const label = (m[2] ?? "").trim().replace(/\s+/g, " ");
+  return label === "" || TEMPLATE_LABELS.some((re) => re.test(label));
 }
 
 /**

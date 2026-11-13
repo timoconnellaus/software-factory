@@ -86,5 +86,7 @@ describe("the System tab's drawing (spec 22 part B)", () => {
     expect(pinOn(pin, [part("table users", "1", 100)], 3)).toEqual({ x: 150, y: 25 });
     expect(pinOn(pin, [], 3)).toBeNull();
     expect(pinOn({ ...pin, element: "nowhere" }, [], 2)).toEqual({ x: 50, y: 25 });
+    // A part that exists without a box isn't "removed": the pin stays where it was put.
+    expect(pinOn(pin, [{ ...part("table users", "1"), box: null }], 3)).toEqual({ x: 50, y: 25 });
   });
 });

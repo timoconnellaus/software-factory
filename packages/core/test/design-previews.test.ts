@@ -251,6 +251,28 @@ describe("design previews (spec 22 part B)", () => {
     );
     expect(base.revision).toBe(0);
     expect(base.preview).not.toBeNull();
+    // A drawing that arrives later moves the artifact's updatedAt and tells the planning view
+    // (review of #168/#169): the app's reads are keyed on it.
+    await rows(
+      "UPDATE core_planning_artifacts SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+      pulled.artifactId,
+    );
+    await agent("design.preview", {
+      artifactId: pulled.artifactId,
+      revision: 0,
+      preview: await previewOf(D2),
+    });
+    const after = await first<{ updated_at: string }>(
+      "SELECT updated_at FROM core_planning_artifacts WHERE id = ?",
+      pulled.artifactId,
+    );
+    expect(after.updated_at > "2000-01-01T00:00:00.000Z").toBe(true);
+    const logged = await rows<{ type: string }>(
+      "SELECT type FROM core_planning_events WHERE work_item_id = ? AND type = 'artifact.updated' AND instr(payload, ?) > 0",
+      item.workItemId,
+      '"preview":0',
+    );
+    expect(logged.length).toBeGreaterThan(0);
   });
 
   it("writes each kept design's preview beside it as .svg, in the spec's commit (criterion 4)", async () => {
