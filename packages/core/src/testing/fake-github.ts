@@ -145,6 +145,8 @@ export interface FakeGitHub extends GitHubService {
     opts?: {
       byGitHub?: boolean;
       tree?: { set?: Record<string, { mode: string; sha: string }>; remove?: string[] };
+      /** What the compare reports for the merge commit's paths (patches, renames). */
+      touches?: Touch[];
     },
   ): Promise<string>;
   /** GitHub can't list this commit's changes in full (a compare past its 300 files). */
@@ -609,7 +611,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         // The paths it sets differ from the merged-in side: the compare lists them, as GitHub's does.
         state.touched = {
           ...(state.touched ?? {}),
-          [next]: [...(state.touched?.[next] ?? []), ...Object.keys(opts.tree.set ?? {})],
+          [next]: [
+            ...(state.touched?.[next] ?? []),
+            ...Object.keys(opts.tree.set ?? {}),
+            ...(opts.touches ?? []),
+          ],
         };
         const tree = { ...treeAt(state, next), ...opts.tree.set };
         for (const p of opts.tree.remove ?? []) delete tree[p];

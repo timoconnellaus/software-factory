@@ -16,7 +16,7 @@ import { desiredRunnerVersion } from "../services.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
-import { currentResolution, resolutionSchema } from "./babysit.ts";
+import { resolutionFor, resolutionSchema } from "./babysit.ts";
 import {
   ACTIVE_STATUSES,
   INTAKE_STATES,
@@ -550,7 +550,18 @@ export const workItemGet = defineOperation({
     // The item's own rows go to D1 as one batch (ADR 0241), alongside the approver lookup.
     const [
       { ids: approverUserIds, users: approverUsers },
-      [stages, specRows, questions, gates, runs, packetRows, queue, waitsForRows, waitedOnRows],
+      [
+        stages,
+        specRows,
+        questions,
+        gates,
+        runs,
+        packetRows,
+        queue,
+        waitsForRows,
+        waitedOnRows,
+        resolutionRows,
+      ],
     ] = await Promise.all([
       approversLookup,
       readBatch(ctx.d1, [
@@ -608,12 +619,17 @@ export const workItemGet = defineOperation({
           .innerJoin("core_work_items as t", "t.id", "l.work_item_id")
           .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
           .where("l.waits_for_id", "=", w.id),
+        // The babysitter's resolution on this head, its summary only (primary key; spec 53).
+        ctx.db
+          .selectFrom("core_babysit_resolutions")
+          .select(["head_sha", "summary"])
+          .where("work_item_id", "=", w.id),
       ]),
     ]);
     const spec = w.current_spec_id ? specRows[0] : undefined;
     const packet = packetRows[0];
     return {
-      babysitResolution: await currentResolution(ctx, w),
+      babysitResolution: resolutionFor(resolutionRows[0], w.head_sha),
       item: {
         ...summarise(w),
         body: w.body,

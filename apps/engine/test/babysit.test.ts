@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import { BABYSITTER, FOREMAN, NO_BABYSIT_RUNNER } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { deliverRepository } from "../src/deliver/deliverer.ts";
+import { pruneBabysit } from "../src/index.ts";
 import {
   all,
   build,
@@ -481,7 +482,15 @@ type Tree = { set?: Record<string, { mode: string; sha: string }>; remove?: stri
 interface ResolutionView {
   status: string;
   reason: string | null;
-  files: { path: string; conflicted: boolean; patchOmitted: boolean }[];
+  files: {
+    path: string;
+    conflicted: boolean;
+    took: string;
+    note: string | null;
+    previousPath: string | null;
+    patchOmitted: boolean;
+    patchTruncated: boolean;
+  }[];
   outside: string[];
   notShown: number;
 }
@@ -515,10 +524,19 @@ async function resolvedAs(
   return { w, a, view: got.babysitResolution };
 }
 
-const mergeOf = (tree: Tree) => async (w: World, a: Item, branch: string) => {
-  await github.createBranch(w.repo, branch, a.head);
-  return github.craftMerge(w.repo, branch, "main", { tree });
-};
+const mergeOf =
+  (
+    tree: Tree,
+    touches?: Parameters<typeof github.craftMerge>[3] extends infer O
+      ? O extends { touches?: infer T }
+        ? T
+        : never
+      : never,
+  ) =>
+  async (w: World, a: Item, branch: string) => {
+    await github.createBranch(w.repo, branch, a.head);
+    return github.craftMerge(w.repo, branch, "main", { tree, ...(touches ? { touches } : {}) });
+  };
 
 describe("the resolution at the reopened gate (decision 1)", () => {
   it("flags a file outside the conflict; a mode change counts as the resolution's", async () => {
@@ -560,6 +578,111 @@ describe("the resolution at the reopened gate (decision 1)", () => {
       outside: [],
     });
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("taking the item's side of a file only main changed undoes main's change: listed as a deviation", async () => {
+    const w = await world();
+    // Main lands a fix to src/auth.ts, which the item never touched, alongside the conflict.
+    const a = await toMergeGate(w, "Drops main's fix", "src/a.ts");
+    await github.push(w.repo, "main", undefined, ["src/a.ts", "src/auth.ts"]);
+    await github.setMergeable(w.repo, a.pr, false);
+    await approve(w, a.id);
+    await babysitJob(a.id);
+    await runStage(w, a.id, "babysit", async (claimed) => {
+      await github.createBranch(w.repo, claimed.branch, a.head);
+      // The merge keeps the item's (absent) auth.ts: main's fix is gone.
+      const merged = await github.craftMerge(w.repo, claimed.branch, "main", {
+        tree: {
+          set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } },
+          remove: ["src/auth.ts"],
+        },
+      });
+      return { headSha: merged, result: { verdict: "resolved", note: "resolved" } };
+    });
+    await waitFor("the resolution recorded", () =>
+      first("SELECT work_item_id FROM core_babysit_resolutions WHERE work_item_id = ?", a.id),
+    );
+    const got = await ok<{ babysitResolution: ResolutionView }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(got.babysitResolution.outside).toEqual(["src/auth.ts"]);
+    expect(got.babysitResolution.files).toContainEqual(
+      expect.objectContaining({
+        path: "src/auth.ts",
+        conflicted: false,
+        note: "differs from the default branch's change, which a merge would take",
+      }),
+    );
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("a conflicted file resolved wholly to one side is listed, saying which side was discarded", async () => {
+    const { w, a, view } = await resolvedAs("Takes the item's side", async (w_, a_, branch) => {
+      const mine = (await github.pathEntries(w_.repo, a_.head, ["src/a.ts"]))["src/a.ts"];
+      await github.createBranch(w_.repo, branch, a_.head);
+      return github.craftMerge(w_.repo, branch, "main", {
+        tree: { set: { "src/a.ts": mine ?? { mode: "100644", sha: "x" } } },
+      });
+    });
+    expect(view?.files).toEqual([
+      expect.objectContaining({
+        path: "src/a.ts",
+        conflicted: true,
+        took: "item",
+        note: "took the item's side: the default branch's change is discarded",
+      }),
+    ]);
+    expect(view?.outside).toEqual([]);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("a second parent that isn't on the default branch is unclean", async () => {
+    const { w, a, view } = await resolvedAs("Merged the wrong thing", async (w_, a_, branch) => {
+      const side = await github.push(w_.repo, "side-branch", undefined, ["src/a.ts"]);
+      await github.createBranch(w_.repo, branch, a_.head);
+      return github.craftMerge(w_.repo, branch, side, {
+        tree: { set: { "src/a.ts": { mode: "100644", sha: "a-resolved" } } },
+      });
+    });
+    expect(view?.status).toBe("unclean");
+    expect(view?.reason).toMatch(/isn't on main/);
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+  });
+
+  it("flags an omitted or clipped patch, and keeps a rename's old path", async () => {
+    const { w, a, view } = await resolvedAs(
+      "Renames and long patches",
+      mergeOf(
+        {
+          set: {
+            "src/a.ts": { mode: "100644", sha: "a-resolved" },
+            "src/b-new.ts": { mode: "100644", sha: "moved" },
+            "src/blob.bin": { mode: "100644", sha: "binary" },
+          },
+        },
+        [
+          { path: "src/a.ts", status: "modified", patch: "x".repeat(5000) },
+          {
+            path: "src/b-new.ts",
+            status: "renamed",
+            previousPath: "src/b.ts",
+            patch: "@@ -1 +1 @@",
+          },
+        ],
+      ),
+    );
+    const byPath = new Map(view?.files.map((f) => [f.path, f]));
+    expect(byPath.get("src/a.ts")).toMatchObject({ patchTruncated: true, patchOmitted: false });
+    expect(byPath.get("src/b-new.ts")).toMatchObject({ previousPath: "src/b.ts" });
+    expect(byPath.get("src/blob.bin")).toMatchObject({ patchOmitted: true });
+    // An ended item's resolution goes with the hourly prune.
+    await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
+    await pruneBabysit(env.DB, new Date());
+    expect(
+      await first("SELECT work_item_id FROM core_babysit_resolutions WHERE work_item_id = ?", a.id),
+    ).toBeNull();
   });
 
   it("a merge whose first parent isn't the approved head is unclean: review the whole diff", async () => {

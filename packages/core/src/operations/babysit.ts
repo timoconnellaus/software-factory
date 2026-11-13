@@ -451,15 +451,22 @@ export const resolutionSchema = z.object({
     z.object({
       path: z.string(),
       previousPath: z.string().nullable(),
-      /** Both sides had changed it: the conflict. False: outside it, flagged. */
+      /** Both sides had changed it: the conflict, always listed. False: a deviation, flagged. */
       conflicted: z.boolean(),
+      /** Whose content it has: the item's, the default branch's, both (equal), or neither. */
+      took: z.enum(["item", "main", "both", "neither"]),
+      /** What it means, when it matters (a side discarded, a deviation from the merge). */
+      note: z.string().nullable(),
       /** GitHub gave no patch (binary or too large): look at the file. */
       patchOmitted: z.boolean(),
       /** The patch was clipped at RESOLUTION_PATCH_MAX characters. */
       patchTruncated: z.boolean(),
     }),
   ),
-  /** Files the resolution changed that only one side had touched: beyond the conflict. */
+  /**
+   * Deviations from a plain merge outside the conflict: a path one side changed whose content
+   * isn't that side's (main's fix undone, the item's change dropped), or one neither side changed.
+   */
   outside: z.array(z.string()),
   /** Resolution files not listed (past RESOLUTION_FILES_MAX), conflicted or not. */
   notShown: z.number(),
@@ -558,19 +565,50 @@ async function readResolution(
     github.pathEntries(repo, main, paths),
   ]);
   const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  // A clean merge takes one side's content (mode and blob) for every path: the resolution's own are
-  // those that are neither's (a deletion, a mode change or an edit alike).
-  const own = paths.filter((p) => !same(atR[p], atItem[p]) && !same(atR[p], atMain[p]));
-  const listed = own.slice(0, RESOLUTION_FILES_MAX);
+  const itemChanged = new Set(ours.paths);
+  const mainChanged = new Set(theirs.paths);
+  // Each path against what a plain merge gives (review of #175): changed only by the item, it must
+  // be the item's; only on main, main's; on neither side, unchanged. Anything else is a deviation
+  // (including taking one side wholesale where the merge takes the other, which would undo a
+  // change). Changed on both sides (the conflict) it is always listed, with the side it took.
+  type Took = "item" | "main" | "both" | "neither";
+  type Judged = { path: string; kind: "conflict" | "deviation"; took: Took };
+  const judged = paths.flatMap((p): Judged[] => {
+    const tookItem = same(atR[p], atItem[p]);
+    const tookMain = same(atR[p], atMain[p]);
+    const took: Took =
+      tookItem && tookMain ? "both" : tookItem ? "item" : tookMain ? "main" : "neither";
+    if (both.has(p)) return [{ path: p, kind: "conflict", took }];
+    const expected = mainChanged.has(p) ? tookMain : tookItem;
+    return expected ? [] : [{ path: p, kind: "deviation", took }];
+  });
+  const ordered = [
+    ...judged.filter((j) => j.kind === "conflict"),
+    ...judged.filter((j) => j.kind === "deviation"),
+  ];
+  const listed = ordered.slice(0, RESOLUTION_FILES_MAX);
   const patches: Record<string, string> = {};
-  const files = listed.map((path) => {
-    const f = byPath.get(path);
+  const files = listed.map((j) => {
+    const f = byPath.get(j.path);
     const patch = f?.patch ?? null;
-    if (patch) patches[path] = patch.slice(0, RESOLUTION_PATCH_MAX);
+    if (patch) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
     return {
-      path,
+      path: j.path,
       previousPath: f?.previousPath ?? null,
-      conflicted: both.has(path),
+      conflicted: j.kind === "conflict",
+      took: j.took,
+      note:
+        j.kind === "conflict"
+          ? j.took === "item"
+            ? "took the item's side: the default branch's change is discarded"
+            : j.took === "main"
+              ? "took the default branch's side: the item's change is discarded"
+              : null
+          : mainChanged.has(j.path)
+            ? "differs from the default branch's change, which a merge would take"
+            : itemChanged.has(j.path)
+              ? "differs from the item's change, which a merge would take"
+              : "changed by the resolution alone",
       patchOmitted: patch === null,
       patchTruncated: (patch?.length ?? 0) > RESOLUTION_PATCH_MAX,
     };
@@ -583,8 +621,8 @@ async function readResolution(
       itemHead,
       main,
       files,
-      outside: own.filter((p) => !both.has(p)),
-      notShown: own.length - listed.length,
+      outside: ordered.filter((j) => j.kind === "deviation").map((j) => j.path),
+      notShown: ordered.length - listed.length,
       patchBase: "itemHead",
     },
     patches,
@@ -659,18 +697,12 @@ export const babysitResolution = defineOperation({
   },
 });
 
-/** The resolution recorded for the item's current head, or null (none, or the head moved). */
-export async function currentResolution(
-  ctx: Pick<HandlerContext, "db">,
-  w: Pick<WorkItemRow, "id" | "head_sha">,
-): Promise<Resolution | null> {
-  // core_babysit_resolutions' primary key; the summary only, never the patches.
-  const row = await ctx.db
-    .selectFrom("core_babysit_resolutions")
-    .select(["head_sha", "summary"])
-    .where("work_item_id", "=", w.id)
-    .executeTakeFirst();
-  if (!row || row.head_sha !== w.head_sha) return null;
+/** A stored resolution's summary, when it is for `headSha` (none, or the head moved: null). */
+export function resolutionFor(
+  row: { head_sha: string; summary: string } | undefined,
+  headSha: string | null,
+): Resolution | null {
+  if (!row || row.head_sha !== headSha) return null;
   const parsed = resolutionSchema.safeParse(parseJson(row.summary, null));
   return parsed.success ? parsed.data : null;
 }
@@ -678,9 +710,9 @@ export async function currentResolution(
 export const babysitResolutionPatches = defineOperation({
   name: "babysit.resolutionPatches",
   description:
-    "The patches of the babysitter's conflict resolution on a work item's current head, for the reopened merge gate (spec 53 decision 1), each against the item's head and clipped. Empty when there is none or the head has moved.",
+    "The patches of the babysitter's conflict resolution on a work item's current head, for the reopened merge gate (spec 53 decision 1), each against the item's head and clipped. Empty when there is none or the head has moved. For a person who can see the item (its org's members).",
   risk: "read",
-  actors: ["human", "agent"],
+  actors: ["human"],
   permission: "member",
   input: z.object({ workItemId }),
   output: z.object({ headSha: z.string().nullable(), patches: z.record(z.string(), z.string()) }),
