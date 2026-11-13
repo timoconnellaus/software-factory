@@ -300,8 +300,30 @@ describe("the desktop app's client door (/client/v1)", () => {
     const soft = await signIn(w, undefined, "software");
     const me = async (token: string) => (await callOp(token, "desktopDevice.list", {})).status;
     expect(await me(soft.token)).toBe(200);
+    // The website's approval page says which software-key Mac a Secure Enclave sign-in replaces.
+    const lookupFor = async (keyStorage: string) => {
+      const d = await newDevice();
+      const { challenge } = await pkce();
+      const started = await json<{ requestId: string }>(
+        await post("desktop/start", {
+          deviceName: "Tim's MacBook Pro",
+          publicKey: d.publicKey,
+          keyStorage,
+          codeChallenge: challenge,
+          state: b64url(crypto.getRandomValues(new Uint8Array(16))),
+        }),
+      );
+      return ok<{ replacesSoftwareMac: string | null }>(
+        "desktop.authLookup",
+        { requestId: started.requestId },
+        w.human,
+      );
+    };
+    expect((await lookupFor("secure-enclave")).replacesSoftwareMac).toBe("Tim's MacBook Pro");
+    expect((await lookupFor("software")).replacesSoftwareMac).toBeNull();
     // The Mac signs in again with its new Secure Enclave key (its revoke may have failed offline).
     const enclave = await signIn(w);
+    expect((await lookupFor("secure-enclave")).replacesSoftwareMac).toBeNull();
     expect(await me(soft.token)).toBe(401);
     const old = await first<{ revoked_at: string | null }>(
       "SELECT revoked_at FROM core_desktop_devices WHERE id = ?",
@@ -387,7 +409,34 @@ describe("the desktop app's client door (/client/v1)", () => {
       ...input,
       mergeWithoutChecks: true,
     });
-    expect(without.summary).toMatch(/, without its checks: "From the desktop"$/);
+    // ...first, so it is in the first words even where the sheet can't show it all.
+    expect(without.summary).toMatch(
+      /^Merge WITHOUT its checks: 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/,
+    );
+    // With a 39-character owner and a 60-character repository the facts pass 120 characters:
+    // the title goes, the facts (and the condition) stay whole.
+    const repoOf = "(SELECT repository_id FROM core_work_items WHERE id = ?)";
+    const was = await first<{ owner: string; name: string }>(
+      `SELECT owner, name FROM core_repositories WHERE id = ${repoOf}`,
+      workItemId,
+    );
+    await env.DB.prepare(
+      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
+    )
+      .bind("o".repeat(39), "r".repeat(60), workItemId)
+      .run();
+    const longNames = await prove(token, device, "review.merge", {
+      ...input,
+      mergeWithoutChecks: true,
+    });
+    expect(longNames.summary).toBe(
+      `Merge WITHOUT its checks: 3f2a91c into main of ${"o".repeat(39)}/${"r".repeat(60)}:`,
+    );
+    await env.DB.prepare(
+      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
+    )
+      .bind(was?.owner ?? "", was?.name ?? "", workItemId)
+      .run();
 
     // An agent pushes before the person approves: the gate is withdrawn (as moveAttachedHead does).
     await env.DB.prepare(

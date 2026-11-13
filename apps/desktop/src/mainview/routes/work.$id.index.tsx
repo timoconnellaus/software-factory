@@ -949,11 +949,41 @@ function Runs({ detail }: { detail: WorkItemDetail }) {
                   {r.endedAt ? capitalise(r.outcome ?? r.status) : "Running"}
                 </span>
                 {r.summary && <div className="mt-0.5 text-ink-3 text-xs">{r.summary}</div>}
+                <RunLog run={r} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * Where a run's log is, once it isn't simply in D1 (AGENTS.md "Cloudflare cost"): archived to R2 30
+ * days after the run ended (read back from there), or missing from the archive, which is recorded as
+ * an incident for a person on Checks and incidents. Never shown as an empty run.
+ */
+function RunLog({ run }: { run: WorkItemDetail["runs"][number] }) {
+  if (run.log === "kept") return null;
+  if (run.log === "archived") {
+    return (
+      <div className="mt-0.5 text-ink-muted text-xs" data-testid="run-log-archived">
+        Log archived
+      </div>
+    );
+  }
+  return (
+    <div className="mt-0.5 text-xs" data-testid="run-log-missing">
+      <span className="text-destructive">Log missing from the archive</span>
+      {" · "}
+      {run.archiveIncident?.resolvedAt ? (
+        <span className="text-ink-muted">incident resolved</span>
+      ) : (
+        <Link to="/factory/incidents" className="underline">
+          incident open
+        </Link>
+      )}
     </div>
   );
 }

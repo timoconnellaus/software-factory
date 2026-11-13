@@ -62,6 +62,8 @@ export const LABELS: Readonly<Record<string, string>> = {
   "approval.decide": "Approval decided",
   "gate.escalate": "Gate escalated",
   "incident.open": "Factory incident opened",
+  "incident.resolve": "Archive incident resolved",
+  "run.reportArchiveMissing": "Archived log reported missing",
   "push.observe": "New commit pushed",
 };
 

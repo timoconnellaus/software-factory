@@ -17,7 +17,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
-import { archiveRunEvents, pruneExpired } from "../src/retention.ts";
+import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
 import { growingScans, type Recorded, recordingEnv } from "./query-plans.ts";
 
@@ -118,6 +118,17 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },
+  {
+    // Polled by an open item; its runs query joins each run's archive incident
+    // (core_incidents_run_idx). The item has a running job, so it has a run.
+    name: "workItem.get (polled)",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      return as(e, "workItem.get", { workItemId: item }, w.human);
+    },
+  },
   {
     // Not polled, but per push: a person's push to a factory item's branch at its merge stage
     // (ADR 0587) reads the item, its open gates and its queue entry, then moves its head.
@@ -335,7 +346,7 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
-    // Last two: they end the test's run 31 days ago, archive it, and read it back.
+    // The last four: they end the test's run 31 days ago, archive it, read it back, and lose one of its objects.
     name: "archiving an ended run's events (retention)",
     run: async (e) => {
       if (!job) return null;
@@ -356,6 +367,61 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
     },
+  },
+  {
+    // The archive's daily sample, with one of the run's objects gone: it finds the gap (the top
+    // rowid, then the picks by rowid) and reports it through run.reportArchiveMissing as the
+    // scheduler, which opens the run's one incident record.
+    name: "the archive's daily sample, reporting a missing object",
+    run: async (e) => {
+      // The run's archive index names an object that isn't in the bucket (the run had no events of
+      // its own to archive, so the chunk is recorded here, as the archiver records one).
+      const run = await env.DB.prepare("SELECT id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("id");
+      const key = `runs/${run}/events/0-0.ndjson`;
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO core_run_archive_chunks
+           (run_id, first_seq, last_seq, r2_key, rows, bytes, sha256, archived_at)
+         VALUES (?, 0, 0, ?, 1, 1, 'x', ?)`,
+      )
+        .bind(run, key, new Date().toISOString())
+        .run();
+      await env.ARCHIVE.delete(key);
+      const top = await env.DB.prepare(
+        "SELECT max(rowid) AS top FROM core_run_archive_chunks",
+      ).first<number>("top");
+      const at = await env.DB.prepare("SELECT rowid FROM core_run_archive_chunks WHERE r2_key = ?")
+        .bind(key)
+        .first<number>("rowid");
+      const missing = await sampleArchive(e, new Date(), 1, () => ((at ?? 1) - 0.5) / (top ?? 1));
+      if (!missing.includes(key)) throw new Error(`the sample didn't find ${key} missing`);
+      return missing;
+    },
+  },
+  {
+    // A viewer meeting the same gap once the incident is recorded: the chunk and the run's incident.
+    name: "run.reportArchiveMissing (a viewer, incident already recorded)",
+    run: async (e) => {
+      const run = await env.DB.prepare(
+        "SELECT r.id, r.work_item_id, c.first_seq FROM core_runs r JOIN core_run_archive_chunks c ON c.run_id = r.id WHERE r.job_id = ? AND c.first_seq = 0",
+      )
+        .bind(job?.jobId)
+        .first<{ id: string; work_item_id: string; first_seq: number }>();
+      if (!run) throw new Error("the run wasn't archived");
+      return as(
+        e,
+        "run.reportArchiveMissing",
+        { workItemId: run.work_item_id, runId: run.id, firstSeq: run.first_seq },
+        w.human,
+      );
+    },
+  },
+  {
+    // Read when the desktop's Checks and incidents page opens (not polled): the open archive
+    // incidents on core_incidents_open_archive_idx, newest first, no sort.
+    name: "incident.listArchiveMissing",
+    run: (e) => as(e, "incident.listArchiveMissing", { orgId: w.orgId }, w.human),
   },
 ];
 

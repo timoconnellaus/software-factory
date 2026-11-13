@@ -25,7 +25,7 @@ import { getOperation } from "../registry.ts";
 import { describeConfigDecision } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
-import { titled } from "./summary.ts";
+import { MAX_FACTS, titled } from "./summary.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
 export const DESKTOP_DEVICE_ACTOR: Actor = { type: "runner", id: "desktop-device-login" };
@@ -156,13 +156,22 @@ export function rawSignature(sig: Uint8Array): Uint8Array<ArrayBuffer> {
 export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
   `${nonce}\n${op}\n${digest}\n${summary}`;
 
-export { cleanTitle, MAX_SUMMARY, titled } from "./summary.ts";
+export { cleanTitle, MAX_FACTS, MAX_SUMMARY, titled } from "./summary.ts";
+
+/** `s` cut in the middle to `max` characters (a branch name too long for the facts' limit). */
+const middle = (s: string, max: number) => {
+  const c = [...s];
+  if (c.length <= max) return s;
+  const half = Math.max(1, Math.floor((max - 1) / 2));
+  return `${c.slice(0, half).join("")}…${c.slice(-half).join("")}`;
+};
 
 /**
  * The words for the decision a presence proof is for (ADR 0391), from the engine's own records,
  * never from the caller: the Touch ID prompt shows them, completing "SF Keys is trying to …".
  * **Every case puts the engine's facts first and anything a person or agent wrote (a title) last,
- * through `titled`**, so the summary stays within MAX_SUMMARY with the facts intact. New cases
+ * through `titled`**: the facts whole (an unusual condition first among them), the title only in the
+ * room they leave under MAX_SUMMARY. New cases
  * (the config and workflow decisions included) follow the same rule.
  */
 async function describeDecision(ctx: HandlerContext, op: string, input: Record<string, unknown>) {
@@ -186,16 +195,21 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "spec.requestChanges":
       return onItem("Request changes to the spec for", input.workItemId);
     case "review.merge": {
-      // The prompt names the commit, the branch and repository and a merge without checks before
-      // the title (spec 40 M4b, spec 60): `Merge 3f2a91c into main of acme/widgets, without its
-      // checks: "Fix the inbox count"`. Every client sends the head SHA; without one it falls back
-      // to the work item's number.
+      // The prompt names a merge without checks first, then the commit, the branch and the
+      // repository, then the title (spec 40 M4b, spec 60): `Merge WITHOUT its checks: 3f2a91c into
+      // main of acme/widgets: "Fix the inbox count"`. The unusual condition leads, so it is in the
+      // first words even where the sheet can't show everything. Every client sends the head SHA;
+      // without one it falls back to the work item's number.
       const w = await item(input.workItemId);
       if (!w) return "Merge a work item";
       const commit = typeof input.headSha === "string" ? input.headSha.slice(0, 7) : `#${w.number}`;
-      const into = `${w.default_branch ?? "the default branch"}${w.owner ? ` of ${w.owner}/${w.name}` : ""}`;
-      const without = input.mergeWithoutChecks === true ? ", without its checks" : "";
-      return titled(`Merge ${commit} into ${into}${without}:`, w.title);
+      const verb = input.mergeWithoutChecks === true ? "Merge WITHOUT its checks:" : "Merge";
+      const repo = w.owner ? ` of ${w.owner}/${w.name}` : "";
+      const fixed = `${verb} ${commit} into ${repo}:`.length;
+      // GitHub bounds owners (39) and repository names (100); only the branch can outgrow the facts'
+      // limit, and only it is shortened.
+      const branch = middle(w.default_branch ?? "the default branch", MAX_FACTS - fixed);
+      return titled(`${verb} ${commit} into ${branch}${repo}:`, w.title);
     }
     case "mobile.pairOffer":
       return "Add a phone to your account";
@@ -372,7 +386,7 @@ export const desktopAuthStart = defineOperation({
 export const desktopAuthLookup = defineOperation({
   name: "desktop.authLookup",
   description:
-    "What a desktop sign-in is waiting for, so the website can show it before a person approves: the device name, where its key lives, the key's fingerprint, its status and expiry.",
+    "What a desktop sign-in is waiting for, so the website can show it before a person approves: the device name, where its key lives, the key's fingerprint, its status and expiry, and the software-key Mac of yours it replaces when approved, if any.",
   risk: "read",
   actors: ["human"],
   permission: "signed-in",
@@ -384,10 +398,30 @@ export const desktopAuthLookup = defineOperation({
     keyFingerprint: z.string(),
     status: z.enum(["pending", "approved", "denied", "consumed", "expired"]),
     expiresAt: z.string(),
+    /**
+     * The name of your software-key Mac this sign-in replaces when approved (a Secure Enclave key
+     * for a Mac of the same name revokes it, desktop.authExchange), or null.
+     */
+    replacesSoftwareMac: z.string().nullable(),
   }),
   async handler(input, ctx) {
     const row = await requestById(ctx, input.requestId);
+    // Once per page load, on core_desktop_devices_user_idx (one person's devices).
+    const replaced =
+      row.key_storage === "secure-enclave"
+        ? await ctx.db
+            .selectFrom("core_desktop_devices")
+            .select("name")
+            .where("user_id", "=", ctx.actor.id)
+            .where("platform", "=", "macos")
+            .where("name", "=", row.device_name)
+            .where("key_storage", "=", "software")
+            .where("revoked_at", "is", null)
+            .limit(1)
+            .executeTakeFirst()
+        : undefined;
     return {
+      replacesSoftwareMac: replaced?.name ?? null,
       requestId: row.id,
       deviceName: row.device_name,
       // A Mac's request is only ever secure-enclave or software (requestById reads macos only).
