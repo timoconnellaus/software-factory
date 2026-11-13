@@ -28,13 +28,25 @@ import {
   refuseIfParked,
   TRIAGE_PARK_CAP,
 } from "../readiness.ts";
-import { activeKillSwitch, approverIds, loadPolicy, overrideApprovals } from "../scope.ts";
+import {
+  activeKillSwitch,
+  adoptedDefinition,
+  agentsFrom,
+  approverIds,
+  loadPolicy,
+  MAX_ADOPTED,
+  orgConfigAt,
+  overrideApprovals,
+  parseAdopted,
+} from "../scope.ts";
 import { childEnded, heldReason, NOT_HELD } from "../splits.ts";
+import { workflowImpact } from "../stages/impact.ts";
 import type { OrgConfig } from "../stages/org-config.ts";
 import {
-  repinImpact,
   resolveProjectWorkflow,
+  runsOnToday,
   shapingStagesOf,
+  stricterDefinition,
 } from "../stages/project-workflow.ts";
 import { releaseEvent } from "../workflow-events.ts";
 import { trialForNewItem } from "./improve.ts";
@@ -2012,72 +2024,238 @@ export const workItemParkForInfo = defineOperation({
 export const workItemRepinWorkflow = defineOperation({
   name: "workItem.repinWorkflow",
   description:
-    "At a stage boundary, move a running work item onto its org's current workflow version when that version only tightens against the one the item pinned (spec 52, Q3). Journaled as `workflow: repinned`. A version that loosens anything never moves a running item; `reason` says why it stayed. The Workflow calls it.",
+    "At a stage boundary, bring a running work item onto its org's current workflow version where it only tightens (spec 52, Q3). A version that only tightens moves the item onto it (`workflow: repinned`); one that tightens some stages and loosens others gives the item only its tightenings, stage by stage, over what it already runs (`workflow: tightened parts adopted`, appended to the item's `org_config_adopted`). A loosening never reaches a running item, and a later version never takes away a tightening the item adopted. At the merge boundary `behind` lists adopted tightenings verify can act on (verify and the checks before it), for the Workflow to verify again; ones at triage, spec or the build are journaled as `passed`. The Workflow calls it.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
   // Called at every boundary: an audit row only when the item moved (ADR 0590).
-  audit: { changesOnly: true, changed: (out) => out.repinned },
+  audit: { changesOnly: true, changed: (out) => out.repinned || out.noticed === true },
   input: z.object({
     workItemId,
-    /** The boundary, for the journal (the stage the item is about to enter). */
+    /** The boundary's label, for the journal only: the boundary itself is the item's stage. */
     at: z.string().max(40),
   }),
   output: z.object({
     repinned: z.boolean(),
+    /** Only some stages' tightenings were adopted (the version also loosens). */
+    partial: z.boolean().default(false),
     from: z.number().nullable(),
     to: z.number().nullable(),
     reason: z.string().nullable(),
+    /** Tightenings at stages the item has passed (review of #139): it doesn't go back by itself. */
+    behind: z.array(z.string()).default([]),
+    /** Tightenings it didn't take: the same stage's change also loosens (review of #185). */
+    skipped: z.array(z.string()).default([]),
+    /** Told the project's approvers what it didn't take (once per version). */
+    noticed: z.boolean().optional(),
+    /** What the item runs can't be read: the Workflow asks a person (v17). */
+    unreadable: z.string().optional(),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
+    // Only the item's Workflow moves it between versions (review of #185).
+    if (ctx.origin.surface !== "workflow" && ctx.origin.surface !== "test")
+      throw new OperationError(
+        "forbidden",
+        "an item moves between workflow versions only at its own Workflow's stage boundaries",
+      );
     const pinned = w.org_config_version;
-    const stay = (reason: string) => ({ repinned: false, from: pinned, to: null, reason });
+    const adoptedRaw = w.org_config_adopted;
+    const stay = (reason: string) => ({
+      repinned: false,
+      partial: false,
+      from: pinned,
+      to: null,
+      reason,
+      behind: [] as string[],
+    });
     if (pinned === null) return stay("the item isn't on an org workflow");
     if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status))
       return stay("the item isn't running");
-    // One point read of the org's row (and its current document, parsed).
-    const current = await currentOrgConfig(ctx.db, project.org_id);
-    if (current.version === 0 || current.version <= pinned)
+    // Its pinned workflow stopped reading, whether or not the org moved on (third review of #185).
+    if (ctx.scope.pinnedError)
+      return {
+        ...stay(`the item's workflow can't be resolved: ${ctx.scope.pinnedError}`),
+        unreadable: ctx.scope.pinnedError,
+      };
+    const adopted = parseAdopted(adoptedRaw);
+    if (!adopted)
+      return {
+        ...stay("the item's adopted versions can't be read"),
+        unreadable: "the item's adopted versions can't be read",
+      };
+    // The org's current version: a point read of its row; documents through the per-isolate cache.
+    const at = (
+      await ctx.db
+        .selectFrom("core_organization")
+        .select("config_version")
+        .where("id", "=", project.org_id)
+        .executeTakeFirst()
+    )?.config_version;
+    if (!at || at <= Math.max(pinned, ...adopted))
       return stay("the item is on the org's current version");
     const raw = (
       await loadPolicy(ctx.db, { id: project.id, policy_sha: w.policy_sha ?? project.policy_sha })
     ).policy;
     if (!raw || !onOrgWorkflow(raw)) return stay("the item's config isn't on an org workflow");
-    const then = await storedOrgConfig(ctx.db, project.org_id, pinned);
-    if (!then) return stay(`org config v${pinned} can't be read`);
-    const impact = repinImpact(
+    // What the item runs now: its pinned workflow with every version it adopted folded in, and the
+    // newer version, compared stage by stage against that, never the pin alone (review of #185).
+    const current = await adoptedDefinition(
+      ctx.db,
+      project.org_id,
       raw,
-      { config: then, approvals: await overrideApprovals(ctx.db, project.id, pinned) },
-      {
-        config: current.config,
-        approvals: await overrideApprovals(ctx.db, project.id, current.version),
-      },
+      pinned,
+      adoptedRaw,
+      project.id,
     );
+    // What it runs no longer reads (third review of #185): the Workflow (v17) asks a person.
+    if (!current.ok)
+      return {
+        ...stay(`the item's workflow can't be resolved: ${current.error}`),
+        unreadable: current.error,
+      };
+    const now = await orgConfigAt(ctx.db, project.org_id, at);
+    if (!now.ok) return stay("an org config version can't be read");
+    const nowDef = resolveProjectWorkflow(raw, now.config, {
+      kind: "effective",
+      approvals: await overrideApprovals(ctx.db, project.id, at),
+    });
+    if (!nowDef?.ok) return stay("the project's workflow can't be resolved");
+    const agents = {
+      before: current.agents,
+      after: agentsFrom(nowDef.value, [now.config]),
+    };
+    const impact = workflowImpact(current.def, nowDef.value, agents);
+    // At the merge boundary, the stages verify can act on again: verify and the checks between the
+    // build and it (review of #185). A tightening of triage, spec or the build itself is behind the
+    // item for good: journaled, never re-run.
+    // The boundary from the item's own state, never the caller's label (review of #185): at the merge
+    // boundary verify has run (the item is still in verify).
+    const merge = w.stage === "verify" || w.stage === "merge";
+    const split = (
+      changes: { path: string; summary: string }[],
+      def: { stages: readonly { id: string }[] },
+    ) => {
+      const build = def.stages.findIndex((s) => s.id === "build");
+      const verify = def.stages.findIndex((s) => s.id === "verify");
+      const passed = merge ? verify : build;
+      const behind: string[] = [];
+      const past: string[] = [];
+      for (const c of changes) {
+        const id = /^stages\.([^.]+)/.exec(c.path)?.[1];
+        const k = def.stages.findIndex((s) => s.id === id);
+        if (k < 0 || k > passed) continue;
+        if (merge && k > build && k <= verify) behind.push(c.summary);
+        else past.push(c.summary);
+      }
+      return { behind, past };
+    };
     const loosening = impact.changes.filter((c) => c.class === "loosens");
-    if (loosening.length)
-      return stay(
-        `v${current.version} loosens against v${pinned}: ${loosening.map((c) => c.summary).join(" ")}`,
-      );
+    let partial = false;
+    let tightens = impact.changes.filter((c) => c.class === "tightens");
+    let movesOnto: { stages: readonly { id: string }[] } = nowDef.value;
+    let nextAdopted: number[] | null = null;
+    // Tightenings it won't take, told to the project's approvers once per version (review of #185).
+    const notice = async (why: string, skipped: string[]) => {
+      const marker = `"noticeFor":${at},`;
+      const told = await ctx.db
+        .selectFrom("core_audit")
+        .select("id")
+        .where("work_item_id", "=", w.id)
+        .where("operation", "=", "workItem.repinWorkflow")
+        .where(sql<boolean>`instr(diff, ${marker}) > 0`)
+        .limit(1)
+        .executeTakeFirst();
+      if (told) return { ...stay(why), skipped };
+      ctx.change({
+        entity: "work_item",
+        id: w.id,
+        after: { noticeFor: at, workflow: "not adopted", why, skipped },
+      });
+      for (const userId of (await approverIds(ctx.db, project.org_id, ctx.scope.policy)).slice(
+        0,
+        5,
+      ))
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.notAdopted",
+            userId,
+            workItemId: w.id,
+            title: `Work item #${w.number} doesn't take v${at} of the org's workflow: ${why}`,
+            url: `/?item=${w.id}`,
+          },
+        });
+      return { ...stay(why), skipped, noticed: true };
+    };
+    let skipped: string[] = [];
+    if (loosening.length) {
+      // Only the tightened parts, stage by stage (review of #139).
+      const stricter = stricterDefinition(current.def, nowDef.value, agents);
+      skipped = stricter.skipped.map((c) => c.summary);
+      const why = `v${at} loosens against what the item runs: ${loosening.map((c) => c.summary).join(" ")}`;
+      if (stricter.adopted.length === 0 || runsOnToday(stricter.def))
+        return skipped.length ? notice(why, skipped) : stay(why);
+      if (adopted.length >= MAX_ADOPTED)
+        return notice(
+          `the item already took tightenings from ${adopted.length} later versions, the most it takes: it finishes on what it runs, unless a person stops it`,
+          stricter.adopted.map((c) => c.summary),
+        );
+      partial = true;
+      tightens = stricter.adopted;
+      movesOnto = stricter.def;
+      nextAdopted = [...adopted, at];
+    }
     ctx.write(
       ctx.db
         .updateTable("core_work_items")
-        .set({ org_config_version: current.version, updated_at: ctx.now })
+        .set(
+          nextAdopted
+            ? { org_config_adopted: JSON.stringify(nextAdopted), updated_at: ctx.now }
+            : { org_config_version: at, org_config_adopted: null, updated_at: ctx.now },
+        )
         .where("id", "=", w.id)
-        .where("org_config_version", "=", pinned),
+        .where("org_config_version", "=", pinned)
+        .where((eb) =>
+          adoptedRaw === null
+            ? eb("org_config_adopted", "is", null)
+            : eb("org_config_adopted", "=", adoptedRaw),
+        ),
     );
+    // Exactly this item, at exactly the pin and adoptions it read (review of #139).
+    ctx.guardChanged("the item is still at the org version it read");
+    const { behind, past } = split(tightens, movesOnto);
     ctx.change({
       entity: "work_item",
       id: w.id,
-      before: { orgConfigVersion: pinned },
+      before: { orgConfigVersion: pinned, orgConfigAdopted: adopted },
       after: {
-        workflow: "repinned",
-        orgConfigVersion: current.version,
+        workflow: partial ? "tightened parts adopted" : "repinned",
+        ...(nextAdopted ? { orgConfigAdopted: nextAdopted } : { orgConfigVersion: at }),
         at: input.at,
-        tightens: impact.changes.filter((c) => c.class === "tightens").map((c) => c.summary),
+        tightens: tightens.map((c) => c.summary),
+        ...(behind.length ? { behind } : {}),
+        ...(past.length ? { passed: past } : {}),
+        // Tightenings in stages it didn't take (the same stage also loosens), for a person to see.
+        ...(skipped.length ? { notAdopted: skipped } : {}),
       },
     });
-    return { repinned: true, from: pinned, to: current.version, reason: null };
+    if (skipped.length)
+      for (const userId of (await approverIds(ctx.db, project.org_id, ctx.scope.policy)).slice(
+        0,
+        5,
+      ))
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.notAdopted",
+            userId,
+            workItemId: w.id,
+            title: `Work item #${w.number} took part of v${at} of the org's workflow; not: ${skipped.join(" ")}`,
+            url: `/?item=${w.id}`,
+          },
+        });
+    return { repinned: true, partial, from: pinned, to: at, reason: null, behind, skipped };
   },
 });

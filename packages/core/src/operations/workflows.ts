@@ -7,6 +7,8 @@
 import type { Db } from "@software-factory/db";
 import { sql } from "kysely";
 import { z } from "zod";
+import { autopilotImpact } from "../autopilots/impact.ts";
+import { autopilotSchema } from "../autopilots/schema.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { type ImpactChange, type PolicyImpact, same } from "../policy/impact.ts";
@@ -40,6 +42,13 @@ import {
 import { STAGE_TYPES, stageType } from "../stages/registry.ts";
 import { validateWorkflow } from "../stages/validate.ts";
 import { type WorkflowDefinition, workflowDefinitionSchema } from "../stages/workflow.ts";
+import {
+  requireOrgProjects,
+  saveAutopilot,
+  setAutopilotEnabled,
+  withAutopilot,
+  withAutopilotEnabled,
+} from "./autopilots.ts";
 
 /** How many of an org's admins one org config write notifies, and how many overrides it names. */
 export const NOTIFY_ADMINS = 10;
@@ -54,6 +63,8 @@ export const ORG_CONFIG_WRITES = [
   "workflow.save",
   "orgConfig.rollback",
   "agent.save",
+  "autopilot.save",
+  "autopilot.enable",
   // Skills (ADR 0513): through the org config version and its impact check.
   "skill.save",
   "skill.attach",
@@ -153,6 +164,9 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
   // Agents are practice, except one that judges the work (an agent check's): a different prompt
   // there may pass what the old one sent back, so changing or removing it loosens (Q16).
   const judging = new Set([...judgingAgents(before), ...judgingAgents(after)]);
+  // An agent an enabled autopilot hands to is part of that autopilot's reach (review of #197):
+  // changing it changes what the autopilot does, so it loosens too.
+  const piloting = new Set([...autopilotAgents(before), ...autopilotAgents(after)]);
   const byName = (c: OrgConfig) => new Map(c.agents.map((a) => [a.name.toLowerCase(), a]));
   const was = byName(before);
   const now2 = byName(after);
@@ -166,9 +180,17 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
             class: "loosens",
             summary: `${label} judges work in a workflow: changing it changes what passes.`,
           }
-        : { path: `agents.${label}`, class: "neutral", summary: `The agent ${label} changed.` },
+        : piloting.has(name)
+          ? {
+              path: `agents.${label}`,
+              class: "loosens",
+              summary: `An autopilot that is on hands to ${label}: changing it changes what the autopilot does.`,
+            }
+          : { path: `agents.${label}`, class: "neutral", summary: `The agent ${label} changed.` },
     );
   }
+  // Autopilots (ADR 0514 §5): practice, except releasing work or widening their reach.
+  changes.push(...autopilotImpact(before.autopilots, after.autopilots));
   return summarise(changes);
 }
 
@@ -180,7 +202,15 @@ export function orgConfigImpact(before: OrgConfig, after: OrgConfig): PolicyImpa
 function skillsImpact(before: OrgConfig, after: OrgConfig): ImpactChange[] {
   const out: ImpactChange[] = [];
   const judged = new Set<string>();
-  const judges = new Set([...judgingAgents(before), ...judgingAgents(after)]);
+  // Judges, and the agents enabled autopilots hand to (review of #197): what they follow is policy.
+  const judges = new Set([
+    ...judgingAgents(before),
+    ...judgingAgents(after),
+    ...autopilotAgents(before),
+    ...autopilotAgents(after),
+  ]);
+  for (const c of [before, after])
+    for (const a of c.autopilots) if (a.enabled) for (const id of a.skills) judged.add(id);
   for (const c of [before, after]) {
     for (const w of [...c.workflows, ...Object.values(c.builtIns)])
       for (const s of w?.stages ?? [])
@@ -200,7 +230,7 @@ function skillsImpact(before: OrgConfig, after: OrgConfig): ImpactChange[] {
         ? {
             path: `skills.${id}`,
             class: "loosens",
-            summary: `A skill a judge follows changed (${id}, ${what}).`,
+            summary: `A skill a judge or an autopilot that is on follows changed (${id}, ${what}).`,
           }
         : { path: `skills.${id}`, class: "neutral", summary: `The skill ${id}: ${what}.` },
     );
@@ -214,12 +244,17 @@ function skillsImpact(before: OrgConfig, after: OrgConfig): ImpactChange[] {
         ? {
             path: `agentSkills.${agent}`,
             class: "loosens",
-            summary: `${agent} judges work: the skills it follows changed.`,
+            summary: `${agent} judges work or runs an autopilot that is on: the skills it follows changed.`,
           }
         : { path: `agentSkills.${agent}`, class: "neutral", summary: `${agent}'s skills changed.` },
     );
   }
   return out;
+}
+
+/** The agents (lower-cased names) the document's enabled autopilots hand to. */
+function autopilotAgents(config: OrgConfig): string[] {
+  return config.autopilots.filter((a) => a.enabled).map((a) => a.agent.toLowerCase());
 }
 
 /** The agents (lower-cased names) that judge work in any of the document's workflows. */
@@ -444,6 +479,7 @@ export async function writeOrgVersion(
         });
     }
   }
+  await noticeOpenMergeGates(ctx, org, version, config, input.before, projects);
   ctx.guardExists(
     "org config base unchanged",
     ctx.db
@@ -956,6 +992,8 @@ async function rollbackOrgConfig(
   if (!target) throw new OperationError("not_found", `no valid version ${input.toVersion}`);
   const { version, config } = await currentOrgConfig(ctx.db, input.orgId);
   requireBase(version, input.baseVersion);
+  // Its autopilots still name only the org's projects (review of #197).
+  for (const a of target.autopilots) await requireOrgProjects(ctx, input.orgId, a);
   const impact = orgConfigImpact(config, target);
   const written = await writeOrgVersion(ctx, input.orgId, version, target, {
     source: "rollback",
@@ -991,7 +1029,11 @@ export async function applyApprovedOrgConfig(
       ? await rollbackOrgConfig(ctx, input, pa.actor_id)
       : pa.operation === "agent.save"
         ? await saveAgent(ctx, input, pa.actor_id)
-        : await saveWorkflow(ctx, input, pa.actor_id);
+        : pa.operation === "autopilot.save"
+          ? await saveAutopilot(ctx, input, pa.actor_id)
+          : pa.operation === "autopilot.enable"
+            ? await setAutopilotEnabled(ctx, input, true, pa.actor_id)
+            : await saveWorkflow(ctx, input, pa.actor_id);
   ctx.writePendingStatus(
     "apply",
     ctx.db.updateTable("core_pending_actions").set({ status: "applied" }).where("id", "=", pa.id),
@@ -1067,6 +1109,90 @@ export const stageTypeList = defineOperation({
 });
 
 /**
+ * A decision gate this version adds doesn't reach an item whose merge gate is already open (ADR
+ * 0510 as amended for #185): the gate's person is told, on the item, so it isn't bypassed silently.
+ * Org saves only (rare); one bounded read of the org's open merge gates, oldest first
+ * (core_pending_actions_org_idx: org_id, status, created_at), at most 50, and the org's admins told
+ * when there are more.
+ */
+async function noticeOpenMergeGates(
+  ctx: HandlerContext,
+  org: string,
+  version: number,
+  config: OrgConfig,
+  before: OrgConfig,
+  projects: { id: string; policy: ProjectPolicy | null }[],
+) {
+  const added = new Map<string, string[]>();
+  for (const wf of config.workflows) {
+    const was = before.workflows.find((x) => x.id === wf.id);
+    const gates = wf.stages
+      .filter((x) => x.type === "decision" && !was?.stages.some((y) => y.id === x.id))
+      .map((x) => x.name);
+    if (gates.length) added.set(wf.id, gates);
+  }
+  if (added.size === 0) return;
+  const open = await ctx.db
+    .selectFrom("core_pending_actions as pa")
+    .innerJoin("core_work_items as w", "w.id", "pa.work_item_id")
+    .select(["pa.assignee_user_id", "pa.project_id", "w.id", "w.number"])
+    .where("pa.org_id", "=", org)
+    .where("pa.status", "=", "pending")
+    .where("pa.kind", "=", "merge")
+    .where("w.org_config_version", "is not", null)
+    // Oldest first, so the gates waiting longest are told; past 50 the save says so (third review
+    // of #185).
+    .orderBy("pa.created_at")
+    .limit(51)
+    .execute();
+  if (open.length > 50) {
+    ctx.change({
+      entity: "org",
+      id: org,
+      after: {
+        notice: `v${version} adds ${[...added.values()].flat().join(", ")}; more than 50 open merge gates weren't told one by one: it isn't applied to items whose merge gate is open`,
+      },
+    });
+    const admins = await ctx.db
+      .selectFrom("core_member")
+      .select("user_id")
+      .where("organization_id", "=", org)
+      .where("role", "in", ["owner", "admin"])
+      .orderBy("created_at")
+      .limit(NOTIFY_ADMINS)
+      .execute();
+    for (const a of admins)
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "workflow.gateNotApplied",
+          userId: a.user_id,
+          title: `v${version} of the org's workflow adds ${[...added.values()].flat().join(", ")}; it isn't applied to the items whose merge gate is open (more than 50: their people were told for the first 50 only)`,
+          url: "/settings",
+        },
+      });
+  }
+  for (const g of open.slice(0, 50)) {
+    const wf = projects.find((p) => p.id === g.project_id)?.policy?.workflow;
+    const gates = wf ? added.get(wf) : undefined;
+    if (!gates) continue;
+    const notice = `v${version} of the org's workflow adds ${gates.join(", ")}; not applied to this item, whose merge gate is already open`;
+    ctx.change({ entity: "work_item", id: g.id, after: { notice } });
+    if (g.assignee_user_id)
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "workflow.gateNotApplied",
+          userId: g.assignee_user_id,
+          workItemId: g.id,
+          title: `Work item #${g.number}: ${notice}`,
+          url: `/?item=${g.id}`,
+        },
+      });
+  }
+}
+
+/**
  * A waiting org change as an approver sees it (ADR 0610, review of #159): what it would save, what
  * is there now, and the engine's classification against the current version. Bounded: at most 20
  * are listed, and only a rollback reads a stored version (by primary key).
@@ -1113,6 +1239,23 @@ async function pendingOrgChange(
           unknown
         >) ?? null;
       if (proposal) after = withAgent(config, proposal as never);
+    } else if (p.operation === "autopilot.save" || p.operation === "autopilot.enable") {
+      // The autopilot's full reach, now and as proposed (review of #197): every field, so the
+      // pending-change screen can show what turning it on or changing it would let it do.
+      const id = p.operation === "autopilot.save" ? obj(input.autopilot)?.id : input.autopilotId;
+      const was = config.autopilots.find((a) => a.id === id) ?? null;
+      current = (was as unknown as Record<string, unknown>) ?? null;
+      if (p.operation === "autopilot.save") {
+        proposal = obj(input.autopilot);
+        if (proposal) after = withAutopilot(config, autopilotSchema.parse(proposal));
+      } else if (was) {
+        proposal = { ...was, enabled: true } as unknown as Record<string, unknown>;
+        after = withAutopilotEnabled(config, was.id, true);
+      }
+      // What it would run with, as it is now (review of #197): its agent and the skills it follows,
+      // so whoever approves sees them even if they changed while it was off.
+      if (proposal)
+        proposal = { ...proposal, uses: await autopilotUses(db, orgId, config, proposal) };
     } else if (p.operation === "orgConfig.rollback" && toVersion !== null) {
       after = await storedOrgConfig(db, orgId, toVersion);
       // The whole org config, now and as the rollback would make it: every workflow and agent
@@ -1170,3 +1313,54 @@ export const orgConfigPreviewRollback = defineOperation({
     };
   },
 });
+
+/** The agent a (proposed) autopilot hands to and the skills it follows, as they are now. */
+async function autopilotUses(
+  db: Db,
+  orgId: string,
+  config: OrgConfig,
+  autopilot: Record<string, unknown>,
+) {
+  const agentName = String(autopilot.agent ?? "").toLowerCase();
+  const agent = config.agents.find((a) => a.name.toLowerCase() === agentName) ?? null;
+  const own = Array.isArray(autopilot.skills) ? (autopilot.skills as unknown[]).map(String) : [];
+  const attached = config.agentSkills[agentName] ?? [];
+  const ids = [...new Set([...own, ...attached])].filter((x) => Object.hasOwn(config.skills, x));
+  // Each skill's current version, by primary key (org, skill, version): at most 40 keys, in
+  // chunks of 15 key pairs a query (D1's bound-parameter limit), so at most three queries.
+  const keys = ids.slice(0, 40).map((id) => ({ id, version: config.skills[id]?.version ?? 0 }));
+  const rows: {
+    skill_id: string;
+    version: number;
+    name: string;
+    description: string;
+    body: string;
+  }[] = [];
+  for (let i = 0; i < keys.length; i += 15) {
+    const chunk = keys.slice(i, i + 15);
+    rows.push(
+      ...(await db
+        .selectFrom("core_skill_versions")
+        .select(["skill_id", "version", "name", "description", "body"])
+        .where("org_id", "=", orgId)
+        .where((eb) =>
+          eb.or(
+            chunk.map((k) => eb.and([eb("skill_id", "=", k.id), eb("version", "=", k.version)])),
+          ),
+        )
+        .limit(15)
+        .execute()),
+    );
+  }
+  const skills = keys.map((k) => {
+    const row = rows.find((r) => r.skill_id === k.id && r.version === k.version);
+    return {
+      id: k.id,
+      version: k.version,
+      name: row?.name ?? null,
+      description: row?.description ?? null,
+      body: row?.body ?? null,
+    };
+  });
+  return { agent, attachedSkills: attached, skills };
+}

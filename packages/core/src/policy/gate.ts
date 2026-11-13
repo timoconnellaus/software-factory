@@ -29,6 +29,14 @@ export type Decision = (typeof DECISIONS)[number];
 export const AUTONOMY_POLICIES = ["cautious", "balanced", "autonomous"] as const;
 export type AutonomyPolicyName = (typeof AUTONOMY_POLICIES)[number];
 
+/** What an autopilot may never do, in any policy, override or floor (ADR 0514). */
+export const AUTOPILOT_NEVER: readonly RiskClass[] = [
+  "merge",
+  "deploy",
+  "check-merge",
+  "self-modify",
+];
+
 /** Merge, deploy and self-modify always go to a person, for every actor and policy (ADR 0008). */
 export const ALWAYS_REVIEW: readonly RiskClass[] = ["merge", "deploy", "self-modify"];
 
@@ -69,6 +77,8 @@ export const AUTONOMY_TABLE: Record<AutonomyPolicyName, Record<NonHuman, Row>> =
     "self-improve": row("allow", "review", "review", "deny", "review", "review", "deny", "review"),
     // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
     scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
+    // An autopilot reads and files work (ADR 0514): nothing else, in every policy.
+    autopilot: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
   balanced: {
     agent: row("allow", "allow", "review", "review", "review", "review", "review", "review"),
@@ -77,6 +87,8 @@ export const AUTONOMY_TABLE: Record<AutonomyPolicyName, Record<NonHuman, Row>> =
     "self-improve": row("allow", "allow", "review", "deny", "review", "review", "deny", "review"),
     // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
     scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
+    // An autopilot reads and files work (ADR 0514): nothing else, in every policy.
+    autopilot: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
   autonomous: {
     agent: row("allow", "allow", "review", "allow", "allow", "review", "review", "review"),
@@ -85,6 +97,8 @@ export const AUTONOMY_TABLE: Record<AutonomyPolicyName, Record<NonHuman, Row>> =
     "self-improve": row("allow", "allow", "review", "review", "review", "review", "deny", "review"),
     // The pull only starts released work (ADR 0491): read and write, nothing else, in every policy.
     scheduler: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
+    // An autopilot reads and files work (ADR 0514): nothing else, in every policy.
+    autopilot: row("allow", "allow", "deny", "deny", "deny", "deny", "deny", "deny"),
   },
 };
 
@@ -178,6 +192,11 @@ export function decide({ actor, risk, policy, policyError, floor }: GateInput): 
       reason = `project override (${actor}.${risk})`;
     }
   }
+
+  // An autopilot never merges, deploys or changes the factory, even with a person's approval or a
+  // project's override (ADR 0514): deny, not review.
+  if (actor === "autopilot" && (AUTOPILOT_NEVER as readonly string[]).includes(risk))
+    return { decision: "deny", reason: "an autopilot never merges, deploys or changes config" };
 
   if (ALWAYS_REVIEW.includes(risk) && decision === "allow") {
     decision = "review";

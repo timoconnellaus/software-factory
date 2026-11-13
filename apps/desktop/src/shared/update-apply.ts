@@ -2,10 +2,12 @@
 // app restarts. The click shows "Updating to <version>" at once; the steps are the update's
 // signature checked (cheap when it was checked at download: updates.ts), the runner asked to stop
 // taking jobs, then the restart. A refused update shows why, with a way back; a runner that is busy
-// (or doesn't answer) goes back to idle, and the app updates once it is idle (index.ts).
+// (or doesn't answer) goes back to idle, and the app updates once it is idle (index.ts). A restart
+// handed to the updater that neither restarts nor returns for minutes is `stuck`: the only way on is
+// to quit and reopen the app.
 // Pure, for the tests: the main process holds the state and pushes it with the update status.
 
-export type ApplyStep = "idle" | "verifying" | "waiting" | "restarting" | "refused";
+export type ApplyStep = "idle" | "verifying" | "waiting" | "restarting" | "refused" | "stuck";
 
 export interface ApplyState {
   step: ApplyStep;
@@ -22,6 +24,8 @@ export type ApplyEvent =
   /** Checked, the runner is idle: the app is restarting. */
   | { type: "restarting" }
   | { type: "refused"; reason: string }
+  /** Handed to the updater, which neither restarted nor returned (restart-update.ts). */
+  | { type: "stuck" }
   /** The runner has jobs, or didn't answer: the update waits for idle. */
   | { type: "deferred" }
   /** The person read the refusal and goes back. */
@@ -43,15 +47,20 @@ export function applyTransition(s: ApplyState, e: ApplyEvent): ApplyState {
     case "restarting":
       return s.step === "verifying" || s.step === "waiting" ? { ...s, step: "restarting" } : s;
     case "refused":
-      return s.step === "idle" || s.step === "refused"
+      // Stuck stays stuck: only quitting moves on from it.
+      return s.step === "idle" || s.step === "refused" || s.step === "stuck"
         ? s
         : { ...s, step: "refused", reason: e.reason };
+    case "stuck":
+      return s.step === "restarting" ? { ...s, step: "stuck", reason: STUCK_TEXT } : s;
     case "deferred":
       return s.step === "verifying" || s.step === "waiting" ? IDLE : s;
     case "back":
       return s.step === "refused" ? IDLE : s;
   }
 }
+
+export const STUCK_TEXT = "The update is taking too long. Quit and reopen the app.";
 
 /** The line under "Updating to <version>" for each step. */
 export function applyStepText(step: ApplyStep): string {
@@ -64,6 +73,8 @@ export function applyStepText(step: ApplyStep): string {
       return "Restarting…";
     case "refused":
       return "The update was refused.";
+    case "stuck":
+      return STUCK_TEXT;
     case "idle":
       return "";
   }

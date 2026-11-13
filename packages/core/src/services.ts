@@ -1,5 +1,6 @@
 import type { AttachmentBlobs } from "./attachments.ts";
 import type { MobileAttestationService } from "./operations/mobile.ts";
+import type { MergeBaseUnknown } from "./verify/merge-base.ts";
 
 // What operations may call outside D1. sf-engine supplies the real ones (the GitHub App, the runner
 // channel secret); tests supply fakes (`@software-factory/core/testing`). Handlers that call a
@@ -64,8 +65,22 @@ export interface TreeEntry {
 /** A commit's files by path. */
 export type Tree = Record<string, TreeEntry>;
 
+declare const verifiedHead: unique symbol;
+/**
+ * A head SHA the factory verified itself (#190 review, round 3): a pass review packet made for it
+ * and its own factory/verify a success. Only `requireVerifiedHead` (operations/merge-queue.ts)
+ * makes one, so the adapter's merge can't be called with a SHA nothing checked.
+ */
+export type VerifiedHead = string & { readonly [verifiedHead]: true };
+
 export interface CommitInfo {
   parents: string[];
+  /**
+   * The git author. GitHub's update-branch merge made through the API by an App is authored by
+   * `<slug>[bot]` (`<id>+<slug>[bot]@users.noreply.github.com`); a merge in GitHub's web conflict
+   * editor is authored by the person (recorded: test/fixtures/update-branch-merge.json).
+   */
+  author: { name: string; email: string } | null;
   committer: { name: string; email: string } | null;
   /** GitHub verified the commit's signature (its own web-flow signs update-branch merges). */
   verified: boolean;
@@ -314,26 +329,32 @@ export interface GitHubService {
    * Whether two commits have more than one merge base (a criss-cross: each side merged the other),
    * so a three-way judgement from GitHub's single `merge_base_commit` could be wrong: the merge bases
    * GitHub reports each way differ, or a commit is new on both sides (a second merge base is
-   * reachable from both heads but not from the first). Null when it can't tell (more commits than a
-   * compare lists): treat that as ambiguous too.
+   * reachable from both heads but not from the first). Otherwise why it can't tell
+   * (`MergeBaseUnknown`, never `false`): treat that as ambiguous too.
    */
-  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | null>;
+  mergeBaseAmbiguous(repo: RepoRef, a: string, b: string): Promise<boolean | MergeBaseUnknown>;
   /**
-   * Merges the PR's base into its head on GitHub (`PUT /pulls/{n}/update-branch`), only if the
-   * head is still `expectedHeadSha`. GitHub makes the merge commit asynchronously: `requested`
-   * means it accepted; read the PR's head afterwards. `conflict`: the base can't merge in cleanly.
+   * Merges `head` (an exact SHA, the default branch's head the merge queue read) into `branch` on
+   * GitHub (`POST /repos/{o}/{r}/merges`, #190 review). Synchronous: `merged` returns the merge
+   * commit GitHub made and its parents, so the queue records that exact SHA and accepts no other
+   * head. `current`: nothing to merge. `conflict`: it can't merge cleanly. `refused`: anything else,
+   * and always for the repository's default branch, which the adapter reads from GitHub itself.
    */
-  updatePullRequestBranch(
+  mergeIntoBranch(
     repo: RepoRef,
-    input: { number: number; expectedHeadSha: string },
-  ): Promise<{ status: "requested" } | { status: "conflict" | "refused"; reason: string }>;
+    input: { branch: string; head: string; message: string },
+  ): Promise<
+    | { status: "merged"; sha: string; parents: string[] }
+    | { status: "current" }
+    | { status: "conflict" | "refused"; reason: string }
+  >;
   /**
    * Merges the PR if its head is still `sha`. `headMoved`: refused because the head is no longer
    * `sha` (GitHub's 409 "Head branch was modified").
    */
   mergePullRequest(
     repo: RepoRef,
-    input: { number: number; sha: string; method: "merge" | "squash" },
+    input: { number: number; sha: VerifiedHead; method: "merge" | "squash" },
   ): Promise<
     { merged: true; sha: string } | { merged: false; reason: string; headMoved?: boolean }
   >;

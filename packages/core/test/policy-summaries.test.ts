@@ -84,6 +84,7 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
           setting: "requiredFrom",
           value: HOSTILE,
           configVersion: 2,
+          orgVersion: 3,
         },
         "medium",
       ),
@@ -114,8 +115,28 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
       /^Approve a change to the policy \(drafted on v1, now v2\): loosens 5 things: Autonomy policy Balanced → Autonomous…/,
     );
     expect(summaries[8]).toMatch(
-      /^Approve a looser override \(config v2\): loosens: an unnamed one requiredFrom from the org's medium to Acme approved evil line x+…/,
+      /^Approve a looser override \(config v2, org v3\): loosens: an unnamed one requiredFrom from the org's medium to Acme approved evil line x+…/,
     );
+  });
+
+  it("an override of a long list says what it drops and adds (review of #185)", async () => {
+    const w = await world();
+    const db = createDb(env.DB);
+    const long = Array.from({ length: 8 }, (_, i) => `integration-suite-${i}`);
+    const summary = await describeOverrideApprove(
+      db,
+      { ok: true, floor: {} } as const,
+      {
+        projectId: w.projectId,
+        stageId: "verify",
+        setting: "requiredChecks",
+        value: long.slice(0, 7),
+        configVersion: 2,
+        orgVersion: 3,
+      },
+      long,
+    );
+    expect(summary).toMatch(/requiredChecks: drops integration-suite-7 against the org's value/);
   });
 
   it("names the item and the red main for marking a repair, within the helper's rules", async () => {

@@ -30,6 +30,7 @@ export interface OpMap {
   "spec.requestChanges": Def<typeof operations.specRequestChanges>;
   "review.merge": Def<typeof operations.reviewMerge>;
   "delivery.status": Def<typeof operations.deliveryStatus>;
+  "babysit.resolutionPatches": Def<typeof operations.babysitResolutionPatches>;
   "review.sendBack": Def<typeof operations.reviewSendBack>;
   "approval.decide": Def<typeof operations.approvalDecide>;
   "question.answer": Def<typeof operations.questionAnswer>;

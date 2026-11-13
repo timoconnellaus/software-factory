@@ -10,6 +10,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { ALWAYS_REVIEW } from "../policy/gate.ts";
+import { approverIds } from "../scope.ts";
 import { formatPolicy, versionOf, writeVersion } from "./config.ts";
 import { approvingSpecGate, decidePending } from "./gates.ts";
 import { pendingActionId, projectId, requireProject } from "./shared.ts";
@@ -311,12 +312,18 @@ export const adjudicatorRecord = defineOperation({
         ...(blocked ? { blocked } : {}),
       },
     });
-    if (blocked && pa.assignee_user_id) {
+    // Told to the gate's assignee, or the project's first approver when it has none (review of #144).
+    const told = blocked
+      ? (pa.assignee_user_id ??
+        (await approverIds(ctx.db, pa.org_id ?? "", ctx.scope.policy ?? null))[0] ??
+        null)
+      : null;
+    if (blocked && told) {
       ctx.emit({
         kind: "notify",
         payload: {
           event: "adjudicator.blocked",
-          userId: pa.assignee_user_id,
+          userId: told,
           workItemId: pa.work_item_id,
           title: `The adjudicator approved a plan, but it can't be approved yet: ${blocked}`,
           url: pa.work_item_id ? `/?item=${pa.work_item_id}` : "/",

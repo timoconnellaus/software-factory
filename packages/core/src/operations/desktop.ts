@@ -301,12 +301,30 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
           ? await describeOrgConfigDecision(ctx.db, pa.operation, parsed(pa.input), verb)
           : null;
       if (org) return org;
+      // An override approval waits for an org admin (review of #185): the decision names what it
+      // loosens, as the call itself does.
+      if (pa?.operation === "override.approve") {
+        const o = parsed(pa.input);
+        return describeOverrideApprove(
+          ctx.db,
+          ctx.floor,
+          o,
+          typeof o.projectId === "string" &&
+            typeof o.stageId === "string" &&
+            typeof o.setting === "string"
+            ? await overrideOrgValue(ctx.db, o.projectId, o.stageId, o.setting)
+            : undefined,
+          verb,
+        );
+      }
       return pa
         ? onItem(`${verb} ${pa.operation} on`, pa.work_item_id)
         : `${verb} a pending action`;
     }
     case "workflow.save":
     case "agent.save":
+    case "autopilot.save":
+    case "autopilot.enable":
     case "workflow.archive":
     case "workflow.createFromTemplate":
     case "orgConfig.rollback":
@@ -357,6 +375,8 @@ export const POLICY_DECISION_OPS = [
   "workflow.createFromTemplate",
   "workflow.archive",
   "agent.save",
+  "autopilot.save",
+  "autopilot.enable",
   "orgConfig.rollback",
   "orgConfig.adoptProjectWorkflows",
   "override.approve",

@@ -22,6 +22,12 @@ import {
   releaseSplitChildren,
   splitFiles,
 } from "../splits.ts";
+import {
+  cancelUnreadableJobs,
+  UNREADABLE_WORKFLOW_PROMPT,
+  unreadablePlain,
+  workflowUnreadable,
+} from "../unreadable.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -42,6 +48,7 @@ import {
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { has } from "../workflow-features.ts";
+import { resolutionAtGate } from "./babysit.ts";
 import {
   ATTACHED_HELD_TITLE,
   HELD_TITLE,
@@ -49,7 +56,7 @@ import {
   HOLD_ATTACHED,
   lineStopped,
 } from "./delivery.ts";
-import { requireQueueHead } from "./merge-queue.ts";
+import { requireQueueHead, requireVerifiedHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
   endWorkItem,
@@ -105,6 +112,22 @@ export async function postVerify(
     .where("project_id", "=", args.project.id)
     .where("head_sha", "=", args.headSha)
     .executeTakeFirst();
+  // Never success for an item whose pinned workflow can't be read (fourth review of #185), from any
+  // caller (a webhook, the cron, the outbox recheck, a release): a failing check that says why, so
+  // GitHub's required check can't pass and nothing merges it.
+  if (args.output.conclusion === "success") {
+    const why = await workflowUnreadable(ctx, args.item?.id ?? existing?.work_item_id);
+    if (why)
+      args = {
+        ...args,
+        output: {
+          status: "completed",
+          conclusion: "failure",
+          title: UNREADABLE_WORKFLOW_PROMPT,
+          summary: `${UNREADABLE_WORKFLOW_PROMPT}: ${unreadablePlain(why)}. The factory won't pass this commit until it reads again.\n\nDetail: ${why}`,
+        },
+      };
+  }
   const base = ctx.services.publicBaseUrl?.replace(/\/$/, "");
   let checkRunId = existing?.github_check_run_id ?? null;
   let error: string | null = null;
@@ -164,6 +187,71 @@ export async function postVerify(
   return { checkRunId, error };
 }
 
+/**
+ * What happens to an item the moment its pinned workflow is found unreadable (fifth review of
+ * #185), through an operation so it is audited: its queued jobs are cancelled (no runner claims
+ * them), and a `factory/verify` already green on its head is posted again as failing (a check
+ * passed before the break mustn't stay passed). Allowed for agents on such an item; does nothing
+ * when the item reads.
+ */
+export const workItemMarkUnreadable = defineOperation({
+  name: "workItem.markUnreadable",
+  description:
+    "Stop an item whose pinned workflow version can't be read: cancel its queued jobs and turn a passing factory/verify on its head into a failing one that says why. Called by the factory when it first finds the item unreadable; a no-op when the item reads.",
+  risk: "write",
+  actors: ["agent"],
+  permission: "signed-in",
+  input: z.object({ workItemId }),
+  output: z.object({ unreadable: z.boolean(), cancelled: z.number(), checkFailed: z.boolean() }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const why = ctx.scope.pinnedError;
+    if (!why) return { unreadable: false, cancelled: 0, checkFailed: false };
+    const queued = await ctx.db
+      .selectFrom("core_jobs")
+      .select("id")
+      .where("work_item_id", "=", w.id)
+      .where("status", "=", "queued")
+      .limit(50)
+      .execute();
+    cancelUnreadableJobs(
+      ctx,
+      w,
+      queued.map((j) => j.id),
+    );
+    let checkFailed = false;
+    const project = ctx.scope.project;
+    const repository = ctx.scope.repository;
+    if (w.head_sha && project && repository) {
+      const green = await ctx.db
+        .selectFrom("core_verify_checks")
+        .select("conclusion")
+        .where("project_id", "=", project.id)
+        .where("head_sha", "=", w.head_sha)
+        .executeTakeFirst();
+      if (green?.conclusion === "success") {
+        // postVerify turns a success for this item into the failing check that says why.
+        await postVerify(ctx, {
+          project,
+          repo: await repoRef(ctx, repository),
+          headSha: w.head_sha,
+          item: w,
+          prNumber: w.pr_number,
+          packetId: null,
+          output: { status: "completed", conclusion: "success", title: "", summary: "" },
+        });
+        checkFailed = true;
+      }
+    }
+    ctx.change({
+      entity: "work_item",
+      id: w.id,
+      after: { workflowUnreadable: why, cancelledJobs: queued.length, checkFailed },
+    });
+    return { unreadable: true, cancelled: queued.length, checkFailed };
+  },
+});
+
 const reviewerSchema = z.object({
   role: z.literal("review"),
   model: z.string().optional(),
@@ -175,7 +263,7 @@ const reviewerSchema = z.object({
 export const reviewPacketRecord = defineOperation({
   name: "reviewPacket.record",
   description:
-    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it (a check the runner could not run is not a failure: the verdict may pass, but `factory/verify` is then posted as action required, and the merge gate needs a person's explicit decision to merge without it, review.merge `mergeWithoutChecks`), and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
+    "Assemble and store the review packet for the work item's head SHA (ADR 0020, 0041; refused for any other SHA), and post `factory/verify` for that SHA from the App (ADR 0037). The reviewer's report (criteria with evidence and the checks each links to, the reviewer's verdict, risk flags) is opinion; the agent's own report of checks is never used (ADR 0501). The verdict passes only when CI on GitHub is green for the SHA, every check the project declares passed on that SHA as the runner host ran it (a check the runner could not run is not a failure: the verdict may pass, but `factory/verify` is then posted as action required, and the merge gate needs a person's explicit decision to merge without it, review.merge `mergeWithoutChecks`), and the packet is complete (every criterion met with evidence, the reviewer approves). Each criterion is marked Proven only when a check it links to passed on the SHA. Risk flags (auth, migrations, deps, `.factory/`, permissions) come from GitHub's compare, and so does the tests-intact guard (ADR 0500): deleted, removed, skipped or commented-out tests, new suppressions, lowered thresholds and gate-file edits are recorded as findings for a person, never judged by an agent and never part of the verdict. Returns the verdict.",
   risk: "write",
   actors: ["agent"],
   permission: "signed-in",
@@ -221,6 +309,14 @@ export const reviewPacketRecord = defineOperation({
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
+    // A packet is for the item's current head only (#190 review, round 2): pr.merge trusts a pass
+    // packet for the SHA it merges, so an agent can't record one for any other commit.
+    if (w.head_sha !== input.headSha) {
+      throw new OperationError(
+        "conflict",
+        `the review packet must be for the item's head (${w.head_sha ? w.head_sha.slice(0, 7) : "none"}), not ${input.headSha.slice(0, 7)}`,
+      );
+    }
     const project = requireProject(ctx);
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);
@@ -1044,93 +1140,10 @@ async function moveAttachedHead(
   };
 }
 
-/**
- * The merge queue brought a verified head up to date with the default branch by a clean merge
- * (ADR 0330): the reviewed diff is unchanged, so the review packet carries over to the new head,
- * marked with where it came from. `factory/verify` on the new head then passes only on green CI
- * there, like any packet.
- */
-export async function carryReviewPacket(
-  ctx: HandlerContext,
-  args: {
-    item: WorkItemRow;
-    project: ProjectRow;
-    repo: RepoRef;
-    fromSha: string;
-    toSha: string;
-    /** Sections to add to the copy (spec 53: the change digest it was checked against). */
-    extra?: Record<string, unknown>;
-  },
-): Promise<{ packetId: string | null }> {
-  const from = await ctx.db
-    .selectFrom("core_review_packets")
-    .selectAll()
-    .where("work_item_id", "=", args.item.id)
-    .where("head_sha", "=", args.fromSha)
-    .orderBy("created_at", "desc")
-    .executeTakeFirst();
-  if (!from) return { packetId: null };
-  const previous = parseObject(from.sections);
-  const sections: Record<string, unknown> = {
-    ...previous,
-    carriedFrom: args.fromSha,
-    ...args.extra,
-    // The factory's checks ran on the commit they ran on, not this one (ADR 0501): say so.
-    ...(previous.executed
-      ? {
-          checksRanOn:
-            typeof previous.checksRanOn === "string" ? previous.checksRanOn : args.fromSha,
-        }
-      : {}),
-  };
-  const id = newId("reviewPacket");
-  ctx.write(
-    ctx.db.insertInto("core_review_packets").values({
-      id,
-      work_item_id: args.item.id,
-      run_id: from.run_id,
-      head_sha: args.toSha,
-      verdict: from.verdict,
-      summary: from.summary,
-      criteria: from.criteria,
-      checks: from.checks,
-      reviewer: from.reviewer,
-      risk_flags: from.risk_flags,
-      sections: JSON.stringify(sections),
-      created_at: ctx.now,
-    }),
-  );
-  ctx.change({
-    entity: "review_packet",
-    id,
-    after: { headSha: args.toSha, carriedFrom: args.fromSha },
-  });
-  const ci = await readCi(ctx, args.repo, args.toSha);
-  await postVerify(ctx, {
-    project: args.project,
-    repo: args.repo,
-    headSha: args.toSha,
-    item: args.item,
-    prNumber: args.item.pr_number,
-    packetId: id,
-    output: verifyCheckOutput({
-      evidencePass: sections.evidencePass === true,
-      evidenceReasons: strings(sections.evidenceReasons),
-      warnings: strings(sections.warnings),
-      riskFlags: strings(parseJson(from.risk_flags)),
-      ci,
-      workItem: args.item,
-      ...storedTestFindings(sections),
-      ...storedProof(sections),
-    }),
-  });
-  return { packetId: id };
-}
-
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
-    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0500). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
+    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0500), and the head isn't one the babysitter resolved (spec 53: a resolved head always goes to a person). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
   risk: "check-merge",
   actors: ["agent"],
   permission: "approver",
@@ -1148,6 +1161,12 @@ export const prAutoMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
+    // A head the babysitter resolved always goes to a person (#201 review, round 2), whatever
+    // the resolution: check-only or not, nobody has looked at how the conflict was settled.
+    const resolved = await resolutionAtGate(ctx, w, input.headSha);
+    if (resolved.expected || resolved.resolution) {
+      refuse("the babysitter resolved a conflict on this commit: a person decides");
+    }
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);
     const files = await ctx.services.github.compareFiles(
@@ -1188,9 +1207,12 @@ export const prAutoMerge = defineOperation({
         `some checks could not be run on this runner (${executed.notRun.map((n) => String(n.name)).join(", ")}): a person decides`,
       );
     }
+    // Verified on this exact head by the factory's own records, as pr.merge requires (#190 review):
+    // its factory/verify a success, so a head held while main is red doesn't merge.
+    const verified = await requireVerifiedHead(ctx, w, input.headSha);
     const merged = await ctx.services.github.mergePullRequest(repo, {
       number: w.pr_number,
-      sha: input.headSha,
+      sha: verified,
       method: "merge",
     });
     if (!merged.merged) throw new OperationError("conflict", `merge refused: ${merged.reason}`);

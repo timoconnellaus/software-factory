@@ -15,6 +15,7 @@ import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
 import type { RepoRef } from "../services.ts";
+import { workflowUnreadable } from "../unreadable.ts";
 import { attachKey } from "./attach.ts";
 import { startPipeline } from "./backlog.ts";
 import { openIncident } from "./incidents.ts";
@@ -156,15 +157,20 @@ export const mainRedRevert = defineOperation({
       if (Date.parse(ctx.now) - Date.parse(health.red_since) < REVERT_AFTER_MS) {
         throw new OperationError("conflict", "main hasn't been red for 30 minutes");
       }
-      const repair = await ctx.db
+      const repairs = await ctx.db
         .selectFrom("core_work_items")
         .select("id")
         .where("repository_id", "=", repository.id)
         .where("repairs_main", "=", 1)
         .where("status", "in", [...OPEN])
         .where("id", "!=", claim?.revert_work_item_id ?? "")
-        .executeTakeFirst();
-      if (repair) throw new OperationError("conflict", "a repair is already under way");
+        // Bounded; enough that a readable repair behind unreadable ones isn't missed.
+        .limit(50)
+        .execute();
+      // A repair whose workflow can't be read is parked, not under way (sixth review of #185).
+      for (const r of repairs)
+        if (!(await workflowUnreadable(ctx, r.id)))
+          throw new OperationError("conflict", "a repair is already under way");
     }
     if (!claim) {
       // The chain's root: a culprit that is itself a reland carries its original's root.

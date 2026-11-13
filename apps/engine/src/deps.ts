@@ -126,7 +126,7 @@ function unavailableGitHub(): FactoryServices["github"] {
     commitInfo: no,
     changedPaths: no,
     pathEntries: no,
-    updatePullRequestBranch: no,
+    mergeIntoBranch: no,
     compareFiles: no,
     readFile: no,
     listCheckRuns: no,

@@ -19,6 +19,7 @@ import { babysitPrompt } from "../babysit/prompt.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
+import { MERGE_BASE_UNKNOWN } from "../verify/merge-base.ts";
 import {
   createWorkItem,
   repoRef,
@@ -433,6 +434,8 @@ export const flakeRecord = defineOperation({
 const RESOLUTION_PATCH_MAX = 4_000;
 /** Most files a resolution lists. */
 const RESOLUTION_FILES_MAX = 50;
+/** Most files outside the conflict named (#201 review): past it, counted (`outsideNotShown`). */
+const RESOLUTION_OUTSIDE_MAX = 500;
 /** Most paths read: past it, or past GitHub's own caps, the resolution isn't read (fail closed). */
 const RESOLUTION_PATHS_MAX = 250;
 
@@ -468,6 +471,8 @@ export const resolutionSchema = z.object({
    * isn't that side's (main's fix undone, the item's change dropped), or one neither side changed.
    */
   outside: z.array(z.string()),
+  /** Files outside the conflict past RESOLUTION_OUTSIDE_MAX, counted, not named. */
+  outsideNotShown: z.number().default(0),
   /** Resolution files not listed (past RESOLUTION_FILES_MAX), conflicted or not. */
   notShown: z.number(),
   /** What each patch is against: the item's head, so it includes the default branch's changes. */
@@ -484,11 +489,13 @@ const unreadable = (
 ): Resolution => ({
   sha: headSha,
   status,
-  reason: `${reason}: review the whole diff`,
+  // The gate says "review the whole diff" itself: the reason says only why.
+  reason,
   itemHead,
   main,
   files: [],
   outside: [],
+  outsideNotShown: 0,
   notShown: 0,
   patchBase: "itemHead",
 });
@@ -556,10 +563,10 @@ async function readResolution(
     return {
       summary: unreadable(
         headSha,
-        ambiguous === null ? "incomplete" : "unclean",
-        ambiguous === null
-          ? "too many commits to find the merge base"
-          : "the item and the default branch have more than one merge base",
+        ambiguous === true ? "unclean" : ambiguous === "unreadable" ? "failed" : "incomplete",
+        ambiguous === true
+          ? "the item and the default branch have more than one merge base"
+          : MERGE_BASE_UNKNOWN[ambiguous],
         itemHead,
         main,
       ),
@@ -605,11 +612,13 @@ async function readResolution(
     ...judged.filter((j) => j.kind === "deviation"),
   ];
   const listed = ordered.slice(0, RESOLUTION_FILES_MAX);
+  const deviations = ordered.filter((j) => j.kind === "deviation").map((j) => j.path);
   const patches: Record<string, string> = {};
   const files = listed.map((j) => {
     const f = byPath.get(j.path);
     const patch = f?.patch ?? null;
-    if (patch) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
+    // An empty patch is kept: a rename or a mode change with no text change, not a missing one.
+    if (patch !== null) patches[j.path] = patch.slice(0, RESOLUTION_PATCH_MAX);
     return {
       path: j.path,
       previousPath: f?.previousPath ?? null,
@@ -639,7 +648,9 @@ async function readResolution(
       itemHead,
       main,
       files,
-      outside: ordered.filter((j) => j.kind === "deviation").map((j) => j.path),
+      // Every one of them named, up to RESOLUTION_OUTSIDE_MAX (they matter most), then counted.
+      outside: deviations.slice(0, RESOLUTION_OUTSIDE_MAX),
+      outsideNotShown: Math.max(0, deviations.length - RESOLUTION_OUTSIDE_MAX),
       notShown: ordered.length - listed.length,
       patchBase: "itemHead",
     },
@@ -714,6 +725,106 @@ export const babysitResolution = defineOperation({
     };
   },
 });
+
+/**
+ * How the deliverer ends a delivery when the babysitter's resolution became the item's head
+ * (spec 53 decision 1): the engine's own marker that the merge gate reopens for a resolution,
+ * followed by the head's short SHA. It is set even when no resolution could be recorded.
+ */
+export const RESOLVED_CONFLICT = "the babysitter resolved a conflict with the default branch in ";
+
+/**
+ * Whether the item's merge gate reopened after a babysitter resolution of this head (#201 review):
+ * its latest ended delivery was withdrawn with RESOLVED_CONFLICT for the head. Then a missing or
+ * unreadable resolution is a reason to review the whole diff, never an ordinary gate.
+ */
+export function resolutionExpected(
+  lastEnded: { outcome: string | null; end_reason: string | null } | undefined,
+  headSha: string | null,
+): boolean {
+  return (
+    !!headSha &&
+    lastEnded?.outcome === "withdrawn" &&
+    (lastEnded.end_reason ?? "").startsWith(`${RESOLVED_CONFLICT}${headSha.slice(0, 7)}`)
+  );
+}
+
+/**
+ * The resolution at a gate's head, and whether that head came from a babysitter resolution at all
+ * (#201 review, round 2): a resolution row for the head (written by branch.advance in the same
+ * batch that moved the branch to a babysit run's head, then filled by babysit.resolution), or the
+ * deliverer's RESOLVED_CONFLICT end for it. One reader for review.merge, pr.autoMerge and any
+ * automatic approval.
+ */
+export async function resolutionAtGate(
+  ctx: HandlerContext,
+  w: WorkItemRow,
+  headSha: string | null,
+): Promise<{ resolution: Resolution | null; expected: boolean }> {
+  const [row, lastEnded] = await Promise.all([
+    ctx.db
+      .selectFrom("core_babysit_resolutions")
+      .select(["head_sha", "summary"])
+      .where("work_item_id", "=", w.id)
+      .executeTakeFirst(),
+    lastEndedDelivery(ctx, w.id).executeTakeFirst(),
+  ]);
+  return {
+    resolution: resolutionFor(row, headSha),
+    expected: (!!headSha && row?.head_sha === headSha) || resolutionExpected(lastEnded, headSha),
+  };
+}
+
+/**
+ * Why a person must open the full diff before merging this head, or null (#201 review, round 2):
+ * the head came from a babysitter resolution, and it isn't one with nothing else to look at (a
+ * clean resolution read in full, no file outside the conflict, nothing unlisted).
+ */
+export function fullDiffNeeded(at: { resolution: Resolution | null; expected: boolean }) {
+  if (!at.expected && !at.resolution) return null;
+  const r = at.resolution;
+  if (!r)
+    return "the babysitter resolved a conflict on this commit, but its resolution couldn't be shown";
+  if (r.status !== "clean")
+    return `its resolution couldn't be shown on its own (${r.reason ?? r.status})`;
+  const outside = r.outside.length + (r.outsideNotShown ?? 0);
+  if (outside > 0) {
+    return `${outside === 1 ? "1 file" : `${outside} files`} outside the conflict differ from a plain merge`;
+  }
+  if (r.notShown > 0) return `${r.notShown} more resolution files aren't listed`;
+  return null;
+}
+
+/**
+ * A babysit run's head became the item's branch (branch.advance, same batch): mark it so the gate
+ * knows it reopened for a resolution even if the pass dies before recording what it changed.
+ */
+export function markResolutionHead(ctx: HandlerContext, workItemId: string, headSha: string) {
+  const row = {
+    head_sha: headSha,
+    // Not a resolution yet: resolutionFor reads it as none, and the gate as "couldn't be shown".
+    summary: JSON.stringify({ pending: true }),
+    patches: "{}",
+    created_at: ctx.now,
+  };
+  ctx.write(
+    ctx.db
+      .insertInto("core_babysit_resolutions")
+      .values({ work_item_id: workItemId, ...row })
+      .onConflict((oc) => oc.column("work_item_id").doUpdateSet(row)),
+  );
+}
+
+/** The item's latest ended delivery (core_merge_queue_item_idx: its few entries, newest first). */
+export function lastEndedDelivery(ctx: Pick<HandlerContext, "db">, workItemId: string) {
+  return ctx.db
+    .selectFrom("core_merge_queue")
+    .select(["outcome", "end_reason"])
+    .where("work_item_id", "=", workItemId)
+    .where("status", "!=", "queued")
+    .orderBy("enqueued_at", "desc")
+    .limit(1);
+}
 
 /** A stored resolution's summary, when it is for `headSha` (none, or the head moved: null). */
 export function resolutionFor(

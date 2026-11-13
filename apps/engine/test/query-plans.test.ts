@@ -717,6 +717,67 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 52 Q3 (review of #185): a re-pin at a stage boundary, on an item that already adopted a
+    // version's tightenings, with nothing cached: the org row and each version's document by
+    // primary key, override approvals by (project_id, org_version), the guarded update by id.
+    name: "re-pinning a running item at a stage boundary",
+    run: async (e) => {
+      const o = await world();
+      const ship = { ...SOFTWARE, id: "wf_ship", name: "Ship" };
+      await ok("workflow.save", { orgId: o.orgId, baseVersion: 0, workflow: ship }, o.human);
+      const cfg = await ok<{
+        current: { version: number; policy: Record<string, unknown> | null } | null;
+      }>("config.get", { projectId: o.projectId }, o.human);
+      await ok(
+        "config.save",
+        {
+          projectId: o.projectId,
+          baseVersion: cfg.current?.version ?? 0,
+          policy: {
+            ...(cfg.current?.policy ?? {}),
+            workflow: "wf_ship",
+            workflows: [],
+            agents: [],
+          },
+        },
+        o.human,
+      );
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "backlog", projectId: o.projectId, title: "Re-pinned" },
+        o.human,
+      );
+      // Running, and it adopted v1's tightenings; v2 then tightens the spec threshold.
+      await env.DB.prepare(
+        "UPDATE core_work_items SET status = 'running', org_config_version = 1, org_config_adopted = '[1]' WHERE id = ?",
+      )
+        .bind(item.workItemId)
+        .run();
+      const tighter = {
+        ...ship,
+        stages: ship.stages.map((x) =>
+          x.id === "spec"
+            ? {
+                ...x,
+                settings: { ...(x.settings as Record<string, unknown>), requiredFrom: "small" },
+              }
+            : x,
+        ),
+      };
+      await ok("workflow.save", { orgId: o.orgId, baseVersion: 1, workflow: tighter }, o.human);
+      clearOrgConfigCache();
+      const moved = await invoke(
+        invokeDeps(e),
+        "workItem.repinWorkflow",
+        { workItemId: item.workItemId, at: "merge #1" },
+        { actor: FOREMAN, origin: { surface: "test" } },
+      );
+      if (moved.status !== "ok" || (moved.output as { repinned: boolean }).repinned !== true)
+        throw new Error(`the re-pin didn't happen: ${JSON.stringify(moved)}`);
+      return moved;
+    },
+  },
+  {
     // Spec 52 (f), reviews of #155: a job's skills resolved at enqueue, then list, propose, read
     // and accept, and the runner's skill.forJob (see skillsScenario).
     name: "skills: enqueue, list, propose, get, accept and skill.forJob",

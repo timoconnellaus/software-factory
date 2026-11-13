@@ -529,11 +529,15 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       if (r.status !== 200) fail(`commit ${sha}`, r);
       const c = r.json as {
         parents?: { sha: string }[];
+        author?: { name?: string; email?: string } | null;
         committer?: { name?: string; email?: string } | null;
         verification?: { verified?: boolean } | null;
       };
       return {
         parents: (c.parents ?? []).map((p) => p.sha),
+        author: c.author
+          ? { name: String(c.author.name ?? ""), email: String(c.author.email ?? "") }
+          : null,
         committer: c.committer
           ? { name: String(c.committer.name ?? ""), email: String(c.committer.email ?? "") }
           : null,
@@ -588,7 +592,6 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         };
       };
       const [ab, ba] = await Promise.all([since(a, b), since(b, a)]);
-      if (!ab || !ba) return null;
       // An ancestor of the base: the base is ahead of it and not behind (compare parent...base).
       return mergeBaseAmbiguousFrom(ab, ba, async (sha, base) => {
         const r = await api(
@@ -640,20 +643,25 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       }
       return out;
     },
-    async updatePullRequestBranch(repo, { number, expectedHeadSha }) {
-      const r = await api(repo, "PUT", `/pulls/${number}/update-branch`, {
-        expected_head_sha: expectedHeadSha,
-      });
-      if (r.status === 202) return { status: "requested" };
-      const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
-      // 422: a merge conflict, or the head moved past expected_head_sha.
-      if (r.status === 422) {
-        return /conflict/i.test(reason)
-          ? { status: "conflict", reason }
-          : { status: "refused", reason };
+    async mergeIntoBranch(repo, { branch, head, message }) {
+      // Never into the default branch (#190 review, round 3): that is a merge of the PR, which goes
+      // only through mergePullRequest and a verified head. Read from GitHub, not from the caller.
+      const info = await api(repo, "GET", "");
+      if (info.status !== 200) fail("repository", info);
+      const defaultBranch = (info.json as { default_branch?: string }).default_branch;
+      if (!defaultBranch || branch === defaultBranch) {
+        return { status: "refused", reason: `won't merge into the default branch (${branch})` };
       }
-      if ([403, 405, 409].includes(r.status)) return { status: "refused", reason };
-      return fail(`update branch #${number}`, r);
+      const r = await api(repo, "POST", "/merges", { base: branch, head, commit_message: message });
+      if (r.status === 201) {
+        const c = r.json as { sha: string; parents?: { sha: string }[] };
+        return { status: "merged", sha: c.sha, parents: (c.parents ?? []).map((p) => p.sha) };
+      }
+      if (r.status === 204) return { status: "current" };
+      const reason = (r.json as { message?: string })?.message ?? `HTTP ${r.status}`;
+      if (r.status === 409) return { status: "conflict", reason };
+      if ([403, 404, 422].includes(r.status)) return { status: "refused", reason };
+      return fail(`merge into ${branch}`, r);
     },
     async mergePullRequest(repo, { number, sha, method }) {
       const r = await api(repo, "PUT", `/pulls/${number}/merge`, { sha, merge_method: method });

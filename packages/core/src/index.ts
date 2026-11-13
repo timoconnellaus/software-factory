@@ -6,6 +6,7 @@ export * from "./attestation/android.ts";
 export { DerError, readDer } from "./attestation/der.ts";
 export { GOOGLE_ATTESTATION_ROOTS, type PinnedRoot } from "./attestation/roots.ts";
 export { type Certificate, parseCertificate } from "./attestation/x509.ts";
+export * from "./autopilots/index.ts";
 export * from "./babysit/revert.ts";
 export * from "./errors.ts";
 export * from "./ids.ts";
@@ -19,7 +20,7 @@ export {
   SWEEP_CURSOR_KEY,
   sweepStrayAttachmentBlobs,
 } from "./operations/attachments.ts";
-export { type BabysitReason, babysitResult } from "./operations/babysit.ts";
+export { type BabysitReason, babysitResult, RESOLVED_CONFLICT } from "./operations/babysit.ts";
 export {
   CLI_APPROVE_PATH,
   CLI_DEVICE_ACTOR,
@@ -51,6 +52,7 @@ export {
 export { BRANCH_MOVED_AFTER_APPROVAL } from "./operations/github.ts";
 export * as operations from "./operations/index.ts";
 export { STEER_OFFERS_MAX } from "./operations/live.ts";
+export { MOVED_TWICE, MOVED_WHILE_WAITING } from "./operations/merge-queue.ts";
 export {
   formatPairCode,
   MOBILE_APPROVE_PATH,
@@ -83,6 +85,7 @@ export * from "./scope.ts";
 export * from "./services.ts";
 export * from "./skills/index.ts";
 export { childrenOf, SPLIT_MAX, splitSettledEvent } from "./splits.ts";
+export * from "./unreadable.ts";
 export * from "./verify/index.ts";
 export * from "./verify/merge-base.ts";
 export * from "./workflow-events.ts";

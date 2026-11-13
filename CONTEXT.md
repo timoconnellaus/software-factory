@@ -309,8 +309,10 @@ _Avoid_: draft policy
 
 **Merge queue**
 A project's approved merges, waiting to land one at a time (ADR 0330). The **head** (the oldest
-open entry) is brought up to date with the default branch by GitHub's update-branch, CI runs on
-it once, and it merges; then the next head goes. The approval carries over that clean update. A
+open entry) is brought up to date with the default branch by the queue's own merge (`POST /merges`), CI runs on
+it once, and it merges; then the next head goes. The approval carries over that clean update only
+for the babysitter, which verifies the new head first; nothing is carried to a head it wasn't made
+for (#190). A
 conflict or red CI at the head sends the item back to build. From Workflow v11 the babysitter's deliverer runs it per
 repository, and the queue is its delivery table (spec 53).
 _Avoid_: merge train, landing queue
@@ -614,7 +616,7 @@ only a person accepts one (ADR 0513). Org skills reach the reviewer only by exte
 skills, as a policy change.
 _Avoid_: playbook, recipe
 
-**Autopilot** (designed, spec 52, not built)
+**Autopilot** (spec 52; config, actor and operations built, runs not yet)
 A trigger (schedule or event), an agent, its skills, an instruction and an output target: work the
 factory starts on its own. It files through the backlog, never merges or deploys (ADR 0514). Each run
 is a work item of kind `autopilot`, hidden from the Work lists and shown as run history on the

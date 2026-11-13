@@ -3,6 +3,8 @@
 public let presenceOps: Set<String> = [
   "agent.save",
   "approval.decide",
+  "autopilot.enable",
+  "autopilot.save",
   "device.update",
   "killSwitch.set",
   "mobile.pairOffer",

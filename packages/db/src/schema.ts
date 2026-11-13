@@ -334,6 +334,8 @@ export interface CoreWorkItemsTable {
    * from before, or an org with no config).
    */
   org_config_version: number | null;
+  /** 0287: a newer org version whose tightenings the item adopted (Q3); null: none. */
+  org_config_adopted: string | null;
   parent_work_item_id: string | null;
   /** 0370 (spec 23): a parked item's needs-info marker, JSON; null when not parked. */
   needs_info: string | null;
@@ -1039,6 +1041,8 @@ export interface CoreMergeQueueTable {
   /** 0352: the head the queue asked GitHub to update from, and main's head when it asked. */
   update_from_sha: string | null;
   update_base_sha: string | null;
+  /** 0394 (#190 review): the merge commit the queue made (POST /merges); only it is accepted. */
+  update_merge_sha: string | null;
   /** 0350 (spec 53 review): marked just before GitHub is asked to merge; a cancel then waits. */
   merging_at: Iso | null;
   /** 0350: the question asked at the update bound, while it is open or not yet read back. */

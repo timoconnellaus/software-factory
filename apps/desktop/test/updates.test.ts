@@ -125,6 +125,8 @@ function make(
     /** The staged bundle's content hash, as it is each time it is taken. */
     fingerprint?: () => Promise<string>;
     now?: () => number;
+    /** The monotonic clock, when it differs from the wall clock (it may stand still in sleep). */
+    monotonic?: () => number;
     discarded?: string[][];
     logs?: string[];
   } = {},
@@ -150,7 +152,7 @@ function make(
       setInterval: () => 0,
       setTimeout: (_fn, ms) => timers.push(ms),
       now: over.now ?? (() => NOW),
-      monotonic: over.now ?? (() => NOW),
+      monotonic: over.monotonic ?? over.now ?? (() => NOW),
       discard: (folder, staging) => {
         over.discarded?.push([folder, staging]);
       },
@@ -303,10 +305,11 @@ describe("Updates", () => {
         asked.push(u.calls.includes("apply") ? "after" : "before");
         return false;
       },
+      cancelled: () => true,
     });
     expect(asked).toEqual(["before"]);
     expect(u.calls).not.toContain("apply");
-    await updates.apply({ handoff: () => true });
+    await updates.apply({ handoff: () => true, cancelled: () => false });
     expect(u.calls).toContain("apply");
   });
 
@@ -1116,6 +1119,46 @@ describe("the click is fast: the check is done at download", () => {
     // Checked in full just now: the next click only hashes again.
     expect(await updates.verifyForApply()).toBeNull();
     expect(verifies(e.runs)).toBe(before + 2);
+  });
+
+  it("counts the day on the wall clock too: the monotonic one may stand still while the Mac sleeps", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let now = NOW;
+    const { updates } = make(u, e, { now: () => now, monotonic: () => NOW });
+    await updates.check();
+    const before = verifies(e.runs);
+    now = NOW + VERIFIED_FOR_MS - 1;
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before);
+    // Two days asleep: the monotonic clock says no time passed, the wall clock says it did.
+    now = NOW + 2 * VERIFIED_FOR_MS;
+    expect(await updates.verifyForApply()).toBeNull();
+    expect(verifies(e.runs)).toBe(before + 2);
+  });
+
+  it("a restart given up on whose check then fails keeps what the window said", async () => {
+    const u = fakeUpdater();
+    const e = fakeExec();
+    let now = NOW;
+    let bad = false;
+    const exec: Exec = (cmd, args) =>
+      bad && cmd.endsWith("codesign") && args[0] === "--verify"
+        ? Promise.resolve({ code: 1, out: "CSSMERR_TP_CERT_REVOKED" })
+        : e.exec(cmd, args);
+    const logs: string[] = [];
+    const { updates } = make(u, { exec, runs: e.runs }, { now: () => now, logs });
+    await updates.check();
+    const state = { ...updates.state };
+    now = NOW + VERIFIED_FOR_MS + 1;
+    bad = true;
+    // The watchdog cancelled the restart while this check ran ("didn't restart" is on screen).
+    await updates.apply({ handoff: () => false, cancelled: () => true });
+    expect(u.calls).not.toContain("apply");
+    expect(updates.state.error).toBe(state.error);
+    expect(updates.state.reason).toBe(state.reason);
+    expect(updates.state.phase).toBe(state.phase);
+    expect(logs.some((l) => /cancelled restart's check failed afterwards/.test(l))).toBe(true);
   });
 
   it("treats a check from the future (a clock gone backwards) as stale", async () => {

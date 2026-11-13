@@ -1,15 +1,27 @@
 import { env } from "cloudflare:workers";
+import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import {
   assemblePacket,
   checkOnlyDiff,
   FOREMAN,
+  RESOLVED_CONFLICT,
   riskFlags,
   summarizeCi,
   verifyCheckOutput,
 } from "../src/index.ts";
 import { FAKE_APP, protectedGuards } from "../src/testing/index.ts";
-import { first, newItem, ok, refusal, rows, services, world } from "./helpers.ts";
+import {
+  call,
+  first,
+  newItem,
+  ok,
+  RUNNER_ACTOR,
+  refusal,
+  rows,
+  services,
+  world,
+} from "./helpers.ts";
 
 const github = services.github;
 const INTAKE = { type: "intake" as const, id: "github" };
@@ -232,6 +244,100 @@ describe("factory/verify check runs", () => {
     expect(events).toHaveLength(1);
   });
 
+  it("never passes the check for an item whose workflow version can't be read, from a webhook refresh (review of #185)", async () => {
+    const { w, item, head } = await atVerify();
+    await github.setChecks(w.repo, head, [
+      { name: "ci", status: "in_progress", conclusion: null, appSlug: "github-actions", url: null },
+    ]);
+    await record(item.workItemId, head);
+    // The config the item started under stops reading; then CI goes green.
+    await rows(
+      "UPDATE core_work_items SET policy_sha = ? WHERE id = ?",
+      "f".repeat(40),
+      item.workItemId,
+    );
+    await github.setChecks(w.repo, head, [
+      {
+        name: "ci",
+        status: "completed",
+        conclusion: "success",
+        appSlug: "github-actions",
+        url: null,
+      },
+    ]);
+    await ok(
+      "verify.refresh",
+      { repo: { owner: w.repo.owner, name: w.repo.repo }, headSha: head, trigger: "ci" },
+      INTAKE,
+    );
+    const checks = await verifyCheck(w.repo, head);
+    expect(checks[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+    const row = await first<{ conclusion: string; title: string }>(
+      "SELECT conclusion, title FROM core_verify_checks WHERE head_sha = ?",
+      head,
+    );
+    expect(row).toMatchObject({
+      conclusion: "failure",
+      title: "This item's workflow version can't be read",
+    });
+  });
+
+  it("a check already green turns red, and a queued job is never claimed, once the item's workflow can't be read (review of #185)", async () => {
+    const { w, item, head } = await atVerify();
+    await github.setChecks(w.repo, head, [
+      {
+        name: "ci",
+        status: "completed",
+        conclusion: "success",
+        appSlug: "github-actions",
+        url: null,
+      },
+    ]);
+    await record(item.workItemId, head);
+    expect((await verifyCheck(w.repo, head))[0]).toMatchObject({ conclusion: "success" });
+    // A job queued before the break.
+    await ok(
+      "job.enqueue",
+      { workItemId: item.workItemId, stage: "verify", role: "review", prompt: "Look again" },
+      FOREMAN,
+    );
+    await rows(
+      "UPDATE core_work_items SET policy_sha = ? WHERE id = ?",
+      "f".repeat(40),
+      item.workItemId,
+    );
+    // A runner polls: the job is cancelled, never claimed.
+    const r = await ok<{ runnerId: string }>("runner.register", { name: "M5" }, w.human);
+    const claimed = await ok<{ job: unknown }>(
+      "job.claim",
+      {
+        claimId: "claim-unreadable-1",
+        manifest: {
+          contractVersion: CONTRACT_VERSION,
+          runnerKind: "orca",
+          harnesses: ["claude-code"],
+          capabilities: ["hooks"],
+        },
+        capacity: { max: 2, inUse: 0, accepting: true, light: { max: 6, inUse: 0 } },
+      },
+      RUNNER_ACTOR(r.runnerId),
+    );
+    expect(claimed.job).toBeNull();
+    const jobs = await rows<{ status: string }>(
+      "SELECT status FROM core_jobs WHERE work_item_id = ? AND prompt = 'Look again'",
+      item.workItemId,
+    );
+    expect(jobs).toEqual([{ status: "cancelled" }]);
+    // The first refusal marks it: the passing check on its head fails, saying why.
+    await call(
+      "workItem.enterStage",
+      { workItemId: item.workItemId, stage: "merge" },
+      FOREMAN,
+    ).catch(() => undefined);
+    const now = await verifyCheck(w.repo, head);
+    expect(now[0]).toMatchObject({ conclusion: "failure" });
+  });
+
   it("leaves a new push to the PR without a passing check until verify runs again (criterion 2)", async () => {
     const { w, item, head, pr } = await atVerify();
     await record(item.workItemId, head);
@@ -390,6 +496,45 @@ describe("the check-only auto-merge (ADR 0230)", () => {
     );
     expect(out.merged).toBe(true);
     expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
+  });
+
+  // #201 review, round 2: a head the babysitter resolved goes to a person, check-only or not, and
+  // whether or not its resolution was recorded (branch.advance's marker is enough).
+  it("refuses to auto-merge a head the babysitter resolved", async () => {
+    for (const summary of [JSON.stringify({ pending: true }), null]) {
+      const { w, item, head } = await incidentAtMerge(OPT_IN, CHECK_ONLY);
+      await record(item.workItemId, head);
+      if (summary) {
+        await env.DB.prepare(
+          "INSERT INTO core_babysit_resolutions (work_item_id, head_sha, summary, patches, created_at) VALUES (?, ?, ?, '{}', ?)",
+        )
+          .bind(item.workItemId, head, summary, new Date().toISOString())
+          .run();
+      } else {
+        // No record, but the deliverer ended the delivery for a resolution of this head.
+        await env.DB.prepare(
+          "INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, status, enqueued_at, updated_at, ended_at, outcome, end_reason, driver) VALUES (?, ?, ?, ?, ?, 'left', ?, ?, ?, 'withdrawn', ?, 'babysitter')",
+        )
+          .bind(
+            `mq_${head.slice(0, 8)}`,
+            w.projectId,
+            item.workItemId,
+            head,
+            head,
+            new Date().toISOString(),
+            new Date().toISOString(),
+            new Date().toISOString(),
+            `${RESOLVED_CONFLICT}${head.slice(0, 7)}: review the resolution.`,
+          )
+          .run();
+      }
+      const e = await refusal(
+        ok("pr.autoMerge", { workItemId: item.workItemId, headSha: head }, FOREMAN),
+      );
+      expect(e.code).toBe("denied");
+      expect(e.message).toMatch(/babysitter resolved a conflict on this commit: a person decides/);
+      expect((await github.state(w.repo)).pulls[0]?.state).toBe("open");
+    }
   });
 
   it("takes a real check-only diff with a finding through the packet and refuses its auto-merge (ADR 0500)", async () => {

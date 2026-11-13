@@ -87,7 +87,8 @@ export type ReadOpName =
   | "killSwitch.list"
   | "orgConfig.previewRollback"
   | "incident.listArchiveMissing"
-  | "delivery.status";
+  | "delivery.status"
+  | "babysit.resolutionPatches";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

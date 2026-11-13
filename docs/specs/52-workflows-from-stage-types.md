@@ -832,6 +832,13 @@ and after.
   before verify and before the merge gate, from Workflow v13). Gates and checks added *ahead* of the
   item apply to it; ones added before its current stage don't apply retroactively (the item doesn't
   go back). A version that loosens anything never moves a running item.
+  *Amended 2026-11-13 (review of #139):* a version that both tightens and loosens gives a running
+  item only its tightenings, stage by stage (`stricterDefinition`), over what it already runs: the
+  item keeps its pin and appends the newer version to `org_config_adopted` (migration 0287, at most
+  8), folded in order, so a later version that drops what an earlier one added never takes it away;
+  journaled as `workflow: tightened parts adopted`. An unresolvable pinned version or list fails closed: the item parks with a question (v17), never runs under today's workflow. Tightenings inside a stage that also loosens aren't applied; the approvers are told once per version (ADR 0510 as amended). From Workflow v17 (`repin-reverify`), a tightening of a stage the item already
+  passed (a check added before verify, found at the merge boundary) sends it back to verify its head
+  again, with the checks before verify, instead of skipping it.
 - **Moving an item by hand** is `workItem.moveWorkflowVersion` (human): allowed at a stage boundary
   when the item's current stage exists in the new version with the same id and type, and every stage
   already done exists unchanged. If the move loosens for that item, it needs an approver.
@@ -1328,6 +1335,12 @@ screen needs).
    re-pin covers delivery only: a shaping item's version is decided at release (Q4), whose
    comparison needs the version it was shaped under. The call writes an audit row only when the
    item moved (ADR 0590).
+   *Follow-ups (review of #139/#144), 2026-11-13:* partial adoption of a mixed version's tightenings
+   (`org_config_adopted`, migration 0287, folded by `adoptedDefinition`, failing closed); `behind`
+   lists adopted tightenings verify can act on (verify and the checks before it), and from v17 (`repin-reverify`) the merge
+   boundary re-verifies on them; the shadow replay counts an adopted floor as a re-pin (uncompared).
+   `override.approve` is self-modify, decided by an org admin through `approval.decide`; an
+   adjudicator-blocked plan notice goes to the project's first approver when the gate has none.
 6. **(e) Dark factory mode** (no migration expected: the hold is project config, verdicts are audit
    rows and adjudicator rows). `autoApprove` on `publish`'s merge settings, `RISK_PATHS`,
    `autoApproveVerdict()`, the `auto-approve` actor, the adjudicator shadowing `merge`, the
@@ -1364,6 +1377,20 @@ screen needs).
    `<slug>/SKILL.md` in the run's settings directory) is the hosts' change, not made here.
 8. **(g) Autopilots** (migration **0284**: `core_autopilot_runs`, the `autopilot` kind and actor). As
    in "Autopilots", with the per-autopilot limits (Q19).
+   *As built (g1), 2026-11-13:* the `autopilot` actor (read and write in every policy; plan, spend
+   and outbound denied; merge, deploy, check-merge and self-modify denied in code, whatever an
+   override says, `AUTOPILOT_NEVER`); `autopilots` in the org config (`packages/core/src/autopilots/`:
+   the schema, an hourly-at-most cron check, an IANA time zone, the limits' caps; an org agent each,
+   unique ids and names); their impact (`autopilotImpact`, in `orgConfigImpact`); and
+   `autopilot.list`, `autopilot.get`, `autopilot.save`, `autopilot.enable`, `autopilot.disable`
+   through the org config version (an approved loosening applies at `approval.decide`, with a Touch
+   ID summary). Judged by reach (ADR 0514 as amended): changing one that is off is practice and turning it
+   on loosens; for one that is on, anything that widens what it may do loosens. Deferred to (g2): runs
+   (migration 0284, the `autopilot` kind), firing (the cron, events, dedupe keys, daily caps),
+   `autopilot.runNow`/`fire`, the runner channel's `autopilot.file`/`label`/`digest`/`propose`,
+   and next-run times. Its `skills` (the org's or built-ins, checked like an agent's) are practice.
+   Turning one off is one tap on the desktop; saving and turning one on take a desktop presence
+   proof.
 9. **Later, in this order:** the generic review packet (ADR 0512); Preview on the reconciler with
    `decision` and `agent-work`, runner jobs without a repository and media in R2; Publish through a
    connector, Q2's carry-over and the Measure follow-up item; the board's lanes and the all-projects

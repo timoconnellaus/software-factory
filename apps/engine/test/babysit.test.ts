@@ -199,6 +199,86 @@ describe("the babysit job (spec 53 §4)", () => {
         a.id,
       ),
     ).toBeNull();
+    // #201 review: the engine marked the gate as reopened for this resolution, and holds a person
+    // to the whole diff when the resolution isn't clean, or can't be shown at all.
+    const marked = await ok<{ resolutionExpected?: boolean }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(marked.resolutionExpected).toBe(true);
+    const mergeWithout = async () =>
+      call(
+        "review.merge",
+        { workItemId: a.id, openedFullDiff: false, headSha: await gateHead(a.id) },
+        w.human,
+      ).catch((e: unknown) => e);
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = json_set(summary, '$.status', 'incomplete', '$.reason', 'too large to read in full') WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    expect(await mergeWithout()).toMatchObject({
+      code: "conflict",
+      details: { fullDiffRequired: true },
+    });
+    // Round 2: clean, but a file outside the conflict differs from a plain merge (main's fix
+    // undone, say): still the full diff first, from any surface (the website sends false).
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = json_set(summary, '$.status', 'clean', '$.reason', NULL, '$.outside', json('[\"src/b.ts\"]')) WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    expect(await mergeWithout()).toMatchObject({
+      code: "conflict",
+      details: { fullDiffRequired: true },
+    });
+    // branch.advance's own marker (the head came from a babysit run) holds on its own, when the
+    // pass died before recording the resolution and the delivery ended for another reason.
+    expect(
+      await first<{ head_sha: string }>(
+        "SELECT head_sha FROM core_babysit_resolutions WHERE work_item_id = ?",
+        a.id,
+      ),
+    ).toEqual({ head_sha: resolution });
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = '{\"pending\":true}' WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET end_reason = 'ended for another reason' WHERE work_item_id = ? AND status = 'left'",
+    )
+      .bind(a.id)
+      .run();
+    expect(
+      await ok<{ babysitResolution: unknown; resolutionExpected?: boolean }>(
+        "workItem.get",
+        { workItemId: a.id },
+        w.human,
+      ),
+    ).toMatchObject({ babysitResolution: null, resolutionExpected: true });
+    expect(await mergeWithout()).toMatchObject({ details: { fullDiffRequired: true } });
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET end_reason = ? WHERE work_item_id = ? AND status = 'left'",
+    )
+      .bind(
+        `the babysitter resolved a conflict with the default branch in ${resolution.slice(0, 7)}: review the resolution.`,
+        a.id,
+      )
+      .run();
+    // No record at all (a refused babysit.resolution, or one that doesn't parse): still held to it.
+    await env.DB.prepare("DELETE FROM core_babysit_resolutions WHERE work_item_id = ?")
+      .bind(a.id)
+      .run();
+    const gone = await ok<{ babysitResolution: unknown; resolutionExpected?: boolean }>(
+      "workItem.get",
+      { workItemId: a.id },
+      w.human,
+    );
+    expect(gone).toMatchObject({ babysitResolution: null, resolutionExpected: true });
+    expect(await mergeWithout()).toMatchObject({ details: { fullDiffRequired: true } });
+    // Having opened the full diff, the person merges.
     await approve(w, a.id);
     await itemStatus(a.id, "done");
   });
@@ -251,6 +331,38 @@ describe("the babysit job (spec 53 §4)", () => {
       a.repositoryId,
     );
     expect(flakes).toEqual([{ check_name: "ci", test_name: "db connects", head_sha: a.head }]);
+  });
+
+  it("an item whose workflow version stops reading during its babysit job leaves; the healthy one behind it lands (review of #185)", async () => {
+    const w = await world();
+    const a = await toMergeGate(w, "Flaky, then unreadable", "src/a.ts");
+    const b = await toMergeGate(w, "Healthy behind it", "src/b.ts");
+    await github.setChecks(w.repo, a.head, CI("failure"));
+    await approve(w, a.id);
+    await babysitJob(a.id);
+    await approve(w, b.id);
+    // A's job finishes (a flake); meanwhile the config A started under stops reading.
+    await runStage(w, a.id, "babysit", async () => {
+      await env.DB.prepare("UPDATE core_work_items SET policy_sha = ? WHERE id = ?")
+        .bind("f".repeat(40), a.id)
+        .run();
+      return { result: { verdict: "flake", check: "ci", test: "db connects", note: "a reset" } };
+    });
+    await deliverRepository(env, a.projectId, a.repositoryId);
+    await deliverRepository(env, b.projectId, b.repositoryId);
+    await itemStatus(b.id, "done");
+    // A left, not merged; B was never blamed for A; the babysit state is clear.
+    expect(await entry(a.id)).toMatchObject({ status: "left" });
+    const bLeft = await all<{ end_reason: string | null }>(
+      "SELECT end_reason FROM core_merge_queue WHERE work_item_id = ? AND status = 'left' AND outcome != 'merged'",
+      b.id,
+    );
+    expect(bLeft).toEqual([]);
+    const state = await first<{ babysit_job_id: string | null }>(
+      "SELECT babysit_job_id FROM core_delivery_state WHERE key = ?",
+      `${a.projectId}:${a.repositoryId}`,
+    );
+    expect(state?.babysit_job_id).toBeNull();
   });
 
   it("a regression: the delivery ends failed with the job's note, and the item goes back to build", async () => {
@@ -731,7 +843,7 @@ describe("the resolution at the reopened gate (decision 1)", () => {
       });
     });
     expect(view).toMatchObject({ status: "unclean", files: [], outside: [] });
-    expect(view?.reason).toMatch(/not a merge of the approved head.*review the whole diff/);
+    expect(view?.reason).toMatch(/not a merge of the approved head/);
     await ok("workItem.cancel", { workItemId: a.id, reason: "end of test" }, w.human);
   });
 
