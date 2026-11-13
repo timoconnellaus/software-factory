@@ -27,13 +27,16 @@ export {
 } from "./operations/cli.ts";
 export { PENDING_SHOWN } from "./operations/config.ts";
 export {
+  cleanTitle,
   DESKTOP_APPROVE_PATH,
   DESKTOP_CALLBACK_URL,
   DESKTOP_DEVICE_ACTOR,
   DESKTOP_TOKEN_PREFIX,
+  MAX_SUMMARY,
   presenceMessage,
   rawSignature,
   resolveDesktopToken,
+  titled,
 } from "./operations/desktop.ts";
 export { DEVICE_LOGIN_ACTOR, normalizeUserCode } from "./operations/devices.ts";
 export {
