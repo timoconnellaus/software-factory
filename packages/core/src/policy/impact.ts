@@ -494,9 +494,9 @@ function slotSteps(
  * rule, stages/impact.ts): an agent check moved after the gate it ran before reaches the person
  * unchecked, and a gate moved ahead of a check decides before it. So within each slot of a workflow
  * both versions have, any change in the relative order of two steps where one is a gate loosens,
- * whichever way it moved, and each reversed pair is reported. (Every work step in a project's slot
- * hands to an agent, so two agent checks swapping stays neutral: both still run, and both still
- * before any gate they preceded.)
+ * whichever way it moved, and each reversed pair is reported. Fail-closed: two work steps swapping
+ * loosens too, since a work step can ask a person or send back to build, so the order of two checks
+ * isn't provably inert (review of #161).
  */
 function orderChanges(
   before: ProjectPolicy,
@@ -521,7 +521,6 @@ function orderChanges(
           const first = kept[i];
           const second = kept[j];
           if (!first || !second || first.at < second.at) continue;
-          if (first.step.kind !== "gate" && second.step.kind !== "gate") continue;
           add(
             `workflows.${key}/${first.step.id}`,
             "loosens",
