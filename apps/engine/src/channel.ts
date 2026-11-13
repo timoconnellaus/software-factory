@@ -246,7 +246,10 @@ async function planningReply(
       const left = deadline - Date.now();
       if (left <= 0 || signal?.aborted) break;
       await pause(Math.min(HELD_POLL_MS, left, Math.max(0, recheck - Date.now())));
-      if (signal?.aborted) return { body: { ...body, due: false } };
+      if (signal?.aborted) {
+        heldAborted("planning", jobId, deadline - timeout);
+        return { body: { ...body, due: false } };
+      }
       if (Date.now() >= recheck || Date.now() >= deadline) break;
       const state = await env.DB.prepare(
         `SELECT s.status, s.yield_requested_at,
@@ -320,15 +323,28 @@ async function steerReply(
   }
   const { fencingToken } = parsed.data;
   const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
-  const deadline = Date.now() + timeout;
+  const started = Date.now();
+  const deadline = started + timeout;
   const actor: Actor = { type: "runner", id: runner };
+  // A host that acks (spec 44 host ack) sends `ack` on every call: its acks go with the first
+  // take, and every take stays in acking mode (offers, never deliveries) with `ack: []`.
+  const acking = parsed.data.ack !== undefined;
+  let ack = parsed.data.ack ?? [];
   // A take that lost a race to another (two calls read the same queued steer; the guard lets one
   // hand it over) is tried again: the host never sees that 409, which it would take as "this job
   // can't be steered" and stop asking (review of #179).
   const take = async () => {
     for (let attempt = 0; ; attempt++) {
-      const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
-      if (!(reply.body as { raced?: boolean } | undefined)?.raced) return reply;
+      const reply = await invokeReply(
+        env,
+        "run.takeSteers",
+        { jobId, fencingToken, ...(acking ? { ack } : {}) },
+        actor,
+      );
+      if (!(reply.body as { raced?: boolean } | undefined)?.raced) {
+        if (!reply.status || reply.status === 200) ack = [];
+        return reply;
+      }
       if (attempt >= 3) return { body: { runId: "", workItemId: "", steers: [] } };
     }
   };
@@ -338,12 +354,18 @@ async function steerReply(
   if (steers.length > 0 || timeout <= 0) return { body: { steers } };
   while (Date.now() < deadline) {
     await pause(Math.min(HELD_POLL_MS, deadline - Date.now()));
-    // The host has gone: stop, so nothing is taken (marked delivered) for nobody.
-    if (signal?.aborted) return { body: { steers: [] } };
+    // The host has gone: stop, so nothing is taken for nobody (and log it, so a deploy can see
+    // that request signals abort: wrangler tail).
+    if (signal?.aborted) {
+      heldAborted("steer", jobId, started);
+      return { body: { steers: [] } };
+    }
+    // Queued and, for an acking host, not on offer (an unacked offer lapses after 60 s).
     const queued = await env.DB.prepare(
-      "SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL LIMIT 1",
+      `SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL
+         ${acking ? "AND (offered_until IS NULL OR offered_until <= ?)" : ""} LIMIT 1`,
     )
-      .bind(runId)
+      .bind(...(acking ? [runId, new Date().toISOString()] : [runId]))
       .first();
     if (!queued) continue;
     const reply = await take();
@@ -352,6 +374,16 @@ async function steerReply(
     return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
   }
   return { body: { steers: [] } };
+}
+
+/**
+ * One line when a held call's request signal aborts (its runner host went away mid-hold), so a
+ * deployed engine shows in `wrangler tail` that `enable_request_signal` works (spec 44).
+ */
+function heldAborted(hold: "steer" | "terminal" | "planning", jobId: string, started: number) {
+  console.log(
+    `held ${hold} call for ${jobId} aborted by its host after ${Date.now() - started} ms`,
+  );
 }
 
 /**
@@ -413,9 +445,12 @@ async function terminalReply(
       }
     }
     const left = deadline - Date.now();
-    if (left <= 0 || signal?.aborted) return { body: { connect: null } };
+    if (left <= 0) return { body: { connect: null } };
     await pause(Math.min(HELD_POLL_MS, left));
-    if (signal?.aborted) return { body: { connect: null } };
+    if (signal?.aborted) {
+      heldAborted("terminal", jobId, deadline - ms);
+      return { body: { connect: null } };
+    }
   }
 }
 

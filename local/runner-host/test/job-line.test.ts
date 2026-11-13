@@ -135,10 +135,10 @@ describe("the job line (spec 44 part B)", () => {
       line,
     });
     await tick(10);
-    expect(calls).toEqual([{ fencingToken: 3, waitMs: 0 }]);
+    expect(calls).toEqual([{ fencingToken: 3, waitMs: 0, ack: [] }]);
     sockets[0]?.push("steer");
     for (let i = 0; i < 50 && calls.length < 2; i++) await tick(2);
-    expect(calls[1]).toEqual({ fencingToken: 3, waitMs: 0 });
+    expect(calls[1]).toEqual({ fencingToken: 3, waitMs: 0, ack: [] });
     // While the line is up the host never holds a call too (that would pay twice).
     await tick(30);
     expect(calls.every((c) => c.waitMs === 0)).toBe(true);
@@ -197,5 +197,41 @@ describe("the job line (spec 44 part B)", () => {
     expect(calls.every((c) => c.waitMs === 0)).toBe(true);
     stop.abort();
     await Promise.all([loop, running]);
+  });
+
+  it("acks what it received and types a steer offered twice only once (host ack)", async () => {
+    const calls: { ack?: string[] }[] = [];
+    const typed: string[] = [];
+    const answers = [
+      [{ id: "st_1", text: "hello", at: "2026-11-13T00:00:00.000Z" }],
+      // Offered again (its first ack was lost): dropped by id.
+      [{ id: "st_1", text: "hello", at: "2026-11-13T00:00:00.000Z" }],
+    ];
+    const stop = new AbortController();
+    await steerLoop({
+      adapter: {
+        steer: async () => {},
+        manifest: async () => ({ capabilities: ["steer"] }),
+      } as never,
+      cp: {
+        steers: async (_id: string, body: { ack?: string[] }) => {
+          calls.push({ ack: [...(body.ack ?? [])] });
+          const next = answers.shift();
+          if (!next) stop.abort();
+          return { steers: next ?? [] };
+        },
+      } as unknown as ControlPlaneClient,
+      job,
+      signal: stop.signal,
+      steer: async (text) => {
+        typed.push(text);
+      },
+      push: async () => {},
+      onStop: () => {},
+      log: () => {},
+    });
+    expect(typed).toEqual(["hello"]);
+    // Every call says which it received since the last: none, then st_1, then st_1 again.
+    expect(calls.map((c) => c.ack)).toEqual([[], ["st_1"], ["st_1"]]);
   });
 });

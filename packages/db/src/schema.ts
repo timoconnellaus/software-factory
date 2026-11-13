@@ -831,6 +831,8 @@ export interface CoreRunSteersTable {
   interrupt: Generated<Bool>;
   /** `message` (a steer) or `takeover` (stop the stream session for a person, ADR 0450). */
   kind: Generated<"message" | "takeover">;
+  /** 0369: until when an acking host has been offered it (spec 44 host ack); null otherwise. */
+  offered_until: Iso | null;
 }
 
 /** A person opening a run's web terminal (spec 35, ADR 0440). */
