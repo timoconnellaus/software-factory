@@ -209,19 +209,19 @@ async function autoApproveScenario(e: Env) {
     ),
   };
   await run("workflow.save", { orgId: o.orgId, baseVersion: 0, workflow: DARK });
-  // The adjudicator's record on merge gates (20 approvals a person agreed with).
+  // The adjudicator's record on merge gates (20 approvals a person agreed with, on 20 items).
   const now = new Date().toISOString();
   for (let i = 0; i < 20; i++) {
     const pa = uid("pa_");
     await e.DB.batch([
       e.DB.prepare(
         `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
-         VALUES (?, ?, ?, 'wi_x', 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
-      ).bind(pa, o.orgId, o.projectId, o.userId, now, now),
+         VALUES (?, ?, ?, ?, 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+      ).bind(pa, o.orgId, o.projectId, `wi_earned_${i}`, o.userId, now, now),
       e.DB.prepare(
         `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id, verdict, reason, acted, created_at, decided_at)
-         VALUES (?, ?, ?, 'wi_x', 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
-      ).bind(uid("adj_"), pa, o.projectId, uid("job_"), now, now),
+         VALUES (?, ?, ?, ?, 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
+      ).bind(uid("adj_"), pa, o.projectId, `wi_earned_${i}`, uid("job_"), now, now),
     ]);
   }
   const cfg = await run<{

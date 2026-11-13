@@ -178,3 +178,19 @@ just a config option. Nothing special."
 > 0286 marks the factory's own project (`core_projects.factory_source`). Only an org admin lifts
 > a hold. The coordinator is telling the owner.
 
+> Amended 2026-11-13, fifth round of the review of #152: **the floor fails closed.** A deny-list of
+> risky names always leaks a new ecosystem's file, so a changed path qualifies only when it is
+> ordinary content, by allow-list in code (`ORDINARY_EXTENSIONS`, `structuralRisk`): its extension
+> is prose, an asset (`.svg` only under `docs/`) or ordinary source; no segment is hidden or one of
+> the special directories (migrations, seeders, hooks, bin, scripts, vendor, patches, infra, k8s,
+> terraform, helm, deploy, ci); its name isn't a setup, task, hook or agent-instruction name; and
+> the path is NFC with no control or format characters. Every config and data format, every script
+> and every file with no extension is refused, whatever `allowPaths` says; adding to the list is a
+> code change. `allowPaths` matches case-sensitively. **File modes fail closed too**: every path at
+> the head needs a head mode read from GitHub (a GraphQL error fails the read), and only an
+> ordinary file (`100644`) qualifies; modes not read refuse. A hold is a hold whatever its reason
+> says. The babysitter's re-check leaves the approval's own count out of the daily limit. **Earned**
+> (condition 3) now counts approvals a person agreed with on at least 15 **distinct work items**
+> among the last 20 decisions; one approver's decisions can earn it, as for ADR 0374's other
+> kinds. Migration 0286 marks only the factory's own project; every other project's
+> `factory_source` is NULL, which means "detect by markers" (default-deny), not "not the factory".
