@@ -148,6 +148,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   specs.specPropose,
   specs.specAccept,
   specs.specCommit,
+  specs.splitRelease,
   specs.specWriteBack,
   gates.approvalDecide,
   cli.cliDeviceStart,

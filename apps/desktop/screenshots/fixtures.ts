@@ -633,6 +633,8 @@ function board(input: OpInput<"workItem.board">): OpOutput<"workItem.board"> {
         releasedAt: i.releasedAt ?? null,
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
+        // Spec 24: #13 was split off #9's plan, so lists show it under #9.
+        parentWorkItemId: i.id === "wi_13" ? "wi_9" : null,
         waitsFor,
         ...(i.id === "wi_16" ? { releaseFlag: RELEASE_FLAG_16 } : {}),
         blockedBy: waitsFor.filter((w) => w.status !== "done"),
@@ -691,6 +693,41 @@ function detail(id: string): OpOutput<"workItem.get"> {
     shaping: null,
     waitsFor: LINKS.filter(([from]) => from === id).map(([, to]) => link(to)),
     waitedOnBy: LINKS.filter(([, to]) => to === id).map(([from]) => link(from)),
+    // Spec 24: #9's plan split into two work items; #13 is the first of them.
+    split:
+      id === "wi_9"
+        ? {
+            parent: null,
+            children: [
+              {
+                id: "wi_13",
+                number: 13,
+                title: "Issue intake and the trusted-author filter",
+                status: "waiting",
+                stage: "merge",
+                size: "small",
+              },
+              {
+                id: "wi_split_2",
+                number: 14,
+                title: "Report back to the issue",
+                status: "queued",
+                stage: "intake",
+                size: "small",
+              },
+            ],
+          }
+        : id === "wi_13"
+          ? {
+              parent: {
+                id: "wi_9",
+                number: 9,
+                title: "Take work from GitHub issues",
+                status: "running",
+              },
+              children: [],
+            }
+          : { parent: null, children: [] },
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
@@ -767,6 +804,8 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       assumptions: [],
       path: `docs/specs/wi-${n}.md`,
       commitSha: "a1b2c3d",
+      // Spec 24: #12's plan splits into two work items (its card opens the plan to approve).
+      splitInto: id === "wi_12" ? 2 : 0,
     },
     questions:
       n === 11
@@ -1371,6 +1410,30 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       bodyMd: live ? PLAN_MD : "## Goal\nVerify flags a change that weakens the tests.\n",
       acceptanceCriteria: live ? [] : CRITERIA,
       assumptions: live ? ["Edits after release are ignored"] : [],
+      childrenUnreadable: false,
+      splitDigest: live ? "0".repeat(64) : null,
+      // Spec 24, as in PlanFocus: the plan splits into two work items, approved together.
+      children: live
+        ? [
+            {
+              key: "intake",
+              title: "Issue intake and the trusted-author filter",
+              size: "small" as const,
+              goal: "A labelled issue from a trusted author becomes a work item [parent]",
+              scope: ["The issues webhook [parent]", "The trusted-author filter [Q2]"],
+              acceptanceCriteria: ["A labelled issue appears in the Backlog [parent]"],
+            },
+            {
+              key: "report",
+              title: "Report back to the issue",
+              size: "small" as const,
+              goal: "The issue shows where its work got to [parent]",
+              scope: ["One comment with a link, closed on merge [Q4]"],
+              acceptanceCriteria: ["The issue is closed when its item merges [Q4]"],
+              after: "intake",
+            },
+          ]
+        : [],
       coverage: [],
       clarifications: [],
       summary: null,

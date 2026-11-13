@@ -44,6 +44,7 @@ import { Planning } from "../components/planning.tsx";
 import { ReviewPacket } from "../components/review-packet.tsx";
 import { CriteriaList } from "../components/review-parts.tsx";
 import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.tsx";
+import { SplitLinks } from "../components/split-list.tsx";
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
 import { OpError, op } from "../lib/op.ts";
@@ -742,6 +743,11 @@ function Overview({ detail, onTab }: { detail: WorkItemDetail; onTab: (t: Tab) =
             <Button className="w-fit" onClick={() => onTab("plan")}>
               Open the plan
             </Button>
+          </Panel>
+        )}
+        {detail.split && (detail.split.parent || detail.split.children.length > 0) && (
+          <Panel className="px-3.5 py-3">
+            <SplitLinks split={detail.split} />
           </Panel>
         )}
         <section className="flex flex-col gap-2">

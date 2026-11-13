@@ -46,6 +46,49 @@ function minute17(): number {
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
   {
+    // Spec 24: a split's parent waits for its children (each event, and once a day in its held
+    // wait), by core_work_items_parent_idx (migration 0401).
+    // Review of #171: a child's end (its siblings, and who waits for it), the release, and the
+    // existing-children check at approval.
+    name: "a split's child ends: its siblings and who waits for it",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT * FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT work_item_id FROM core_work_item_links WHERE waits_for_id = ? AND work_item_id IN (?, ?)",
+      )
+        .bind("wi_child", "wi_a", "wi_b")
+        .all();
+    },
+  },
+  {
+    name: "a split's release and its existing-children check",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' AND status = 'ready' LIMIT 8",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 1",
+      )
+        .bind("wi_parent")
+        .all();
+    },
+  },
+  {
+    name: "a split's parent reads its children",
+    run: (e) =>
+      e.DB.prepare(
+        "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all(),
+  },
+  {
     // The minute cron, on the minute that also sweeps attachment blobs and runs the improver.
     name: "the minute cron",
     run: (e) => worker.scheduled({ scheduledTime: minute17(), cron: "* * * * *", noRetry() {} }, e),
