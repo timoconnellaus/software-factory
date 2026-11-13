@@ -15,7 +15,7 @@ import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
 import { invokeDeps } from "../src/deps.ts";
-import worker, { pruneCheckResults } from "../src/index.ts";
+import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
@@ -253,6 +253,11 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       // Its item is open, so the row is read, looked up and kept; limit 1 moves the cursor.
       return pruneCheckResults(e.DB, new Date(), 1);
     },
+  },
+  {
+    // Spec 53 §4: the babysitter's reruns and known flakes past their 30 days, oldest first.
+    name: "the babysitter's prune (reruns and known flakes)",
+    run: (e) => pruneBabysit(e.DB, new Date()),
   },
   {
     name: "the hourly prunes (retention)",

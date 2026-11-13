@@ -12,6 +12,7 @@ const listeners = {
   navigate: new Set<Listener<string>>(),
   update: new Set<Listener<UpdateStatus>>(),
   terminal: new Set<Listener<TerminalEvent>>(),
+  touchId: new Set<Listener<string | null>>(),
 };
 
 const rpc = Electroview.defineRPC<AppRPC>({
@@ -39,6 +40,9 @@ const rpc = Electroview.defineRPC<AppRPC>({
       },
       terminalEvent: (e) => {
         for (const l of listeners.terminal) l(e);
+      },
+      touchIdChanged: ({ summary }) => {
+        for (const l of listeners.touchId) l(summary);
       },
     },
   },
@@ -69,3 +73,5 @@ export const onPlanningChanged = (l: Listener<string>) => on("planning", l);
 export const onNavigate = (l: Listener<string>) => on("navigate", l);
 export const onUpdate = (l: Listener<UpdateStatus>) => on("update", l);
 export const onTerminal = (l: Listener<TerminalEvent>) => on("terminal", l);
+/** A decision waiting for Touch ID (its summary), or none (spec 40 M4b). */
+export const onTouchId = (l: Listener<string | null>) => on("touchId", l);

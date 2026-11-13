@@ -336,7 +336,8 @@ _Avoid_: broken build, main-red issue (patientos's claim; here the episode is th
 
 **Known flake** (spec 53)
 A check, or a test in one, that failed and then passed on a rerun of the same SHA, recorded in the
-repository's flake list. A failed check is rerun at most once per SHA (ADR 0583).
+repository's flake list (`core_flakes`). A failed check is rerun at most once per SHA (ADR 0583);
+a check that flakes three times in 14 days gets a backlog item to fix it (decision 3).
 _Avoid_: flaky test (as a label you add by hand)
 
 **Default-branch ruleset**

@@ -8,6 +8,8 @@ const session = {
   keyStorage: "secure-enclave",
   signingIn: false,
   error: null,
+  keyFingerprint: null,
+  keyUpgrade: false,
 };
 export const bun = {
   session: async () => session,
@@ -20,3 +22,4 @@ export const onPlanningChanged = none;
 export const onNavigate = none;
 export const onUpdate = none;
 export const onTerminal = none;
+export const onTouchId = none;
