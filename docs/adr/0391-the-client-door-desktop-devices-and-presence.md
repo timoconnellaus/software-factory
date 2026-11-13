@@ -105,3 +105,13 @@ embedded Developer ID provisioning profile (a bare executable with that entitlem
 is [ADR 0394](0394-the-key-helper-is-its-own-signed-bundle.md). The key stays `.userPresence`
 (Touch ID, or the login password) with no reuse window, as decided above; the owner kept gate
 approvals on the desktop with Touch ID.
+
+## Amendment, 2026-11-13: the summary's facts come first
+A work item's title is written by agents, and the summary used to start with it (`Merge #12 "Fix the
+inbox count" into main`): a title with a double quote could pose as the repository and push the
+rest (", without its checks") off the Touch ID sheet. Every summary now puts the engine's facts
+first and the title last, quoted, with double quotes, format characters (Cf) and line breaks
+removed, and is cut to 120 characters (`titled` in `packages/core`): `Merge 3f2a91c into main of
+acme/widgets, without its checks: "Fix the inbox count"`. The key helper refuses a summary with
+format, separator or control characters (spec 40 M4b). New `describeDecision` cases follow the
+same rule.

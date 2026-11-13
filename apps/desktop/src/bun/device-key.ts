@@ -5,7 +5,7 @@
 // app makes a software P-256 key, keeps it in the keychain and says so (`keyStorage: "software"`),
 // so the website shows it and the engine refuses it for gate decisions.
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { deleteSecret, getSecret, setSecret } from "./keychain.ts";
 
 export interface PublicJwk {
@@ -25,8 +25,11 @@ export interface DeviceKey {
   sign(message: string): Promise<string>;
 }
 
-/** The helper's executable, from the app's Contents/MacOS (Electrobun's working directory). */
-export const HELPER = resolve("../Helpers/SF Keys.app/Contents/MacOS/sf-keys");
+/** The helper's executable, beside the running `bun` in Contents/MacOS (as runningAppPath finds the app). */
+export const HELPER = resolve(
+  dirname(process.execPath),
+  "../Helpers/SF Keys.app/Contents/MacOS/sf-keys",
+);
 const TAG = "com.software-factory.desktop.device-key";
 const SOFTWARE_SERVICE = "com.software-factory.desktop.software-key";
 const STORAGE_SERVICE = "com.software-factory.desktop.key-storage";

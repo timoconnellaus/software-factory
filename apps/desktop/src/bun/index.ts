@@ -129,11 +129,13 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return auth.session();
       },
       signInAgain: async () => {
-        live.stop();
-        terminals.closeAll();
-        setBadge(0);
         try {
-          Utils.openExternal(await auth.signInAgain());
+          const url = await auth.signInAgain(() => {
+            live.stop();
+            terminals.closeAll();
+            setBadge(0);
+          });
+          Utils.openExternal(url);
         } catch (error) {
           auth.error = error instanceof Error ? error.message : "couldn't start the sign-in";
         }
@@ -628,12 +630,15 @@ Electrobun.events.on("open-url", async (e: { data: { url: string } }) => {
 });
 
 async function quit() {
+  // A decision waiting for Touch ID: take the sheet down with the app (spec 40 M4b).
+  helper.cancel();
   live.stop();
   terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }
 Electrobun.events.on("before-quit", async () => {
+  helper.cancel();
   await runner.stop();
 });
 // If the launcher dies, don't linger as an orphan with a runner (ADR 0390).

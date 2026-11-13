@@ -64,7 +64,9 @@ if (KEY_FIXTURE === "signing-in")
     keyFingerprint: "3f2a-91c0-77be-d41e",
   });
 if (KEY_FIXTURE === "upgrade") Object.assign(session, { keyStorage: "software", keyUpgrade: true });
-const TOUCH_ID_SUMMARY = 'Merge 3f2a91c "Fix the inbox count" into main of acme/widgets';
+// The open item's merge (#13), worded as the engine writes it (describeDecision).
+const TOUCH_ID_SUMMARY =
+  'Merge 3f2a91c into main of example/software-factory: "Guard the tests in verify"';
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
 /**

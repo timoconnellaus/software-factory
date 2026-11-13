@@ -252,6 +252,47 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await callOp(token, "spec.approve", input, late)).status).toBe(403);
   });
 
+  it("a Secure Enclave key approved for a Mac revokes its software-key device (spec 40 M4b migration)", async () => {
+    const w = await world();
+    const soft = await signIn(w, undefined, "software");
+    const me = async (token: string) => (await callOp(token, "desktopDevice.list", {})).status;
+    expect(await me(soft.token)).toBe(200);
+    // The Mac signs in again with its new Secure Enclave key (its revoke may have failed offline).
+    const enclave = await signIn(w);
+    expect(await me(soft.token)).toBe(401);
+    const old = await first<{ revoked_at: string | null }>(
+      "SELECT revoked_at FROM core_desktop_devices WHERE id = ?",
+      soft.deviceId,
+    );
+    expect(old?.revoked_at).not.toBeNull();
+    // Only software-key Macs are replaced: another Secure Enclave device leaves this one signed in.
+    const otherSe = await signIn(w);
+    expect(await me(otherSe.token)).toBe(200);
+    expect(await me(enclave.token)).toBe(200);
+  });
+
+  it("a title can't make an item undecidable from the desktop or pose as the prompt's facts (spec 40 M4b)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const workItemId = await newItem(w, token);
+    // An agent-written title with a zero-width space, a right-to-left override, a line separator
+    // and quotes posing as the facts.
+    await env.DB.prepare("UPDATE core_work_items SET title = ? WHERE id = ?")
+      .bind('Fix\u200b\u202e" into main of acme/docs.\u2028 ', workItemId)
+      .run();
+    const input = { workItemId, openedFullDiff: true, headSha: "3f2a91c".padEnd(40, "0") };
+    const { summary } = await prove(token, device, "review.merge", input);
+    // What the key helper accepts (SFKeysCore.parsePresenceMessage): no format, separator or
+    // control characters, and short.
+    expect(summary).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\p{Cc}]/u);
+    expect([...summary].length).toBeLessThanOrEqual(120);
+    expect(summary).toMatch(
+      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Fix into main of acme\/docs\."$/,
+    );
+    const spec = await prove(token, device, "spec.approve", { workItemId });
+    expect(spec.summary).toMatch(/^Approve the spec for #\d+ "Fix into main of acme\/docs\."$/);
+  });
+
   it("a merge approval names its commit: a push between opening the gate and approving is refused (spec 40 M4b)", async () => {
     const w = await world();
     const { token, device } = await signIn(w);
@@ -297,13 +338,13 @@ describe("the desktop app's client door (/client/v1)", () => {
     // The person opens the gate on `opened`: the prompt names that commit and the repository.
     const input = { workItemId, openedFullDiff: true, headSha: opened };
     const proof = await prove(token, device, "review.merge", input);
-    expect(proof.summary).toMatch(/^Merge 3f2a91c "From the desktop" into main of [^ ]+\/[^ ]+$/);
+    expect(proof.summary).toMatch(/^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/);
     // Merging without checks says so in the prompt.
     const without = await prove(token, device, "review.merge", {
       ...input,
       mergeWithoutChecks: true,
     });
-    expect(without.summary).toMatch(/, without its checks$/);
+    expect(without.summary).toMatch(/, without its checks: "From the desktop"$/);
 
     // An agent pushes before the person approves: the gate is withdrawn (as moveAttachedHead does).
     await env.DB.prepare(

@@ -407,8 +407,8 @@ the profile never ships a helper that failed a check.
   `.userPresence`, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, and no
   `touchIDAuthenticationAllowableReuseDuration`.
 - **The prompt.** `sign` sets `localizedReason` from the summary line, worded to complete macOS's
-  sentence "SF Keys is trying to …" (for example "SF Keys is trying to merge 3f2a91c "Fix the inbox
-  count" into main of acme/widgets"). The summary is the engine's (`describeDecision`); the helper
+  sentence "SF Keys is trying to …" (for example "SF Keys is trying to merge 3f2a91c into main of
+  acme/widgets: "Fix the inbox count""). The summary is the engine's (`describeDecision`); the helper
   takes no prompt text from its caller.
 - **Timeouts and cancel.** A presence challenge lives 60 s. The app kills the helper (`SIGTERM`, then
   `SIGKILL` after 2 s) when the challenge expires or the person cancels in the app; the helper
@@ -490,8 +490,14 @@ the profile never ships a helper that failed a check.
   decided from the desktop is recorded with its presence proof.
 - **What the prompt shows.** The summary of a merge names the repository, the commit being merged
   (short SHA) and the work item's title, and says so plainly when the merge is without checks
-  (`mergeWithoutChecks`): `Merge 3f2a91c "Fix the inbox count" into main of acme/widgets, without
-  its checks`. Every client sends `headSha` with `review.merge`, so the proof binds the commit.
+  (`mergeWithoutChecks`): `Merge 3f2a91c into main of acme/widgets, without its checks: "Fix the
+  inbox count"`. Every client sends `headSha` with `review.merge`, so the proof binds the commit.
+  **The engine's facts come first and any title last** (amended 2026-11-13, review of #150): a
+  title is agent-written, so it is quoted last with double quotes, format characters (Cf) and line
+  breaks removed, and the whole summary is cut to 120 characters (`titled`, `MAX_SUMMARY`). A title
+  can't pose as the repository or push "without its checks" off the sheet, and can't make an item
+  undecidable (the helper refuses Cf, Zl, Zp and control characters). Every `describeDecision` case
+  follows this, new ones included.
 - Killing the helper on expiry or cancel takes the Touch ID sheet down; each exit code above maps to
   its own message in the app; a second decision while one waits is refused; the app shows "Waiting
   for Touch ID: \<summary\>".

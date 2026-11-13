@@ -16,6 +16,7 @@ import {
   lastCheckedText,
 } from "../../shared/update-check.ts";
 import { bun, onRunner } from "../bridge.ts";
+import { SignInAgainDialog } from "../components/key-notices.tsx";
 import { PageArea, PageHeader } from "../components/shell-list.tsx";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 import { settingsLayout } from "./_settings.tsx";
@@ -41,6 +42,7 @@ const RUNNER_TEXT: Record<RunnerState["status"], string> = {
 export function SettingsPage() {
   const client = useQueryClient();
   const session = useDesktopSession();
+  const [confirmSignIn, setConfirmSignIn] = useState(false);
   const runner = useQuery({ queryKey: ["runner"], queryFn: () => bun.runnerState({}) });
   const login = useQuery({ queryKey: ["login-item"], queryFn: () => bun.loginItem({}) });
   useEffect(() => onRunner((s) => client.setQueryData(["runner"], s)), [client]);
@@ -106,10 +108,11 @@ export function SettingsPage() {
                 size="sm"
                 className="w-fit"
                 data-testid="sign-in-again"
-                onClick={async () => client.setQueryData(["session"], await bun.signInAgain({}))}
+                onClick={() => setConfirmSignIn(true)}
               >
-                Sign in again
+                Sign in again…
               </Button>
+              <SignInAgainDialog open={confirmSignIn} onOpenChange={setConfirmSignIn} />
             </div>
           )}
           <Label className="flex items-center gap-2 font-normal">

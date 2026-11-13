@@ -109,7 +109,19 @@ export class Auth {
    * device and forgetting the software key), then sign in, which makes the Secure Enclave key and
    * registers it as a new device. Returns the website page to open.
    */
-  async signInAgain(): Promise<string> {
+  async signInAgain(beforeSignOut: () => void = () => undefined): Promise<string> {
+    // The old software-key device must be revoked before its key is forgotten: if it stayed live,
+    // its 30-day token (which an agent may already hold) would outlive the move. So a failed
+    // revoke stops here, with everything as it was. (The engine also revokes it when the new
+    // Secure Enclave device for this Mac is approved.)
+    if (this.token && this.identity) {
+      const r = await this.door()
+        .call("desktopDevice.revoke", { deviceId: this.identity.deviceId })
+        .catch(() => ({ ok: false }) as const);
+      if (!r.ok)
+        throw new Error("Couldn't sign the old key out: check your connection and try again.");
+    }
+    beforeSignOut();
     await this.signOut();
     this.upgradable = false;
     return this.start();

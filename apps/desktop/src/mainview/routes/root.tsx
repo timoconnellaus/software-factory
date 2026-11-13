@@ -108,7 +108,7 @@ function SignIn({ session }: { session: Session }) {
         <p className="text-muted-foreground text-sm" data-testid="key-fingerprint">
           This Mac's key:{" "}
           <span className="font-mono text-foreground">{session.keyFingerprint}</span>. Approve on
-          the website only if it shows the same fingerprint.
+          the website only if it shows exactly this fingerprint, all four groups.
         </p>
       )}
     </main>

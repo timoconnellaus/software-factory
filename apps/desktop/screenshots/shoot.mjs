@@ -224,6 +224,13 @@ export const SCREENS = [
     design: "SettingsDevices.html",
   },
   { name: "key-touch-id", path: "/", query: "?key=touch-id", design: "InboxMerge.html" },
+  {
+    name: "key-sign-in-again-confirm",
+    path: "/settings",
+    query: "?key=upgrade",
+    design: "SettingsDevices.html",
+    clicks: ['[data-testid="sign-in-again"]'],
+  },
   // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
   {
     name: "this-mac-update-idle",
