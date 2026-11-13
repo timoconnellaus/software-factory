@@ -22,7 +22,7 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
-import { describeConfigDecision } from "./config.ts";
+import { CONFIG_WRITES, describeConfigDecision, overrideOrgValue } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
 import {
@@ -251,10 +251,55 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "killSwitch.set":
       return (await describeKillSwitchOff(ctx.db, input)) ?? `Decide ${op}`;
     case "override.approve":
-      return describeOverrideApprove(ctx.db, ctx.floor, input);
+      return describeOverrideApprove(
+        ctx.db,
+        ctx.floor,
+        input,
+        typeof input.projectId === "string" &&
+          typeof input.stageId === "string" &&
+          typeof input.setting === "string"
+          ? await overrideOrgValue(ctx.db, input.projectId, input.stageId, input.setting)
+          : undefined,
+      );
     default:
       return `Decide ${op}`;
   }
+}
+
+/**
+ * The operations that change the factory's own rules (ADR 0610): org config writes, approving a
+ * looser override, a kill switch off, and deciding a waiting config or self-modify change.
+ */
+export const POLICY_DECISION_OPS = [
+  "workflow.save",
+  "workflow.createFromTemplate",
+  "workflow.archive",
+  "agent.save",
+  "orgConfig.rollback",
+  "orgConfig.adoptProjectWorkflows",
+  "override.approve",
+  "killSwitch.set",
+] as const;
+
+/** Whether this call is a policy decision: a software key may never make one (ADR 0610). */
+export async function isPolicyDecision(
+  ctx: HandlerContext,
+  op: string,
+  input: Record<string, unknown>,
+): Promise<boolean> {
+  if ((POLICY_DECISION_OPS as readonly string[]).includes(op)) return true;
+  if (op !== "approval.decide" || typeof input.pendingActionId !== "string") return false;
+  const pa = await ctx.db
+    .selectFrom("core_pending_actions")
+    .select(["operation", "risk"])
+    .where("id", "=", input.pendingActionId)
+    .executeTakeFirst();
+  return (
+    !!pa &&
+    (pa.risk === "self-modify" ||
+      (CONFIG_WRITES as readonly string[]).includes(pa.operation) ||
+      (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation))
+  );
 }
 
 /** A stored pending input, or `{}`. */
@@ -629,6 +674,22 @@ export const presenceChallenge = defineOperation({
       );
     }
     await requireDecides(ctx, deviceId, input.op);
+    // A policy decision never takes a software key's proof, whatever DESKTOP_ALLOW_SOFTWARE_KEYS
+    // says (that is for deciding merges on a dev build): a key any process of the user can read
+    // must not loosen the factory's own rules (ADR 0610, review of #156).
+    if (await isPolicyDecision(ctx, input.op, input.input)) {
+      const d = await ctx.db
+        .selectFrom("core_desktop_devices")
+        .select(["key_storage"])
+        .where("id", "=", deviceId)
+        .executeTakeFirst();
+      if (d?.key_storage === "software")
+        throw new OperationError(
+          "forbidden",
+          "presence proof refused: this device's key isn't in the Secure Enclave, and a policy decision never takes a software key",
+          { browserOnly: true },
+        );
+    }
     const digest = await inputDigest(input.input);
     const summary = await describeDecision(ctx, input.op, input.input);
     const nonce = randomToken();

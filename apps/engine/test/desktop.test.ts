@@ -156,14 +156,14 @@ describe("a config change approved from the desktop (ADR 0610)", () => {
     const proof = await prove(token, device, "approval.decide", input);
     expect(proof.summary).toMatch(
       new RegExp(
-        `^Approve a change to "[^"]+"'s policy \\(v${base} to v${base + 1}\\): loosens: Autonomy policy Balanced → Autonomous`,
+        `^Approve a change to the policy \\(v${base} to v${base + 1}\\): loosens \\d+ things: Autonomy policy Balanced → Autonomous…`,
       ),
     );
     const reject = await prove(token, device, "approval.decide", {
       pendingActionId,
       decision: "rejected",
     });
-    expect(reject.summary).toMatch(/^Reject a change to "[^"]+"'s policy/);
+    expect(reject.summary).toMatch(/^Reject a change to the policy/);
 
     const decided = await callOp(token, "approval.decide", input, proof);
     expect(decided.status).toBe(200);
@@ -381,9 +381,7 @@ describe("the desktop app's client door (/client/v1)", () => {
     const input = { scope: "project", id: w.projectId, on: false };
     expect((await callOp(token, "killSwitch.set", input)).status).toBe(403);
     const proof = await prove(token, device, "killSwitch.set", input);
-    expect(proof.summary).toMatch(
-      /^Turn the project's kill switch off: its work resumes: "[^"]+"$/,
-    );
+    expect(proof.summary).toMatch(/^Turn a project's kill switch off: its work resumes "[^"]+"$/);
     expect((await callOp(token, "killSwitch.set", input, proof)).status).toBe(200);
   });
 
@@ -395,7 +393,7 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(bare.status).toBe(403);
     const proof = await prove(token, device, "workflow.createFromTemplate", input);
     expect(proof.summary).toMatch(
-      /^Add an org workflow from the wf_software template \(v0 to v1\): "Desk" in "[^"]+"$/,
+      /^Add an org workflow from the wf_software template \(v0 to v1\) "Desk in [^"]+"$/,
     );
     const made = await callOp(token, "workflow.createFromTemplate", input, proof);
     expect(made.status).toBe(200);

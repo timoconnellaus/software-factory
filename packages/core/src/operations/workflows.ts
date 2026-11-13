@@ -571,8 +571,8 @@ export const workflowSave = defineOperation({
     ),
   actors: ["human"],
   permission: "admin",
-  // Config is a decision made in the app (ADR 0340): never from the CLI, MCP, a desktop device or
-  // any other token an agent session might hold.
+  // Config is a person's decision (ADR 0340): never from the CLI, MCP or any other token an agent
+  // session might hold.
   browserOnly: true,
   // Decidable on the desktop with a presence proof for this exact call (ADR 0610); never the phone,
   // and never a CLI, MCP, runner or agent token.

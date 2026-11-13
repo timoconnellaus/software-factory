@@ -3,10 +3,11 @@
 // desktop without a proof. Whatever the input, nothing is decided and nothing is written.
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { newId } from "../src/ids.ts";
 import { type Actor, invoke } from "../src/index.ts";
 import { deps, FOREMAN, RUNNER_ACTOR, refusal, rows, world } from "./helpers.ts";
 
-type W = Awaited<ReturnType<typeof world>>;
+type W = Awaited<ReturnType<typeof world>> & { orgProposal: string };
 
 /** A registered Mac (Secure Enclave) of this person's: a refusal is the proof's, not the device's. */
 async function device(userId: string) {
@@ -38,23 +39,51 @@ const CALLS: [string, (w: W) => Record<string, unknown>][] = [
   ["orgConfig.adoptProjectWorkflows", (w) => ({ orgId: w.orgId, baseVersion: 0, dryRun: false })],
   [
     "override.approve",
-    (w) => ({ projectId: w.projectId, stageId: "build", setting: "retryLimit", orgVersion: 1 }),
+    (w) => ({
+      projectId: w.projectId,
+      stageId: "build",
+      setting: "retryLimit",
+      orgVersion: 1,
+      value: 3,
+      configVersion: 1,
+    }),
   ],
   ["killSwitch.set", (w) => ({ scope: "project", id: w.projectId, on: false })],
+  // Approving a waiting org config change (ADR 0516 as amended), made with an org proposal below.
+  ["approval.decide", (w) => ({ pendingActionId: w.orgProposal, decision: "approved" })],
 ];
+
+/** A waiting org config change (a loosening workflow save an org admin decides). */
+async function orgProposal(w: Awaited<ReturnType<typeof world>>) {
+  const id = newId("pendingAction");
+  const now = new Date().toISOString();
+  await rows(
+    `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, created_at, decided_at)
+     VALUES (?, ?, NULL, NULL, 'approval', 'workflow.save', 'self-modify', 'human', ?, ?, 'pending', NULL, ?, NULL)`,
+    id,
+    w.orgId,
+    w.userId,
+    JSON.stringify({ orgId: w.orgId, baseVersion: 0, workflow: {} }),
+    now,
+  );
+  return id;
+}
 
 describe("policy decisions off the website and the desktop's proof (ADR 0610)", () => {
   it.each(CALLS)(
     "%s is refused to agents, runners, the CLI, MCP, the phone and a bare desktop",
     async (op, input) => {
-      const w = await world();
+      const base = await world();
+      const w = { ...base, orgProposal: await orgProposal(base) };
+      // A registered Mac of this person's: the refusal is for the missing proof, not the device.
+      const deviceId = await device(w.userId);
       const before = await rows("SELECT id FROM core_audit WHERE outcome = 'ok'");
       const as = (actor: Actor, surface: string) =>
         invoke(deps, op, input(w), {
           actor,
           origin: {
             surface: surface as "cli",
-            ...(surface === "desktop" ? { deviceId: "dsk_x" } : {}),
+            ...(surface === "desktop" ? { deviceId } : {}),
           },
         });
       for (const [actor, surface] of [
@@ -66,7 +95,14 @@ describe("policy decisions off the website and the desktop's proof (ADR 0610)", 
         [w.human, "desktop"],
       ] as const) {
         const e = await refusal(as(actor, surface));
-        expect(e.code, `${op}: ${actor.type} on ${surface}`).toBe("forbidden");
+        expect(e.code, `${op}: ${actor.type} on ${surface}: ${e.message}`).toBe("forbidden");
+        // A person is refused as a decision made in the wrong place (browser-only), not for
+        // another reason; an agent or runner by the actor check.
+        if (actor.type === "human")
+          expect(e.details, `${op} on ${surface}: ${e.message}`).toMatchObject({
+            browserOnly: true,
+          });
+        else expect(e.message).toMatch(/may not call/);
       }
       const after = await rows("SELECT id FROM core_audit WHERE outcome = 'ok'");
       expect(after.length).toBe(before.length);
@@ -89,8 +125,9 @@ describe("policy decisions off the website and the desktop's proof (ADR 0610)", 
 describe("names in a proof's summary", () => {
   it("lose quotes and invisible characters, and are cut short", async () => {
     const { quotedName } = await import("../src/operations/policy-summary.ts");
-    expect(quotedName('Acme"‮: approve all')).toBe('"Acme: approve all"');
-    expect(quotedName("a​b\nc")).toBe('"ab c"');
+    // A quote becomes a space (it can't close the name early); a bidi control goes.
+    expect(quotedName('Acme"\u202e: approve all')).toBe('"Acme : approve all"');
+    expect(quotedName("a\u200bb\nc")).toBe('"ab c"');
     expect(quotedName("x".repeat(80))).toBe(`"${"x".repeat(59)}…"`);
   });
 });
