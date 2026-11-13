@@ -113,4 +113,11 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > it, and the deliverer only ever takes out the item a refusal names. **Outside the factory:** a
 > person who merges the PR on GitHub by hand is outside its control; what stops them is the failing
 > required `factory/verify` check, with no admin bypass (ADR 0020, 0021).
+>
+> Amended 2026-11-13 (sixth review of #185): a job of an unreadable item is cancelled in one way
+> (`cancelUnreadableJobs`): with its run event, so the Workflow wakes, its retry is refused and it
+> parks or ends with the owner's question; never silently. Only a definite result is "unreadable":
+> an error reading the item is a retryable refusal, and nothing is cancelled, posted or asked on
+> it. Reverting a merged culprit doesn't need its workflow (`mainRed.revert` is allowed), a parked
+> unreadable repair isn't a repair under way, and an item whose Workflow ends is told once, ever.
 

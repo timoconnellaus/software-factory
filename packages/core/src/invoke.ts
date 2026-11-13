@@ -1081,6 +1081,8 @@ export const PINNED_ERROR_ALLOWED = [
   "babysit.next",
   // Stops it: cancels its queued jobs and fails a passing check (audited).
   "workItem.markUnreadable",
+  // Reverting a merged culprit doesn't need its workflow: main must be able to go green.
+  "mainRed.revert",
 ] as const;
 
 /**
@@ -1096,21 +1098,24 @@ export async function askWorkflowUnreadable(
   why: string,
 ): Promise<string | null> {
   const db = createDb(deps.d1);
-  const open = await db
+  const item = await db
+    .selectFrom("core_work_items")
+    .select(["workflow_version", "number"])
+    .where("id", "=", workItemId)
+    .executeTakeFirst();
+  const parks = has(item?.workflow_version, "repin-reverify");
+  // A row that parks asks again only after its last question was answered (Check again, and it
+  // still doesn't read); a row that ends is told once, ever (sixth review of #185).
+  const asked = await db
     .selectFrom("core_questions")
-    .select("id")
+    .select(["id", "answered_at"])
     .where("work_item_id", "=", workItemId)
     .where("asked_by", "=", UNREADABLE_ASKER)
-    .where("answered_at", "is", null)
+    .orderBy("created_at", "desc")
     .limit(1)
     .executeTakeFirst();
-  if (open) return open.id;
+  if (asked && (!parks || asked.answered_at === null)) return asked.id;
   try {
-    const item = await db
-      .selectFrom("core_work_items")
-      .select(["workflow_version", "number"])
-      .where("id", "=", workItemId)
-      .executeTakeFirst();
     // Its queued jobs cancelled and a passing check failed, through an operation (audited).
     await runOperation(
       deps,
@@ -1118,7 +1123,6 @@ export async function askWorkflowUnreadable(
       { workItemId },
       { actor: { type: "agent", id: UNREADABLE_ASKER }, origin: { surface: "workflow" } },
     );
-    const parks = has(item?.workflow_version, "repin-reverify");
     const plain = unreadablePlain(why);
     const asked = await runOperation<{ questionIds: string[] }>(
       deps,

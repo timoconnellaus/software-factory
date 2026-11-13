@@ -708,6 +708,9 @@ async function settleBabysit(
           : null;
     if (job.status === "queued" && why && reason) {
       if (!(await next(true))) return { kind: "wait", ms: BABYSIT_RECHECK_MS };
+      // The job was another item's (it left the head meanwhile): closed, and the head goes on; the
+      // head is never ended for another item's job (sixth review of #185).
+      if (job.work_item_id !== head.work_item_id) return { kind: "go" };
       return {
         kind: "end",
         delivery: reason.kind === "conflict" ? "conflict" : "failed",

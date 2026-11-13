@@ -478,6 +478,62 @@ describe("workItem.repinWorkflow", () => {
     expect(seen.workflows).toEqual([]);
   });
 
+  it("a transient read error is a retryable refusal, never 'unreadable' (review of #185)", async () => {
+    const { workflowUnreadable } = await import("../src/unreadable.ts");
+    const blip = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("D1_ERROR: network blip");
+        },
+      },
+    );
+    await expect(
+      workflowUnreadable({ db: blip, scope: { workItemId: null } } as never, "wi_somewhere"),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    // And with a healthy read, the same item reads.
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    const db = createDb(env.DB);
+    expect(
+      await workflowUnreadable({ db, scope: { workItemId: null } } as never, item.workItemId),
+    ).toBeNull();
+  });
+
+  it("an item that ends (a row before 17) is told once, however often it's refused (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    await rows(
+      "UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?",
+      item.workItemId,
+    );
+    const as = (op: string, input: Record<string, unknown>) =>
+      invoke(deps, op, input, { actor: FOREMAN, origin: { surface: "workflow" } }).catch(
+        (e: { code: string }) => e,
+      );
+    const enqueue = {
+      workItemId: item.workItemId,
+      stage: "build",
+      role: "implement",
+      prompt: "Go",
+    };
+    await as("job.enqueue", enqueue);
+    const [q] = await rows<{ id: string }>(
+      "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable'",
+      item.workItemId,
+    );
+    await ok("question.answer", { questionId: q?.id, answer: "Understood" }, w.human);
+    await as("job.enqueue", enqueue);
+    expect(
+      await rows(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable'",
+        item.workItemId,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("an item whose own pinned config doesn't parse fails closed too (review of #185)", async () => {
     const w = await world();
     await onShip(w);

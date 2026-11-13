@@ -113,6 +113,7 @@ describe("every non-read operation an agent, runner or intake can call is stoppe
         "mergeQueue.leave",
         "babysit.next",
         "workItem.markUnreadable",
+        "mainRed.revert",
       ].sort(),
     );
   });

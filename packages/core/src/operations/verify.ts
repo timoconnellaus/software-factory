@@ -22,7 +22,12 @@ import {
   releaseSplitChildren,
   splitFiles,
 } from "../splits.ts";
-import { UNREADABLE_WORKFLOW_PROMPT, unreadablePlain, workflowUnreadable } from "../unreadable.ts";
+import {
+  cancelUnreadableJobs,
+  UNREADABLE_WORKFLOW_PROMPT,
+  unreadablePlain,
+  workflowUnreadable,
+} from "../unreadable.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
 import {
@@ -208,14 +213,11 @@ export const workItemMarkUnreadable = defineOperation({
       .where("status", "=", "queued")
       .limit(50)
       .execute();
-    for (const j of queued)
-      ctx.write(
-        ctx.db
-          .updateTable("core_jobs")
-          .set({ status: "cancelled", wait_reason: "the item's workflow version can't be read" })
-          .where("id", "=", j.id)
-          .where("status", "=", "queued"),
-      );
+    cancelUnreadableJobs(
+      ctx,
+      w,
+      queued.map((j) => j.id),
+    );
     let checkFailed = false;
     const project = ctx.scope.project;
     const repository = ctx.scope.repository;

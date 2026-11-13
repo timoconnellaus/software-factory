@@ -18,6 +18,7 @@ import {
   gateHead,
   gateOpen,
   itemStatus,
+  MANIFEST,
   ok,
   runStage,
   triage,
@@ -428,6 +429,52 @@ describe("the default builder", () => {
     expect(verify).toEqual([]);
     await ok("question.answer", { questionId: asked.id, answer: "Stop this work item" }, w.human);
     await itemStatus(item.workItemId, "failed");
+  });
+
+  it("a job queued before the version broke is never claimed: the item parks and asks; fixed, Check again carries on (v17, review of #185)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: plain }, w.human);
+    const item = await create(w);
+    await runStage(w, item.workItemId, "triage", () => triage("small"));
+    // The build job is queued; then the item's adopted list stops resolving.
+    await waitFor("the queued build", () =>
+      first(
+        "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = 'build' AND status = 'queued'",
+        item.workItemId,
+      ),
+    );
+    await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    // A runner polls: nothing to claim, and the job is cancelled.
+    const polled = await ok<{ job: unknown }>(
+      "job.claim",
+      {
+        claimId: `claim-${crypto.randomUUID()}`,
+        manifest: MANIFEST,
+        capacity: { max: 4, inUse: 0, accepting: true },
+      },
+      w.runnerActor,
+    );
+    expect(polled.job).toBeNull();
+    // The Workflow wakes, its retry is refused, and it parks on the owner's question.
+    const asked = await waitFor("the question", () =>
+      first<{ id: string }>(
+        "SELECT id FROM core_questions WHERE work_item_id = ? AND asked_by = 'workflow-unreadable' AND answered_at IS NULL",
+        item.workItemId,
+      ),
+    );
+    await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = NULL WHERE id = ?")
+      .bind(item.workItemId)
+      .run();
+    await ok("question.answer", { questionId: asked.id, answer: "Check again" }, w.human);
+    await runStage(w, item.workItemId, "build", () => build());
   });
 
   it("Stop ends an item whose workflow version can't be read (v17, review of #185)", async () => {
