@@ -10,7 +10,7 @@
 // anything GitHub can't show in full. Binary and very large files count like any other: by blob.
 //
 // It fails closed: an unreadable or truncated tree has no digest, and no digest never matches.
-import type { Tree, TreeEntry } from "../services.ts";
+import type { ChangedFile, Tree, TreeEntry } from "../services.ts";
 
 const same = (a: TreeEntry | undefined, b: TreeEntry | undefined) =>
   a?.mode === b?.mode && a?.sha === b?.sha;
@@ -31,14 +31,52 @@ export async function changeDigest(base: Tree, head: Tree): Promise<string> {
 }
 
 /**
+ * The PR's own change as a patch (spec 53's "Words": each changed file's path and patch with line
+ * numbers stripped), so a clean merge of the default branch into other hunks of a file the PR
+ * changed leaves it identical (the #61 loop, 2026-11-13). Per file: its status and only the lines
+ * it adds and removes, in order (line numbers and unchanged context dropped, since a merge of main
+ * moves both). A file GitHub gives no patch for (binary, too large) counts by blob, both sides.
+ */
+export async function patchDigest(
+  files: readonly ChangedFile[],
+  base: Tree,
+  head: Tree,
+): Promise<string> {
+  const lines: string[] = [];
+  for (const f of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
+    const body =
+      typeof f.patch === "string"
+        ? f.patch
+            .split("\n")
+            .filter((l) => (l.startsWith("+") || l.startsWith("-")) && !/^(\+\+\+|---) /.test(l))
+            .join("\n")
+        : `${side(base[f.path])}\0${side(head[f.path])}`;
+    lines.push(`${f.path}\0${f.previousPath ?? ""}\0${f.status}\0${body}`);
+  }
+  const bytes = new TextEncoder().encode(lines.join("\n\u0001"));
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return `p1:${[...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
  * Whether `merged` is made only of its two parents' files: every path is exactly the approved
  * head's entry or the default branch's (absent counts), never a third thing. A file both sides
  * changed fails it (its merge is new content), and so does any crafted edit.
  */
-export function onlyEitherSide(approved: Tree, main: Tree, merged: Tree): string[] {
+export function onlyEitherSide(
+  approved: Tree,
+  main: Tree,
+  merged: Tree,
+  /**
+   * Paths both sides changed since their merge base: a three-way merge of one is new content by
+   * nature, so it isn't a third thing when GitHub made the merge for the factory's own call.
+   */
+  bothChanged: ReadonlySet<string> = new Set(),
+): string[] {
   const third: string[] = [];
   const paths = new Set([...Object.keys(approved), ...Object.keys(main), ...Object.keys(merged)]);
   for (const path of paths) {
+    if (bothChanged.has(path)) continue;
     if (!same(merged[path], approved[path]) && !same(merged[path], main[path])) third.push(path);
   }
   return third.sort();

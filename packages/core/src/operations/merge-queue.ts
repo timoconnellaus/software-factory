@@ -26,8 +26,8 @@ import {
 import type { RepoRef } from "../services.ts";
 import {
   approvalSurvivesMergeOfMain,
-  changeDigest,
   onlyEitherSide,
+  patchDigest,
 } from "../verify/change-digest.ts";
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { askOne } from "./ask.ts";
@@ -579,6 +579,35 @@ export const mergeQueueUpdate = defineOperation({
         reason: `${repository.default_branch} keeps moving: this branch was updated ${entry.updates} times`,
       };
     }
+    // The loop guard (#61): an item whose approval was withdrawn twice for the same reason when
+    // the default branch was merged in isn't updated a third time on its own: it is held and a
+    // person asked, with the reason (until they grant one more update).
+    if (entry.driver === "babysitter" && entry.updates_granted === 0) {
+      const withdrawn = await ctx.db
+        .selectFrom("core_pending_actions")
+        .select(["note"])
+        // core_pending_actions_item_idx (work_item_id, status): the item's few decided gates.
+        .where("work_item_id", "=", w.id)
+        .where("status", "=", "rejected")
+        .where("kind", "=", "merge")
+        .where("decision", "=", "withdrawn")
+        .orderBy("decided_at", "desc")
+        .limit(2)
+        .execute();
+      const [last, before] = withdrawn;
+      if (
+        last?.note &&
+        before?.note &&
+        last.note === before.note &&
+        /^withdrawn: /.test(last.note)
+      ) {
+        return {
+          state: "held" as const,
+          headSha: at,
+          reason: `${WITHDRAWN_TWICE}${last.note.replace(/^withdrawn: /, "")}`,
+        };
+      }
+    }
     const mainHead = await github.getBranchSha(repo, repository.default_branch);
     const asked = await github.updatePullRequestBranch(repo, {
       number: w.pr_number,
@@ -679,14 +708,27 @@ async function acceptUpdate(
     // Only the paths the merge changed on the approved head are read, never whole trees (second
     // review of #105): a path the merge left alone is the approved head's by definition.
     try {
-      const changed = await github.changedPaths(repo, at, prHead);
-      if (changed.complete && changed.paths.length <= MAX_CHANGED_PATHS) {
+      // Judged from the merge base, as a resolution is (#175): a path only one side changed must be
+      // that side's; a path both sides changed is GitHub's own clean three-way merge of it (it made
+      // this merge for the factory's call, and refuses one with a conflict), not a third thing.
+      const [changed, ours, theirs] = await Promise.all([
+        github.changedPaths(repo, at, prHead),
+        github.changedPaths(repo, merged, at),
+        github.changedPaths(repo, at, merged),
+      ]);
+      if (
+        changed.complete &&
+        ours.complete &&
+        theirs.complete &&
+        changed.paths.length <= MAX_CHANGED_PATHS
+      ) {
+        const both = new Set(ours.paths.filter((p) => theirs.paths.includes(p)));
         const [a, m, h] = await Promise.all([
           github.pathEntries(repo, at, changed.paths),
           github.pathEntries(repo, merged, changed.paths),
           github.pathEntries(repo, prHead, changed.paths),
         ]);
-        thirdThings = onlyEitherSide(a, m, h);
+        thirdThings = onlyEitherSide(a, m, h, both);
       }
     } catch {
       thirdThings = null; // unreadable: fails closed
@@ -778,6 +820,10 @@ async function acceptUpdate(
  */
 export const MAX_CHANGED_PATHS = 250;
 
+/** The hold reason when an approval was withdrawn twice for the same reason (the loop guard). */
+export const WITHDRAWN_TWICE =
+  "the approval was withdrawn twice for the same reason when the default branch was merged in: ";
+
 /**
  * The change digest of `headSha` (its changed paths against its merge base with the default
  * branch), or null when it can't be read in full (an error, too many paths): never a partial digest.
@@ -798,11 +844,15 @@ async function digestOf(
     if (!changed.mergeBase || !changed.complete || changed.paths.length > MAX_CHANGED_PATHS) {
       return null;
     }
+    // The PR's own patch against its base (spec 53's change digest): identical after a clean merge
+    // of the default branch into other hunks of the same file (#61).
+    const files = await github.compareFiles(ref, changed.mergeBase, headSha);
+    if (files.length >= 300) return null;
     const [b, h] = await Promise.all([
       github.pathEntries(ref, changed.mergeBase, changed.paths),
       github.pathEntries(ref, headSha, changed.paths),
     ]);
-    return await changeDigest(b, h);
+    return await patchDigest(files, b, h);
   } catch {
     return null;
   }
@@ -954,7 +1004,9 @@ export const mergeQueueHold = defineOperation({
       .where("status", "=", "queued");
     if (!entry.hold_question_id) {
       const questionId = await askOne(ctx, w, {
-        prompt: `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
+        prompt: input.reason.startsWith(WITHDRAWN_TWICE)
+          ? `#${w.number}'s approval was withdrawn twice for the same reason when the default branch was merged in (${input.reason.slice(WITHDRAWN_TWICE.length)}). Update once more and verify again, or wait?`
+          : `The default branch keeps moving: #${w.number} was updated ${entry.updates} times and the branch moved again while CI ran. Update once more and merge when CI passes on the new head, or wait?`,
         context: input.reason,
         options: [HOLD_ANSWERS.now, HOLD_ANSWERS.wait],
         defaultAnswer: HOLD_ANSWERS.now,
