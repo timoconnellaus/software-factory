@@ -242,6 +242,10 @@ export const prMerge = defineOperation({
         .where("end_reason", "like", "cancelled:%")
         .where("ended_at", ">=", ctx.now),
     );
+    // The landing's merge commit: if main goes red, it is a suspect (spec 53 part e).
+    ctx.happened(
+      ctx.db.updateTable("core_work_items").set({ merge_sha: sha }).where("id", "=", w.id),
+    );
     ctx.change({ entity: "work_item", id: w.id, after: { merged: sha } });
     return { merged: true as const, sha };
   },
