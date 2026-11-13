@@ -18,6 +18,9 @@ die() { echo "::error::check-keys-helper: $*"; exit 1; }
 
 # The app as a whole, and the helper's own designated requirement: our identifier, our team.
 codesign --verify --deep --strict "$app" || die "the app's seal doesn't verify"
+# The same requirement the app checks an update against (src/bun/update-verify.ts).
+codesign --verify --strict -R="anchor apple generic and identifier \"com.software-factory.desktop\" and certificate leaf[subject.OU] = \"$team\"" "$app" \
+  || die "the app doesn't satisfy its requirement"
 codesign --verify --strict -R="anchor apple generic and identifier \"com.software-factory.desktop.keys\" and certificate leaf[subject.OU] = \"$team\"" "$helper" \
   || die "the helper doesn't satisfy its requirement"
 

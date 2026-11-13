@@ -248,6 +248,18 @@ jobs:
           for form in zip tar; do
             sh scripts/check-keys-helper.sh "$(ls -d "$work/$form"/*.app)" "$TEAM_ID" "$SF_KEYS_PROFILE"
           done
+          # The rebuilt update archive is the one its manifest names: the updater checks both.
+          archive=$(ls artifacts/"$CHANNEL"-macos-arm64-*.app.tar.zst)
+          zstd -dc "$archive" > "$work/app.tar"
+          sha=$(shasum -a 256 "$work/app.tar" | cut -d' ' -f1)
+          size=$(stat -f %z "$work/app.tar")
+          manifest="artifacts/$CHANNEL-macos-arm64-update-v2.json"
+          want_sha=$(node -p "require('./$manifest').artifact.tarSha256")
+          want_size=$(node -p "require('./$manifest').artifact.tarSize")
+          if [ "$sha" != "$want_sha" ] || [ "$size" != "$want_size" ]; then
+            echo "::error::the update archive ($sha, $size bytes) isn't the one $manifest names ($want_sha, $want_size)"; exit 1
+          fi
+          echo "update archive matches its manifest ($sha, $size bytes)"
           rm -rf "$work"
 
       # Versioned object names, uploaded before the manifests, which go last: a client never sees a
