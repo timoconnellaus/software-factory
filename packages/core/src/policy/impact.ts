@@ -64,6 +64,7 @@ const KNOWN = new Set([
   "improve",
   "adjudicator",
   "autoApproveHold",
+  "factorySource",
   "checks",
 ]);
 
@@ -305,6 +306,15 @@ export function policyImpact(
       `Adjudicator for ${kind === "spec" ? "spec gates" : kind === "step" ? "gate steps" : "merges (a condition of auto-approval)"}: ${was} → ${now}.`,
     );
   }
+
+  // Whether this is the factory's own source (review of #152): saying it isn't, or leaving it to be
+  // recognised after saying it is, loosens; saying it is tightens.
+  if (before.factorySource !== after.factorySource)
+    add(
+      "factorySource",
+      after.factorySource === "yes" || before.factorySource === "no" ? "tightens" : "loosens",
+      `The factory's own source: ${before.factorySource} → ${after.factorySource}.`,
+    );
 
   // Dark factory mode's per-project hold (ADR 0515 §7): setting it tightens, lifting it loosens.
   if (!same(before.autoApproveHold, after.autoApproveHold)) {

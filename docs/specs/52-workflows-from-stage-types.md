@@ -1381,6 +1381,15 @@ screen needs).
    off, withdraws the auto-approval, and the item goes back to verify and its gate (v12). The
    every-fifth review is counted and decided in the same batch, and goes to the gate's assignee or
    the project's first approver.
+   Third round: on the factory's own repository it is default-deny (only `FACTORY_SOURCE_ALLOW`:
+   `docs/screenshots/**`, `docs/design/**`), recognised by the engine's package in the repository
+   unless the project's `factorySource` says otherwise (`no` loosens); package and config surfaces,
+   native code and release scripts are risk paths everywhere, and a submodule bump is risky; a
+   spec's ties count only when a person approved it; the item's Workflow version must have the
+   babysitter's re-check; the red-main window opens when the merge lands and closes on green at or
+   after its merge commit; a revert is matched by its merge commit (GitHub's Revert button), the PR
+   number only from a merge or squash title; the babysitter's re-check also confirms the approval
+   is for this head; the review of every fifth is opened when the merge lands. ADR 0515 amended.
 7. **(f) Skills** (migration **0283**: `core_skill_versions`). As in "Skills", plus agent instructions
    as proposals (Q17). The projection into the harness is a small hook in `harness-claude` and the
    runner host, said in the PR.

@@ -148,3 +148,18 @@ just a config option. Nothing special."
 > it is recorded as the decider `auto-approve` under the `self-improve` actor type. The adjudicator's
 > precision on merges counts only people's decisions (gates people decided, and reviews after a
 > sampled merge), never its own auto-approved merges.
+
+> Amended 2026-11-13 (review of #152): **on the factory's own repository auto-approval is
+> default-deny.** A project is the factory's own source when it says so (`factorySource: "yes"`), or
+> by default (`auto`) when its repository holds the engine's package; saying `no` is a loosening an
+> org admin approves. There a change qualifies only when every path it touches is on
+> `FACTORY_SOURCE_ALLOW` in code (`docs/screenshots/**`, `docs/design/**`); widening that list takes
+> an ADR. On other repositories the deny-lists protect whole package and config surfaces (every
+> `package.json`, lock file, `tsconfig`, build and bundler config, CI and release script, native
+> code, `.factory/**`, agent instruction files) and a submodule pointer bump is risky. The criteria
+> condition counts a spec's ties only when **a person** approved that spec (an adjudicator-approved
+> spec doesn't count). Only an item whose Workflow version has the babysitter's re-check qualifies.
+> The red-main window opens when the merge lands (its merge commit) and closes when main's CI is
+> green on it or a later commit; a revert is matched to the merge commit; the review of every fifth
+> is opened when the merge lands.
+

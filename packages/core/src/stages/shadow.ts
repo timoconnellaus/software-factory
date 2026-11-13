@@ -21,6 +21,7 @@ import {
   type StepAttempt,
 } from "./reconcile.ts";
 import { stageType } from "./registry.ts";
+import { checksObservation } from "./types/checks.ts";
 import type { WorkflowDefinition } from "./workflow.ts";
 
 /** Everything the comparison must cover before the agreement streak means anything (spec 52 Q14). */
@@ -505,10 +506,11 @@ export function shadowVerdict(
     const from = startedAt.get(e) ?? "";
     const packet = (h.packets ?? []).filter((x) => x.at >= from && x.at <= (now || x.at)).at(-1);
     if (!packet) uncompared.add(NOT_MODELLED.noPacket);
-    const passed = packet ? packet.verdict === "pass" : outcome;
-    obs.ci = passed ? "pass" : "fail";
+    // The checks stage's own reading of the packet's verdict (`checksObservation`).
+    const seen = checksObservation(packet ? packet.verdict : outcome ? "pass" : "fail");
+    obs.ci = seen.ci;
     const v = lastStep(e, "verify");
-    if (v) v.output = { ...v.output, failures: passed ? [] : ["today's verdict: not passed"] };
+    if (v) v.output = { ...v.output, failures: seen.failures };
   };
 
   /** Closes the active entry because the Workflow moved on to `next`. */

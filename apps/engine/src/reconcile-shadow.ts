@@ -15,7 +15,7 @@
 //   gates by core_pending_actions_item_idx each with its decider's user row by primary key (LIMIT
 //   200), and whether the merge queue carried a review packet to a new head, by
 //   core_review_packets_item_idx (the item's packets, one per verify round, LIMIT 50). Questions
-//   put to a person are one EXISTS probe of core_questions_item_idx inside the item's read. Five
+//   put to a person are one EXISTS probe of core_questions_position_idx (work_item_id leading) inside the item's read. Five
 //   statements per item, 125 per page, in one batch.
 //   With nothing new: one row and one empty index probe.
 // - writes: one `core_reconcile_items` row per ended item (at most 25) and the cursor (one row).
@@ -111,7 +111,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
         `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version,
            w.shaping_started_at, w.release_flag, w.needs_info, w.workflow_id, p.raw,
            c.created_at AS org_created_at,
-           -- Questions put to a person on the item (core_questions_item_idx, one row is enough).
+           -- Questions put to a person on the item (core_questions_position_idx (work_item_id leading), one row is enough).
            EXISTS (SELECT 1 FROM core_questions q WHERE q.work_item_id = w.id) AS questions,
            (SELECT s.kim_files FROM core_specs s WHERE s.id = w.current_spec_id) AS kim_files,
            c.raw AS org_raw,

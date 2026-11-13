@@ -902,7 +902,7 @@ export const mergeQueueMerging = defineOperation({
     // before the merge. A hold since, or the setting switched off, withdraws it, and the item goes
     // back to verify and its merge gate (Workflow v12), where a person decides.
     if (input.merging && entry.pending_action_id) {
-      const why = await autoApprovalLapsed(ctx, w, entry.pending_action_id);
+      const why = await autoApprovalLapsed(ctx, w, entry.pending_action_id, entry.head_sha);
       if (why) {
         ctx.writePendingStatus(
           "close",
@@ -1032,13 +1032,22 @@ async function autoApprovalLapsed(
   ctx: HandlerContext,
   w: WorkItemRow,
   pendingActionId: string,
+  head: string,
 ): Promise<string | null> {
   const pa = await ctx.db
     .selectFrom("core_pending_actions")
-    .select("decided_by")
+    .select(["decided_by", "input"])
     .where("id", "=", pendingActionId)
     .executeTakeFirst();
   if (pa?.decided_by !== AUTO_APPROVE.id) return null;
+  // It approved exactly one head: any other isn't covered (review of #152).
+  let approved: unknown = null;
+  try {
+    approved = (JSON.parse(pa.input) as { headSha?: unknown }).headSha;
+  } catch {
+    approved = null;
+  }
+  if (approved !== head) return "the auto-approval was for another commit";
   const hold = ctx.scope.rawPolicy?.autoApproveHold;
   if (hold) return `auto-approved merges are held on this project: ${hold.reason}`;
   const project = ctx.scope.project;

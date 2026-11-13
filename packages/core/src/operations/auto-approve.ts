@@ -33,6 +33,7 @@ import { onOrgWorkflow, parseProjectPolicy } from "../policy/project-policy.ts";
 import { approverIds, loadPolicy } from "../scope.ts";
 import { resolveProjectWorkflow } from "../stages/project-workflow.ts";
 import { stageType } from "../stages/registry.ts";
+import { has } from "../workflow-features.ts";
 import { formatPolicy, writeVersion } from "./config.ts";
 import { decidePending, mergeGateHead } from "./gates.ts";
 import { pendingActionId, repoRef } from "./shared.ts";
@@ -126,6 +127,8 @@ export async function autoApproveMerge(
     changes: null,
     hold: ctx.scope.rawPolicy?.autoApproveHold?.reason ?? null,
     touchesFactoryConfig,
+    // Only an item whose Workflow the babysitter delivers, with its re-check (review of #152).
+    versionSupports: has(w.workflow_version, "dark-factory"),
   };
   // Nothing more is read (no GitHub call) when the setting is off or the project is held.
   const day = ctx.now.slice(0, 10);
@@ -161,6 +164,7 @@ export async function autoApproveMerge(
         verdict: packet.verdict === "pass" ? "pass" : "fail",
         ci: sections.ci?.state ?? null,
         criteriaProven: criteriaProven(sections as Record<string, unknown>),
+        specByPerson: await specApprovedByPerson(ctx, w.id),
         weakened: sections.proven?.weakened === true,
         testsIntact: sections.testsIntact?.intact ?? null,
       };
@@ -184,6 +188,8 @@ export async function autoApproveMerge(
           changes: typeof f.changes === "number" ? f.changes : null,
           // No diff from GitHub: binary, too large, or a submodule.
           ...(f.patch === undefined && f.status !== "removed" ? { unreadable: true } : {}),
+          // A submodule pointer bump, whatever .gitmodules says.
+          ...(f.patch?.includes("Subproject commit") ? { submodule: true } : {}),
         }));
         // A rename also touches where it came from.
         for (const f of files)
@@ -191,6 +197,12 @@ export async function autoApproveMerge(
       } catch {
         facts.changes = null; // unread: a person decides
       }
+      facts.factorySource = await isFactorySource(
+        ctx,
+        project,
+        await repoRef(ctx, repository),
+        repository.default_branch,
+      );
     }
   }
   const verdict = autoApproveVerdict(facts, setting);
@@ -219,13 +231,6 @@ export async function autoApproveMerge(
     "approved",
     `${verdict.reason}\n${facts_}`,
   );
-  // Remembered until main is next green: red CI before then holds the project (ADR 0515 §7).
-  ctx.write(
-    ctx.db
-      .insertInto("core_meta")
-      .values({ key: autoApprovedKey(project.id), value: ctx.now })
-      .onConflict((oc) => oc.column("key").doUpdateSet({ value: ctx.now })),
-  );
   // The daily cap, in the batch: refused if another approval took the last place meanwhile, then
   // counted (`<date>:<n>`, one row a project, so nothing grows).
   const dayKey = autoApprovedDayKey(project.id);
@@ -247,15 +252,111 @@ export async function autoApproveMerge(
       )
       .bind(dayKey, day),
   );
-  // Sampling doesn't hold the merge (decided by the owner): every Nth also goes to a person after.
-  // Counted and decided in the same batch, so two approvals at once can't both skip the fifth.
-  const assignee =
-    pa.assignee_user_id ??
-    (await approverIds(ctx.db, project.org_id, ctx.scope.policy ?? null))[0] ??
-    null;
-  reviewAfterMerge(ctx, pa, w.number, headSha, adjudicator.jobId, assignee, project.id);
   return verdict;
 }
+
+/** Whether a person (not the adjudicator) approved the item's latest approved spec gate. */
+async function specApprovedByPerson(ctx: HandlerContext, workItemId: string): Promise<boolean> {
+  // core_pending_actions_item_idx: the item's gates, newest approved spec gate first.
+  const gate = await ctx.db
+    .selectFrom("core_pending_actions as pa")
+    .leftJoin("core_user as u", "u.id", "pa.decided_by")
+    .select(["u.id as person"])
+    .where("pa.work_item_id", "=", workItemId)
+    .where("pa.kind", "=", "spec")
+    .where("pa.status", "in", ["approved", "applied"])
+    .orderBy("pa.decided_at", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  return !!gate?.person;
+}
+
+/**
+ * Whether the project's repository is the factory's own source (review of #152): the project says
+ * so, or (`auto`) the repository holds the engine's package. Any doubt is yes: default-deny.
+ */
+async function isFactorySource(
+  ctx: HandlerContext,
+  project: ProjectRow,
+  repo: Awaited<ReturnType<typeof repoRef>>,
+  branch: string,
+): Promise<boolean> {
+  const said = ctx.scope.rawPolicy?.factorySource ?? "auto";
+  if (said !== "auto") return said === "yes";
+  void project;
+  try {
+    const text = await ctx.services.github.readFile(repo, "apps/engine/package.json", branch);
+    if (text === null) return false;
+    return (JSON.parse(text) as { name?: unknown }).name === "@software-factory/engine";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * An auto-approved merge landed (review of #152): the red-main window starts here, at the merge
+ * commit, and lasts until main's CI is green on it or a later commit; the merge is remembered (its
+ * commit and PR) so a revert of it holds the project; and every fifth goes to a person to review.
+ * Called by `pr.merge` once GitHub merged. Recorded with `happened`: the merge happened.
+ */
+export async function autoApprovedMergeLanded(
+  ctx: HandlerContext,
+  w: { id: string; number: number; pr_number: number | null; project_id: string },
+  approval: PendingActionRow,
+  mergeSha: string,
+): Promise<void> {
+  const project = ctx.scope.project;
+  if (!project) return;
+  ctx.happened(
+    ctx.db
+      .insertInto("core_meta")
+      .values({ key: autoApprovedKey(project.id), value: `${ctx.now} ${mergeSha}` })
+      .onConflict((oc) => oc.column("key").doUpdateSet({ value: `${ctx.now} ${mergeSha}` })),
+  );
+  // The project's recent auto-approved merges (one row, the last 50): what a revert is matched to.
+  const key = autoMergedKey(project.id);
+  const row = await ctx.db
+    .selectFrom("core_meta")
+    .select("value")
+    .where("key", "=", key)
+    .executeTakeFirst();
+  let merged: { sha: string; pr: number | null; number: number }[] = [];
+  try {
+    merged = row ? (JSON.parse(row.value) as typeof merged) : [];
+  } catch {
+    merged = [];
+  }
+  const value = JSON.stringify(
+    [{ sha: mergeSha, pr: w.pr_number, number: w.number }, ...merged].slice(0, 50),
+  );
+  ctx.happened(
+    ctx.db
+      .insertInto("core_meta")
+      .values({ key, value })
+      .onConflict((oc) => oc.column("key").doUpdateSet({ value })),
+  );
+  const adjudication = await ctx.db
+    .selectFrom("core_adjudications")
+    .select("job_id")
+    .where("pending_action_id", "=", approval.id)
+    .executeTakeFirst();
+  const assignee =
+    approval.assignee_user_id ??
+    (await approverIds(ctx.db, project.org_id, ctx.scope.policy ?? null))[0] ??
+    null;
+  reviewAfterMerge(
+    ctx,
+    approval,
+    w.number,
+    mergeSha,
+    adjudication?.job_id ?? "",
+    assignee,
+    project.id,
+  );
+}
+
+/** The project's recent auto-approved merges, `[{ sha, pr, number }]`, newest first. */
+export const autoMergedKey = (projectId: string) => `auto_merged:${projectId}`;
 
 /**
  * A person's look at a sampled auto-approved merge, after it (ADR 0515): an inbox item for the
@@ -274,7 +375,7 @@ function reviewAfterMerge(
 ) {
   const counter = `auto_approved_count:${projectId}`;
   const sampled = `(SELECT CAST(value AS INTEGER) FROM core_meta WHERE key = '${counter.replaceAll("'", "''")}') % ${REVIEW_AFTER_MERGE_EVERY} = 0`;
-  ctx.write(
+  ctx.happened(
     ctx.d1
       .prepare(
         `INSERT INTO core_meta (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`,
@@ -282,7 +383,7 @@ function reviewAfterMerge(
       .bind(counter),
   );
   const id = newId("pendingAction");
-  ctx.write(
+  ctx.happened(
     ctx.d1
       .prepare(
         `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, workflow_id, kind, operation, risk,
@@ -303,7 +404,7 @@ function reviewAfterMerge(
       ),
   );
   // Its verdict feeds the adjudicator's precision on merges: approved = it was right to approve.
-  ctx.write(
+  ctx.happened(
     ctx.d1
       .prepare(
         `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id,
@@ -322,7 +423,7 @@ function reviewAfterMerge(
       ),
   );
   if (assignee)
-    ctx.write(
+    ctx.happened(
       ctx.d1
         .prepare(
           `INSERT INTO core_outbox (id, at, kind, payload, next_at) SELECT ?, ?, 'notify', ?, ? WHERE ${sampled}`,

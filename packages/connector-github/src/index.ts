@@ -107,7 +107,11 @@ export function revertsIn(
     const title = /^Revert "(.*)"/.exec(m);
     const sha = /This reverts commit ([0-9a-f]{7,40})/.exec(m)?.[1] ?? null;
     if (!title && !sha) continue;
-    const pr = title ? /#(\d+)/.exec(title[1] ?? "")?.[1] : undefined;
+    // The reverted PR from its merge title ("Merge pull request #N …") or a squash title's trailing
+    // "(#N)"; never the first "#N" anywhere ("Fix #9 crash (#41)" is PR 41).
+    const quoted = title?.[1] ?? "";
+    const pr =
+      /^Merge pull request #(\d+)\b/.exec(quoted)?.[1] ?? /\(#(\d+)\)\s*$/.exec(quoted)?.[1];
     out.push({ sha, pr: pr ? Number(pr) : null });
     if (out.length >= 20) break;
   }

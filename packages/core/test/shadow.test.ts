@@ -20,6 +20,7 @@ import {
   shadowVerdict,
   type WorkflowDefinition,
 } from "../src/stages/index.ts";
+import { checksObservation, checksVerdict } from "../src/stages/types/checks.ts";
 
 const item = (over: Partial<ItemSnapshot["item"]> = {}): ItemSnapshot["item"] => ({
   kind: "change",
@@ -621,11 +622,13 @@ describe("the second review of #148", () => {
   });
 
   it("checks reads exactly the verdict assemblePacket computes", () => {
-    // The reconciler's checks stage is fed the stored packet's verdict; at the switch-over it reads
-    // the same function. Here the function's own verdicts decide the replay.
-    const verdicts = (["pass", "fail"] as const).map((want) => {
-      const packet = assemblePacket(packetInput(want === "pass"));
-      return packet.verdict;
+    // The checks stage's verdict function calls assemblePacket, and nothing else decides it.
+    const verdicts = [true, false].map((green) => {
+      const input = packetInput(green);
+      const stage = checksVerdict(input);
+      expect(stage.verdict).toBe(assemblePacket(input).verdict);
+      expect(stage).toEqual({ verdict: stage.verdict, ...checksObservation(stage.verdict) });
+      return stage.verdict;
     });
     expect(verdicts).toEqual(["pass", "fail"]);
     const replay = (verdict: "pass" | "fail") =>
