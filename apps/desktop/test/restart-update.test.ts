@@ -174,6 +174,25 @@ describe("restartToUpdate", () => {
     expect(calls.slice(-2)).toEqual(["startRunner", "startLive"]);
   });
 
+  it("a handed-off apply that hangs past the stuck bound is stuck, and nothing comes back", async () => {
+    const lines: string[] = [];
+    const { d, calls } = deps({
+      log: (line) => lines.push(line),
+      apply: async (gate) => {
+        calls.push("apply");
+        expect(gate.handoff()).toBe(true);
+        // applyUpdate never returns, and the app never restarts.
+        await new Promise<void>(() => {});
+      },
+    });
+    expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 5, stuckTimeoutMs: 20 })).toBe(
+      "stuck",
+    );
+    expect(calls).not.toContain("startRunner");
+    expect(calls).not.toContain("startLive");
+    expect(lines.join("\n")).toMatch(/quit and reopen/);
+  });
+
   it("an apply that returns in time is not stalled", async () => {
     const { d } = deps();
     expect(await restartToUpdate(d, { anyway: true, applyTimeoutMs: 1_000 })).toBe("failed");
