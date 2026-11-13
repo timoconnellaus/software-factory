@@ -76,6 +76,16 @@ const ORDINARY: [string, string][] = [
     "Agreed-upon schema migration",
     "My-sql migration",
     "We-chat login",
+    // Round 3: a placeholder's opening with a real request after it.
+    "My code is crashing when I upload",
+    "My changes are lost after refresh",
+    "My PR has been stuck in verify for days",
+    "My commit has the wrong author in the log",
+    "I checked the docs page and it 404s",
+    "I read the docs and the install command is wrong",
+    "I tested the tests tab and it crashes",
+    "I have read the changelog page; it renders blank",
+    "I have added tests but CI still fails on main",
   ].map((t): [string, string] => [`Task: ${t}`, `- [ ] ${t}`]),
   ["API", "[note]: we should drop the v1 API"],
 ];
@@ -105,6 +115,8 @@ const EMPTY: [string, string][] = [
       "My code follows the style guidelines of this project",
       "This issue is not a duplicate",
       "I agree to the terms",
+      "I have read the [contributing guide](https://example.com/CONTRIBUTING.md)",
+      "**I have searched the existing issues**",
     ]
       .map((t) => `- [ ] ${t}`)
       .join("\n"),

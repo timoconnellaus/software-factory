@@ -67,28 +67,39 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
  * empty marker. Only these known shapes, as whole sentences; anything else is substance and goes to
  * triage (when unsure, fail open).
  */
+const END = String.raw`[.!]?$`;
+/** Each placeholder as a whole sentence (review of #169): nothing may follow but punctuation. */
 const TEMPLATE_LABELS: RegExp[] = [
-  // "I have read the contributing guide", "I've searched existing issues", "I agree to the terms".
-  /^i(?: have|'ve)? (?:read|searched|checked|tested|added|updated|followed|reviewed|confirmed|looked)(?: (?:for|through|at))? (?:the |all |existing |any |for )?(?:docs|documentation|guide|guidelines|contributing(?: guide(?:lines)?)?|code of conduct|existing (?:issues|pull requests|prs)|open (?:issues|prs)|issues|faq|readme|changelog|tests?|my (?:code|changes))\b.*$/i,
-  /^i agree (?:to|with) (?:the |this )?(?:terms|code of conduct|cla|license)\b.*$/i,
-  /^i (?:have|'ve) (?:added|updated|written) (?:tests|docs|documentation|a changeset)\b.*$/i,
-  /^i can reproduce (?:this|it|the (?:issue|bug))(?: (?:on|in) .*)?\.?$/i,
-  // "My code follows the style guidelines", "My changes generate no new warnings".
-  /^my (?:code|changes|pr|commits?) (?:follows?|generates?|passe[sd]|has|have|is|are|includes?)\b.*$/i,
+  // "I have read the contributing guide", "I've searched the existing issues".
+  String.raw`^i(?: have|'ve)? (?:read|searched|checked|followed|reviewed)(?: (?:for|through))? (?:the |all |any )?(?:existing |open )?(?:docs|documentation|contributing guide(?:lines)?|contribution guidelines|guidelines|code of conduct|issues|pull requests|prs|faq|readme)`,
+  String.raw`^i agree to (?:follow )?(?:the |this project's )?(?:terms|code of conduct|cla|license)`,
+  String.raw`^i(?: have|'ve) (?:added|updated|written) (?:tests|docs|documentation|a changeset)(?: for (?:my|this|the) (?:change|changes|fix|feature))?`,
+  String.raw`^i can reproduce (?:this|it|the (?:issue|bug))(?: (?:on|in) (?:the )?(?:latest|main)(?: version| release| branch)?)?`,
+  // "My code follows the style guidelines of this project", "My changes generate no new warnings".
+  String.raw`^my (?:code|changes) follows? the (?:code |coding )?style(?: guidelines?)?(?: of this project)?`,
+  String.raw`^my changes generate no new warnings`,
   // "Read the docs", "Followed the contributing guide".
-  /^(?:read|followed) the (?:docs|documentation|guide|guidelines|contributing(?: guide)?|code of conduct|readme|faq)\.?$/i,
-  // "This issue is not a duplicate", "This PR is not a duplicate", "Not a duplicate".
-  /^(?:this (?:issue|pr|pull request) is )?not a duplicate\.?$/i,
-  /^(?:searched|checked) (?:for )?(?:existing|open|similar) (?:issues|prs|pull requests)\.?$/i,
-  /^(?:tests?|docs?|documentation|changelog) (?:added|updated|written)\.?$/i,
-  /^(?:todo|tbd|n\/a|na|none|-)\.?$/i,
-];
+  String.raw`^(?:read|followed) the (?:docs|documentation|guide|guidelines|contributing guide|code of conduct|readme|faq)`,
+  // "This issue is not a duplicate", "Not a duplicate".
+  String.raw`^(?:this (?:issue|pr|pull request) is )?not a duplicate`,
+  String.raw`^(?:searched|checked) (?:for )?(?:existing|open|similar) (?:issues|prs|pull requests)`,
+  String.raw`^(?:tests?|docs?|documentation|changelog) (?:added|updated|written)`,
+  String.raw`^(?:todo|tbd|n\/a|na|none|-)`,
+].map((p) => new RegExp(`${p}${END}`, "i"));
+
+/** A label's words without markdown: a link's text, emphasis and code marks dropped. */
+const plainLabel = (t: string) =>
+  t
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|\*|_|`)(.+?)\1/g, "$2")
+    .replace(/\s+/g, " ")
+    .trim();
 
 /** An unticked box that is a template's placeholder, not a task. */
 function templateBox(line: string): boolean {
   const m = /^\s*([-*+]|\d+[.)])\s+\[ ?\](?:\s+(.*))?$/.exec(line);
   if (!m) return false;
-  const label = (m[2] ?? "").trim().replace(/\s+/g, " ");
+  const label = plainLabel(m[2] ?? "");
   return label === "" || TEMPLATE_LABELS.some((re) => re.test(label));
 }
 
