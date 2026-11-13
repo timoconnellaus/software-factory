@@ -29,13 +29,13 @@ import type {
   EventsRequest,
   HeartbeatRequest,
   HeartbeatResponse,
+  LineCallResponse,
   PlanningCallRequest,
   ReleaseRequest,
   SteersRequest,
   SteersResponse,
   TerminalCallRequest,
   TerminalCallResponse,
-  LineCallResponse,
   TokenResponse,
 } from "./wire.ts";
 

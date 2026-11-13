@@ -6,6 +6,7 @@ import { clientHub } from "./client-hub.ts";
 import { deliverRepository } from "./deliver/deliverer.ts";
 import { planningHub } from "./planning-hub.ts";
 import { failDeadRelease, pullProject } from "./pull.ts";
+import { terminalRelay } from "./terminal-relay.ts";
 
 interface OutboxRow {
   id: string;
@@ -133,15 +134,23 @@ async function dispatch(env: Env, message: OutboxMessage): Promise<void> {
       // The pull a release, finish or cancel asked for, now that it has committed (ADR 0491).
       await pullProject(env, message.payload.projectId);
       return;
-    case "planning.changed":
+    case "planning.changed": {
+      // The planning job's line, when the item has one running (spec 44 part B): its hook's wait
+      // wakes and calls planning.wait once.
+      const planningJob = await activeJob(env, message.payload.workItemId, "planning");
+      if (planningJob) await terminalRelay(env, planningJob).push("planning");
       // Live Planning tabs and the planning agent's held wait hear it from the hub (ADR 0350).
       await planningHub(env, message.payload.workItemId).notify();
       await notifyPlanningViewers(env, message.payload.workItemId);
       return;
-    case "run.steered":
-      // Nothing to wake: the runner host's held steer call polls for queued steers in the Worker
-      // (spec 44 part A); the runner socket's push (part B) will route here by job.
+    }
+    case "run.steered": {
+      // Pushed down the job's line (spec 44 part B, ADR 0592): the host then takes its steers with
+      // its own fenced call. A host without a line finds them on its held call's poll (part A).
+      const jobId = message.payload.jobId ?? (await activeJob(env, message.payload.workItemId));
+      if (jobId) await terminalRelay(env, jobId).push("steer");
       return;
+    }
     case "device.revoked":
       // A revoked device's live socket closes now, not when it next calls (ADR 0541).
       await clientHub(env, message.payload.userId).closeDevice(message.payload.deviceId);
@@ -203,4 +212,20 @@ export async function notifyClients(env: Env, payload: NotifyPayload): Promise<s
     ),
   );
   return users;
+}
+
+/**
+ * The work item's running job (optionally of one stage): the newest active run, read backwards on
+ * UNIQUE (work_item_id, run_no), at most a few runs per item. For a `run.steered` queued before it
+ * carried `jobId`, and for `planning.changed` (spec 44 part B).
+ */
+async function activeJob(env: Env, workItemId: string, stage?: string): Promise<string | null> {
+  return env.DB.prepare(
+    `SELECT job_id FROM core_runs WHERE work_item_id = ?
+       AND status IN ('claimed', 'preparing', 'running', 'collecting')
+       ${stage ? "AND stage = ?" : ""}
+     ORDER BY run_no DESC LIMIT 1`,
+  )
+    .bind(...(stage ? [workItemId, stage] : [workItemId]))
+    .first<string>("job_id");
 }
