@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
  */
 const LATE_BLOCKS: [number, number][] = [
   // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
-  [367, 367],
+  [367, 368],
 ];
 
 const late = (name: string) => {

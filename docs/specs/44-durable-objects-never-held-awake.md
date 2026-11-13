@@ -1,6 +1,6 @@
 # Spec 44: Durable Objects are never held awake
 
-**Status: building.** PR 1 (steers and the terminal, part A1 and A2) is built (migration 0367). The coordinator schedules the build after #73 and the planning
+**Status: building.** PR 1 (steers and the terminal, part A1 and A2) is built (migration 0367); PR 2 (planning, part A3) is built. The coordinator schedules the build after #73 and the planning
 PRs land, because they touch the same files (`channel.ts`, `planning.ts`, `planning.tsx`,
 `local/runner-host`).
 

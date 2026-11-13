@@ -38,6 +38,7 @@ import {
   NEWS_EVENTS,
   newsEnvelope,
   OPEN_SESSION,
+  openQuestionCount,
   openSession,
   type PlanningSessionRow,
   planningPrompt,
@@ -47,6 +48,7 @@ import {
   STANDING_EDITS_MAX,
   standingEdits,
   takeBackFromGate,
+  USER_EVENTS,
   wakeSession,
   withdrawSpecGate,
 } from "../planning.ts";
@@ -631,7 +633,7 @@ export const planningNews = defineOperation({
 export const planningPeek = defineOperation({
   name: "planning.peek",
   description:
-    "Whether there is planning news after a cursor (default: the last one delivered), and whether the session must yield or has ended (spec 26). A read, so a hook's look between the agent's steps costs no write.",
+    "Whether there is planning news after a cursor (default: the last one delivered), when a batch of it is due (`dueAt`, the same rule as planning.wait, null while paused or with nothing a person did), and whether the session must yield or has ended (spec 26, 44). A read, so a hook's look between the agent's steps, and sf-engine's held wait polling it, cost no write.",
   risk: "read",
   actors: ["runner"],
   permission: "signed-in",
@@ -639,6 +641,8 @@ export const planningPeek = defineOperation({
   output: z.object({
     latest: z.number(),
     news: z.boolean(),
+    /** When planning.wait would hand this news over (ISO), or null: nothing due, or paused. */
+    dueAt: z.string().nullable(),
     yield: z.boolean(),
     ended: z.boolean(),
   }),
@@ -646,17 +650,26 @@ export const planningPeek = defineOperation({
   async handler(input, ctx) {
     const { session } = await planningJob(ctx, input);
     const from = Math.max(input.cursor ?? 0, session.delivered_cursor);
-    const rows = await ctx.db
-      .selectFrom("core_planning_events")
-      .select(["id", "type"])
-      .where("work_item_id", "=", session.work_item_id)
-      .where("id", ">", from)
-      .orderBy("id", "desc")
-      .limit(200)
-      .execute();
+    const events = (types?: readonly string[]) =>
+      ctx.db
+        .selectFrom("core_planning_events")
+        .where("work_item_id", "=", session.work_item_id)
+        .where("id", ">", from)
+        .$if(types !== undefined, (q) => q.where("type", "in", types as string[]));
+    // Only what is pending for the agent, each on (work_item_id, id): the newest event, whether any
+    // is news (LIMIT 1), and a person's latest (the batch rule needs only that one).
+    const [newest, anyNews, latestUser, open] = await Promise.all([
+      events().select("id").orderBy("id", "desc").limit(1).executeTakeFirst(),
+      events(NEWS_EVENTS).select("id").limit(1).executeTakeFirst(),
+      events(USER_EVENTS).select(["type", "at"]).orderBy("id", "desc").limit(1).executeTakeFirst(),
+      openQuestionCount(ctx, session.work_item_id),
+    ]);
+    const dueAt =
+      session.paused_at === null && latestUser ? batchDue([latestUser], open, input.idleMs) : null;
     return {
-      latest: rows[0]?.id ?? from,
-      news: rows.some((r) => (NEWS_EVENTS as readonly string[]).includes(r.type)),
+      latest: newest?.id ?? from,
+      news: anyNews !== undefined,
+      dueAt: dueAt === null ? null : new Date(dueAt).toISOString(),
       yield: session.yield_requested_at !== null,
       ended: !OPEN_SESSION.includes(session.status),
     };
@@ -758,7 +771,7 @@ function deliver(
 export const planningWait = defineOperation({
   name: "planning.wait",
   description:
-    "The planning agent's Stop hook waits for news (spec 20, kim's batch rule): due once a person has paused 15 s after their latest answer, at once after a chat message or when no question is left open. This evaluates once and answers `due: false` with when to look again; sf-engine's channel holds the call and re-evaluates on every change. A wait that asks the session to yield answers `yield: true`.",
+    "The planning agent's Stop hook waits for news (spec 20, kim's batch rule): due once a person has paused 15 s after their latest answer, at once after a chat message or when no question is left open. This evaluates once and answers `due: false` with when to look again; sf-engine's channel holds the call in the Worker, polling planning.peek, and evaluates again when news falls due (spec 44). A wait that asks the session to yield answers `yield: true`.",
   risk: "write",
   // Re-evaluated on every change and every 50 s: audited when news is handed over or the
   // session changes (logPlanning marks it), ADR 0590.
@@ -799,7 +812,12 @@ export const planningWait = defineOperation({
       );
       logPlanning(ctx, session.work_item_id, "session.changed", { status: "idle" });
       if (await agentDrafted(ctx)) await announce(ctx, session);
-    } else {
+    } else if (
+      session.agent_seen_at === null ||
+      Date.parse(ctx.now) - Date.parse(session.agent_seen_at) >= SEEN_REFRESH_MS
+    ) {
+      // Kept fresh under the same rule as markWorking: a wait evaluated often (sf-engine's held
+      // wait re-calls it when news falls due) writes at most every SEEN_REFRESH_MS (spec 44).
       ctx.write(
         ctx.db
           .updateTable("core_planning_sessions")

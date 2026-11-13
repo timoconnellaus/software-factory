@@ -719,8 +719,7 @@ export const runSteer = defineOperation({
       logPlanning(ctx, item.id, "chat.steered", { messageId, steerId: id });
       await takeBackFromGate(ctx, item, "a person steered the planner");
     }
-    // Wakes the runner host's held steer call (sf-engine: the work item's hub).
-    ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
+    // Nothing to wake: the runner host's held steer call polls for it in the Worker (spec 44).
     return { steerId: id, text, status: "queued" as const };
   },
 });
@@ -781,6 +780,15 @@ export const runTakeSteers = defineOperation({
             queued.map((s) => s.id),
           )
           .where("delivered_at", "is", null),
+      );
+      // Every steer this call read is the one it marks delivered, or the batch aborts: two takes
+      // racing can't both hand the same steer over (the loser answers 409 conflict, and the
+      // channel's held call keeps waiting).
+      ctx.guardExists(
+        "steers taken once",
+        ctx.db
+          .selectNoFrom(sql<number>`1`.as("one"))
+          .where(sql<boolean>`changes() = ${queued.length}`),
       );
       // A steer typed into a planning session is its chat message's delivery (spec 26).
       ctx.write(
@@ -845,8 +853,7 @@ export const runTakeover = defineOperation({
       }),
     );
     ctx.change({ entity: "run_steer", id, after: { runId: run.id, kind: "takeover" } });
-    // The same wake as a steer: the host's held steer call takes it at once.
-    ctx.emit({ kind: "run.steered", payload: { workItemId: item.id } });
+    // Like a steer: the host's held steer call finds it on its next poll (spec 44).
     return { requestId: id, status: "queued" as const };
   },
 });

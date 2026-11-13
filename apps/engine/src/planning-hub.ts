@@ -1,7 +1,8 @@
 // The PlanningHub (spec 20, ADR 0350): one Durable Object per work item that knows when its
-// planning changed (and, since ADR 0400, wakes the runner host's held steer call). The outbox delivers each `planning.changed` here; the hub pushes a line to every
-// open Planning tab's Server-Sent-Events stream (the app re-reads `planning.get`) and wakes the
-// planning agent's held `planning.wait`. It keeps no state worth saving: a hub that restarts starts
+// planning changed. The outbox delivers each `planning.changed` here; the hub pushes a line to every
+// open website Planning tab's Server-Sent-Events stream (the app re-reads `planning.get`). Since
+// spec 44 nothing waits on it: the held `planning.wait` and steer calls poll in the Worker. Its SSE
+// stream (and so the hub) goes with spec 44 PR 3, when the website's tab moves to the ClientHub. It keeps no state worth saving: a hub that restarts starts
 // a new sequence, and every reader re-reads D1, so nothing is lost but a wake-up the next change or
 // timeout brings anyway.
 import { DurableObject } from "cloudflare:workers";
@@ -12,53 +13,14 @@ const encoder = new TextEncoder();
 
 export class PlanningHub extends DurableObject<Env> {
   private seq = 0;
-  private readonly waiters = new Set<() => void>();
   private readonly streams = new Set<WritableStreamDefaultWriter<Uint8Array>>();
   private keepalive: ReturnType<typeof setInterval> | null = null;
 
-  /** The current sequence: pass it to `waitForChange` to miss nothing in between. */
-  async current(): Promise<number> {
-    return this.seq;
-  }
-
-  /** Something changed: wake every waiter and tell every open view. */
+  /** Something changed: tell every open view. */
   async notify(): Promise<number> {
     this.seq++;
-    for (const wake of [...this.waiters]) wake();
-    this.waiters.clear();
     await this.send(`event: changed\ndata: ${JSON.stringify({ seq: this.seq })}\n\n`);
     return this.seq;
-  }
-
-  /**
-   * Wake every waiter without telling the open views (ADR 0400): a run's steer, which the runner
-   * host's held steer call waits for on the same hub. Waiters re-read D1 and wait again.
-   */
-  async wake(): Promise<number> {
-    this.seq++;
-    for (const wake of [...this.waiters]) wake();
-    this.waiters.clear();
-    return this.seq;
-  }
-
-  /**
-   * Resolves `true` at the first change after `since` (at once if one already happened), or `false`
-   * after `ms` with none.
-   */
-  async waitForChange(since: number, ms: number): Promise<boolean> {
-    if (this.seq > since) return true;
-    if (ms <= 0) return false;
-    return new Promise<boolean>((resolve) => {
-      const wake = () => {
-        clearTimeout(timer);
-        resolve(true);
-      };
-      const timer = setTimeout(() => {
-        this.waiters.delete(wake);
-        resolve(false);
-      }, ms);
-      this.waiters.add(wake);
-    });
   }
 
   /** A Server-Sent-Events stream of changes, for one open Planning tab. */
@@ -78,9 +40,9 @@ export class PlanningHub extends DurableObject<Env> {
     return readable;
   }
 
-  /** How many views and waiters are attached (tests). */
-  async listeners(): Promise<{ streams: number; waiters: number }> {
-    return { streams: this.streams.size, waiters: this.waiters.size };
+  /** How many views are attached (tests). */
+  async listeners(): Promise<{ streams: number }> {
+    return { streams: this.streams.size };
   }
 
   private async send(text: string) {
