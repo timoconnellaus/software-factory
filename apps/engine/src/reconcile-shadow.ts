@@ -24,10 +24,12 @@
 import { has, onOrgWorkflow, type ProjectPolicy, parseProjectPolicy } from "@software-factory/core";
 import {
   compileItemWorkflow,
+  type EventRow,
   effectivePolicy,
   type GateRow,
   type ItemEnd,
   type JobRow,
+  type PacketRow,
   parseOrgConfig,
   type ShadowHistory,
   type ShadowObserved,
@@ -54,6 +56,10 @@ interface ItemRow {
   approvals: string | null;
   /** The Workflow version it ran on (ADR 0053). */
   workflow_version: number | null;
+  shaping_started_at: string | null;
+  release_flag: string | null;
+  /** The approved plan's kept `.kim/` files (spec 22), JSON. */
+  kim_files: string | null;
 }
 
 /** Where the last pass stopped: `<updated_at> <id>` of the last ended item it read. */
@@ -94,7 +100,9 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   const reads = await env.DB.batch(
     ids.flatMap((id) => [
       env.DB.prepare(
-        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version, p.raw,
+        `SELECT w.id, w.org_id, w.kind, w.status, w.size, w.domains, w.spec_required, w.workflow, w.pulled_at, w.workflow_version,
+           w.shaping_started_at, w.release_flag, p.raw,
+           (SELECT s.kim_files FROM core_specs s WHERE s.id = w.current_spec_id) AS kim_files,
            c.raw AS org_raw,
            (SELECT json_group_array(json_object('stage', a.stage_id, 'setting', a.setting, 'value', a.value))
             FROM core_override_approvals a
@@ -116,6 +124,7 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
            json_extract(j.context, '$.step.id') AS step,
            json_extract(j.context, '$.specId') IS NOT NULL AS critic,
            json_extract(j.context, '$.adjudicate') IS NOT NULL AS adjudicate,
+           json_extract(j.context, '$.adjudicate.kind') AS adjudicateKind,
            json_extract(r.result, '$.verdict') AS verdict, json_extract(r.result, '$.notes') AS note
          FROM core_jobs j LEFT JOIN core_runs r ON r.id = j.run_id
          WHERE j.work_item_id = ? LIMIT 200`,
@@ -126,14 +135,29 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
         `SELECT pa.kind, pa.operation, pa.status, pa.decision, pa.created_at AS at,
            pa.decided_at AS decidedAt, pa.note,
            json_extract(pa.input, '$.stepId') AS step, json_extract(pa.input, '$.headSha') AS headSha,
-           EXISTS (SELECT 1 FROM core_user u WHERE u.id = pa.decided_by) AS byPerson
+           EXISTS (SELECT 1 FROM core_user u WHERE u.id = pa.decided_by) AS byPerson,
+           pa.decided_by AS decidedBy, a.mode AS adjMode, a.acted AS adjActed
          FROM core_pending_actions pa
+         LEFT JOIN core_adjudications a ON a.pending_action_id = pa.id
          WHERE pa.work_item_id = ? LIMIT 200`,
       ).bind(id),
-      // The merge queue merged the default branch in and carried the packet to the new head
-      // (carryReviewPacket, ADR 0330).
+      // Its review packets (core_review_packets_item_idx, in its order): the verdict the checks
+      // stage reads, and whether the merge queue carried one to a new head (ADR 0330).
       env.DB.prepare(
-        "SELECT 1 AS moved FROM core_review_packets WHERE work_item_id = ? AND json_extract(sections, '$.carriedFrom') IS NOT NULL LIMIT 1",
+        `SELECT head_sha AS headSha, verdict, created_at AS at,
+           json_extract(sections, '$.carriedFrom') IS NOT NULL AS carried
+         FROM core_review_packets WHERE work_item_id = ? ORDER BY created_at LIMIT 50`,
+      ).bind(id),
+      // What has no point of its own in the replay (a re-pin, a release choice, a question, a
+      // parked item): from the item's own audit rows (core_audit_item_idx), the few that matter.
+      env.DB.prepare(
+        `SELECT operation, at,
+           instr(diff, '"workflow":"repinned"') > 0 AS repinned,
+           instr(diff, 'needsInfo') > 0 AS parked
+         FROM core_audit WHERE work_item_id = ? AND outcome = 'ok'
+           AND (operation IN ('workItem.repinWorkflow', 'workItem.releaseChoice', 'question.ask')
+             OR instr(diff, 'needsInfo') > 0)
+         LIMIT 50`,
       ).bind(id),
     ]),
   );
@@ -147,14 +171,23 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
     const at = PER_ITEM * i;
     const row = (reads[at]?.results as ItemRow[] | undefined)?.[0];
     const stages = (reads[at + 1]?.results ?? []) as StageRow[];
-    const queueHeadMoved = (reads[at + 4]?.results ?? []).length > 0;
+    const packetRows = (reads[at + 4]?.results ?? []) as (PacketRow & { carried: number })[];
+    const queueHeadMoved = packetRows.some((p) => p.carried === 1);
+    const packets = packetRows.map(({ headSha, verdict, at: t }) => ({ headSha, verdict, at: t }));
+    const events = ((reads[at + 5]?.results ?? []) as RawEvent[]).flatMap(eventOf);
     const jobs = ((reads[at + 2]?.results ?? []) as RawJob[]).map(jobOf);
     const gates = ((reads[at + 3]?.results ?? []) as RawGate[]).map(gateOf);
     const verdict = row
       ? verdictOf(
           row,
-          { stages, jobs, gates },
-          { queueHeadMoved, babysitter: has(row.workflow_version, "babysitter-delivery") },
+          { stages, jobs, gates, packets, events },
+          {
+            queueHeadMoved,
+            babysitter: has(row.workflow_version, "babysitter-delivery"),
+            keptDesigns: !!row.kim_files && row.kim_files !== "[]",
+            releasedAt: row.shaping_started_at ? row.pulled_at : null,
+            releaseFlag: !!row.release_flag,
+          },
         )
       : null;
     if (!row || !verdict) return;
@@ -175,8 +208,8 @@ export async function shadowPass(env: Env, now = new Date()): Promise<number> {
   await env.DB.batch(writes);
   return ended.length;
 }
-/** Per ended item, the batch reads: the item, its stages, its jobs, its gates, a moved head. */
-const PER_ITEM = 5;
+/** Per ended item, the batch reads: the item, its stages, jobs, gates, packets and events. */
+const PER_ITEM = 6;
 
 interface RawJob {
   stage: JobRow["stage"];
@@ -201,6 +234,9 @@ interface RawGate {
   step: string | null;
   headSha: string | null;
   byPerson: number;
+  decidedBy: string | null;
+  adjMode: string | null;
+  adjActed: number | null;
 }
 const jobOf = (j: RawJob): JobRow => ({
   ...j,
@@ -209,7 +245,27 @@ const jobOf = (j: RawJob): JobRow => ({
   // `notes` is a list in a run's result; one line is enough for a send-back's note.
   note: typeof j.note === "string" ? j.note.slice(0, 500) : null,
 });
-const gateOf = (g: RawGate): GateRow => ({ ...g, byPerson: g.byPerson === 1 });
+const gateOf = ({ adjMode, adjActed, ...g }: RawGate): GateRow => ({
+  ...g,
+  byPerson: g.byPerson === 1,
+  adjudication: adjMode ? { mode: adjMode, acted: adjActed === 1 } : null,
+});
+
+interface RawEvent {
+  operation: string;
+  at: string;
+  repinned: number;
+  parked: number;
+}
+const eventOf = (e: RawEvent): EventRow[] => {
+  const out: EventRow[] = [];
+  if (e.operation === "workItem.repinWorkflow" && e.repinned === 1)
+    out.push({ kind: "repin", at: e.at });
+  if (e.operation === "workItem.releaseChoice") out.push({ kind: "releaseChoice", at: e.at });
+  if (e.operation === "question.ask") out.push({ kind: "question", at: e.at });
+  if (e.parked === 1) out.push({ kind: "parked", at: e.at });
+  return out;
+};
 
 function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserved) {
   const stages = history.stages;
@@ -251,7 +307,7 @@ function verdictOf(row: ItemRow, history: ShadowHistory, observed: ShadowObserve
     },
     history,
     row.status as ItemEnd,
-    observed,
+    { ...observed, adjudicator: policy.adjudicator },
   );
 }
 

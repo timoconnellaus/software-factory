@@ -1201,7 +1201,24 @@ screen needs).
    carries the approved change (`Observations.carriedApproval`, spec 53), including v12's carried
    approval after a re-verify; it stays a named divergence only for items before the babysitter
    (v4 to v10). The agent check now retries its run up to the item's retry limit, as today's slot
-   steps do. `reconcile.streak` reports a number. Not modelled, so reported as divergences on the
+   steps do. `reconcile.streak` reports a number. After review: **nothing is dropped silently.**
+   Whatever the replay has no point for is named in the item's `uncompared` list, so the item never
+   counts toward the streak: a gate whose operation the reconciler doesn't model, a re-pin (Q3), a
+   release choice or a release flag (Q4), questions put to a person, a parked item, the plan's kept
+   designs written back (spec 22), a job or a stage row the workflow doesn't have, a verify with no
+   packet. The spec critic's runs are compared with the spec stage's `critic` setting, and the
+   adjudicator's with the project's mode for that gate kind. A skip of a stage the workflow lacks
+   (an attached PR's spec and build) is a named equivalence (`absent-stage-skipped`), reported, not
+   a divergence. A shaped item's release is a point of its own (the reconciler waits for it). A
+   gate decided by the adjudicator agrees only where it had earned it (its record: active for that
+   kind, and it acted). **The checks stage reads the review packet's verdict**, the stored output of
+   `assemblePacket` (`packages/core/src/verify/packet.ts`), never the Workflow's own outcome; at the
+   switch-over the reconciler's checks stage reads the verdict from the same function, so a
+   Workflow that moved on against its packet diverges (tested). `reconcile.streak` reports, beside
+   the number, which of the switch-over's scenarios (`COVERAGE`: a verify that fails, slot and
+   merge-gate send-backs, retries past the limit, changes requested at the spec gate, a parked item
+   or one with questions, a cancel, a carried approval, an attached PR, an incident) the streak's
+   items covered and which are missing. Not modelled, so reported as divergences on the
    items that hit them: triage's readiness rounds (re-triage on answers), a PR conflict's free
    rounds (v3), and a stage added by a re-pin before the item's stage (Q3). `reconcile()`, the
    snapshot loader and `next()` for Software's types. It runs on the outbox and the cron beside the
