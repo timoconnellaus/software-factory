@@ -80,6 +80,7 @@ export type ReadOpName =
   | "config.export"
   | "adjudicator.stats"
   | "workflow.get"
+  | "workflow.list"
   | "incident.listArchiveMissing";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(

@@ -90,3 +90,14 @@ message is unread. A person's chat, answer or revised answer while the spec wait
 withdraws the gate (`withdrawn`), and the Workflow's planning stage starts the next round in the
 same version. See [ADR 0470](0470-planning-steering.md).
 
+
+## Amended, 2026-11-13 (spec 44, part A3)
+The held `planning.wait` no longer waits on the PlanningHub. sf-engine's channel evaluates
+`planning.wait` once (fenced). While nothing is due it polls `planning.peek` in the Worker every
+`HELD_POLL_MS` (3 s). `planning.peek` is a read, and now answers `dueAt` with the same batch rule
+and the wait's `idleMs`. The channel evaluates `planning.wait` again only when news falls due, the
+session must yield or has ended, the wait's `recheckAt` passes, or the hold ends.
+- `planning.wait` writes `agent_seen_at` at most every 30 s while it waits.
+- `PlanningHub.waitForChange` and `wake()` are deleted.
+- The hub keeps `notify()` and the website's SSE stream until spec 44 PR 3.
+- `run.steered` no longer wakes the hub.
