@@ -222,6 +222,51 @@ describe("the babysit job (spec 53 §4)", () => {
       code: "conflict",
       details: { fullDiffRequired: true },
     });
+    // Round 2: clean, but a file outside the conflict differs from a plain merge (main's fix
+    // undone, say): still the full diff first, from any surface (the website sends false).
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = json_set(summary, '$.status', 'clean', '$.reason', NULL, '$.outside', json('[\"src/b.ts\"]')) WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    expect(await mergeWithout()).toMatchObject({
+      code: "conflict",
+      details: { fullDiffRequired: true },
+    });
+    // branch.advance's own marker (the head came from a babysit run) holds on its own, when the
+    // pass died before recording the resolution and the delivery ended for another reason.
+    expect(
+      await first<{ head_sha: string }>(
+        "SELECT head_sha FROM core_babysit_resolutions WHERE work_item_id = ?",
+        a.id,
+      ),
+    ).toEqual({ head_sha: resolution });
+    await env.DB.prepare(
+      "UPDATE core_babysit_resolutions SET summary = '{\"pending\":true}' WHERE work_item_id = ?",
+    )
+      .bind(a.id)
+      .run();
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET end_reason = 'ended for another reason' WHERE work_item_id = ? AND status = 'left'",
+    )
+      .bind(a.id)
+      .run();
+    expect(
+      await ok<{ babysitResolution: unknown; resolutionExpected?: boolean }>(
+        "workItem.get",
+        { workItemId: a.id },
+        w.human,
+      ),
+    ).toMatchObject({ babysitResolution: null, resolutionExpected: true });
+    expect(await mergeWithout()).toMatchObject({ details: { fullDiffRequired: true } });
+    await env.DB.prepare(
+      "UPDATE core_merge_queue SET end_reason = ? WHERE work_item_id = ? AND status = 'left'",
+    )
+      .bind(
+        `the babysitter resolved a conflict with the default branch in ${resolution.slice(0, 7)}: review the resolution.`,
+        a.id,
+      )
+      .run();
     // No record at all (a refused babysit.resolution, or one that doesn't parse): still held to it.
     await env.DB.prepare("DELETE FROM core_babysit_resolutions WHERE work_item_id = ?")
       .bind(a.id)

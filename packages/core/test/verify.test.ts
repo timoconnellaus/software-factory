@@ -4,6 +4,7 @@ import {
   assemblePacket,
   checkOnlyDiff,
   FOREMAN,
+  RESOLVED_CONFLICT,
   riskFlags,
   summarizeCi,
   verifyCheckOutput,
@@ -390,6 +391,45 @@ describe("the check-only auto-merge (ADR 0230)", () => {
     );
     expect(out.merged).toBe(true);
     expect((await github.state(w.repo)).pulls[0]?.state).toBe("merged");
+  });
+
+  // #201 review, round 2: a head the babysitter resolved goes to a person, check-only or not, and
+  // whether or not its resolution was recorded (branch.advance's marker is enough).
+  it("refuses to auto-merge a head the babysitter resolved", async () => {
+    for (const summary of [JSON.stringify({ pending: true }), null]) {
+      const { w, item, head } = await incidentAtMerge(OPT_IN, CHECK_ONLY);
+      await record(item.workItemId, head);
+      if (summary) {
+        await env.DB.prepare(
+          "INSERT INTO core_babysit_resolutions (work_item_id, head_sha, summary, patches, created_at) VALUES (?, ?, ?, '{}', ?)",
+        )
+          .bind(item.workItemId, head, summary, new Date().toISOString())
+          .run();
+      } else {
+        // No record, but the deliverer ended the delivery for a resolution of this head.
+        await env.DB.prepare(
+          "INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, status, enqueued_at, updated_at, ended_at, outcome, end_reason, driver) VALUES (?, ?, ?, ?, ?, 'left', ?, ?, ?, 'withdrawn', ?, 'babysitter')",
+        )
+          .bind(
+            `mq_${head.slice(0, 8)}`,
+            w.projectId,
+            item.workItemId,
+            head,
+            head,
+            new Date().toISOString(),
+            new Date().toISOString(),
+            new Date().toISOString(),
+            `${RESOLVED_CONFLICT}${head.slice(0, 7)}: review the resolution.`,
+          )
+          .run();
+      }
+      const e = await refusal(
+        ok("pr.autoMerge", { workItemId: item.workItemId, headSha: head }, FOREMAN),
+      );
+      expect(e.code).toBe("denied");
+      expect(e.message).toMatch(/babysitter resolved a conflict on this commit: a person decides/);
+      expect((await github.state(w.repo)).pulls[0]?.state).toBe("open");
+    }
   });
 
   it("takes a real check-only diff with a finding through the packet and refuses its auto-merge (ADR 0500)", async () => {

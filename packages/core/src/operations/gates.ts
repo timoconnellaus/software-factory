@@ -14,7 +14,7 @@ import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { childrenOf, createSplitChildren } from "../splits.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
-import { resolutionAtGate } from "./babysit.ts";
+import { fullDiffNeeded, resolutionAtGate } from "./babysit.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
 import { startTrial } from "./improve.ts";
 import { openIncident } from "./incidents.ts";
@@ -456,19 +456,16 @@ export const reviewMerge = defineOperation({
     let note = input.note ?? null;
     if (pa.status === "pending") {
       const item = requireWorkItem(ctx);
-      // The babysitter's resolution (spec 53 decision 1, #201 review): when it isn't a clean one
-      // read in full, or was expected and can't be shown, the person reviews the whole diff, and
+      // The babysitter's resolution (spec 53 decision 1, #201 review): unless there is nothing
+      // but a clean conflict to look at, the person reviews the whole diff of the gate's head, and
       // the engine holds them to it: refused unless they opened the full diff in this decision.
-      const at = await resolutionAtGate(ctx, item);
-      if (
-        !input.openedFullDiff &&
-        (at.resolution ? at.resolution.status !== "clean" : at.expected)
-      ) {
+      const why = fullDiffNeeded(
+        await resolutionAtGate(ctx, item, mergeGateHead(pa) ?? item.head_sha),
+      );
+      if (why && !input.openedFullDiff) {
         throw new OperationError(
           "conflict",
-          at.resolution
-            ? `The babysitter's resolution of this conflict couldn't be shown on its own (${at.resolution.reason ?? at.resolution.status}). Open the full diff before you merge.`
-            : "The babysitter resolved a conflict on this commit, but its resolution couldn't be shown. Open the full diff before you merge.",
+          `The babysitter resolved a conflict on this commit and ${why}. Open the full diff before you merge.`,
           { fullDiffRequired: true },
         );
       }

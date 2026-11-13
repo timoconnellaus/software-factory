@@ -7,6 +7,7 @@ import { BABYSITTER } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { defineOperation } from "../operation.ts";
 import { has } from "../workflow-features.ts";
+import { markResolutionHead } from "./babysit.ts";
 import { requireOpenToMerge, requireQueueHead } from "./merge-queue.ts";
 import { repoRef, requireRepository, requireWorkItem, sha, workItemId } from "./shared.ts";
 
@@ -74,8 +75,16 @@ export const branchAdvance = defineOperation({
       return { ok: false, sha: null, reason: "the run's fencing token is stale (taken over)" };
     }
     const repo = await repoRef(ctx, requireRepository(ctx));
+    const job = await ctx.db
+      .selectFrom("core_jobs")
+      .select("stage")
+      .where("id", "=", run.job_id)
+      .executeTakeFirst();
     const moved = await ctx.services.github.fastForward(repo, w.branch, run.head_sha);
     if (!moved.ok) return { ok: false, sha: null, reason: moved.reason };
+    // A babysit job's head is a resolution (spec 53 decision 1): marked in this batch, so the gate
+    // knows it reopened for one whatever happens to the rest of the pass (#201 review, round 2).
+    if (job?.stage === "babysit") markResolutionHead(ctx, w.id, run.head_sha);
     ctx.write(
       ctx.db
         .updateTable("core_work_items")

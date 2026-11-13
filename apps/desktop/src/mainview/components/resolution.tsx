@@ -62,6 +62,34 @@ export function resolutionView(detail: WorkItemDetail): ResolutionView {
   return { kind: "whole", why, sha: r.sha };
 }
 
+/**
+ * Whether merging needs the full diff opened first (#201 review, round 2), as review.merge's rule
+ * has it: the gate reopened for a resolution and there's more to look at than a clean conflict
+ * (it isn't clean, can't be shown, or has files outside the conflict or unlisted).
+ */
+export function resolutionNeedsFullDiff(detail: WorkItemDetail): boolean {
+  const view = resolutionView(detail);
+  if (view.kind === "none") return false;
+  if (view.kind === "whole") return true;
+  const r = view.resolution;
+  return r.outside.length + (r.outsideNotShown ?? 0) > 0 || r.notShown > 0;
+}
+
+/** The resolution's commit and the review packet's, when they differ (any view). */
+function OtherHead({ detail, sha }: { detail: WorkItemDetail; sha: string | null }) {
+  const packetHead = detail.reviewPacket?.headSha ?? null;
+  if (!sha || !packetHead || packetHead === sha) return null;
+  return (
+    <div className="flex items-start gap-2 text-xs" data-testid="resolution-other-head">
+      <StatusDot status="waiting" className="mt-1" />
+      <span>
+        This resolution is for <span className="font-mono">{sha.slice(0, 7)}</span>, but the review
+        packet is for <span className="font-mono">{packetHead.slice(0, 7)}</span>.
+      </span>
+    </div>
+  );
+}
+
 /** A link to the PR's full diff on GitHub, which also marks the full diff opened. */
 function FullDiff({ prUrl, onOpen }: { prUrl: string | null; onOpen: () => void }) {
   if (!prUrl) return null;
@@ -133,12 +161,12 @@ export function ResolutionPanel({
           The resolution
         </SectionTitle>
         <WholeDiff why={view.why} sha={view.sha} prUrl={prUrl} onOpenDiff={onOpenDiff} />
+        <OtherHead detail={detail} sha={view.sha} />
       </section>
     );
   }
   const r = view.resolution;
   const sha = r.sha.slice(0, 7);
-  const packetHead = detail.reviewPacket?.headSha ?? null;
   const outside = new Set(r.outside);
   const listed = new Set(r.files.map((f) => f.path));
   const unlisted = r.outside.filter((p) => !listed.has(p));
@@ -167,15 +195,7 @@ export function ResolutionPanel({
           . Each patch is against the commit you approved, so it includes the default branch's
           changes.
         </div>
-        {packetHead && packetHead !== r.sha && (
-          <div className="flex items-start gap-2 text-xs" data-testid="resolution-other-head">
-            <StatusDot status="waiting" className="mt-1" />
-            <span>
-              This resolution is for <span className="font-mono">{sha}</span>, but the review packet
-              is for <span className="font-mono">{packetHead.slice(0, 7)}</span>.
-            </span>
-          </div>
-        )}
+        <OtherHead detail={detail} sha={r.sha} />
         {outsideCount > 0 && (
           <div className="flex items-start gap-2 font-medium" data-testid="resolution-outside">
             <StatusDot status="failed" className="mt-1.5" />
@@ -264,9 +284,18 @@ export function ResolutionSummary({ detail }: { detail: WorkItemDetail }) {
           <StatusDot status="failed" className="mt-1.5" />
           <span>
             {outside === 1
-              ? "1 file outside the conflict differs from a plain merge."
-              : `${outside} files outside the conflict differ from a plain merge.`}
+              ? "1 file outside the conflict differs from a plain merge"
+              : `${outside} files outside the conflict differ from a plain merge`}
+            : {r.outside.slice(0, 5).join(", ")}
+            {outside > 5 ? ", …" : ""}. Look at {outside === 1 ? "it" : "them"} in the full diff
+            before you merge.
           </span>
+        </div>
+      )}
+      {outside === 0 && r.notShown > 0 && (
+        <div className="text-ink-muted text-xs">
+          {r.notShown} more {r.notShown === 1 ? "file isn't" : "files aren't"} listed: look at them
+          in the full diff before you merge.
         </div>
       )}
       <ReviewLink workItemId={detail.item.id} label="Review the resolution" />

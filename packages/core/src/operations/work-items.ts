@@ -714,7 +714,9 @@ export const workItemGet = defineOperation({
     const packet = packetRows[0];
     return {
       babysitResolution: resolutionFor(resolutionRows[0], w.head_sha),
-      resolutionExpected: resolutionExpected(lastEndedRows[0], w.head_sha),
+      resolutionExpected:
+        (!!w.head_sha && resolutionRows[0]?.head_sha === w.head_sha) ||
+        resolutionExpected(lastEndedRows[0], w.head_sha),
       item: {
         ...summarise(w),
         body: w.body,

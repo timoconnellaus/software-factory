@@ -22,6 +22,7 @@ import {
   NoChecksNotice,
   noChecksSetUp,
 } from "./factory-checks.tsx";
+import { resolutionNeedsFullDiff } from "./resolution.tsx";
 import { Chip, Field, Panel } from "./shell-list.tsx";
 
 /**
@@ -151,6 +152,9 @@ export function MergeDecision({
   // decision to merge without them, recorded with the merge.
   const executed = packetExecuted(packet);
   const without = executed && !executed.waived ? executed.notRun.map((n) => n.name) : [];
+  // A resolution with more than the conflict to look at (#201 review): the engine refuses the merge
+  // until the full diff is opened, so the button waits for it too.
+  const mustOpenDiff = resolutionNeedsFullDiff(detail) && !opened;
   if (!mergeGate) return null;
   return (
     <Panel needsYou className="gap-2.5" data-testid="decision">
@@ -166,11 +170,13 @@ export function MergeDecision({
         />
       </Field>
       <Button
-        disabled={!canDecide || pending !== null}
+        disabled={!canDecide || pending !== null || mustOpenDiff}
         title={
-          detail.viewer.isApprover
-            ? "Asks for Touch ID"
-            : "Only an approver on this project can merge"
+          !detail.viewer.isApprover
+            ? "Only an approver on this project can merge"
+            : mustOpenDiff
+              ? "Open the full diff first: the babysitter's resolution needs more than the conflict looked at"
+              : "Asks for Touch ID"
         }
         onClick={() =>
           decide({
@@ -189,6 +195,11 @@ export function MergeDecision({
             ? `Merge ${sha} without these checks`
             : `Merge ${sha}`}
       </Button>
+      {mustOpenDiff && (
+        <p className="m-0 text-ink-muted text-xs leading-normal" data-testid="merge-needs-diff">
+          Open the full diff before you merge: the babysitter resolved a conflict here.
+        </p>
+      )}
       {without.length > 0 && (
         <p className="m-0 text-amber-700 text-xs leading-normal dark:text-amber-400">
           {without.length === 1 ? "1 declared check" : `${without.length} declared checks`} could

@@ -42,6 +42,7 @@ import {
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
 import { has } from "../workflow-features.ts";
+import { resolutionAtGate } from "./babysit.ts";
 import {
   ATTACHED_HELD_TITLE,
   HELD_TITLE,
@@ -1130,7 +1131,7 @@ export async function carryReviewPacket(
 export const prAutoMerge = defineOperation({
   name: "pr.autoMerge",
   description:
-    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0500). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
+    "Merge a factory incident's fix without a person, under the narrow check-only rule (ADR 0230): the item is a factory incident, GitHub's compare shows it only ADDS files under `.factory/checks/` and `evals/regressions/` (with at least one regression case), CI is green on the head SHA (the regression eval runs there), the review packet for that SHA passed, and its tests-intact guard found nothing (ADR 0500), and the head isn't one the babysitter resolved (spec 53: a resolved head always goes to a person). Risk `check-merge`, which every autonomy policy denies unless the project's `.factory/policy.json` opts in. Anything else is refused: use pr.merge and the merge gate.",
   risk: "check-merge",
   actors: ["agent"],
   permission: "approver",
@@ -1148,6 +1149,12 @@ export const prAutoMerge = defineOperation({
       throw new OperationError("conflict", "the branch moved since the review packet was made");
     }
     await requireQueueHead(ctx, w, input.headSha);
+    // A head the babysitter resolved always goes to a person (#201 review, round 2), whatever
+    // the resolution: check-only or not, nobody has looked at how the conflict was settled.
+    const resolved = await resolutionAtGate(ctx, w, input.headSha);
+    if (resolved.expected || resolved.resolution) {
+      refuse("the babysitter resolved a conflict on this commit: a person decides");
+    }
     const repository = requireRepository(ctx);
     const repo = await repoRef(ctx, repository);
     const files = await ctx.services.github.compareFiles(

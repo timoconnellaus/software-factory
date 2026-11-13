@@ -749,10 +749,17 @@ export function resolutionExpected(
   );
 }
 
-/** The item's resolution on its head and whether one was expected (review.merge's rule). */
+/**
+ * The resolution at a gate's head, and whether that head came from a babysitter resolution at all
+ * (#201 review, round 2): a resolution row for the head (written by branch.advance in the same
+ * batch that moved the branch to a babysit run's head, then filled by babysit.resolution), or the
+ * deliverer's RESOLVED_CONFLICT end for it. One reader for review.merge, pr.autoMerge and any
+ * automatic approval.
+ */
 export async function resolutionAtGate(
   ctx: HandlerContext,
   w: WorkItemRow,
+  headSha: string | null,
 ): Promise<{ resolution: Resolution | null; expected: boolean }> {
   const [row, lastEnded] = await Promise.all([
     ctx.db
@@ -763,9 +770,49 @@ export async function resolutionAtGate(
     lastEndedDelivery(ctx, w.id).executeTakeFirst(),
   ]);
   return {
-    resolution: resolutionFor(row, w.head_sha),
-    expected: resolutionExpected(lastEnded, w.head_sha),
+    resolution: resolutionFor(row, headSha),
+    expected: (!!headSha && row?.head_sha === headSha) || resolutionExpected(lastEnded, headSha),
   };
+}
+
+/**
+ * Why a person must open the full diff before merging this head, or null (#201 review, round 2):
+ * the head came from a babysitter resolution, and it isn't one with nothing else to look at (a
+ * clean resolution read in full, no file outside the conflict, nothing unlisted).
+ */
+export function fullDiffNeeded(at: { resolution: Resolution | null; expected: boolean }) {
+  if (!at.expected && !at.resolution) return null;
+  const r = at.resolution;
+  if (!r)
+    return "the babysitter resolved a conflict on this commit, but its resolution couldn't be shown";
+  if (r.status !== "clean")
+    return `its resolution couldn't be shown on its own (${r.reason ?? r.status})`;
+  const outside = r.outside.length + (r.outsideNotShown ?? 0);
+  if (outside > 0) {
+    return `${outside === 1 ? "1 file" : `${outside} files`} outside the conflict differ from a plain merge`;
+  }
+  if (r.notShown > 0) return `${r.notShown} more resolution files aren't listed`;
+  return null;
+}
+
+/**
+ * A babysit run's head became the item's branch (branch.advance, same batch): mark it so the gate
+ * knows it reopened for a resolution even if the pass dies before recording what it changed.
+ */
+export function markResolutionHead(ctx: HandlerContext, workItemId: string, headSha: string) {
+  const row = {
+    head_sha: headSha,
+    // Not a resolution yet: resolutionFor reads it as none, and the gate as "couldn't be shown".
+    summary: JSON.stringify({ pending: true }),
+    patches: "{}",
+    created_at: ctx.now,
+  };
+  ctx.write(
+    ctx.db
+      .insertInto("core_babysit_resolutions")
+      .values({ work_item_id: workItemId, ...row })
+      .onConflict((oc) => oc.column("work_item_id").doUpdateSet(row)),
+  );
 }
 
 /** The item's latest ended delivery (core_merge_queue_item_idx: its few entries, newest first). */

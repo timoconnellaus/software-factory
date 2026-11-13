@@ -3,11 +3,18 @@
 // shown at all; nothing extra on an ordinary gate. Patches only for the head shown. In the Inbox, a
 // resolution that isn't clean can't be merged from the card.
 import type { OpOutput } from "@software-factory/client/ops";
+import { parsePacket } from "@software-factory/client/packet";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
-import { Patch, ResolutionPanel, resolutionView } from "../src/mainview/components/resolution.tsx";
+import {
+  Patch,
+  ResolutionPanel,
+  resolutionNeedsFullDiff,
+  resolutionView,
+} from "../src/mainview/components/resolution.tsx";
+import { MergeDecision } from "../src/mainview/components/review-parts.tsx";
 import { renderPage, textOf } from "./route-harness.tsx";
 
 vi.mock("../src/mainview/bridge.ts", () => import("./bridge-stub.ts"));
@@ -124,6 +131,20 @@ describe("the resolution at the reopened merge gate", () => {
     expect(text).toContain("Review the whole diff, not only the resolution");
   });
 
+  it("says when the resolution and the review packet are for different commits, in the loud view too", () => {
+    const loud = withResolution({ status: "failed", reason: "GitHub failed" })({
+      workItemId: "wi_13",
+    });
+    const away = {
+      ...loud,
+      babysitResolution: loud.babysitResolution && {
+        ...loud.babysitResolution,
+        sha: "0ddc0ffee12",
+      },
+    };
+    expect(panel(away)).toContain('data-testid="resolution-other-head"');
+  });
+
   it("says when the resolution and the review packet are for different commits", () => {
     const d = withResolution({ files: [file()] })({ workItemId: "wi_13" });
     const other = {
@@ -140,6 +161,44 @@ describe("the resolution at the reopened merge gate", () => {
     const decided = { ...d, gates: d.gates.filter((g) => g.kind !== "merge") };
     expect(panel(decided)).not.toContain('data-testid="resolution"');
     expect(resolutionView(decided)).toEqual({ kind: "none" });
+  });
+});
+
+describe("when merging needs the full diff opened first (review.merge's rule)", () => {
+  const needs = (r: Partial<Resolution> | null, expected?: boolean) =>
+    resolutionNeedsFullDiff(withResolution(r, expected)({ workItemId: "wi_13" }));
+  it("only a clean resolution with nothing outside the conflict and nothing unlisted doesn't", () => {
+    expect(needs({ files: [file()] })).toBe(false);
+    expect(needs(null, false)).toBe(false);
+    expect(needs({ files: [file()], outside: ["src/x.ts"] })).toBe(true);
+    expect(needs({ files: [file()], outsideNotShown: 1 })).toBe(true);
+    expect(needs({ files: [file()], notShown: 1 })).toBe(true);
+    expect(needs({ status: "incomplete", reason: "too large" })).toBe(true);
+    expect(needs(null, true)).toBe(true);
+  });
+});
+
+describe("the Review tab's Merge, after a resolution", () => {
+  const decision = (r: Partial<Resolution>, opened: boolean) => {
+    const d = withResolution(r)({ workItemId: "wi_13" });
+    const packet = d.reviewPacket ? parsePacket(d.reviewPacket) : null;
+    if (!packet) throw new Error("fixture #13 has a packet");
+    return render(<MergeDecision detail={d} packet={packet} opened={opened} />);
+  };
+  // Whether the Merge button has the disabled attribute (its classes mention `disabled:` too).
+  const mergeButton = (html: string) =>
+    /\sdisabled=""/.test(/<button[^>]*data-testid="merge"[^>]*>/.exec(html)?.[0] ?? "")
+      ? "disabled"
+      : "enabled";
+
+  it("stays disabled until the full diff is opened, when there's more than the conflict to look at", () => {
+    const closed = decision({ files: [file()], outside: ["src/x.ts"] }, false);
+    expect(mergeButton(closed)).toContain("disabled");
+    expect(closed).toContain('data-testid="merge-needs-diff"');
+    expect(mergeButton(decision({ files: [file()], outside: ["src/x.ts"] }, true))).not.toContain(
+      "disabled",
+    );
+    expect(mergeButton(decision({ files: [file()] }, false))).not.toContain("disabled");
   });
 });
 
@@ -187,10 +246,20 @@ describe("the Inbox merge card after a resolution", () => {
     expect(html).toContain('data-testid="inbox-merge-elsewhere"');
   });
 
-  it("shows a clean resolution's summary and still lets the card merge", async () => {
-    const html = await inbox({ files: [file()], outside: ["src/x.ts"] });
+  it("shows a clean resolution's summary and lets the card merge when there is nothing else to look at", async () => {
+    const html = await inbox({ files: [file()] });
     expect(html).toContain('data-testid="inbox-resolution-clean"');
     expect(html).not.toContain('data-testid="inbox-merge-elsewhere"');
-    expect(textOf(html)).toContain("1 file outside the conflict differs from a plain merge");
+    expect(html).toContain('data-testid="merge"');
+  });
+
+  it("doesn't offer Merge for a clean resolution with files outside the conflict, or unlisted ones", async () => {
+    const outside = await inbox({ files: [file()], outside: ["src/x.ts"] });
+    expect(outside).toContain('data-testid="inbox-merge-elsewhere"');
+    expect(outside).not.toContain('data-testid="merge"');
+    const said = textOf(outside).replace(/\s+/g, " ");
+    expect(said).toMatch(/1 file outside the conflict differs from a plain merge ?: ?src\/x\.ts/);
+    const unlisted = await inbox({ files: [file()], notShown: 2 });
+    expect(unlisted).toContain('data-testid="inbox-merge-elsewhere"');
   });
 });
