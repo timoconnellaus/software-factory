@@ -119,7 +119,7 @@ export async function queuedEntries(
 }
 
 /** The work item's open entry, if it has one. */
-async function openEntry(ctx: HandlerContext, item: string) {
+export async function openEntry(ctx: HandlerContext, item: string) {
   return (
     (await ctx.db
       .selectFrom("core_merge_queue")

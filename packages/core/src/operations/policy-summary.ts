@@ -1,6 +1,13 @@
 // The words for a policy decision made with a presence proof (ADR 0391, 0610): from the engine's
-// own records, never the caller's. The Touch ID prompt and the audit journal show them, so each
-// names what is decided and, first, what it loosens. Names come last, cleaned and cut short.
+// own records, never the caller's. The Touch ID prompt and the audit journal show them, and the key
+// helper signs only a summary of at most 300 characters with no control or format characters, so:
+// - the facts come first and whole (what is decided, the versions, then what it loosens: the
+//   unusual condition in the first words);
+// - names (a workflow's, an agent's, a project's, the org's) come last, cleaned, in the room the
+//   facts leave under MAX_SUMMARY, and never pose as a fact;
+// - every piece that came from a document (a change sentence naming a stage, an id) is cleaned too.
+// These are the rules of `titled()` and `cleanTitle()` in PR #153 (desktop.ts), ported here while it
+// is in review; when it lands this module calls them instead (review of #156, item 4).
 import type { Db } from "@software-factory/db";
 import type { FloorParse } from "../policy/gate.ts";
 import type { PolicyImpact } from "../policy/impact.ts";
@@ -13,37 +20,68 @@ import {
   withWorkflow,
 } from "./workflows.ts";
 
-/** At most this many changes are listed; the Touch ID prompt has little room. */
-const SUMMARY_CHANGES = 3;
+/** How long a summary grows with a title in it (as #153). */
+export const MAX_SUMMARY = 120;
+/** The most the facts alone may take, under the key helper's 300 (as #153). */
+export const MAX_FACTS = 280;
 
 /**
- * A name as the prompt shows it: no quotes, control or invisible characters (a name can't pose as
- * the engine's words), spaces collapsed, at most 60 characters, in quotes.
+ * Text as a summary may show it: no format characters (Cf: zero-width, soft hyphen, bidi), no
+ * control or line/paragraph separators, no double quotes (a title is quoted), whitespace collapsed.
  */
-export function quotedName(name: string): string {
-  const clean = name
-    // Line breaks and tabs are spaces; other control and invisible characters go.
-    .replace(/\s+/g, " ")
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
-    .replace(
-      /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff"\u201c\u201d]/g,
-      "",
-    )
+export function cleanTitle(text: string): string {
+  return text
+    .replace(/\p{Cf}/gu, "")
+    .replace(/["\p{Zl}\p{Zp}\p{Cc}]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return `"${clean.length > 60 ? `${clean.slice(0, 59)}…` : clean}"`;
 }
 
-/** "loosens: A; B (+2 more)": the impact's class and the changes of that class, first. */
-export function impactWords(impact: PolicyImpact): string {
-  const shown = impact.changes.filter((c) => c.class === impact.class).slice(0, SUMMARY_CHANGES);
-  const rest = impact.changes.length - shown.length;
-  const what = shown.map((c) => c.summary.replace(/\.$/, "")).join("; ");
-  return `${impact.class}${what ? `: ${what}` : ""}${rest > 0 ? ` (+${rest} more)` : ""}`;
+/** `facts "title"`: the facts whole, then the title in the room left under MAX_SUMMARY. */
+export function titled(facts: string, title: string | null | undefined): string {
+  const t = [...cleanTitle(title ?? "")];
+  const room = MAX_SUMMARY - [...facts].length - 3;
+  if (t.length === 0 || room < 8) return facts;
+  return `${facts} "${t.length > room ? `${t.slice(0, room - 1).join("")}…` : t.join("")}"`;
+}
+
+/** `s` cut to `max` characters with an ellipsis. */
+const cut = (s: string, max: number) => {
+  const c = [...s];
+  return c.length <= max ? s : `${c.slice(0, Math.max(1, max - 1)).join("")}…`;
+};
+
+/** A name for the prompt, quoted (kept for the config summaries' callers). */
+export const quotedName = (name: string) => `"${cut(cleanTitle(name), 60)}"`;
+
+/**
+ * "loosens: <the change>" or "loosens 3 things: <the first>…": the class first, then the first
+ * change of that class, cleaned and cut to the room left. The full list is on the screen.
+ */
+export function impactWords(impact: PolicyImpact, room = 160): string {
+  const mine = impact.changes.filter((c) => c.class === impact.class);
+  const lead = mine.length > 1 ? `${impact.class} ${mine.length} things` : impact.class;
+  const first = mine[0] ? cleanTitle(mine[0].summary.replace(/\.$/, "")) : "";
+  if (!first) return lead;
+  const more = mine.length > 1 ? "…" : "";
+  return `${lead}: ${cut(first, Math.max(12, room - lead.length - 2 - more.length))}${more}`;
+}
+
+/** Facts never past MAX_FACTS: the impact words give way first (they come last among the facts). */
+export function facts(head: string, impact?: PolicyImpact | string | null): string {
+  const h = cleanTitle(head);
+  if (!impact) return cut(h, MAX_FACTS);
+  const room = MAX_FACTS - [...h].length - 2;
+  const words =
+    typeof impact === "string" ? cut(cleanTitle(impact), room) : impactWords(impact, room);
+  return `${h}: ${words}`;
 }
 
 const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+/** An id from a request, shown only if it looks like one. */
+const idOf = (v: unknown) =>
+  typeof v === "string" && /^[A-Za-z0-9_.-]{1,60}$/.test(v) ? v : "an unnamed one";
 
 async function orgName(db: Db, orgId: string): Promise<string> {
   const row = await db
@@ -51,14 +89,13 @@ async function orgName(db: Db, orgId: string): Promise<string> {
     .select("name")
     .where("id", "=", orgId)
     .executeTakeFirst();
-  return quotedName(row?.name ?? orgId);
+  return row?.name ?? orgId;
 }
 
 /**
  * The summary of an org config write (`workflow.save`, `agent.save`, `workflow.archive`,
  * `workflow.createFromTemplate`, `orgConfig.rollback`, `orgConfig.adoptProjectWorkflows`), made
- * directly or approved as a waiting change. `verb` starts it ("Save", "Approve", "Reject"). Null for
- * any other operation.
+ * directly or approved as a waiting change (`verb`). Null for any other operation.
  */
 export async function describeOrgConfigDecision(
   db: Db,
@@ -72,60 +109,66 @@ export async function describeOrgConfigDecision(
   const org = await orgName(db, orgId);
   const base = typeof raw.baseVersion === "number" ? raw.baseVersion : version;
   const versions =
-    base !== version
-      ? `drafted on v${base}, the org's workflows are now v${version}`
-      : `v${version} to v${version + 1}`;
-  // "Approve: save …" for a waiting change; "Save …" made directly.
+    base !== version ? `drafted on v${base}, now v${version}` : `v${version} to v${version + 1}`;
   const say = (act: string) => (verb ? `${verb}: ${act}` : act[0]?.toUpperCase() + act.slice(1));
-  const loosening = (after: OrgConfig | null) => {
+  const impactOf = (after: OrgConfig | null) => {
     if (!after) return "the change can't be read";
     const parsed = parseOrgConfig(after);
-    return parsed.ok ? impactWords(orgConfigImpact(config, parsed.config)) : "not valid";
+    return parsed.ok ? orgConfigImpact(config, parsed.config) : "not valid";
+  };
+  const attempt = (fn: () => OrgConfig) => {
+    try {
+      return fn();
+    } catch {
+      return null;
+    }
   };
   switch (op) {
     case "workflow.save": {
       const wf = obj(raw.workflow);
-      let after: OrgConfig | null = null;
-      try {
-        after = withWorkflow(config, wf as never);
-      } catch {
-        after = null;
-      }
-      return say(
-        `save the org workflow (${versions}): ${loosening(after)}: ${quotedName(String(wf.name ?? wf.id ?? "a workflow"))} in ${org}`,
+      const after = attempt(() => withWorkflow(config, wf as never));
+      return titled(
+        facts(say(`save an org workflow (${versions})`), impactOf(after)),
+        `${String(wf.name ?? "")} in ${org}`,
       );
     }
     case "agent.save": {
       const agent = obj(raw.agent);
-      let after: OrgConfig | null = null;
-      try {
-        after = withAgent(config, agent as never);
-      } catch {
-        after = null;
-      }
-      return say(
-        `save the org agent (${versions}): ${loosening(after)}: ${quotedName(String(agent.name ?? "an agent"))} in ${org}`,
+      const after = attempt(() => withAgent(config, agent as never));
+      return titled(
+        facts(say(`save an org agent (${versions})`), impactOf(after)),
+        `${String(agent.name ?? "")} in ${org}`,
       );
     }
     case "workflow.archive": {
       const wf = config.workflows.find((w) => w.id === raw.workflowId);
-      return say(
-        `archive the org workflow (${versions}): ${quotedName(wf?.name ?? String(raw.workflowId))} in ${org}`,
+      return titled(
+        facts(say(`archive an org workflow (${versions})`)),
+        `${wf?.name ?? ""} in ${org}`,
       );
     }
     case "workflow.createFromTemplate":
-      return say(
-        `add an org workflow from the ${String(raw.templateId)} template (${versions}): ${quotedName(String(raw.name ?? ""))} in ${org}`,
+      return titled(
+        facts(say(`add an org workflow from the ${idOf(raw.templateId)} template (${versions})`)),
+        `${String(raw.name ?? "")} in ${org}`,
       );
     case "orgConfig.rollback": {
       const to = typeof raw.toVersion === "number" ? raw.toVersion : 0;
-      return say(
-        `roll the org's workflows back to v${to} (${versions}): ${loosening(await storedOrgConfig(db, orgId, to))}: ${org}`,
+      return titled(
+        facts(
+          say(`roll the org's workflows back to v${to} (${versions})`),
+          impactOf(await storedOrgConfig(db, orgId, to)),
+        ),
+        org,
       );
     }
     case "orgConfig.adoptProjectWorkflows":
-      return say(
-        `move every project still on its own workflow onto org workflows (${versions}), keeping what each item does: ${org}`,
+      return titled(
+        facts(
+          say(`move the projects on their own workflows onto org workflows (${versions})`),
+          "as the dry run showed",
+        ),
+        org,
       );
     default:
       return null;
@@ -139,20 +182,24 @@ export async function describeKillSwitchOff(
 ): Promise<string | null> {
   if (raw.on !== false || typeof raw.id !== "string") return null;
   if (raw.scope === "org")
-    return `Turn the org's kill switch off: its work resumes: ${await orgName(db, raw.id)}`;
+    return titled("Turn the org's kill switch off: its work resumes", await orgName(db, raw.id));
   const p = await db
     .selectFrom("core_projects")
     .select("name")
     .where("id", "=", raw.id)
     .executeTakeFirst();
-  return `Turn the project's kill switch off: its work resumes: ${quotedName(p?.name ?? raw.id)}`;
+  return titled("Turn a project's kill switch off: its work resumes", p?.name ?? raw.id);
 }
 
-/** An org admin approving a project's looser override. */
+/**
+ * An org admin approving a project's looser override: the setting, the org's value and the
+ * override's value, all from the engine's records and the bound input (review of #156, item 2).
+ */
 export async function describeOverrideApprove(
   db: Db,
   _floor: FloorParse,
   raw: Record<string, unknown>,
+  orgValue: unknown,
 ): Promise<string> {
   const p =
     typeof raw.projectId === "string"
@@ -162,5 +209,13 @@ export async function describeOverrideApprove(
           .where("id", "=", raw.projectId)
           .executeTakeFirst()
       : undefined;
-  return `Approve a looser override (loosens: ${String(raw.stageId)} ${String(raw.setting)}, for org workflows v${String(raw.orgVersion)}): ${quotedName(p?.name ?? String(raw.projectId))}`;
+  const v = (x: unknown) =>
+    cut(cleanTitle(x === undefined ? "unset" : typeof x === "string" ? x : JSON.stringify(x)), 40);
+  return titled(
+    facts(
+      `Approve a looser override (config v${Number(raw.configVersion)})`,
+      `loosens: ${idOf(raw.stageId)} ${idOf(raw.setting)} from the org's ${v(orgValue)} to ${v(raw.value)}`,
+    ),
+    p?.name ?? String(raw.projectId),
+  );
 }
