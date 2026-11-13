@@ -22,8 +22,10 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
+import { describeConfigDecision } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
+import { titled } from "./summary.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
 export const DESKTOP_DEVICE_ACTOR: Actor = { type: "runner", id: "desktop-device-login" };
@@ -154,36 +156,7 @@ export function rawSignature(sig: Uint8Array): Uint8Array<ArrayBuffer> {
 export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
   `${nonce}\n${op}\n${digest}\n${summary}`;
 
-/** The longest summary a Touch ID sheet or phone prompt is given (spec 40 M4b). */
-export const MAX_SUMMARY = 120;
-
-/**
- * A title as a summary may show it: no double quotes (it is quoted), no format characters (Cf:
- * zero-width and bidi controls, which hide or reorder text), no line or paragraph separators (Zl,
- * Zp) or control characters (which break the line), whitespace collapsed. Titles are written by
- * agents and people; the key helper refuses a summary with any of these, so leaving one in would
- * also make the item undecidable from the desktop.
- */
-export function cleanTitle(title: string): string {
-  return title
-    .replace(/\p{Cf}/gu, "")
-    .replace(/["\p{Zl}\p{Zp}\p{Cc}]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/**
- * `prefix "title"`, the title last and cut so the whole summary stays within MAX_SUMMARY: whatever
- * a title says, it can't push the engine's facts (the verb, the commit, the repository, "without
- * its checks") off the end of the prompt, nor pose as one of them.
- */
-export function titled(prefix: string, title: string | null | undefined): string {
-  const head = [...prefix].slice(0, MAX_SUMMARY).join("");
-  const t = [...cleanTitle(title ?? "")];
-  const room = MAX_SUMMARY - [...head].length - 3;
-  if (t.length === 0 || room < 8) return head;
-  return `${head} "${t.length > room ? `${t.slice(0, room - 1).join("")}…` : t.join("")}"`;
-}
+export { cleanTitle, MAX_SUMMARY, titled } from "./summary.ts";
 
 /**
  * The words for the decision a presence proof is for (ADR 0391), from the engine's own records,
@@ -252,11 +225,14 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
         typeof input.pendingActionId === "string"
           ? await ctx.db
               .selectFrom("core_pending_actions")
-              .select(["operation", "work_item_id"])
+              .select(["operation", "work_item_id", "input", "project_id"])
               .where("id", "=", input.pendingActionId)
               .executeTakeFirst()
           : undefined;
       const verb = input.decision === "rejected" ? "Reject" : "Approve";
+      // A config change names the versions and what it loosens, the project last (ADR 0610).
+      const config = pa ? await describeConfigDecision(ctx, pa, verb) : null;
+      if (config) return config;
       return pa
         ? onItem(`${verb} ${pa.operation} on`, pa.work_item_id)
         : `${verb} a pending action`;

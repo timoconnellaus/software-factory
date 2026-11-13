@@ -34,4 +34,12 @@ describe("presence summaries", () => {
     expect(long).toMatch(/…"$/);
     expect([...titled("Approve", "é".repeat(300))].length).toBeLessThanOrEqual(MAX_SUMMARY);
   });
+  it("never cut the facts, and show a label only with its title (config summaries)", () => {
+    const facts =
+      "Approve a change to the policy (v2 to v3): loosens: Autonomy policy Balanced → Autonomous; agent spend: review → allow";
+    expect(titled(facts, "Acme", "; project")).toBe(facts);
+    const short = "Approve a change to the policy (v2 to v3): loosens: Autonomy policy";
+    expect(titled(short, "Ac\u200bme", "; project")).toBe(`${short}; project "Acme"`);
+    expect(titled(short, "", "; project")).toBe(short);
+  });
 });

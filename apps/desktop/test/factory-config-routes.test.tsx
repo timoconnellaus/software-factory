@@ -10,7 +10,14 @@ const PENDING = 'data-testid="read-pending"';
 const ERROR = 'data-testid="read-error"';
 const failed = { error: "the factory isn't reachable" };
 const noConfig = {
-  result: { projectId: "prj_factory", current: null, error: null, history: [], pending: [] },
+  result: {
+    projectId: "prj_factory",
+    current: null,
+    error: null,
+    history: [],
+    pending: [],
+    pendingMore: false,
+  },
 };
 
 describe.each([
@@ -66,5 +73,148 @@ describe("Agents", () => {
   it("labels a model as the role's configured model", async () => {
     const text = textOf(await renderPage("/factory/agents"));
     expect(text).toContain("Role Configured model, standard tier Configured model, light tier");
+  });
+});
+
+describe("Policy: changing it in the app (ADR 0610)", () => {
+  it("offers Edit policy and no website link", async () => {
+    const html = await renderPage("/factory/policy");
+    expect(html).toContain('data-testid="edit-config"');
+    expect(textOf(html)).not.toContain("on the website");
+  });
+
+  it("shows a waiting change, with Approve only once the engine has classified it", async () => {
+    const html = await renderPage("/factory/policy");
+    const text = textOf(html);
+    expect(text).toContain("1 change is waiting for an approver");
+    expect(text).toContain("Save: Let agents spend and reach outside");
+    // Before the classification is on screen there is nothing to approve yet.
+    expect(text).toContain("Classifying the change…");
+    expect(html).not.toContain('data-testid="pending-approve"');
+    expect(html).toContain('data-testid="pending-reject"');
+  });
+
+  it("offers only Reject for a change drafted against an older version", async () => {
+    const stale = {
+      result: {
+        projectId: "prj_factory",
+        current: { ...CURRENT, version: 13 },
+        error: null,
+        history: [],
+        pending: [
+          {
+            pendingActionId: "pa_old",
+            operation: "config.save",
+            note: "Let agents spend and reach outside",
+            by: "owner",
+            createdAt: new Date().toISOString(),
+            baseVersion: 12,
+            policy: { retryLimit: 3 },
+            toVersion: null,
+          },
+        ],
+        pendingMore: false,
+      },
+    };
+    const html = await renderPage("/factory/policy", { answers: { "config.get": stale } });
+    expect(textOf(html)).toContain("drafted against v12; the config is now v13");
+    expect(html).not.toContain('data-testid="pending-approve"');
+    expect(html).toContain('data-testid="pending-reject"');
+  });
+
+  it("edits the whole config as a form, with History and roll back", async () => {
+    const html = await renderPage("/factory/policy?edit=1");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="policy-form"');
+    for (const section of [
+      "Autonomy",
+      "Timeouts and people",
+      "Throughput",
+      "Review packet",
+      "Protection on the default branch",
+      "Self-improvement",
+      "Adjudicator",
+      "History",
+    ])
+      expect(text).toContain(section);
+    expect(text).toContain("Roll back");
+    expect(html).toContain('data-testid="edit-json"');
+    expect(html).toContain('data-testid="edit-done"');
+  });
+});
+
+const CURRENT = {
+  version: 12,
+  sha: "5da8988",
+  source: "app",
+  note: null,
+  createdBy: "owner",
+  createdAt: new Date().toISOString(),
+  valid: true,
+  impact: null,
+  policy: { version: 1, autonomyPolicy: "balanced" },
+};
+
+describe("Workflows and Agents: changing them in the app (ADR 0610)", () => {
+  it.each(["/factory/workflows", "/factory/agents", "/factory/policy"])(
+    "%s offers an edit button and no website link",
+    async (path) => {
+      const html = await renderPage(path);
+      expect(html).toContain('data-testid="edit-config"');
+      expect(textOf(html)).not.toContain("on the website");
+    },
+  );
+
+  it("edits a workflow's slots and steps", async () => {
+    const html = await renderPage("/factory/workflows?edit=1");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="workflow-editor"');
+    expect(html).toContain('data-testid="slot-afterSpec"');
+    expect(html).toContain('data-testid="step-critic"');
+    expect(text).toContain("Add a work step");
+    expect(text).toContain("Merge gate Always a person");
+  });
+
+  it("edits the agents", async () => {
+    const html = await renderPage("/factory/agents?edit=1");
+    expect(html).toContain('data-testid="agents-form"');
+    expect(html).toContain('data-testid="agent-0"');
+    expect(html).toContain('data-testid="add-agent"');
+  });
+});
+
+describe("Policy on an org workflow (spec 52, PR #121)", () => {
+  it("marks the settings the org's workflow sets, with the org's value and the override", async () => {
+    const text = textOf(await renderPage("/factory/policy?project=prj_site&edit=1"));
+    expect(text).toContain("Software sets 2. Overridden here");
+    expect(text).toContain(
+      "A looser value than the org's applies only once an org admin approves it",
+    );
+    expect(text).toContain("Software sets ci, typecheck. This project uses the org's value.");
+  });
+});
+
+describe("Policy: follow-ups from the review of #145", () => {
+  it("on a software key, says this Mac can't approve yet and offers no live Approve or Reject", async () => {
+    const html = await renderPage("/factory/policy", { session: { keyStorage: "software" } });
+    expect(textOf(html)).toContain(
+      "This Mac can't approve yet: its key isn't in the Secure Enclave. Update the app, then sign in again.",
+    );
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*data-testid="pending-reject"/);
+  });
+
+  it("says the org's workflow couldn't be read, not that it has no such stage", async () => {
+    const text = textOf(
+      await renderPage("/factory/policy?project=prj_site&edit=1", {
+        answers: { "workflow.get": { error: "the factory isn't reachable" } },
+      }),
+    );
+    expect(text).toContain("Couldn't read the org's workflow");
+    expect(text).not.toContain("has no stage that sets this");
+  });
+
+  it("edits when a spec is needed", async () => {
+    const text = textOf(await renderPage("/factory/policy?edit=1"));
+    expect(text).toContain("Spec approval Needed from");
   });
 });

@@ -23,7 +23,7 @@ import { dirname } from "node:path";
 import type { CheckPhase } from "../shared/rpc.ts";
 import { isNewer } from "../shared/version.ts";
 import type { Exec, StagedUpdate } from "./update-verify.ts";
-import { bundleInfo, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
+import { bundleInfo, stagedBundle, stagedUpdate, teamIdOf, verifyBundle } from "./update-verify.ts";
 
 export interface UpdateState {
   /** A verified update is staged: "Restart to update" can be offered. */
@@ -297,10 +297,11 @@ export class Updates {
       return `refused ${staged.version}: not newer than this version (${running})`;
     const team = await teamIdOf(this.d.appPath, this.d.exec);
     if (!team) return "refused: this build isn't signed, so it can't check an update's signature";
-    const why = await verifyBundle(staged.path, team, this.d.exec);
+    const bundle = stagedBundle(staged.path, this.d.appPath);
+    const why = await verifyBundle(bundle, team, this.d.exec);
     if (why) return `refused ${staged.version}: ${why}`;
     // Read only now, from inside the seal just verified: the manifest's version is the bucket's word.
-    const own = this.d.bundle(staged.path);
+    const own = this.d.bundle(bundle);
     if (!own) return `refused ${staged.version}: the staged app has no readable version`;
     if (own.version !== staged.version)
       return `refused ${staged.version}: the staged app is version ${own.version}, not what the manifest says`;

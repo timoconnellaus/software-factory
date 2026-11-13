@@ -6,8 +6,9 @@ import { sql } from "kysely";
 import { z } from "zod";
 import { defineOperation, type HandlerContext, type WorkItemRow } from "../operation.ts";
 import { POLICY_PR_BRANCH } from "./onboarding.ts";
+import { personPushed } from "./pushed-head.ts";
 import { ACTIVE_RUN, finishRun } from "./runners.ts";
-import { requireProject, requireRepository } from "./shared.ts";
+import { repoRef, requireProject, requireRepository } from "./shared.ts";
 import { repoName, repositoryForRepo } from "./verify.ts";
 
 export const connectorReceive = defineOperation({
@@ -67,7 +68,7 @@ type RunRow = {
 export const pushObserve = defineOperation({
   name: "push.observe",
   description:
-    "The GitHub connector saw a push. To the default branch: nothing to do (config lives in the app, ADR 0370; `.factory/policy.json` there is no longer read). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch; anything else fails the work item's active run (bumping its fencing token) and is audited. People's pushes to other branches are ignored here (`factory/verify` guards their PRs).",
+    "The GitHub connector saw a push. To the default branch: nothing to do (config lives in the app, ADR 0370; `.factory/policy.json` there is no longer read). By the factory's App anywhere else (branch confinement, ADR 0052 item 4): a push must be to the run branch of an active run whose fencing token is current, or a control-plane move of a work item's branch; anything else fails the work item's active run (bumping its fencing token) and is audited. A person's push to the branch of a factory-built work item in verify or at its merge gate (ADR 0587), when GitHub shows it is the branch's head: the item records the new head, an open merge gate or an approval the babysitter holds for the old head is withdrawn, and (Workflow v14) the item verifies the new head again without a build (`reverify`); with nothing open to withdraw on an older version, the push is only recorded (`told`). People's other pushes are ignored here (`factory/verify` guards their PRs).",
   risk: "write",
   actors: ["intake"],
   permission: "signed-in",
@@ -84,7 +85,7 @@ export const pushObserve = defineOperation({
     pusherIsApp: z.boolean(),
   }),
   output: z.object({
-    outcome: z.enum(["policy", "ok", "violation", "ignored"]),
+    outcome: z.enum(["policy", "ok", "violation", "ignored", "reverify", "told"]),
     detail: z.string(),
     failedRuns: z.array(z.string()),
     policy: z
@@ -112,7 +113,8 @@ export const pushObserve = defineOperation({
       };
     }
     if (!input.pusherIsApp) {
-      return { outcome: "ignored" as const, detail: `pushed by ${input.pusher}`, ...none };
+      const pushed = await personPush(ctx, input, branch);
+      return { ...pushed, ...none };
     }
 
     if (branch === POLICY_PR_BRANCH) {
@@ -189,6 +191,54 @@ export const pushObserve = defineOperation({
     );
   },
 });
+
+/**
+ * A push by someone other than the factory's App (ADR 0587): to a factory-built item's own branch
+ * (`factory/<n>-<slug>`, never a run's), from verify on, it moves the item's head. GitHub is asked
+ * for the branch's head, so a late or repeated delivery of an older push changes nothing.
+ */
+async function personPush(
+  ctx: HandlerContext,
+  input: { after: string; pusher: string },
+  branch: string,
+): Promise<{ outcome: "ignored" | "reverify" | "told"; detail: string }> {
+  const ignored = { outcome: "ignored" as const, detail: `pushed by ${input.pusher}` };
+  const match = RUN_BRANCH.test(branch) ? null : ITEM_BRANCH.exec(branch);
+  if (!match) return ignored;
+  const repository = requireRepository(ctx);
+  const item =
+    (await ctx.db
+      .selectFrom("core_work_items")
+      .selectAll()
+      // UNIQUE (project_id, number): one row.
+      .where("project_id", "=", requireProject(ctx).id)
+      .where("number", "=", Number(match[1]))
+      .where("repository_id", "=", repository.id)
+      .executeTakeFirst()) ?? null;
+  // An attached PR's pushes are verify.refresh's (spec 05); a factory item's only from verify on.
+  if (
+    !item ||
+    item.kind === "attached" ||
+    item.branch !== branch ||
+    !["running", "waiting", "paused"].includes(item.status) ||
+    (item.stage !== "verify" && item.stage !== "merge") ||
+    item.head_sha === input.after
+  ) {
+    return ignored;
+  }
+  const head = await ctx.services.github
+    .getBranchSha(await repoRef(ctx, repository), branch)
+    .catch(() => null);
+  if (head !== input.after) {
+    return {
+      outcome: "ignored" as const,
+      detail: `${input.pusher} pushed ${input.after.slice(0, 7)}, but ${branch} is at ${head?.slice(0, 7) ?? "an unknown head"} now`,
+    };
+  }
+  ctx.subject({ workItemId: item.id });
+  const pushed = await personPushed(ctx, item, input.after, input.pusher);
+  return { outcome: pushed.outcome, detail: pushed.detail };
+}
 
 /** Fails the item's active runs (fencing them out) and tells the requester. */
 function violation(ctx: HandlerContext, item: WorkItemRow, active: RunRow[], why: string) {

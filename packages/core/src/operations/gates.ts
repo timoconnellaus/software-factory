@@ -157,7 +157,7 @@ export function decidePending(
  * planner merges it); and the `.kim/` files the person sees at the gate are recorded on the spec,
  * revision and content hash, so the commit writes exactly those (review of #130).
  */
-async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
+export async function approvingSpecGate(ctx: HandlerContext, pa: PendingActionRow): Promise<void> {
   await assertSpecGateCurrent(ctx, pa.work_item_id);
   if (!pa.work_item_id) return;
   const conflicts = await kimConflicts(ctx, { id: pa.work_item_id });
