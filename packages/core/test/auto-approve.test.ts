@@ -60,6 +60,7 @@ const good = (): AutoApproveFacts => ({
   touchesFactoryConfig: false,
   versionSupports: true,
   reportedFiles: 2,
+  modeChanges: [],
 });
 const failing = (f: AutoApproveFacts, s = ON) =>
   autoApproveVerdict(f, s)
@@ -332,27 +333,29 @@ async function saveConfig(w: W, policy: Record<string, unknown>) {
   );
 }
 
-/** The adjudicator's record on this project's merge gates: 20 approvals a person agreed with. */
+/** The adjudicator's record on this project's merge gates: 20 approvals a person agreed with, on 20 items. */
 async function earned(w: W) {
   const now = new Date().toISOString();
   for (let i = 0; i < 20; i++) {
     const pa = uid("pa_");
     await rows(
       `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
-       VALUES (?, ?, ?, 'wi_x', 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
       pa,
       w.orgId,
       w.projectId,
+      `wi_earned_${i}`,
       w.userId,
       now,
       now,
     );
     await rows(
       `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id, verdict, reason, acted, created_at, decided_at)
-       VALUES (?, ?, ?, 'wi_x', 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
+       VALUES (?, ?, ?, ?, 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
       uid("adj_"),
       pa,
       w.projectId,
+      `wi_earned_${i}`,
       uid("job_"),
       now,
       now,
@@ -867,6 +870,37 @@ describe("dark factory mode through the operations", () => {
     expect(after).toEqual({ status: "rejected", decision: "withdrawn" });
   });
 
+  it("the babysitter's re-check leaves the approval's own count out: the day's last isn't withdrawn", async () => {
+    const w = await world();
+    await dark(w);
+    const { item, head, gate, pa } = await atMergeGate(w);
+    expect(pa.status).toBe("approved");
+    // As if it were the day's tenth (the limit): the count includes it.
+    const day = new Date().toISOString().slice(0, 10);
+    await rows(
+      "UPDATE core_meta SET value = ? WHERE key = ?",
+      `${day}:10`,
+      `auto_approved_day:${w.projectId}`,
+    );
+    const counted = await first<{ value: string }>(
+      "SELECT value FROM core_meta WHERE key = ?",
+      `auto_approved_day:${w.projectId}`,
+    );
+    expect(counted?.value).toBe(`${day}:10`);
+    await ok(
+      "mergeQueue.enter",
+      { workItemId: item.workItemId, headSha: head, pendingActionId: gate, driver: "babysitter" },
+      FOREMAN,
+    );
+    const marked = await ok<{ merging: boolean; withdrawn?: string }>(
+      "mergeQueue.merging",
+      { workItemId: item.workItemId, merging: true },
+      BABYSITTER,
+    );
+    expect(marked.withdrawn).toBeUndefined();
+    expect(marked.merging).toBe(true);
+  });
+
   it("the review after a sampled merge goes to the first approver when the gate had no assignee", async () => {
     const w = await world();
     await dark(w);
@@ -979,7 +1013,7 @@ describe("dark factory mode, fourth review of #152", () => {
   it("a symlink, a submodule or a changed mode is never low risk", () => {
     const v = autoApproveVerdict({ ...good(), modeChanges: ["src/theme.ts"] }, ON);
     expect(v.approve).toBe(false);
-    expect(v.reason).toMatch(/symlink, a submodule or a mode change/);
+    expect(v.reason).toMatch(/not an ordinary file mode/);
   });
 
   it("allowPaths entries name places: bare wildcards are refused", () => {
@@ -1067,5 +1101,189 @@ describe("dark factory mode, fourth review of #152", () => {
       BABYSITTER,
     );
     expect(marked.withdrawn).toMatch(/no longer qualifies: outside allowPaths/);
+  });
+});
+
+describe("dark factory mode, fifth review of #152: the floor fails closed", () => {
+  // Everything the reviewer found approved under allowPaths ["src/**"] in round 5.
+  const FOUND = [
+    "gradle.lockfile",
+    "Package.resolved",
+    "go.work.sum",
+    "Cartfile.resolved",
+    "package.yaml",
+    "package.json5",
+    "GNUmakefile",
+    "rules.mk",
+    "CMakeLists.txt",
+    "BUILD",
+    "WORKSPACE",
+    "MODULE.bazel",
+    "defs.bzl",
+    "flake.nix",
+    "constraints.txt",
+    "dev-requirements.txt",
+    "tox.ini",
+    "noxfile.py",
+    "biome.jsonc",
+    "turbo.jsonc",
+    "nx.json",
+    "Directory.Packages.props",
+    "dev.Dockerfile",
+    "Containerfile",
+    "compose.yaml",
+    "Tiltfile",
+    "Earthfile",
+    "terragrunt.hcl",
+    "x.tf.json",
+    "Chart.yaml",
+    "kustomization.yaml",
+    "action.yml",
+    "cloudbuild.yaml",
+    "setupTests.ts",
+    "globalSetup.ts",
+    "test-setup.ts",
+    "postinstall.js",
+    "migration/x.ts",
+    "seeders/x.ts",
+    "infra/x.yaml",
+    "AGENT.md",
+    "opencode.jsonc",
+    "x.mdc",
+    "env.local",
+    "x.env",
+    "x.pem",
+    "id_rsa",
+    "run.sh",
+    "x.ps1",
+    "bin/tool.js",
+    "patches/foo.patch",
+    "vendor/lib.js",
+  ];
+  // One sample of extensions not on the allow-list.
+  const OTHER_EXTENSIONS = [
+    "json",
+    "jsonc",
+    "json5",
+    "yaml",
+    "yml",
+    "toml",
+    "xml",
+    "ini",
+    "cfg",
+    "conf",
+    "lock",
+    "nix",
+    "bzl",
+    "mk",
+    "cmake",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "bat",
+    "tf",
+    "hcl",
+    "sql",
+    "pem",
+    "key",
+    "env",
+    "patch",
+    "props",
+    "gradle",
+    "csv",
+    "wasm",
+    "so",
+    "exe",
+    "zip",
+  ];
+  const SRC = autoApproveSettings.parse({ enabled: true, allowPaths: ["src/**"] });
+  const one = (path: string): AutoApproveFacts => ({
+    ...good(),
+    reportedFiles: 1,
+    changes: [{ path, changes: 1 }],
+  });
+
+  it("refuses everything the reviewer found, and every extension off the allow-list", () => {
+    const paths = [
+      ...FOUND.flatMap((x) => [`src/${x}`, `src/a/b/${x}`]),
+      ...OTHER_EXTENSIONS.map((e) => `src/x.${e}`),
+    ];
+    for (const path of paths) {
+      expect(structuralRisk(path), path).not.toBeNull();
+      expect(autoApproveVerdict(one(path), SRC).approve, path).toBe(false);
+    }
+  });
+
+  it("allows a small set of ordinary files", () => {
+    for (const path of [
+      "src/components/Button.tsx",
+      "src/theme.ts",
+      "src/util/format.py",
+      "src/server/handler.go",
+      "src/lib.rs",
+      "src/styles/site.css",
+      "src/notes.md",
+      "src/logo.png",
+    ]) {
+      expect(structuralRisk(path), path).toBeNull();
+      expect(autoApproveVerdict(one(path), SRC).approve, path).toBe(true);
+    }
+    // An .svg only under docs.
+    expect(structuralRisk("docs/img/diagram.svg")).toBeNull();
+    expect(structuralRisk("src/icon.svg")).not.toBeNull();
+  });
+
+  it("matches allowPaths case-sensitively; refuses format characters and paths not in NFC", () => {
+    expect(autoApproveVerdict(one("SRC/theme.ts"), SRC).approve).toBe(false);
+    expect(structuralRisk("src/the\u200Bme.ts")).not.toBeNull();
+    expect(structuralRisk("src/cafe\u0301.ts")).not.toBeNull();
+  });
+
+  it("modes fail closed: unread modes are refused", () => {
+    const { modeChanges: _, ...unread } = good();
+    const v = autoApproveVerdict(unread, ON);
+    expect(v.approve).toBe(false);
+    expect(v.reason).toMatch(/file modes/);
+  });
+
+  it("a hold with an empty reason is still a hold", () => {
+    expect(failing({ ...good(), hold: "" })).toContain("hold");
+  });
+});
+
+describe("dark factory mode, fifth review of #152: earned on distinct items", () => {
+  it("twenty agreed approvals on one work item don't earn merges", async () => {
+    const w = await world();
+    const now = new Date().toISOString();
+    for (let i = 0; i < 20; i++) {
+      const pa = uid("pa_");
+      await rows(
+        `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, decision, decided_by, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_one', 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'approved', 'approved', ?, ?, ?)`,
+        pa,
+        w.orgId,
+        w.projectId,
+        w.userId,
+        now,
+        now,
+      );
+      await rows(
+        `INSERT INTO core_adjudications (id, pending_action_id, project_id, work_item_id, kind, mode, job_id, verdict, reason, acted, created_at, decided_at)
+         VALUES (?, ?, ?, 'wi_one', 'merge', 'shadow', ?, 'approve', 'fine', 0, ?, ?)`,
+        uid("adj_"),
+        pa,
+        w.projectId,
+        uid("job_"),
+        now,
+        now,
+      );
+    }
+    const stats = await ok<{ merge: { eligible: boolean; precision: number; agreed: number } }>(
+      "adjudicator.stats",
+      { projectId: w.projectId },
+      w.human,
+    );
+    expect(stats.merge).toMatchObject({ precision: 1, agreed: 1, eligible: false });
   });
 });

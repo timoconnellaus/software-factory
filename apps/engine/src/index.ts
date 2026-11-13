@@ -334,7 +334,9 @@ export async function runAdjudicator(env: Env, limit = 10): Promise<number> {
          OR (pa.kind = 'merge' AND pa.operation = 'pr.merge'
            -- Merge gates only where the project shadows them or has it active (review of #152):
            -- otherwise nothing is written and the same gates would be asked every minute.
-           AND json_extract(pp.raw, '$.adjudicator.merge') IN ('shadow', 'active')))
+           -- json_valid first (round 5): one malformed policy row can't stop the tick for every org.
+           AND CASE WHEN json_valid(pp.raw) THEN json_extract(pp.raw, '$.adjudicator.merge') END
+             IN ('shadow', 'active')))
        AND pp.raw LIKE '%"adjudicator"%'
      ORDER BY pa.created_at LIMIT ?`,
   )

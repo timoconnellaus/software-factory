@@ -32,7 +32,7 @@ import {
 import { deliveredEvent, mergeQueueEvent } from "../workflow-events.ts";
 import { adjudicatorStats } from "./adjudicator.ts";
 import { askOne } from "./ask.ts";
-import { AUTO_APPROVE, evaluateAutoApproval } from "./auto-approve.ts";
+import { AUTO_APPROVE, evaluateAutoApproval, holdReason } from "./auto-approve.ts";
 import { lineStopped } from "./delivery.ts";
 import {
   pendingActionId,
@@ -1037,7 +1037,7 @@ async function autoApprovalLapsed(
 ): Promise<string | null> {
   const pa = await ctx.db
     .selectFrom("core_pending_actions")
-    .select(["decided_by", "input"])
+    .select(["decided_by", "input", "decided_at"])
     .where("id", "=", pendingActionId)
     .executeTakeFirst();
   if (pa?.decided_by !== AUTO_APPROVE.id) return null;
@@ -1050,7 +1050,7 @@ async function autoApprovalLapsed(
   }
   if (approved !== head) return "the auto-approval was for another commit";
   const hold = ctx.scope.rawPolicy?.autoApproveHold;
-  if (hold) return `auto-approved merges are held on this project: ${hold.reason}`;
+  if (hold) return `auto-approved merges are held on this project: ${holdReason(hold)}`;
   const project = ctx.scope.project;
   if (!project) return "the project can't be read";
   // The whole verdict again, against the settings now (review of #152): narrowed allowPaths,
@@ -1062,11 +1062,18 @@ async function autoApprovalLapsed(
     .executeTakeFirst();
   const mode = ctx.scope.policy?.adjudicator.merge ?? "off";
   const stats = await adjudicatorStats(ctx, project.id, "merge");
-  const { verdict } = await evaluateAutoApproval(ctx, pa, w, project, {
-    active: mode === "active",
-    eligible: stats.eligible,
-    approved: adjudication?.verdict === "approve",
-  });
+  const { verdict } = await evaluateAutoApproval(
+    ctx,
+    pa,
+    w,
+    project,
+    {
+      active: mode === "active",
+      eligible: stats.eligible,
+      approved: adjudication?.verdict === "approve",
+    },
+    { approvedAt: pa.decided_at },
+  );
   if (verdict.approve) return null;
   return `it no longer qualifies: ${verdict.reason}`;
 }

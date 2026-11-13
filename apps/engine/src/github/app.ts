@@ -586,6 +586,11 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
           `query($owner: String!, $name: String!, ${vars}) { repository(owner: $owner, name: $name) { ${fields} } }`,
           variables,
         );
+        // Any GraphQL error fails the read (review of #152: modes fail closed), not just a missing
+        // repository: a partial answer would read as paths with no mode.
+        const errors = (r as { errors?: unknown[] }).errors;
+        if (Array.isArray(errors) && errors.length > 0)
+          fail(`tree entries ${sha}`, { status: 200, json: r });
         const data = (r as { data?: { repository?: Record<string, unknown> } }).data?.repository;
         if (!data) fail(`tree entries ${sha}`, { status: 200, json: r });
         batch.forEach((d, k) => {

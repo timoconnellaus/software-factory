@@ -16,7 +16,10 @@ import { approvingSpecGate, decidePending, mergeGateHead } from "./gates.ts";
 import { pendingActionId, projectId, requireProject } from "./shared.ts";
 
 export const ADJUDICATOR_MIN_DECISIONS = 20;
-/** Approvals a person agreed with, at least (review of #152): defers alone earn nothing. */
+/**
+ * Approvals a person agreed with, on at least this many distinct work items (review of #152): defers
+ * alone earn nothing, and one item's gates count once.
+ */
 export const ADJUDICATOR_MIN_AGREED = 15;
 export const ADJUDICATOR_PRECISION = 0.95;
 /** In active mode, every Nth approval verdict is still left to a person, to keep it measured. */
@@ -39,7 +42,7 @@ export interface AdjudicatorStats {
   /** Its verdicts on gates a person decided (the last 20). */
   decisions: number;
   approvals: number;
-  /** Approvals the person also approved. */
+  /** Distinct work items where a person also approved what it approved. */
   agreed: number;
   precision: number;
   eligible: boolean;
@@ -54,7 +57,7 @@ export async function adjudicatorStats(
   const rows = await ctx.db
     .selectFrom("core_adjudications as a")
     .innerJoin("core_pending_actions as pa", "pa.id", "a.pending_action_id")
-    .select(["a.verdict", "pa.decision"])
+    .select(["a.verdict", "pa.decision", "pa.work_item_id"])
     .where("a.project_id", "=", project)
     .where("a.kind", "=", kind)
     .where("a.verdict", "is not", null)
@@ -69,8 +72,10 @@ export async function adjudicatorStats(
     .limit(ADJUDICATOR_MIN_DECISIONS)
     .execute();
   const approvals = rows.filter((r) => r.verdict === "approve");
-  const agreed = approvals.filter((r) => r.decision === "approved").length;
-  const precision = approvals.length ? agreed / approvals.length : 0;
+  const agreedRows = approvals.filter((r) => r.decision === "approved");
+  const precision = approvals.length ? agreedRows.length / approvals.length : 0;
+  // Earned on distinct work items (review of #152, round 5): many gates of one item count once.
+  const agreed = new Set(agreedRows.flatMap((r) => (r.work_item_id ? [r.work_item_id] : []))).size;
   return {
     decisions: rows.length,
     approvals: approvals.length,
@@ -97,7 +102,7 @@ export async function requireAdjudicatorEarned(
     if (!stats.eligible) {
       throw new OperationError(
         "conflict",
-        `the adjudicator hasn't earned ${kind === "spec" ? "spec gates" : "gate steps"} yet: ${stats.decisions} of ${ADJUDICATOR_MIN_DECISIONS} decisions, ${Math.round(stats.precision * 100)}% precision (needs ${ADJUDICATOR_PRECISION * 100}%). Run it in shadow mode until it has.`,
+        `the adjudicator hasn't earned ${kind === "spec" ? "spec gates" : kind === "merge" ? "merges" : "gate steps"} yet: ${stats.decisions} of ${ADJUDICATOR_MIN_DECISIONS} decisions, approvals a person agreed with on ${stats.agreed} of ${ADJUDICATOR_MIN_AGREED} distinct items, ${Math.round(stats.precision * 100)}% precision (needs ${ADJUDICATOR_PRECISION * 100}%). Run it in shadow mode until it has.`,
         { stats },
       );
     }

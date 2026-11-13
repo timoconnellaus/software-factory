@@ -229,11 +229,16 @@ export const FACTORY_SOURCE_ALLOW = ["docs/design/**"] as const;
  * so a new ecosystem's file doesn't slip through a list. Returns why, or null.
  */
 export function structuralRisk(path: string): string | null {
-  // A path with a control character or a line break isn't matched by globs as a person reads it.
-  if (/\p{Cc}|\p{Zl}|\p{Zp}/u.test(path)) return "a path with control characters";
+  // A path with a control or format character or a line break, or not in NFC, isn't matched by
+  // globs as a person reads it.
+  if (/\p{Cc}|\p{Cf}|\p{Zl}|\p{Zp}/u.test(path)) return "a path with control characters";
+  if (path.normalize("NFC") !== path) return "a path not in Unicode NFC";
   const segs = path.split("/");
   const lower = segs.map((x) => x.toLowerCase());
   const base = lower.at(-1) ?? "";
+  // The fail-closed floor (review of #152, round 5): only ordinary content, by allow-list.
+  const kind = ordinaryContent(lower);
+  if (kind) return kind;
   // (a) any hidden file or directory, at any depth (.github, .claude, .husky, .devcontainer…).
   if (segs.some((x) => x.startsWith("."))) return "a hidden file or directory";
   // (b) lock files, by shape.
@@ -261,6 +266,126 @@ export function structuralRisk(path: string): string | null {
     base.endsWith(".rules")
   )
     return "an owners or agent instruction file";
+  return null;
+}
+
+/**
+ * The only file kinds an unattended change may touch (review of #152, round 5): prose, assets and
+ * ordinary source. Anything else (every config and data format, scripts, keys, no extension) is
+ * never auto-approved. Adding to this list is a code change.
+ */
+export const ORDINARY_EXTENSIONS: ReadonlySet<string> = new Set([
+  // Prose and assets (.svg only under a docs path: it can carry script).
+  "md",
+  "mdx",
+  "txt",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "css",
+  "scss",
+  "html",
+  // Ordinary source.
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "mjs",
+  "cjs",
+  "py",
+  "go",
+  "rs",
+  "rb",
+  "java",
+  "kt",
+  "swift",
+  "c",
+  "h",
+  "cc",
+  "cpp",
+  "cs",
+  "php",
+  "dart",
+  "ex",
+  "exs",
+  "vue",
+  "svelte",
+]);
+
+/** Directories nothing in is ordinary content, at any depth (case-insensitive). */
+const SPECIAL_DIRS = new Set([
+  "migrations",
+  "migration",
+  "migrate",
+  "seeders",
+  "seeds",
+  "hooks",
+  "bin",
+  "scripts",
+  "vendor",
+  "patches",
+  "infra",
+  "k8s",
+  "terraform",
+  "helm",
+  "deploy",
+  "ci",
+]);
+
+/** Names (extension stripped) that make a source file special: setup, tasks, hooks, instructions. */
+const SPECIAL_NAMES = new Set([
+  "setup",
+  "conftest",
+  "noxfile",
+  "fabfile",
+  "manage",
+  "tasks",
+  "build",
+  "gulpfile",
+  "gruntfile",
+  "rakefile",
+  "postinstall",
+  "preinstall",
+  "install",
+  "prepare",
+  "setuptests",
+  "globalsetup",
+  "globalteardown",
+  "agent",
+  "gemini",
+  "copilot-instructions",
+  "opencode",
+  "cmakelists",
+  "constraints",
+]);
+const SPECIAL_SHAPES = [
+  /\.config$/,
+  /\.setup$/,
+  /-setup$/,
+  /\.rc$/,
+  /^agents/,
+  /^claude/,
+  /requirements/,
+];
+
+/** Why a path isn't ordinary content, or null when it is (lower-cased segments). */
+function ordinaryContent(lower: readonly string[]): string | null {
+  const base = lower.at(-1) ?? "";
+  if (lower.some((x) => x.length === 0)) return "an empty path segment";
+  if (lower.some((x) => x.startsWith("."))) return "a hidden file or directory";
+  const dir = lower.slice(0, -1).find((x) => SPECIAL_DIRS.has(x));
+  if (dir) return `inside ${dir}/`;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return "a file with no extension";
+  const ext = base.slice(dot + 1);
+  if (!ORDINARY_EXTENSIONS.has(ext)) return `a .${ext} file (only ordinary source and prose)`;
+  if (ext === "svg" && !lower.slice(0, -1).includes("docs")) return "an .svg outside docs";
+  const stem = base.slice(0, dot);
+  if (SPECIAL_NAMES.has(stem) || SPECIAL_SHAPES.some((re) => re.test(stem)))
+    return "a setup, task or instruction file";
   return null;
 }
 
@@ -384,8 +509,11 @@ const LOCKS: Record<string, string[]> = {
   "go.sum": ["go.mod"],
 };
 
-/** A glob over repository paths: `**` any directories, `*` within one segment. Case-insensitive. */
-export function globMatch(glob: string, path: string): boolean {
+/**
+ * A glob over repository paths: `**` any directories, `*` within one segment. Case-insensitive,
+ * except for allowPaths (round 5): a place an unattended change may touch matches exactly.
+ */
+export function globMatch(glob: string, path: string, caseSensitive = false): boolean {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i] as string;
@@ -402,7 +530,7 @@ export function globMatch(glob: string, path: string): boolean {
     else if (c === "?") re += "[^/]";
     else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${re}$`, "i").test(path);
+  return new RegExp(`^${re}$`, caseSensitive ? "" : "i").test(path);
 }
 
 const matching = (globs: readonly string[], paths: readonly string[]) =>
@@ -456,7 +584,10 @@ export interface AutoApproveFacts {
     | null;
   /** How many files GitHub says the change touches (the PR's `changed_files`); must match. */
   reportedFiles?: number | null;
-  /** Paths whose file mode is a symlink or a submodule, or changed between base and head. */
+  /**
+   * Paths whose head mode isn't an ordinary file (100644), with no head mode read, or whose base mode
+   * isn't one. Undefined: not read, which refuses (round 5).
+   */
   modeChanges?: string[];
   /** The repository is the factory's own source: default-deny (`FACTORY_SOURCE_ALLOW`). */
   factorySource?: boolean;
@@ -505,8 +636,8 @@ export function autoApproveVerdict(
   );
   add(
     "hold",
-    !facts.hold,
-    facts.hold ? `the project's auto-approval is held: ${facts.hold}` : "no hold",
+    facts.hold === null,
+    facts.hold !== null ? `the project's auto-approval is held: ${facts.hold}` : "no hold",
   );
   add(
     "version",
@@ -561,7 +692,9 @@ export function autoApproveVerdict(
   const forbidden = matching(setting.forbiddenPaths, paths);
   // Every path inside allowPaths (and inside the other version's, after `stricterAutoApprove`).
   const allow = [setting.allowPaths, ...((setting as { alsoAllow?: string[][] }).alsoAllow ?? [])];
-  const outside = paths.filter((p) => allow.some((list) => !list.some((g) => globMatch(g, p))));
+  const outside = paths.filter((p) =>
+    allow.some((list) => !list.some((g) => globMatch(g, p, true))),
+  );
   const today = facts.today ?? 0;
   // At least one file, and exactly as many as GitHub says the change touches (fail closed).
   const own = (changes ?? []).filter((c) => !c.renamedFrom).length;
@@ -576,7 +709,9 @@ export function autoApproveVerdict(
       const why = structuralRisk(x);
       return why ? [`${x.replace(/\p{Cc}/gu, "?")} (${why})`] : [];
     }),
-    ...(facts.modeChanges ?? []).map((x) => `${x} (a symlink, a submodule or a mode change)`),
+    ...(facts.modeChanges ?? []).map((x) => `${x} (not an ordinary file mode)`),
+    // Modes unread fail closed (round 5).
+    ...(changes && facts.modeChanges === undefined ? ["file modes (couldn't be read)"] : []),
     // The factory's own repository: anything off the allow-list.
     ...(facts.factorySource
       ? paths.filter((x) => !FACTORY_SOURCE_ALLOW.some((g) => globMatch(g, x)))

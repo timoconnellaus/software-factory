@@ -47,6 +47,10 @@ export const AUTO_APPROVE: Actor = { type: "self-improve", id: "auto-approve" };
 export const REVIEW_AFTER_MERGE_EVERY = 5;
 
 /** Today's auto-approvals in a project, `<date>:<n>` (one row a project, so nothing grows). */
+/** A hold as the verdict reads it: null only when there is none, whatever its reason says. */
+export const holdReason = (hold: { reason?: string } | null | undefined): string | null =>
+  hold ? hold.reason?.trim() || "held (no reason given)" : null;
+
 export const autoApprovedDayKey = (projectId: string) => `auto_approved_day:${projectId}`;
 
 /** The key in `core_meta` that says the project has an auto-approved merge since main was last green. */
@@ -92,6 +96,11 @@ export async function evaluateAutoApproval(
   w: WorkItemRow,
   project: ProjectRow,
   adjudicator: { active: boolean; eligible: boolean; approved: boolean },
+  /**
+   * The babysitter's re-check of an approval already given (round 5): when it was counted today,
+   * today's count leaves it out, so the day's last one isn't withdrawn by itself.
+   */
+  recheck?: { approvedAt: string | null },
 ): Promise<{
   verdict: AutoApproveVerdict;
   setting: AutoApproveSettings;
@@ -121,14 +130,15 @@ export async function evaluateAutoApproval(
     packet: null,
     adjudicator,
     changes: null,
-    hold: ctx.scope.rawPolicy?.autoApproveHold?.reason ?? null,
+    // The hold object, not its reason (round 5): a hold with an empty reason is still a hold.
+    hold: holdReason(ctx.scope.rawPolicy?.autoApproveHold),
     touchesFactoryConfig: input.touchesFactoryConfig !== false,
     // Only an item whose Workflow the babysitter delivers, with its re-check (review of #152); an
     // attached PR merges directly on approval, with none, so it never qualifies.
     versionSupports: has(w.workflow_version, "dark-factory") && w.kind !== "attached",
   };
   // Nothing more is read (no GitHub call) when the setting is off or the project is held.
-  if (setting.enabled && !facts.hold && headSha) {
+  if (setting.enabled && facts.hold === null && headSha) {
     const day = ctx.now.slice(0, 10);
     // Today's count for the project (`core_meta`, one row a project: `<date>:<n>`), by key.
     const counted = await ctx.db
@@ -136,7 +146,8 @@ export async function evaluateAutoApproval(
       .select("value")
       .where("key", "=", autoApprovedDayKey(project.id))
       .executeTakeFirst();
-    facts.today = counted?.value.startsWith(`${day}:`) ? Number(counted.value.slice(11)) : 0;
+    const today = counted?.value.startsWith(`${day}:`) ? Number(counted.value.slice(11)) : 0;
+    facts.today = recheck?.approvedAt?.startsWith(day) ? Math.max(0, today - 1) : today;
     // The newest packet on this commit (core_review_packets_item_idx).
     const packet = await ctx.db
       .selectFrom("core_review_packets")
@@ -200,16 +211,16 @@ export async function evaluateAutoApproval(
           github.pathEntries(repo, headSha, paths),
           base ? github.pathEntries(repo, base, paths) : Promise.resolve({}),
         ]);
+        // Fail closed (review of #152, round 5): every path that exists at the head must have a head
+        // mode, and only an ordinary file (100644) passes; no mode read, an executable, a symlink or
+        // a submodule is refused, as is any base mode other than an ordinary file.
+        const atHeadNow = new Set(files.filter((f) => f.status !== "removed").map((f) => f.path));
         facts.modeChanges = paths.filter((x) => {
           const h = atHead[x]?.mode;
           const b = (atBase as Record<string, { mode: string }>)[x]?.mode;
-          return (
-            h === "120000" ||
-            h === "160000" ||
-            b === "120000" ||
-            b === "160000" ||
-            (!!h && !!b && h !== b)
-          );
+          if (atHeadNow.has(x) && h !== "100644") return true;
+          if (!atHeadNow.has(x) && h !== undefined && h !== "100644") return true;
+          return b !== undefined && b !== "100644";
         });
       } catch {
         facts.changes = null; // unread: a person decides

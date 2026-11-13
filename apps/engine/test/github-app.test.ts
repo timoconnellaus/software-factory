@@ -202,6 +202,18 @@ describe("reading a change by its paths", () => {
     expect(seen).toEqual(["POST /graphql"]);
     expect(sent.body?.variables).toMatchObject({ e0: `${sha}:`, e1: `${sha}:bin` });
   });
+
+  it("a GraphQL error fails the tree read, even with partial data (review of #152, round 5)", async () => {
+    const { app } = await appWith(async () =>
+      Response.json({
+        data: { repository: { d0: { entries: [] }, d1: null } },
+        errors: [{ message: "Something went wrong while executing your query." }],
+      }),
+    );
+    await expect(app.pathEntries(repo, "c".repeat(40), ["a.ts", "bin/run.sh"])).rejects.toThrow(
+      /tree entries/,
+    );
+  });
 });
 
 describe("finding the App's installation on a repo (incident 2026-11-11-bootstrap)", () => {
