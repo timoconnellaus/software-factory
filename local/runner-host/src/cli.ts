@@ -67,6 +67,7 @@ import {
   saveConfig,
 } from "./config.ts";
 import { deviceLogin } from "./device-login.ts";
+import { gitAtLeast, MIN_GIT } from "./git.ts";
 import { acquireHostLock, HostLockedError } from "./host-lock.ts";
 import { installHint, linuxChecks } from "./linux.ts";
 import { readLiveJobs } from "./live-jobs.ts";
@@ -422,7 +423,12 @@ async function doctor(args: string[]) {
     if (Number(process.versions.node.split(".")[0]) < 24) throw new Error(process.version);
     return process.version;
   });
-  await check("git", () => version("git"));
+  await check(`git ≥ ${MIN_GIT.join(".")}`, async () => {
+    const v = await version("git");
+    // The check export needs `--attr-source` (git 2.40): an older git fails every check export.
+    if (!gitAtLeast(v)) throw new Error(`${v}; install a newer one (${installHint("git")})`);
+    return v;
+  });
   await check("tmux ≥ 3.2", async () => {
     const v = await version("tmux", ["-V"]);
     if (!tmuxAtLeast(v)) throw new Error(`${v}; install a newer one (${installHint("tmux")})`);
