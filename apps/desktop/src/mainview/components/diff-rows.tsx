@@ -27,7 +27,7 @@ export function DiffRows({ rows, testId }: { rows: DiffRow[]; testId?: string })
 function Region({ was, now }: { was: string; now: string }) {
   const r = changedRegion(was, now);
   return (
-    <span className="flex min-w-0 flex-col gap-0.5 break-words font-mono text-[11px]">
+    <span className="flex min-w-0 flex-col gap-0.5 whitespace-pre-wrap break-words font-mono text-[11px]">
       <span className="text-ink-3" data-testid="diff-was">
         {r.before}
         <mark className="bg-chip-amber text-chip-amber-ink line-through">{r.was || "∅"}</mark>

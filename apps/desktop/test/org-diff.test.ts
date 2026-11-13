@@ -155,3 +155,55 @@ describe("round 4 of #159", () => {
     expect(long.before.startsWith("…")).toBe(true);
   });
 });
+
+describe("round 5 of #159", () => {
+  it("covers every top-level key of the org config schema", async () => {
+    const { ORG_CONFIG_KEYS } = await import("../src/mainview/lib/org-diff.ts");
+    const { orgConfigSchema } = await import("../../../packages/core/src/stages/org-config.ts");
+    // A key added to the schema without a diff fails here.
+    expect([...ORG_CONFIG_KEYS].sort()).toEqual(Object.keys(orgConfigSchema.shape).sort());
+  });
+
+  it("shows a rollback's change to the org's built-in copies, and what an added workflow brings", async () => {
+    const { orgConfigDiff } = await import("../src/mainview/lib/org-diff.ts");
+    const incident = (checks: string[]) => ({
+      id: "wf_incident",
+      name: "Incident",
+      stages: [
+        stage({
+          id: "verify",
+          name: "Verify",
+          type: "checks",
+          settings: { requiredChecks: checks },
+        }),
+      ],
+    });
+    const rows = orgConfigDiff(
+      { version: 1, builtIns: { incident: incident(["ci", "e2e"]) }, workflows: [], agents: [] },
+      {
+        version: 1,
+        builtIns: { incident: incident(["ci"]) },
+        workflows: [{ id: "wf_new", name: "New", stages: [stage()] }],
+        agents: [],
+      },
+    );
+    const labels = rows.map((r) => r.label);
+    expect(labels).toContain("Built-in incident (the org's copy): Verify: settings");
+    expect(labels).toContain("Workflow New");
+    expect(labels).toContain("Workflow New: Reviewer: type (new stage)");
+  });
+
+  it("makes every invisible or look-alike change visible, by code point", async () => {
+    const { changedRegion } = await import("../src/mainview/lib/org-diff.ts");
+    expect(changedRegion("a b", "a\u00a0b").now).toBe("⟨U+00A0⟩");
+    expect(changedRegion("a\nb", "a\r\nb").now).toBe("⟨CR⟩");
+    expect(changedRegion("e", "e\u0301").now).toBe("⟨U+0301⟩");
+    expect(changedRegion("ok", "ok\ufe0f").now).toBe("⟨U+FE0F⟩");
+    // A Cyrillic letter for a Latin one: a non-ASCII character in the change carries its code point.
+    const look = changedRegion("pass", "p\u0430ss");
+    expect(look.was).toBe("a");
+    expect(look.now).toContain("⟨U+0430⟩");
+    // An emoji is one character: a change to it isn't split into halves.
+    expect(changedRegion("go 😀", "go 😁").now).toBe("😁⟨U+1F601⟩");
+  });
+});
