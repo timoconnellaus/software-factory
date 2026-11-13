@@ -137,6 +137,30 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
+    // Spec 44 part A: the held steer call waits in the Worker, reading every HELD_POLL_MS whether
+    // the run has a queued steer (core_run_steers_undelivered_idx). One poll at least.
+    name: "the held steer call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+      });
+    },
+  },
+  {
+    // Spec 44 part A: the held terminal call reads whether the run has an open attach
+    // (core_run_terminal_attaches_open_idx), and asks the relay only when it does.
+    name: "the held terminal call's poll (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).terminal?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+      });
+    },
+  },
+  {
     // Every planning call finds its session by the job. The test's job is dressed as a planning
     // run for the call, so the real lookup runs (and is refused: there is no session).
     name: "a planning call's session lookup",

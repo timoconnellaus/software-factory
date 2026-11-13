@@ -6,7 +6,7 @@
 //   node scripts/check-profile.ts "<app>/Contents/Helpers/SF Keys.app"
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,44 +60,93 @@ export function expiry(
   return { level: "ok", text: `the key helper's profile expires on ${when} (${days} days)` };
 }
 
-function run(cmd: string, args: string[], input?: string): string {
-  const r = spawnSync(cmd, args, { input, maxBuffer: 16 * 1024 * 1024 });
-  if (r.status !== 0) throw new Error(`${cmd} ${args.join(" ")}: ${r.stderr?.toString().trim()}`);
+function run(cmd: string, args: string[]): string {
+  const r = spawnSync(cmd, args, { maxBuffer: 16 * 1024 * 1024 });
+  if (r.status !== 0) {
+    // plutil writes its errors to stdout, codesign and security to stderr: show both.
+    const why = [r.stdout, r.stderr]
+      .map((b) => b?.toString().trim())
+      .filter(Boolean)
+      .join(" | ");
+    throw new Error(`${cmd} ${args.join(" ")} exited ${r.status}: ${why || "(no output)"}`);
+  }
   return r.stdout.toString();
 }
 
 const sha1 = (der: Buffer) => createHash("sha1").update(der).digest("hex");
 
-function main(helper: string): void {
-  const profileXml = run("security", [
-    "cms",
-    "-D",
-    "-i",
-    join(helper, "Contents/embedded.provisionprofile"),
-  ]);
-  const extract = (path: string, as: "json" | "raw") =>
-    run("plutil", ["-extract", path, as, "-o", "-", "-"], profileXml).trim();
-  const profileEnts = JSON.parse(extract("Entitlements", "json")) as Ents;
-  const claimedXml = run("codesign", ["-d", "--entitlements", "-", "--xml", helper]);
-  const claimed = JSON.parse(
-    run("plutil", ["-convert", "json", "-o", "-", "-"], claimedXml),
-  ) as Ents;
+/**
+ * What the check needs from a decoded profile (its plist XML): the Entitlements, the first
+ * certificate's DER and the expiry. Each value is taken out with `plutil -extract … xml1` from a
+ * file (not stdin, and not as json or raw, whose handling of a profile's <data> and <date> differs
+ * between macOS versions), then read from that small XML.
+ */
+export function readProfile(profileXml: string): {
+  entitlements: Ents;
+  certificate: Buffer;
+  expires: Date;
+} {
+  const work = mkdtempSync(join(tmpdir(), "sf-keys-profile-"));
+  try {
+    const profile = join(work, "profile.plist");
+    writeFileSync(profile, profileXml);
+    const extract = (path: string) => {
+      const out = join(work, `${path.replace(/\W/g, "_")}.plist`);
+      run("plutil", ["-extract", path, "xml1", "-o", out, profile]);
+      return out;
+    };
+    const entsFile = extract("Entitlements");
+    run("plutil", ["-convert", "json", entsFile]);
+    const entitlements = JSON.parse(readFileSync(entsFile, "utf8")) as Ents;
+    const cert = /<data>([\s\S]*?)<\/data>/.exec(
+      readFileSync(extract("DeveloperCertificates.0"), "utf8"),
+    )?.[1];
+    if (!cert) throw new Error("the profile has no DeveloperCertificates");
+    const date = /<date>([^<]+)<\/date>/.exec(readFileSync(extract("ExpirationDate"), "utf8"))?.[1];
+    if (!date) throw new Error("the profile has no ExpirationDate");
+    return {
+      entitlements,
+      certificate: Buffer.from(cert.replace(/\s+/g, ""), "base64"),
+      expires: new Date(date),
+    };
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
-  const problems = entitlementProblems(claimed, profileEnts);
+/** The entitlements a signed bundle claims, from `codesign --xml` through a file. */
+function claimedEntitlements(helper: string): Ents {
+  const work = mkdtempSync(join(tmpdir(), "sf-keys-ents-"));
+  try {
+    const file = join(work, "ents.plist");
+    writeFileSync(file, run("codesign", ["-d", "--entitlements", "-", "--xml", helper]));
+    run("plutil", ["-convert", "json", file]);
+    return JSON.parse(readFileSync(file, "utf8")) as Ents;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+function main(helper: string): void {
+  const profile = readProfile(
+    run("security", ["cms", "-D", "-i", join(helper, "Contents/embedded.provisionprofile")]),
+  );
+  const claimed = claimedEntitlements(helper);
+  const problems = entitlementProblems(claimed, profile.entitlements);
 
   // The profile's certificate is the one that signed the helper.
   const work = mkdtempSync(join(tmpdir(), "sf-keys-cert-"));
   try {
     run("codesign", ["-d", `--extract-certificates=${join(work, "cert")}`, helper]);
     const signer = sha1(readFileSync(join(work, "cert0")));
-    const named = sha1(Buffer.from(extract("DeveloperCertificates.0", "raw"), "base64"));
+    const named = sha1(profile.certificate);
     if (signer !== named)
       problems.push(`the profile names certificate ${named}, the helper is signed by ${signer}`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 
-  const e = expiry(new Date(extract("ExpirationDate", "raw")), new Date());
+  const e = expiry(profile.expires, new Date());
   if (e.level === "error") problems.push(e.text);
   else
     console.log(e.level === "warning" ? `::warning title=Key helper profile::${e.text}` : e.text);
@@ -109,8 +158,33 @@ function main(helper: string): void {
   console.log(`check-profile: the profile allows all ${Object.keys(claimed).length} entitlements`);
 }
 
+/**
+ * `--self-test <profile.plist> [signed binary]`: read a decoded profile (CI's macOS job runs it on a
+ * synthetic one shaped like the portal's) and, given one, a binary signed with the helper's
+ * entitlements, and check the one against the other, so a plutil or codesign change on the runner
+ * shows here and not in a release.
+ */
+function selfTest(file: string, signed?: string): void {
+  const p = readProfile(readFileSync(file, "utf8"));
+  if (signed) {
+    const ents = claimedEntitlements(signed);
+    const problems = entitlementProblems(ents, p.entitlements);
+    if (problems.length) throw new Error(`self-test: ${problems.join("; ")}`);
+    console.log(
+      `check-profile self-test: ${signed} claims ${Object.keys(ents).length} allowed entitlements`,
+    );
+  }
+  if (!Object.keys(p.entitlements).length) throw new Error("no entitlements read");
+  if (!p.certificate.length) throw new Error("no certificate read");
+  if (Number.isNaN(p.expires.getTime())) throw new Error("no expiry read");
+  console.log(
+    `check-profile self-test: ${Object.keys(p.entitlements).length} entitlements, a ${p.certificate.length}-byte certificate, expires ${p.expires.toISOString()}`,
+  );
+}
+
 if (!process.env.VITEST) {
-  const helper = process.argv[2];
-  if (!helper) throw new Error("usage: node scripts/check-profile.ts <SF Keys.app>");
-  main(helper);
+  const [first, second, third] = process.argv.slice(2);
+  if (first === "--self-test" && second) selfTest(second, third);
+  else if (first) main(first);
+  else throw new Error("usage: node scripts/check-profile.ts <SF Keys.app> | --self-test <plist>");
 }

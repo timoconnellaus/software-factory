@@ -26,6 +26,7 @@ import {
   STEER_WAIT_MAX_MS,
   steersRequestSchema,
   TERMINAL_PATHS,
+  TERMINAL_TICKET_TTL_MS,
   TERMINAL_WAIT_MAX_MS,
   terminalCallRequestSchema,
 } from "@software-factory/runner-contract";
@@ -242,9 +243,20 @@ async function planningReply(
 }
 
 /**
- * The runner host's held steer call (spec 31, ADR 0400): `run.takeSteers` as the runner, and while
- * nothing is queued the call waits on the work item's hub, which `run.steer`'s outbox message
- * wakes, until a steer comes or the wait's time is up. Taking steers marks them delivered.
+ * How often a held channel call re-checks while it waits (spec 44 part A). The wait is in the
+ * Worker, which is billed for CPU and not for wall time; each check is one indexed point read on a
+ * partial index that is empty while nothing is due. No Durable Object is held.
+ */
+export const HELD_POLL_MS = 3_000;
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
+
+/**
+ * The runner host's held steer call (spec 31, ADR 0400; spec 44 part A): `run.takeSteers` as the
+ * runner (fenced) first. While nothing is queued, the call waits in the Worker, reading every
+ * HELD_POLL_MS whether the run has an undelivered steer (core_run_steers_undelivered_idx), and takes
+ * them once one is there. When the time is up it answers empty without another take. Taking steers
+ * marks them delivered, in the operation's own guarded batch, so a steer is handed over once.
  */
 async function steerReply(
   env: Env,
@@ -263,30 +275,35 @@ async function steerReply(
   const timeout = Math.min(parsed.data.waitMs ?? STEER_WAIT_MAX_MS, STEER_WAIT_MAX_MS);
   const deadline = Date.now() + timeout;
   const actor: Actor = { type: "runner", id: runner };
-  let hub: ReturnType<typeof planningHub> | null = null;
-  let seen = 0;
-  for (;;) {
-    const reply = await invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+  const take = () => invokeReply(env, "run.takeSteers", { jobId, fencingToken }, actor);
+  const first = await take();
+  if (first.status && first.status !== 200) return first;
+  const { runId, steers } = first.body as { runId: string; steers: unknown[] };
+  if (steers.length > 0 || timeout <= 0) return { body: { steers } };
+  while (Date.now() < deadline) {
+    await pause(Math.min(HELD_POLL_MS, deadline - Date.now()));
+    const queued = await env.DB.prepare(
+      "SELECT 1 FROM core_run_steers WHERE run_id = ? AND delivered_at IS NULL LIMIT 1",
+    )
+      .bind(runId)
+      .first();
+    if (!queued) continue;
+    const reply = await take();
     if (reply.status && reply.status !== 200) return reply;
-    const body = reply.body as { workItemId: string; steers: unknown[] };
-    const left = deadline - Date.now();
-    if (body.steers.length > 0 || left <= 0) return { body: { steers: body.steers } };
-    if (!hub) {
-      hub = planningHub(env, body.workItemId);
-      // A steer sent between the read above and taking the sequence is seen by one more read.
-      seen = await hub.current();
-      continue;
-    }
-    const changed = await hub.waitForChange(seen, left);
-    if (changed) seen = await hub.current();
+    return { body: { steers: (reply.body as { steers: unknown[] }).steers } };
   }
+  return { body: { steers: [] } };
 }
 
 /**
- * The runner host's held terminal call (spec 35, ADR 0440): `run.terminal.host` as the runner
- * (fenced), then a wait on the job's TerminalRelay until a viewer is waiting and no host is
- * connected. The answer is the relay's host socket URL with a one-use ticket the relay minted, or
- * `connect: null` once the wait's time is up. Never stored.
+ * The runner host's held terminal call (spec 35, ADR 0440; spec 44 part A): `run.terminal.host` as
+ * the runner (fenced), then a wait in the Worker. Every HELD_POLL_MS it reads whether the run has an
+ * open attach (core_run_terminal_attaches_open_idx). Only then does it ask the job's TerminalRelay,
+ * the one that knows who is really connected, for a host ticket (`hostTicket()`, answered at once
+ * from its live sockets). D1 only says whether asking is worth it: an attach the relay has no viewer
+ * for, older than a viewer ticket lives, was left by a deploy or a crash, and is closed through
+ * `run.terminal.closeStale`, so it wakes the relay once, not every poll. The answer is the relay's
+ * host socket URL with a one-use ticket, or `connect: null` once the wait's time is up. Never stored.
  */
 async function terminalReply(
   env: Env,
@@ -303,19 +320,41 @@ async function terminalReply(
     };
   }
   const { fencingToken } = parsed.data;
-  const check = await invokeReply(
-    env,
-    "run.terminal.host",
-    { jobId, fencingToken },
-    { type: "runner", id: runner },
-  );
+  const actor: Actor = { type: "runner", id: runner };
+  const check = await invokeReply(env, "run.terminal.host", { jobId, fencingToken }, actor);
   if (check.status && check.status !== 200) return check;
+  const { runId } = check.body as { runId: string };
   const ms = Math.min(parsed.data.waitMs ?? TERMINAL_WAIT_MAX_MS, TERMINAL_WAIT_MAX_MS);
-  const ticket = await terminalRelay(env, jobId).waitForViewer(ms);
-  if (!ticket) return { body: { connect: null } };
-  const url = new URL(TERMINAL_PATHS.host(jobId), origin.replace(/^http/, "ws"));
-  url.searchParams.set("ticket", ticket);
-  return { body: { connect: { url: url.toString() } } };
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const open = await env.DB.prepare(
+      "SELECT opened_at FROM core_run_terminal_attaches WHERE run_id = ? AND closed_at IS NULL ORDER BY opened_at LIMIT 1",
+    )
+      .bind(runId)
+      .first<{ opened_at: string }>();
+    if (open) {
+      const { ticket, viewers } = await terminalRelay(env, jobId).hostTicket();
+      if (ticket) {
+        const url = new URL(TERMINAL_PATHS.host(jobId), origin.replace(/^http/, "ws"));
+        url.searchParams.set("ticket", ticket);
+        return { body: { connect: { url: url.toString() } } };
+      }
+      const staleBefore = new Date(Date.now() - TERMINAL_TICKET_TTL_MS).toISOString();
+      if (viewers === 0 && open.opened_at < staleBefore) {
+        // The relay has no viewer for an attach older than any ticket: left by a deploy or crash.
+        const closed = await invokeReply(
+          env,
+          "run.terminal.closeStale",
+          { jobId, fencingToken, before: staleBefore },
+          actor,
+        );
+        if (closed.status && closed.status !== 200) return closed;
+      }
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return { body: { connect: null } };
+    await pause(Math.min(HELD_POLL_MS, left));
+  }
 }
 
 /**
