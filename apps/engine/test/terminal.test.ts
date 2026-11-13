@@ -2,7 +2,7 @@
 // call on the signed channel, the TerminalRelay Durable Object with real WebSocket pairs, the
 // viewer's attach through EngineApi, read-only enforcement in the relay, caps and the journal.
 import { env } from "cloudflare:workers";
-import { type Actor, FOREMAN } from "@software-factory/core";
+import { type Actor, FOREMAN, STEER_OFFERS_MAX } from "@software-factory/core";
 import {
   type ChannelCallError,
   httpControlPlane,
@@ -786,6 +786,134 @@ describe("held calls wait in the Worker, not in a Durable Object (spec 44 part A
       .bind(old?.steers[0]?.id)
       .first<{ delivered_at: string | null }>();
     expect(oldRow?.delivered_at).not.toBeNull();
+  });
+
+  it("offers steers in order: none while an earlier one is on offer (review of #189)", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const fence = job.lease.fencingToken;
+    const take = (ack: string[]) => c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0, ack });
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "A" }, w.human);
+    // A's answer is lost; B comes after it.
+    const lost = await take([]);
+    const a = lost?.steers[0]?.id as string;
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "B" }, w.human);
+    // B isn't offered while A is.
+    expect(await take([])).toEqual({ steers: [] });
+    // A lapses: both are offered, A first.
+    await env.DB.prepare("UPDATE core_run_steers SET offered_until = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), a)
+      .run();
+    expect((await take([]))?.steers.map((s) => s.text)).toEqual(["A", "B"]);
+  });
+
+  it("a held call sees an offer lapse and takes the steer again", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const fence = job.lease.fencingToken;
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "again" }, w.human);
+    const lost = await c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0, ack: [] });
+    const id = lost?.steers[0]?.id as string;
+    // The offer lapses a second into the hold.
+    await env.DB.prepare("UPDATE core_run_steers SET offered_until = ? WHERE id = ?")
+      .bind(new Date(Date.now() + 1_000).toISOString(), id)
+      .run();
+    const started = Date.now();
+    const held = await c.steers?.(job.jobId, { fencingToken: fence, waitMs: 20_000, ack: [] });
+    expect(held?.steers.map((s) => s.id)).toEqual([id]);
+    expect(Date.now() - started).toBeLessThan(1_000 + HELD_POLL_MS + 1_500);
+  });
+
+  it("delivers acks only for the host's own run, and after the run has ended", async () => {
+    const w = await world();
+    const caps = [...MANIFEST.capabilities, "terminal" as const, "steer" as const];
+    const one = await running(w, caps);
+    const two = await running(w, caps);
+    const offer = async (r: typeof one, text: string) => {
+      await ok("run.steer", { workItemId: r.item.workItemId, runId: r.runId, text }, w.human);
+      const got = await r.c.steers?.(r.job.jobId, {
+        fencingToken: r.job.lease.fencingToken,
+        waitMs: 0,
+        ack: [],
+      });
+      return got?.steers[0]?.id as string;
+    };
+    const delivered = (id: string) =>
+      env.DB.prepare("SELECT delivered_at FROM core_run_steers WHERE id = ?")
+        .bind(id)
+        .first<string | null>("delivered_at");
+    const mine = await offer(one, "mine");
+    const theirs = await offer(two, "theirs");
+    // Run one's host acks run two's steer: nothing happens to it.
+    await one.c.steers?.(one.job.jobId, {
+      fencingToken: one.job.lease.fencingToken,
+      waitMs: 0,
+      ack: [theirs],
+    });
+    expect(await delivered(theirs)).toBeNull();
+    // Run one ends; its host flushes the ack for what it typed: taken, nothing offered.
+    await env.DB.prepare("UPDATE core_runs SET status = 'handed_back' WHERE id = ?")
+      .bind(one.runId)
+      .run();
+    const flushed = await one.c.steers?.(one.job.jobId, {
+      fencingToken: one.job.lease.fencingToken,
+      waitMs: 20_000,
+      ack: [mine],
+    });
+    expect(flushed).toEqual({ steers: [] });
+    expect(await delivered(mine)).not.toBeNull();
+    // Without acks, an ended run is still refused.
+    await expect(
+      one.c.steers?.(one.job.jobId, { fencingToken: one.job.lease.fencingToken, ack: [] }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("gives a steer up after STEER_OFFERS_MAX offers nobody acked, and shows it undelivered", async () => {
+    const w = await world();
+    const { c, job, item, runId } = await running(w, [
+      ...MANIFEST.capabilities,
+      "terminal",
+      "steer",
+    ]);
+    const fence = job.lease.fencingToken;
+    const take = (ack: string[]) => c.steers?.(job.jobId, { fencingToken: fence, waitMs: 0, ack });
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "never acked" }, w.human);
+    await ok("run.steer", { workItemId: item.workItemId, runId, text: "next" }, w.human);
+    const first = await take([]);
+    const id = first?.steers[0]?.id as string;
+    // Offered the last time, and lapsed.
+    await env.DB.prepare("UPDATE core_run_steers SET offered_until = ?, offers = ? WHERE id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), STEER_OFFERS_MAX, id)
+      .run();
+    await env.DB.prepare("UPDATE core_run_steers SET offered_until = ? WHERE run_id = ?")
+      .bind(new Date(Date.now() - 1_000).toISOString(), runId)
+      .run();
+    // It is given up; the one after it is offered.
+    expect((await take([]))?.steers.map((s) => s.text)).toEqual(["next"]);
+    const row = await env.DB.prepare(
+      "SELECT delivered_at, undeliverable_at FROM core_run_steers WHERE id = ?",
+    )
+      .bind(id)
+      .first<{ delivered_at: string | null; undeliverable_at: string | null }>();
+    expect(row?.undeliverable_at).not.toBeNull();
+    expect(row?.delivered_at).not.toBeNull();
+    const live = await ok<{ steers: { id: string; status: string; deliveredAt: string | null }[] }>(
+      "run.live",
+      { workItemId: item.workItemId, runId },
+      w.human,
+    );
+    expect(live.steers.find((s) => s.id === id)).toMatchObject({
+      status: "undelivered",
+      deliveredAt: null,
+    });
   });
 
   it("refuses a stale fencing token on both holds before any wait", async () => {

@@ -12,7 +12,7 @@ import {
   describeOverrideApprove,
 } from "../src/operations/policy-summary.ts";
 import { keyHelperRefusal } from "../src/testing/key-helper.ts";
-import { deps, POLICY, world } from "./helpers.ts";
+import { deps, newItem, POLICY, world } from "./helpers.ts";
 
 /** A name built to break a prompt: quotes, a soft hyphen, bidi and zero-width marks, a newline. */
 const HOSTILE = `Acme "approved" \u00ad\u202eevil\u202c\u200b\nline ${"x".repeat(200)}`;
@@ -116,6 +116,34 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
     expect(summaries[8]).toMatch(
       /^Approve a looser override \(config v2\): loosens: an unnamed one requiredFrom from the org's medium to Acme approved evil line x+…/,
     );
+  });
+
+  it("names the item and the red main for marking a repair, within the helper's rules", async () => {
+    const w = await world();
+    await rename(w);
+    const item = await newItem(w, `Fix "the" \u202eflaky \u00adbuild ${"z".repeat(90)}`);
+    const id = `dsk_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      "INSERT INTO core_desktop_devices (id, user_id, name, public_key, key_storage, created_at, last_seen_at, revoked_at) VALUES (?, ?, 'M5', 'key', 'secure-enclave', ?, NULL, NULL)",
+    )
+      .bind(id, w.userId, new Date().toISOString())
+      .run();
+    for (const repair of [true, false]) {
+      const r = await invoke(
+        deps,
+        "presence.challenge",
+        { op: "workItem.markRepair", input: { workItemId: item.workItemId, repair } },
+        { actor: w.human, origin: { surface: "desktop", deviceId: id } },
+      );
+      if (r.status !== "ok") throw new Error(r.status);
+      const summary = (r.output as { summary: string }).summary;
+      expect(keyHelperRefusal(summary), summary).toBeNull();
+      expect(summary).toMatch(
+        repair
+          ? /^Mark as a repair of red main .*: #\d+/
+          : /^No longer a repair of red main .*: #\d+/,
+      );
+    }
   });
 
   it("a software key gets no challenge for a policy decision, whatever DESKTOP_ALLOW_SOFTWARE_KEYS says", async () => {

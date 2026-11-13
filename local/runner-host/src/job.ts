@@ -27,6 +27,7 @@ import {
   type RunnerEvent,
   type SessionHandle,
   type SessionOutcome,
+  STEER_OFFER_MS,
   STEER_WAIT_MAX_MS,
   type StoredArtifact,
   steerText,
@@ -182,93 +183,125 @@ export async function steerLoop(options: {
   if (!(await adapter.manifest()).capabilities.includes("steer")) return;
   const take = cp.steers.bind(cp);
   let failures = 0;
+  // Fenced or killed: the job is over for this host, and an ack would be refused.
+  let stopped = false;
   // Host ack (spec 44): every call says which steers this host has received since the last one,
   // so a steer is delivered only once the host has it (a take by a call whose host had gone is
   // offered again a minute later). A steer offered twice is dropped here by its id.
+  //
+  // The seen-set is in memory, per job (review of #189). It needn't outlive the process: a host
+  // restart ends the job's session (jobs aren't re-adopted, spec 39), so no session is left to type
+  // a steer twice into, and the acks this loop holds are flushed when it stops (below). Re-adopting
+  // a live job after a restart (spec 39) must persist it with the job.
   let received: string[] = [];
   const seen = new Set<string>();
-  while (!signal.aborted) {
-    let steers: {
-      id: string;
-      text: string;
-      interrupt?: boolean;
-      kind?: "message" | "takeover";
-    }[];
-    const viaLine = options.line?.up() ?? false;
-    try {
-      ({ steers } = await take(
+  // After a call that failed (its answer may be lost, with steers it took now on offer), the next
+  // wait on the line ends once such an offer has lapsed, not at the 5-minute safety poll.
+  let recheckAt: number | null = null;
+  try {
+    await steerCalls();
+  } finally {
+    // Acks for steers already typed go in one last call, so a steer the session got isn't offered
+    // again (or shown as undelivered). The cloud takes an ack after the run has ended.
+    if (received.length > 0 && !stopped) {
+      await take(
         job.jobId,
-        {
-          fencingToken: job.lease.fencingToken,
-          waitMs: viaLine || received.length > 0 ? 0 : STEER_WAIT_MAX_MS,
-          ack: received,
-        },
-        signal,
-      ));
-      failures = 0;
-      received = [];
-    } catch (error) {
-      if (signal.aborted) return;
-      if (isStop(error)) {
-        options.onStop(error);
-        return;
-      }
-      if (error instanceof ChannelCallError && (error.status === 404 || error.status === 409)) {
-        log(`${job.jobId}: no steers (${error.status} ${error.code ?? ""}); not asking again`);
-        return;
-      }
-      failures++;
-      const wait = Math.min((options.retryMs ?? 5_000) * 2 ** (failures - 1), 60_000);
-      await sleep(wait, undefined, { signal }).catch(() => {});
-      continue;
+        { fencingToken: job.lease.fencingToken, waitMs: 0, ack: received },
+        AbortSignal.timeout(10_000),
+      ).catch((error: unknown) =>
+        log(`${job.jobId}: couldn't send the last steer acks: ${String(error)}`),
+      );
     }
-    for (const s of steers) {
-      if (signal.aborted) return;
-      received.push(s.id);
-      if (seen.has(s.id)) continue;
-      seen.add(s.id);
-      if (s.kind === "takeover") {
+  }
+
+  async function steerCalls(): Promise<void> {
+    while (!signal.aborted) {
+      let steers: {
+        id: string;
+        text: string;
+        interrupt?: boolean;
+        kind?: "message" | "takeover";
+      }[];
+      const viaLine = options.line?.up() ?? false;
+      try {
+        ({ steers } = await take(
+          job.jobId,
+          {
+            fencingToken: job.lease.fencingToken,
+            waitMs: viaLine || received.length > 0 ? 0 : STEER_WAIT_MAX_MS,
+            ack: received,
+          },
+          signal,
+        ));
+        failures = 0;
+        received = [];
+      } catch (error) {
+        if (signal.aborted) return;
+        if (isStop(error)) {
+          stopped = true;
+          options.onStop(error);
+          return;
+        }
+        if (error instanceof ChannelCallError && (error.status === 404 || error.status === 409)) {
+          log(`${job.jobId}: no steers (${error.status} ${error.code ?? ""}); not asking again`);
+          return;
+        }
+        recheckAt = Date.now() + STEER_OFFER_MS + 1_000;
+        failures++;
+        const wait = Math.min((options.retryMs ?? 5_000) * 2 ** (failures - 1), 60_000);
+        await sleep(wait, undefined, { signal }).catch(() => {});
+        continue;
+      }
+      for (const s of steers) {
+        if (signal.aborted) return;
+        received.push(s.id);
+        if (seen.has(s.id)) continue;
+        seen.add(s.id);
+        if (s.kind === "takeover") {
+          try {
+            if (!options.takeover) throw new Error("this session can't be taken over from here");
+            await options.takeover();
+            log(`${job.jobId}: stopped the session for a takeover (${s.id})`);
+          } catch (error) {
+            const why = error instanceof Error ? error.message : String(error);
+            await options
+              .push({
+                type: "log",
+                stream: "stderr",
+                text: `the session could not be handed over: ${why}`.slice(0, 2_000),
+              })
+              .catch(() => {});
+          }
+          continue;
+        }
+        const text = steerText(s.text);
+        if (!text) continue;
         try {
-          if (!options.takeover) throw new Error("this session can't be taken over from here");
-          await options.takeover();
-          log(`${job.jobId}: stopped the session for a takeover (${s.id})`);
+          if (s.interrupt && options.interrupt) {
+            await options.interrupt(text);
+            log(`${job.jobId}: interrupted the agent for a person (${s.id})`);
+          } else {
+            await options.steer(text);
+            log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
+          }
         } catch (error) {
           const why = error instanceof Error ? error.message : String(error);
           await options
             .push({
               type: "log",
               stream: "stderr",
-              text: `the session could not be handed over: ${why}`.slice(0, 2_000),
+              text: `a message from the dashboard could not be typed: ${why}`.slice(0, 2_000),
             })
             .catch(() => {});
         }
-        continue;
       }
-      const text = steerText(s.text);
-      if (!text) continue;
-      try {
-        if (s.interrupt && options.interrupt) {
-          await options.interrupt(text);
-          log(`${job.jobId}: interrupted the agent for a person (${s.id})`);
-        } else {
-          await options.steer(text);
-          log(`${job.jobId}: typed a message from the dashboard (${s.id})`);
-        }
-      } catch (error) {
-        const why = error instanceof Error ? error.message : String(error);
-        await options
-          .push({
-            type: "log",
-            stream: "stderr",
-            text: `a message from the dashboard could not be typed: ${why}`.slice(0, 2_000),
-          })
-          .catch(() => {});
+      // On the line: wait for a push (or the line going up or down, or the 5-minute safety poll).
+      // Acks to send go at once (the next call, not held); else, on the line, wait for a push.
+      if (received.length === 0 && viaLine && options.line?.up()) {
+        const lapse = recheckAt === null ? undefined : Math.max(0, recheckAt - Date.now());
+        recheckAt = null;
+        await options.line.next("steer", signal, lapse);
       }
-    }
-    // On the line: wait for a push (or the line going up or down, or the 5-minute safety poll).
-    // Acks to send go at once (the next call, not held); else, on the line, wait for a push.
-    if (received.length === 0 && viaLine && options.line?.up()) {
-      await options.line.next("steer", signal);
     }
   }
 }

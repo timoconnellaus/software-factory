@@ -56,9 +56,11 @@ read a check's log or ask GitHub to rerun one.
   fast-forward to its own run branch.
 - The runner host changes are small: a `babysit` job sent to resolve a conflict is prepared, merged
   and pushed like a build (`pushesRunBranch`).
-- Not covered yet: the reopened merge gate shows the whole new head, not only the resolution
-  against a plain merge of main (decision 1's "the person sees only the resolution"); that is the
-  next PR.
+- The reopened merge gate shows only the resolution (decision 1, stored with the item, migration 0392):
+  `babysit.resolution` records, from the resolution's merge commit and its two parents, the files
+  whose content is neither side's, which of them both sides had changed (the conflict), each
+  patch, and the files outside the conflict, which the gate flags. `workItem.get` returns it while
+  the item's head is that resolution.
 - Not covered yet: a check that fails on a head the queue updated is read by the item's Workflow
   when it re-verifies that head (ADR 0582), so it goes back to build as before rather than to the
   babysitter. Routing it there needs a Workflow feature row.
