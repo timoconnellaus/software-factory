@@ -15,7 +15,7 @@
 //   build served under a manifest saying 9.9.9 passes both checks above, so the bundle's own
 //   version must equal the manifest's and be newer than the running one (updates.ts).
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const APP_IDENTIFIER = "com.software-factory.desktop";
 
@@ -64,6 +64,16 @@ export async function verifyBundle(
   if (gk.code !== 0) return `Gatekeeper rejects it: ${lastLine(gk.out)}`;
   return null;
 }
+
+/**
+ * The .app Electrobun staged. Its record's `staging_path` is a folder that holds the new bundle
+ * under the running app's own name (`<App>.app.prepared-<hash>/<App>.app`), not the bundle itself:
+ * checking the folder made every update fail with "Is a directory" (found on the first real
+ * self-update, 0.1.44 to 0.1.48). The name comes from the running app, never from the record, so
+ * the bundle checked is the one that would replace it.
+ */
+export const stagedBundle = (stagingPath: string, appPath: string) =>
+  stagingPath.endsWith(".app") ? stagingPath : join(stagingPath, basename(appPath));
 
 /** The version and channel a bundle says it is, from its own Resources/version.json, or null. */
 export function bundleInfo(
