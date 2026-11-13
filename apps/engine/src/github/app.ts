@@ -14,10 +14,12 @@ import {
   type GitHubService,
   type InstallationInfo,
   type InstallationRepo,
+  mergeBaseAmbiguousFrom,
   OperationError,
   type PullRequestInfo,
   type RepoGuards,
   type RepoRef,
+  type SinceBase,
 } from "@software-factory/core";
 
 const API = "https://api.github.com";
@@ -564,7 +566,7 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       };
     },
     async mergeBaseAmbiguous(repo, a, b) {
-      const side = async (base: string, head: string) => {
+      const since = async (base: string, head: string): Promise<SinceBase | null> => {
         const r = await api(
           repo,
           "GET",
@@ -574,20 +576,29 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
         const body = r.json as {
           merge_base_commit?: { sha?: string };
           total_commits?: number;
-          commits?: { sha: string }[];
+          commits?: { sha: string; parents?: { sha: string }[] }[];
         };
-        const commits = body.commits ?? [];
-        if ((body.total_commits ?? 0) > commits.length) return null;
         return {
           base: body.merge_base_commit?.sha ?? null,
-          shas: new Set(commits.map((c) => c.sha)),
+          total: body.total_commits ?? 0,
+          commits: (body.commits ?? []).map((c) => ({
+            sha: c.sha,
+            parents: (c.parents ?? []).map((p) => p.sha),
+          })),
         };
       };
-      const [ab, ba] = await Promise.all([side(a, b), side(b, a)]);
-      if (!ab || !ba || !ab.base || !ba.base) return null;
-      if (ab.base !== ba.base) return true;
-      for (const s of ab.shas) if (ba.shas.has(s)) return true;
-      return false;
+      const [ab, ba] = await Promise.all([since(a, b), since(b, a)]);
+      if (!ab || !ba) return null;
+      // An ancestor of the base: the base is ahead of it and not behind (compare parent...base).
+      return mergeBaseAmbiguousFrom(ab, ba, async (sha, base) => {
+        const r = await api(
+          repo,
+          "GET",
+          `/compare/${encodeURIComponent(sha)}...${encodeURIComponent(base)}?per_page=1`,
+        );
+        if (r.status !== 200) return null;
+        return (r.json as { behind_by?: number }).behind_by === 0;
+      });
     },
     async pathEntries(repo, sha, paths) {
       // One GraphQL query per batch of directories: each directory's entries (name, mode, blob),
