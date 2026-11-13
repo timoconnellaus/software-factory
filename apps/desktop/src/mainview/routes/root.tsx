@@ -16,6 +16,7 @@ import { KeyNotices } from "../components/key-notices.tsx";
 import { UpdateRequired } from "../components/update-required.tsx";
 import { Updating } from "../components/updating.tsx";
 import { WindowSkeleton } from "../components/window-skeleton.tsx";
+import { accountKey, clearAccountData } from "../lib/account.ts";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
 import { DRAG } from "../lib/title-bar.ts";
 
@@ -60,8 +61,8 @@ function Root() {
       }),
     [client],
   );
-  // Signing in or out changes everything the cache holds.
-  const shown = useSignedInRoutes(session ? session.signedIn : null);
+  // Signing in or out, or as another account, changes everything the cache holds.
+  const shown = useSignedInRoutes(accountKey(session));
   // The main process hasn't answered yet: the window's shell, as index.html drew it.
   if (!session) return <WindowSkeleton />;
   // Restart to update, from the click until the app restarts (or a refusal): the whole window.
@@ -103,40 +104,40 @@ function Root() {
 /**
  * Which signed-in session the routes are shown for (a number that changes with each sign-in), or
  * null while they load again for it. Signed in at launch: shown at once, as the router loads them.
- * Signing in (or out) empties the cache and reloads the routes; only then are they shown, keyed
- * afresh, so nothing loaded or caught while signed out (a "signed out" refusal) is shown.
+ * Signing in or out, or a sign-in as another login or device while signed in (`account`, from
+ * lib/account.ts), empties the cache and reloads the routes; only then are they shown, keyed
+ * afresh, so nothing the previous account read, or caught while signed out, is shown.
  */
-function useSignedInRoutes(signedIn: boolean | null): number | null {
+function useSignedInRoutes(account: string | null): number | null {
+  const signedIn = account === null ? null : account !== "out";
   const router = useRouter();
   const client = useQueryClient();
   // Signed in when first rendered: shown at once (the router is loading with that session).
   const [shown, setShown] = useState<number | null>(signedIn ? 0 : null);
   const generation = useRef(0);
-  /** The session as last known: null until the main process first answers. */
-  const known = useRef<boolean | null>(signedIn);
+  /** The account as last known: null until the main process first answers. */
+  const known = useRef<string | null>(account);
   useEffect(() => {
-    if (signedIn === null) return;
+    if (account === null) return;
     const before = known.current;
-    known.current = signedIn;
+    known.current = account;
     // The first answer: the router is loading with that session already (`_app` asks it).
     if (before === null) {
       if (signedIn) setShown(0);
       return;
     }
-    if (before === signedIn) return;
+    if (before === account) return;
     const mine = ++generation.current;
     setShown(null);
     // The update status is the app's, not the account's: it survives (ADR 0393).
-    client.removeQueries({
-      predicate: (q) => q.queryKey[0] !== "session" && q.queryKey[0] !== "update",
-    });
+    clearAccountData(client);
     void router
       .invalidate()
       .catch(() => undefined)
       .finally(() => {
         if (signedIn && generation.current === mine) setShown(mine);
       });
-  }, [signedIn, client, router]);
+  }, [account, signedIn, client, router]);
   return shown;
 }
 

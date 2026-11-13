@@ -22,6 +22,7 @@ import { peekItem } from "../lib/places.ts";
 import { boardsQuery, workflowQuery, workListsQuery } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { groupUnderParents } from "../lib/splits.ts";
+import { useStageWait } from "../lib/use-stage-wait.ts";
 import {
   type ActiveItem,
   boardLanes,
@@ -303,11 +304,18 @@ export function ProjectBoard({
 
 function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string> }) {
   const open = useOpenItem() === item.id;
+  // No job running for its stage: what it waits on, not "Working" (stage-wait.ts).
+  const wait = useStageWait(item);
   const state =
     item.status === "queued"
       ? { label: "Queued", tone: "neutral" as const, needsYou: false }
-      : cardState(item, needsYou);
-  const who = waitingOn(item, needsYou);
+      : wait && !needsYou.has(item.id)
+        ? { label: "Waiting", tone: "neutral" as const, needsYou: false }
+        : cardState(item, needsYou);
+  const who =
+    wait && !needsYou.has(item.id)
+      ? { label: wait, status: "waiting" as const }
+      : waitingOn(item, needsYou);
   return (
     <Link
       {...peekItem(item.id)}
@@ -335,10 +343,32 @@ function BoardCard({ item, needsYou }: { item: ActiveItem; needsYou: Set<string>
       <HeldChip projectId={item.projectId} workItemId={item.id} enabled={item.stage === "merge"} />
       <div className="flex items-start gap-1.5 text-ink-muted text-xs" data-testid="card-who">
         <StatusDot status={who.status} className="mt-1" />
-        <span className="min-w-0 flex-1">{item.statusReason ?? who.label}</span>
+        <span className="min-w-0 flex-1" data-testid={wait ? "stage-wait" : undefined}>
+          {wait && !needsYou.has(item.id) ? wait : (item.statusReason ?? who.label)}
+        </span>
         <span className="ml-auto flex-none">{since(item.updatedAt)}</span>
       </div>
     </Link>
+  );
+}
+
+/** The list's "Waiting on" cell: what the stage waits on when no job runs for it (stage-wait.ts). */
+function WhoCell({
+  item,
+  who,
+  needsYou,
+}: {
+  item: ActiveItem;
+  who: { label: string; status: "waiting" | "running" | "idle" };
+  needsYou: boolean;
+}) {
+  const wait = useStageWait(item);
+  const shown = wait && !needsYou ? { label: wait, status: "waiting" as const } : who;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <StatusDot status={shown.status} />
+      {shown.label}
+    </span>
   );
 }
 
@@ -405,10 +435,7 @@ function ActiveTable({
                     : PHASE_COLUMNS.find((c) => c.key === phaseColumn(i))?.label}
                 </td>
                 <td className="whitespace-nowrap py-2.5 pr-3">
-                  <span className="inline-flex items-center gap-1.5">
-                    <StatusDot status={who.status} />
-                    {who.label}
-                  </span>
+                  <WhoCell item={i} who={who} needsYou={needsYou.has(i.id)} />
                 </td>
                 {showProject && (
                   <td className="whitespace-nowrap py-2.5 pr-3 text-ink-3 @max-[560px]:hidden">
@@ -592,15 +619,18 @@ function PhaseCard({
   const projects = useProjects();
   const open = useOpenItem() === item.id;
   const project = projects.data?.find((p) => p.id === item.projectId)?.name ?? "project";
+  const wait = useStageWait(item);
   const line =
-    column === "done"
-      ? outcomeOf(item)
-      : column === "queued" || column === "delivery"
-        ? waitingOn({ ...item, blockedBy: item.blockedBy ?? [] }, needsYou)
-        : {
-            label: `${PRIORITY_SHORT[(item.priority ?? "normal") as Priority]}${item.statusReason ? ` · ${item.statusReason}` : ""}`,
-            status: "idle" as const,
-          };
+    wait && column === "delivery" && !needsYou.has(item.id)
+      ? { label: wait, status: "waiting" as const }
+      : column === "done"
+        ? outcomeOf(item)
+        : column === "queued" || column === "delivery"
+          ? waitingOn({ ...item, blockedBy: item.blockedBy ?? [] }, needsYou)
+          : {
+              label: `${PRIORITY_SHORT[(item.priority ?? "normal") as Priority]}${item.statusReason ? ` · ${item.statusReason}` : ""}`,
+              status: "idle" as const,
+            };
   return (
     <Link
       {...peekItem(item.id)}

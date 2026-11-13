@@ -47,6 +47,7 @@ import { Chip, PageArea, Panel, SectionTitle } from "../components/shell-list.ts
 import { SplitLinks } from "../components/split-list.tsx";
 import { Timeline } from "../components/timeline.tsx";
 import { ExternalLink } from "../lib/external.tsx";
+import { deliveryStatusQuery } from "../lib/factory-queries.ts";
 import { OpError, op } from "../lib/op.ts";
 import { closeTerminal } from "../lib/open-terminals.ts";
 import {
@@ -68,6 +69,7 @@ import {
 } from "../lib/queries.ts";
 import { useProjects, useSession } from "../lib/session.ts";
 import { isTypingTarget } from "../lib/shortcuts.ts";
+import { stageWait } from "../lib/stage-wait.ts";
 import { togglePin, updateViewState, useViewState } from "../lib/view-state.ts";
 import { workLayout } from "./_work.tsx";
 
@@ -101,11 +103,15 @@ export const Route = createRoute({
       // The org's board: what an item before release can wait for (its edit dialog).
       queryClient.ensureQueryData(boardsQuery(session.orgs.map((o) => o.id))).catch(() => null),
       // Then its project's workflow, whose name the Details panel shows (spec 52 PR (d)).
-      queryClient
-        .ensureQueryData(workItemQuery(params.id))
-        .then((d) =>
+      queryClient.ensureQueryData(workItemQuery(params.id)).then((d) =>
+        Promise.all([
           queryClient.ensureQueryData(workflowQuery(d.item.projectId)).catch(() => null),
-        ),
+          // In merge: whether a red main holds it, for the stage strip (stage-wait.ts).
+          d.item.stage === "merge"
+            ? queryClient.ensureQueryData(deliveryStatusQuery(d.item.projectId)).catch(() => null)
+            : null,
+        ]),
+      ),
       queryClient.ensureQueryData(timelineQuery(params.id)).catch(() => null),
       queryClient.ensureQueryData(runnersQuery()).catch(() => null),
       queryClient.ensureQueryData(attachmentsQuery(params.id)).catch(() => null),
@@ -574,9 +580,27 @@ function CancelDialog({
 
 /** The stages as a strip of dots: done, now, to come, skipped (with triage's reason). */
 export function StageStrip({ detail }: { detail: WorkItemDetail }) {
+  // In merge: whether main being red holds it (delivery.status, also read for the Held chip).
+  const merging =
+    detail.item.stage === "merge" && ["running", "waiting"].includes(detail.item.status);
+  const delivery = useQuery({ ...deliveryStatusQuery(detail.item.projectId), enabled: merging });
   if (isPreRelease(detail.item.status)) return <PreReleaseStrip detail={detail} />;
   const steps = stageSteps(detail);
-  const waiting = detail.item.status === "waiting";
+  const repo = delivery.data?.repositories.find((r) =>
+    r.deliveries.some((d) => d.workItemId === detail.item.id),
+  );
+  const entry = repo?.deliveries.find((d) => d.workItemId === detail.item.id);
+  // No job running for the stage: what it waits on (stage-wait.ts), and its dot says waiting.
+  const wait = stageWait({
+    item: detail.item,
+    stages: detail.stages,
+    runs: detail.runs,
+    reviewPacket: detail.reviewPacket,
+    mergeQueue: detail.mergeQueue,
+    delivery:
+      entry && repo ? { position: entry.position, state: entry.state, branch: repo.branch } : null,
+  });
+  const waiting = detail.item.status === "waiting" || wait !== null;
   return (
     <div
       className="flex flex-wrap items-center gap-x-[18px] gap-y-1 rounded-[10px] bg-panel px-3.5 py-2.5 shadow-panel"
@@ -610,6 +634,11 @@ export function StageStrip({ detail }: { detail: WorkItemDetail }) {
           {STAGE_LABEL[s.stage]}
         </span>
       ))}
+      {wait && (
+        <span className="text-ink-3 text-xs" data-testid="stage-wait">
+          {wait}
+        </span>
+      )}
       {steps
         .filter((s) => s.state === "skipped")
         .map((s) => (
