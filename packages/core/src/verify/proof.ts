@@ -312,6 +312,45 @@ export function proveCriteria(
   });
 }
 
+/**
+ * Where a project's checks are set up (docs/checks.md), for the gate's line that says none are.
+ * There is no screen to declare checks yet, so this is the docs section.
+ */
+export const CHECKS_DOCS_URL =
+  "https://github.com/timoconnellaus/software-factory/blob/main/docs/checks.md#setting-up-checks";
+
+/**
+ * Whether anything is set up that could prove a criterion: a check the project declares, or a CI
+ * check its config requires (never `factory/verify`) that reported on the SHA. A required name that
+ * never reports proves nothing, so it doesn't count. With nothing set up the gate says so instead
+ * of "0/N criteria proven" (the owner's decision, 2026-11-13): a count can only be honest when
+ * something could have proven a criterion.
+ */
+export function checksSetUp(
+  declared: readonly string[],
+  requiredCi: readonly string[],
+  ci: Pick<CiSummary, "checks">,
+): boolean {
+  if (declared.length > 0) return true;
+  const key = (s: string) => s.trim().toLowerCase();
+  const required = new Set(requiredCi.map(key).filter((n) => n !== "factory/verify"));
+  return ci.checks.some((c) => required.has(key(c.name)));
+}
+
+/** Why a criterion is Not proven, in a few words, for the gate. Empty when it is Proven. */
+export function whyNotProven(
+  p: Pick<CriterionProof, "proven" | "provenBy" | "unproven" | "notCounted" | "linkedBy">,
+): string {
+  if (p.proven) return "";
+  const named = [...p.unproven, ...p.notCounted];
+  if (named.length === 0) return "no check is named for this";
+  if (p.linkedBy === "reviewer") {
+    return `only the reviewer named ${named.join(", ")}, and a reviewer's link proves nothing`;
+  }
+  if (p.unproven.length > 0) return `${p.unproven.join(", ")} didn't pass on this commit`;
+  return `${p.notCounted.join(", ")} can't prove a criterion (a static check, or a CI job the config doesn't require)`;
+}
+
 /** One line per executed check, for `factory/verify`'s summary. */
 export function checkLines(executed: Pick<ExecutedChecks, "declared" | "results">): string[] {
   return executed.declared.map((name, i) => {

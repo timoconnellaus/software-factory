@@ -102,6 +102,31 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: "factory-checks",
   },
+  // Honest proof at the gate (the owner's decision, 2026-11-13): no checks set up at all says so,
+  // with no count; checks with every criterion proven; checks with some criteria tied to none.
+  {
+    name: "item-review-proof-no-checks",
+    path: "/work/wi_13?tab=review&fixture=nochecks",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-all-proven",
+    path: "/work/wi_13?tab=review&fixture=allproven",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-some-untied",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "inbox-merge-no-checks",
+    path: "/?item=wi_13&fixture=nochecks",
+    design: "InboxMerge.html",
+  },
   // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
   {
     name: "item-review-not-run",
@@ -194,6 +219,42 @@ export const SCREENS = [
   { name: "factory-runners", path: "/factory/runners", design: "FactoryRunners.html" },
   { name: "factory-incidents", path: "/factory/incidents", design: "FactoryIncidents.html" },
   { name: "factory-policy", path: "/factory/policy", design: "FactoryPolicy.html" },
+  // Policy edited in the app (ADR 0610): the form, a draft that loosens with its impact, History.
+  { name: "policy-edit", path: "/factory/policy?edit=1", design: "FactoryPolicy.html" },
+  {
+    name: "policy-edit-draft",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    clicks: ['[aria-label="Autonomous"]'],
+    scrollTo: "save-bar",
+  },
+  {
+    name: "policy-history",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+  },
+  // Review of #145: the rollback's classification and difference before confirming; a project on an
+  // org workflow; a Mac with a software key (every released build before the key helper).
+  {
+    name: "policy-rollback",
+    path: "/factory/policy?edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "history",
+    clicks: ['[data-testid="history"] button'],
+  },
+  {
+    name: "policy-org-workflow",
+    path: "/factory/policy?project=prj_site&edit=1",
+    design: "FactoryPolicy.html",
+    scrollTo: "override-retryLimit",
+  },
+  {
+    name: "policy-software-key",
+    path: "/factory/policy",
+    query: "?key=software",
+    design: "FactoryPolicy.html",
+  },
   { name: "factory-agents", path: "/factory/agents", design: "FactoryAgents.html" },
   { name: "factory-workflows", path: "/factory/workflows", design: "FactoryWorkflow.html" },
   {

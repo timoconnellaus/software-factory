@@ -6,9 +6,11 @@ import type { CheckResult } from "@software-factory/runner-contract";
 import type { ChangedFile } from "../services.ts";
 import type { CiSummary } from "./ci.ts";
 import {
+  CHECKS_DOCS_URL,
   type CheckRun,
   type CriterionProof,
   checkLines,
+  checksSetUp,
   type DeclaredCheck,
   type ExecutedChecks,
   executedChecks,
@@ -16,6 +18,7 @@ import {
   notRunTitle,
   proveCriteria,
   weakerLines,
+  whyNotProven,
 } from "./proof.ts";
 import { type RiskFlag, riskFlags } from "./risk.ts";
 import { type TestsIntact, testFindingLines, testsIntact } from "./tests-intact.ts";
@@ -198,6 +201,9 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
               proven: proof.filter((p) => p.proven).length,
               total: proof.length,
               weakened: proof.some((p) => p.weakened),
+              // Nothing declared and no required CI reported: nothing could prove a criterion, so
+              // the gate says that rather than "0/N proven".
+              checksSetUp: checksSetUp(executed.declared, input.requiredCi ?? [], ci),
             },
           }
         : {}),
@@ -244,7 +250,9 @@ export function verifyCheckOutput(args: {
   /** The factory's own checks on this SHA, one line each (ADR 0501). */
   checkLines?: string[];
   /** How many criteria an executed check proves. */
-  proven?: { proven: number; total: number; weakened?: boolean } | null;
+  proven?: StoredProven | null;
+  /** Each criterion not proven, with why ("no check is named for this"). */
+  unprovenLines?: string[];
   /**
    * Declared checks the runner could not run on this SHA (fourth review, S2): with everything else
    * passing, the check is action required, not success, until a person decides at the merge gate.
@@ -279,12 +287,7 @@ export function verifyCheckOutput(args: {
     ...list("Warnings", args.warnings),
     ...list("Risk flags", args.riskFlags),
     ...list("Checks run by the factory", args.checkLines ?? []),
-    ...(args.proven
-      ? [
-          `Criteria proven by an executed check: ${args.proven.proven}/${args.proven.total}${args.proven.weakened ? " (weakened: the tests-intact guard found gate-file edits on this commit)" : ""}`,
-          "",
-        ]
-      : []),
+    ...(args.proven ? provenLines(args.proven, args.unprovenLines ?? []) : []),
     ciLine,
   ].join("\n");
   if (!args.evidencePass) {
@@ -338,6 +341,32 @@ export function verifyCheckOutput(args: {
 
 const short = (sha: string) => sha.slice(0, 7);
 
+/** The proven count as a packet stores it. `checksSetUp: false`: nothing could prove a criterion. */
+export interface StoredProven {
+  proven: number;
+  total: number;
+  weakened?: boolean;
+  checksSetUp?: boolean;
+}
+
+/**
+ * The summary's proof lines. With no checks set up at all it says so, never "0/N proven"; with
+ * checks, the count and why each criterion not proven isn't (the owner's decision, 2026-11-13).
+ */
+function provenLines(p: StoredProven, unproven: string[]): string[] {
+  if (p.checksSetUp === false) {
+    return [
+      `No checks are set up for this project, so nothing can be proven. How to set them up: ${CHECKS_DOCS_URL}`,
+      "",
+    ];
+  }
+  return [
+    `Criteria proven by an executed check: ${p.proven}/${p.total}${p.weakened ? " (weakened: the tests-intact guard found gate-file edits on this commit)" : ""}`,
+    ...unproven.map((u) => `- ${u}`),
+    "",
+  ];
+}
+
 /** The tests-intact finding lines stored in a packet's sections (for `verifyCheckOutput`). */
 export function storedTestFindings(sections: Record<string, unknown>): {
   testFindings: string[];
@@ -356,13 +385,14 @@ export function storedTestFindings(sections: Record<string, unknown>): {
  */
 export function storedProof(sections: Record<string, unknown>): {
   checkLines: string[];
-  proven: { proven: number; total: number; weakened?: boolean } | null;
+  proven: StoredProven | null;
+  unprovenLines: string[];
   notRun: ExecutedChecks["notRun"];
   notRunWaived: NotRunWaiver | null;
 } {
   const e = sections.executed as Partial<ExecutedChecks> | undefined;
   const p = sections.proven as
-    | { proven?: unknown; total?: unknown; weakened?: unknown }
+    | { proven?: unknown; total?: unknown; weakened?: unknown; checksSetUp?: unknown }
     | undefined;
   const ranOn = typeof sections.checksRanOn === "string" ? sections.checksRanOn : null;
   const lines =
@@ -377,11 +407,34 @@ export function storedProof(sections: Record<string, unknown>): {
       : lines,
     proven:
       typeof p?.proven === "number" && typeof p.total === "number"
-        ? { proven: p.proven, total: p.total, ...(p.weakened === true ? { weakened: true } : {}) }
+        ? {
+            proven: p.proven,
+            total: p.total,
+            ...(p.weakened === true ? { weakened: true } : {}),
+            ...(typeof p.checksSetUp === "boolean" ? { checksSetUp: p.checksSetUp } : {}),
+          }
         : null,
+    unprovenLines: storedUnproven(sections),
     notRun: storedNotRun(sections),
     notRunWaived: storedWaiver(sections),
   };
+}
+
+/** "Not proven: <criterion> (<why>)" for each criterion not proven, from a packet's sections. */
+function storedUnproven(sections: Record<string, unknown>): string[] {
+  if (!Array.isArray(sections.proof)) return [];
+  return sections.proof.flatMap((x: unknown) => {
+    const r = x as Partial<CriterionProof> | null;
+    if (!r || typeof r.criterion !== "string" || r.proven !== false) return [];
+    const why = whyNotProven({
+      proven: false,
+      provenBy: [],
+      unproven: Array.isArray(r.unproven) ? r.unproven : [],
+      notCounted: Array.isArray(r.notCounted) ? r.notCounted : [],
+      linkedBy: r.linkedBy === "spec" ? "spec" : "reviewer",
+    });
+    return [`Not proven: ${r.criterion} (${why})`];
+  });
 }
 
 /** The declared checks not run on the packet's SHA, from its sections. */
