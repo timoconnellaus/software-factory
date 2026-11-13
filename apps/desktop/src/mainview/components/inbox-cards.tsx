@@ -189,7 +189,8 @@ function SpecDetail({
               </>
             ) : (
               <Button
-                disabled={pending !== null}
+                // Only once the item has loaded (review of #169): a split must open the plan.
+                disabled={pending !== null || !d || item.isError}
                 onClick={() => decide({ kind: "spec.approve", workItemId })}
                 data-testid="approve-spec"
               >

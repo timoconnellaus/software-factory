@@ -342,6 +342,31 @@ describe("the spec gate and questions", () => {
     };
     expect(split.gates.find((g) => g.workItemId === item.workItemId)?.parent).toEqual(want);
     expect(split.questions.find((q) => q.workItemId === item.workItemId)?.parent).toEqual(want);
+    // The planning card names it too (review of #169).
+    await rows(
+      "INSERT INTO core_planning_sessions (id, work_item_id, session_ref, status, announced_at, created_by, created_at, updated_at) VALUES (?, ?, 'ref', 'idle', '2026-11-13T00:00:00.000Z', 'test', '2026-11-13T00:00:00.000Z', '2026-11-13T00:00:00.000Z')",
+      uid("ps_"),
+      item.workItemId,
+    );
+    const withPlanning = await ok<{ planning: Card[] }>("inbox.list", {}, w.human);
+    expect(withPlanning.planning.find((p) => p.workItemId === item.workItemId)?.parent).toEqual(
+      want,
+    );
+    // Never across orgs: a parent row in another org isn't named (review of #169).
+    const elsewhereOrg = uid("org_");
+    await rows(
+      "INSERT INTO core_organization (id, name, slug, kind, github_installation_id, created_at) VALUES (?, 'Elsewhere', ?, 'personal', '43', '2026-11-13T00:00:00.000Z')",
+      elsewhereOrg,
+      elsewhereOrg,
+    );
+    await rows(
+      "UPDATE core_work_items SET org_id = ? WHERE id = ?",
+      elsewhereOrg,
+      parent.workItemId,
+    );
+    const elsewhere = await inbox();
+    expect(elsewhere.gates.find((g) => g.workItemId === item.workItemId)?.parent).toBeNull();
+    await rows("UPDATE core_work_items SET org_id = ? WHERE id = ?", w.orgId, parent.workItemId);
     // An incident is its item's child too, but not split work: no parent on its cards.
     await linked("incident");
     const incident = await inbox();

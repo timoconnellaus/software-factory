@@ -14,7 +14,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
-import { childEnded, childrenOf, SPLIT_MAX, sliceHash } from "../splits.ts";
+import { childEnded, childrenOf, PLAN_MERGED_OUTSIDE, SPLIT_MAX, sliceHash } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -442,6 +442,7 @@ export const workItemGet = defineOperation({
             size: z.string().nullable(),
           }),
         ),
+        held: z.boolean().default(false),
       })
       .optional(),
     stages: z.array(stageView),
@@ -644,7 +645,7 @@ export const workItemGet = defineOperation({
         // Only a plan's child has a parent to show (review of #173): no lookup otherwise.
         ctx.db
           .selectFrom("core_work_items")
-          .select(["id", "number", "title", "status"])
+          .select(["id", "number", "title", "status", "awaiting_children"])
           .where("id", "=", w.parent_work_item_id ?? "")
           .where(sql<boolean>`${w.source === "planning" && w.parent_work_item_id ? 1 : 0} = 1`),
         ctx.db
@@ -696,7 +697,19 @@ export const workItemGet = defineOperation({
       waitsFor: waitsForRows.map(toLink),
       waitedOnBy: waitedOnRows.map(toLink),
       split: {
-        parent: parentRows[0] ?? null,
+        parent: parentRows[0]
+          ? {
+              id: parentRows[0].id,
+              number: parentRows[0].number,
+              title: parentRows[0].title,
+              status: parentRows[0].status,
+            }
+          : null,
+        // Held until its parent's plan merges (review of #169): not released or shaped yet.
+        held:
+          !!parentRows[0] &&
+          parentRows[0].awaiting_children !== 1 &&
+          parentRows[0].status !== "done",
         children: childRows
           .map((c) => ({ ...c, size: c.size ?? null }))
           .sort((a, b) => a.number - b.number),
@@ -1344,6 +1357,10 @@ export const workItemFinish = defineOperation({
     // `shaping`: a spec rejected while shaping before release ends the item too (ADR 0493).
     if (!["running", "waiting", "paused", "shaping"].includes(w.status))
       return { status: w.status };
+    // A split parent whose plan merged outside the factory waits for its children with no
+    // Workflow (review of #169): its old Workflow ending (its gate was closed) doesn't end it.
+    if (w.awaiting_children === 1 && w.status_reason === PLAN_MERGED_OUTSIDE)
+      return { status: w.status };
     setItemStatus(
       ctx,
       w.id,
@@ -1591,6 +1608,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select([
@@ -1619,6 +1638,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select([
@@ -1685,6 +1706,8 @@ export const inboxList = defineOperation({
         .leftJoin("core_work_items as parent", (j) =>
           j
             .onRef("parent.id", "=", "core_work_items.parent_work_item_id")
+            // Never across orgs (review of #169): a parent is in its child's org.
+            .onRef("parent.org_id", "=", "core_work_items.org_id")
             .on("core_work_items.source", "=", "planning"),
         )
         .select((eb) => [

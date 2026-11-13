@@ -66,6 +66,47 @@ export function byPerson(ctx: Pick<HandlerContext, "actor" | "origin">): boolean
 }
 
 /**
+ * Placeholder sentences of issue and PR templates (review of #169): a filer's attestation, or an
+ * empty marker. Only these known shapes, as whole sentences; anything else is substance and goes to
+ * triage (when unsure, fail open).
+ */
+const END = String.raw`[.!]?$`;
+/** Each placeholder as a whole sentence (review of #169): nothing may follow but punctuation. */
+const TEMPLATE_LABELS: RegExp[] = [
+  // "I have read the contributing guide", "I've searched the existing issues".
+  String.raw`^i(?: have|'ve)? (?:read|searched|checked|followed|reviewed)(?: (?:for|through))? (?:the |all |any )?(?:existing |open )?(?:docs|documentation|contributing guide(?:lines)?|contribution guidelines|guidelines|code of conduct|issues|pull requests|prs|faq|readme)`,
+  String.raw`^i agree to (?:follow )?(?:the |this project's )?(?:terms|code of conduct|cla|license)`,
+  String.raw`^i(?: have|'ve) (?:added|updated|written) (?:tests|docs|documentation|a changeset)(?: for (?:my|this|the) (?:change|changes|fix|feature))?`,
+  String.raw`^i can reproduce (?:this|it|the (?:issue|bug))(?: (?:on|in) (?:the )?(?:latest|main)(?: version| release| branch)?)?`,
+  // "My code follows the style guidelines of this project", "My changes generate no new warnings".
+  String.raw`^my (?:code|changes) follows? the (?:code |coding )?style(?: guidelines?)?(?: of this project)?`,
+  String.raw`^my changes generate no new warnings`,
+  // "Read the docs", "Followed the contributing guide".
+  String.raw`^(?:read|followed) the (?:docs|documentation|guide|guidelines|contributing guide|code of conduct|readme|faq)`,
+  // "This issue is not a duplicate", "Not a duplicate".
+  String.raw`^(?:this (?:issue|pr|pull request) is )?not a duplicate`,
+  String.raw`^(?:searched|checked) (?:for )?(?:existing|open|similar) (?:issues|prs|pull requests)`,
+  String.raw`^(?:tests?|docs?|documentation|changelog) (?:added|updated|written)`,
+  String.raw`^(?:todo|tbd|n\/a|na|none|-)`,
+].map((p) => new RegExp(`${p}${END}`, "i"));
+
+/** A label's words without markdown: a link's text, emphasis and code marks dropped. */
+const plainLabel = (t: string) =>
+  t
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|\*|_|`)(.+?)\1/g, "$2")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** An unticked box that is a template's placeholder, not a task. */
+function templateBox(line: string): boolean {
+  const m = /^\s*([-*+]|\d+[.)])\s+\[ ?\](?:\s+(.*))?$/.exec(line);
+  if (!m) return false;
+  const label = plainLabel(m[2] ?? "");
+  return label === "" || TEMPLATE_LABELS.some((re) => re.test(label));
+}
+
+/**
  * What's left of a body without template headings, HTML comments, a template's unticked checklist
  * (`- [ ] I searched existing issues`, box and label: review of #117), checkbox markers, images and
  * links. A ticked item keeps its words (`- [x] Crashes when saving a 2GB file` is a request), and
@@ -77,9 +118,11 @@ function substance(body: string): string {
       .replace(/<!--[\s\S]*?-->/g, " ")
       .split("\n")
       .filter((l) => !/^\s*#{1,6}(\s|$)/.test(l))
-      .filter((l) => !/^\s*([-*+]|\d+[.)])\s+\[ ?\](\s|$)/.test(l))
+      .filter((l) => !templateBox(l))
       // Reference definitions (`[1]: https://…`) are links.
-      .filter((l) => !/^\s*\[[^\]]+\]:\s*\S+/.test(l))
+      .filter(
+        (l) => !/^\s*\[[^\]]+\]:\s*(<?https?:\/\/\S+>?|<?\/\S*>?|#\S*)(\s+["'(].*)?\s*$/.test(l),
+      )
       .map((l) => l.replace(/^\s*([-*+]|\d+[.)])\s+(\[[xX]\](?=\s|$))?/, ""))
       .join(" ")
       // Images, inline (a URL may hold balanced parentheses) or by reference, and HTML images.

@@ -173,7 +173,7 @@ export async function writeBackFiles(
       content: a.content,
       base: pulled ? a.base : null,
     });
-    // A design's preview lands beside it as `.svg` (spec 22 part B, kim's naming).
+    // A design's preview lands beside it as `<its path>.svg`, such as `system.d2.svg` (spec 22 part B).
     const svg = a.kind === "design" ? previewSvg(a.preview) : null;
     if (svg) {
       out.push({

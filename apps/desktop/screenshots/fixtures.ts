@@ -716,6 +716,7 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 size: "small",
               },
             ],
+            held: false,
           }
         : id === "wi_13"
           ? {
@@ -726,8 +727,9 @@ function detail(id: string): OpOutput<"workItem.get"> {
                 status: "running",
               },
               children: [],
+              held: false,
             }
-          : { parent: null, children: [] },
+          : { parent: null, children: [], held: false },
   };
   if (!PRE.includes(d.item.status)) return { ...d, ...links };
   return {
