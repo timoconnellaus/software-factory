@@ -11,7 +11,7 @@
     { "name": "lint", "run": "pnpm lint", "timeoutMinutes": 10 },
     {
       "name": "test",
-      "run": "VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1",
+      "run": "TURBO_TELEMETRY_DISABLED=1 VITEST_MAX_WORKERS=2 pnpm turbo run test --concurrency=1 --continue --env-mode=loose",
       "timeoutMinutes": 60
     }
   ],
