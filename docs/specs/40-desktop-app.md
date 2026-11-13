@@ -212,6 +212,23 @@ environment, on `main` only (it refuses any other ref and any commit that isn't 
     checks;
   - an app that can't replace itself (translocated from Downloads, or a folder this account can't
     write) says "Move Software Factory to your Applications folder" instead of failing silently.
+- **Check for updates** (2026-11-13): a person can ask. *Check for Updates…* sits under About in
+  the app menu (and in the menu bar's menu), always enabled; **Settings > This Mac** has an
+  *Updates* card with the installed version and channel, when it last checked, what it found and a
+  *Check for updates* button. Both show the same state (`UpdateStatus.phase`, worded once in
+  `src/shared/update-check.ts`): *Checking…* (the button disabled), then exactly one of *You're up
+  to date (0.1.x)*; *Downloading 0.1.y…* then *0.1.y is ready: Restart to update* (the same
+  `restartToUpdate`, so no job is cancelled unless the person picks *Restart now*); or the reason
+  in plain words (offline, the list of versions couldn't be read, the update was refused and why)
+  with *Try again*. From the menu with the window open, it opens This Mac; with it closed, the menu
+  bar shows *Checking for updates…* / *Downloading…* and a notification says what it found.
+  A person's press is not held back by `ON_DEMAND_GAP_MS` (that gap is for the door's
+  `update_required`); every trigger shares one check in flight, so pressing twice, or pressing
+  during the 6-hourly check, joins it. An update already staged is reported ready, never downloaded
+  again, and no check above is skipped. Dev builds and unsigned builds say *Updates are off in this
+  build* and never check (an unsigned build could never apply one). Setting the app menu replaces
+  the whole bar, so the standard Edit and Window menus are set with it. Tested in
+  `test/updates.test.ts`; screenshots in `docs/screenshots/check-updates/`.
 - **Restart to update** waits for the runner: no job is cancelled for an update (spec 38's rule).
   The app reads the runner host's `live-jobs.json`, at the path the runner child resolves (it gets
   only HOME, PATH and SF_RUNNER_DESKTOP, not the app's XDG or SF_RUNNER_* variables). While jobs

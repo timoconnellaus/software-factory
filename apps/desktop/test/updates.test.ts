@@ -13,22 +13,57 @@ import {
   teamIdOf,
   verifyBundle,
 } from "../src/bun/update-verify.ts";
-import { installProblem, RETRY_MS, type UpdaterLike, Updates } from "../src/bun/updates.ts";
+import {
+  installProblem,
+  OFF_DEV,
+  OFF_UNSIGNED,
+  plainReason,
+  RETRY_MS,
+  type UpdaterLike,
+  Updates,
+} from "../src/bun/updates.ts";
+import type { UpdateStatus } from "../src/shared/rpc.ts";
+import { checkSummary, checkView, lastCheckedText } from "../src/shared/update-check.ts";
 import { compareVersions, isNewer } from "../src/shared/version.ts";
 
 const APP = "/Applications/Software Factory.app";
 const STAGED = `${APP}.prepared-abc`;
 const TEAM = "ABCDE12345";
+const NOW = 1_800_000_000_000;
 
 function fakeUpdater(
-  over: Partial<{ manifest: string; running: string; ready: boolean; error: string }> = {},
+  over: Partial<{
+    manifest: string;
+    running: string;
+    ready: boolean;
+    error: string;
+    channel: string;
+    checkError: string;
+    /** Electrobun already prepared the manifest's version (its check says updateReady). */
+    prepared: boolean;
+  }> = {},
 ) {
   const calls: string[] = [];
-  const s = { manifest: "0.1.5", running: "0.1.4", ready: true, error: "", ...over };
+  const s = {
+    manifest: "0.1.5",
+    running: "0.1.4",
+    ready: true,
+    error: "",
+    channel: "canary",
+    checkError: "",
+    prepared: false,
+    ...over,
+  };
   const updater: UpdaterLike = {
     checkForUpdate: async () => {
       calls.push("check");
-      return { version: s.manifest, updateAvailable: s.manifest !== s.running, error: "" };
+      if (s.checkError) return { version: "", updateAvailable: false, error: s.checkError };
+      return {
+        version: s.manifest,
+        updateAvailable: s.manifest !== s.running,
+        updateReady: s.prepared,
+        error: "",
+      };
     },
     downloadUpdate: async () => {
       calls.push("download");
@@ -37,7 +72,7 @@ function fakeUpdater(
     applyUpdate: async () => {
       calls.push("apply");
     },
-    getLocalInfo: async () => ({ version: s.running, channel: "canary" }),
+    getLocalInfo: async () => ({ version: s.running, channel: s.channel }),
     appDataFolder: async () => "/data",
   };
   return { updater, calls, s };
@@ -73,6 +108,7 @@ function make(
   } = {},
 ) {
   const timers: number[] = [];
+  const phases: string[] = [];
   const updates = new Updates(
     {
       updater: u.updater,
@@ -91,10 +127,11 @@ function make(
             : () => over.bundle ?? null,
       setInterval: () => 0,
       setTimeout: (_fn, ms) => timers.push(ms),
+      now: () => NOW,
     },
-    () => {},
+    (st) => phases.push(st.phase),
   );
-  return { updates, timers };
+  return { updates, timers, phases };
 }
 
 describe("versions", () => {
@@ -422,5 +459,185 @@ describe.runIf(process.platform === "darwin")("a real signed bundle (macOS)", ()
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Check for updates, pressed by a person", () => {
+  it("says up to date, with the installed version and when it checked", async () => {
+    const u = fakeUpdater({ manifest: "0.1.4", running: "0.1.4" });
+    const { updates, phases } = make(u);
+    await updates.checkByPerson();
+    expect(updates.state).toMatchObject({
+      phase: "up-to-date",
+      installed: "0.1.4",
+      channel: "canary",
+      checkedAt: NOW,
+      ready: false,
+    });
+    expect(phases).toContain("checking");
+    expect(u.calls).toEqual(["check"]);
+  });
+
+  it("finds an update, downloads and verifies it, and offers the restart", async () => {
+    const u = fakeUpdater();
+    const { updates, phases } = make(u);
+    await updates.checkByPerson();
+    expect(updates.state).toMatchObject({ phase: "ready", ready: true, version: "0.1.5" });
+    expect(phases).toEqual(expect.arrayContaining(["checking", "downloading", "ready"]));
+    expect(phases.indexOf("downloading")).toBeLessThan(phases.indexOf("ready"));
+    expect(u.calls.filter((c) => c === "download")).toHaveLength(1);
+  });
+
+  it("never downloads an update already staged again", async () => {
+    const u = fakeUpdater();
+    const { updates } = make(u);
+    await updates.check();
+    expect(updates.state.ready).toBe(true);
+    await updates.checkByPerson();
+    await updates.checkByPerson();
+    expect(updates.state).toMatchObject({ phase: "ready", version: "0.1.5" });
+    expect(u.calls).toEqual(["check", "download"]);
+  });
+
+  it("doesn't download a version Electrobun already prepared, but still verifies it", async () => {
+    const u = fakeUpdater({ prepared: true });
+    const e = fakeExec();
+    const { updates } = make(u, e);
+    await updates.checkByPerson();
+    expect(updates.state.phase).toBe("ready");
+    expect(u.calls).not.toContain("download");
+    expect(e.runs.some((r) => r[0]?.endsWith("spctl"))).toBe(true);
+  });
+
+  it("says why an update was refused, in plain words, and nothing is offered", async () => {
+    const sig = make(fakeUpdater(), fakeExec({ badSignature: true }));
+    await sig.updates.checkByPerson();
+    expect(sig.updates.state).toMatchObject({
+      phase: "failed",
+      ready: false,
+      reason: "Version 0.1.5 was refused: its signature didn't check out.",
+    });
+    const down = make(fakeUpdater({ manifest: "0.1.3" }));
+    await down.updates.checkByPerson();
+    expect(down.updates.state.reason).toBe(
+      "Version 0.1.3 was refused: it isn't newer than this version (0.1.4).",
+    );
+    const gk = make(fakeUpdater(), fakeExec({ gatekeeper: false }));
+    await gk.updates.checkByPerson();
+    expect(gk.updates.state.reason).toMatch(/Gatekeeper rejected it/);
+  });
+
+  it("says when it couldn't reach the server, and tries again later", async () => {
+    const u = fakeUpdater({ checkError: "Failed to check for updates: fetch failed" });
+    const { updates, timers } = make(u);
+    await updates.checkByPerson();
+    expect(updates.state).toMatchObject({ phase: "failed", checkedAt: NOW });
+    expect(updates.state.reason).toMatch(/Couldn't reach the update server/);
+    expect(timers).toEqual([RETRY_MS]);
+  });
+
+  it("joins a check already running when pressed twice", async () => {
+    const u = fakeUpdater();
+    const { updates } = make(u);
+    await Promise.all([updates.checkByPerson(), updates.checkByPerson(), updates.check()]);
+    expect(u.calls.filter((c) => c === "check")).toHaveLength(1);
+    expect(u.calls.filter((c) => c === "download")).toHaveLength(1);
+    expect(updates.state.phase).toBe("ready");
+  });
+
+  it("isn't held back by the automatic triggers' gap", async () => {
+    const u = fakeUpdater({ manifest: "0.1.4", running: "0.1.4" });
+    const { updates } = make(u);
+    await updates.checkNow(1_000);
+    await updates.checkNow(2_000);
+    await updates.checkByPerson();
+    await updates.checkByPerson();
+    expect(u.calls.filter((c) => c === "check")).toHaveLength(3);
+  });
+
+  it("says updates are off in a dev build, and never checks", async () => {
+    const u = fakeUpdater({ channel: "dev" });
+    const { updates } = make(u);
+    await updates.checkByPerson();
+    await updates.start();
+    expect(updates.state).toMatchObject({ phase: "off", reason: OFF_DEV, channel: "dev" });
+    expect(u.calls).toEqual([]);
+  });
+
+  it("says updates are off in an unsigned build, and never downloads", async () => {
+    const u = fakeUpdater();
+    const { updates } = make(u, fakeExec({ unsigned: true }));
+    await updates.checkByPerson();
+    await updates.start();
+    expect(updates.state).toMatchObject({ phase: "off", reason: OFF_UNSIGNED, error: null });
+    expect(u.calls).toEqual([]);
+  });
+});
+
+describe("plainReason", () => {
+  it("names a manifest that couldn't be read, and a failed download", () => {
+    expect(plainReason("Failed to check for updates: HTTP 404")).toBe(
+      "Couldn't read the update server's list of versions (HTTP 404).",
+    );
+    expect(plainReason("Failed to check for updates: update.json is not valid JSON")).toBe(
+      "Couldn't read the update server's list of versions.",
+    );
+    expect(plainReason("Failed to download update: HTTP 500")).toMatch(/couldn't be downloaded/);
+  });
+});
+
+describe("what the person sees", () => {
+  const base: UpdateStatus = {
+    required: false,
+    ready: false,
+    version: null,
+    error: null,
+    needsMove: false,
+    jobs: 0,
+    waitingForRunner: null,
+    downloadUrl: "https://downloads.zerobsai.com/desktop/canary-macos-arm64-Software-Factory.zip",
+    phase: "idle",
+    checkedAt: null,
+    installed: "0.1.4",
+    channel: "canary",
+    reason: null,
+  };
+  const view = (u: Partial<UpdateStatus>) => checkView({ ...base, ...u });
+
+  it("disables the button while a check runs", () => {
+    expect(view({ phase: "checking" })).toMatchObject({ line: "Checking…", busy: true });
+    expect(view({ phase: "downloading", version: "0.1.5" })).toMatchObject({
+      line: "Downloading 0.1.5…",
+      busy: true,
+    });
+  });
+
+  it("shows exactly one outcome", () => {
+    expect(view({ phase: "up-to-date" }).line).toBe("You're up to date (0.1.4)");
+    const ready = view({ phase: "ready", ready: true, version: "0.1.5" });
+    expect(ready.line).toBe("0.1.5 is ready: Restart to update");
+    expect(ready.actions.map((a) => a.action)).toEqual(["restart"]);
+    const failed = view({ phase: "failed", reason: "Couldn't reach the update server." });
+    expect(failed).toMatchObject({ tone: "error", line: "Couldn't reach the update server." });
+    expect(failed.actions.map((a) => a.label)).toEqual(["Try again"]);
+    expect(view({ phase: "off", reason: OFF_DEV })).toMatchObject({ line: OFF_DEV, actions: [] });
+  });
+
+  it("never offers a plain restart while the runner has jobs", () => {
+    const v = view({ phase: "ready", ready: true, version: "0.1.5", jobs: 2 });
+    expect(v.actions.map((a) => a.action)).toEqual(["restart-when-idle", "restart-anyway"]);
+    expect(v.actions[1]?.label).toMatch(/cancels 2 jobs/);
+    expect(
+      view({ phase: "ready", ready: true, version: "0.1.5", waitingForRunner: 1 }).actions,
+    ).toEqual([]);
+  });
+
+  it("says when it last checked, and what a notification says", () => {
+    expect(lastCheckedText(null)).toBe("Not checked yet");
+    expect(lastCheckedText(NOW - 30_000, NOW)).toBe("Last checked just now");
+    expect(lastCheckedText(NOW - 5 * 60_000, NOW)).toBe("Last checked 5 minutes ago");
+    expect(lastCheckedText(NOW - 3 * 3_600_000, NOW)).toBe("Last checked 3 hours ago");
+    expect(checkSummary({ ...base, phase: "up-to-date" })).toBe("You're up to date (0.1.4).");
+    expect(checkSummary({ ...base, phase: "failed", reason: "Offline." })).toBe("Offline.");
   });
 });

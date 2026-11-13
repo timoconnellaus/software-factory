@@ -213,6 +213,61 @@ export const SCREENS = [
   { name: "update-required-jobs", path: "/", query: "?update=jobs", design: "Main.html" },
   { name: "update-required-waiting", path: "/", query: "?update=waiting", design: "Main.html" },
   { name: "update-required-download", path: "/", query: "?update=download", design: "Main.html" },
+  // Check for updates on This Mac (spec 40 M4): the row in each state (fake-bridge.ts `?check=`).
+  {
+    name: "this-mac-update-idle",
+    path: "/settings",
+    query: "?check=idle",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-checking",
+    path: "/settings",
+    query: "?check=checking",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-up-to-date",
+    path: "/settings",
+    query: "?check=up-to-date",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-downloading",
+    path: "/settings",
+    query: "?check=downloading",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-ready",
+    path: "/settings",
+    query: "?check=ready",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-jobs",
+    path: "/settings",
+    query: "?check=jobs",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-offline",
+    path: "/settings",
+    query: "?check=offline",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-refused",
+    path: "/settings",
+    query: "?check=refused",
+    design: "SettingsDevices.html",
+  },
+  {
+    name: "this-mac-update-off",
+    path: "/settings",
+    query: "?check=off",
+    design: "SettingsDevices.html",
+  },
 ];
 
 const args = argv;
