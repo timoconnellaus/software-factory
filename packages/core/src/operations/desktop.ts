@@ -14,6 +14,7 @@
 //
 // The app isn't anyone before it signs in, so sf-engine calls authStart and authExchange unsigned,
 // as DESKTOP_DEVICE_ACTOR.
+
 import type { KeyStorage } from "@software-factory/db";
 import { z } from "zod";
 import { type Actor, type DeviceSurface, isDeviceSurface } from "../actors.ts";
@@ -22,6 +23,7 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
+import { childrenOf } from "../splits.ts";
 import { describeConfigDecision } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
@@ -176,8 +178,28 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     return w ? `#${w.number} ${quoted(w.title)}` : "a work item";
   };
   switch (op) {
-    case "spec.approve":
-      return `Approve the spec for ${await named(input.workItemId)}`;
+    case "spec.approve": {
+      // A split approves its work items too (spec 24, review of #173): the prompt says how many,
+      // from the gated spec in the engine's records.
+      const w =
+        typeof input.workItemId === "string"
+          ? await ctx.db
+              .selectFrom("core_work_items as w")
+              .leftJoin("core_specs as s", "s.id", "w.current_spec_id")
+              .select(["s.children"])
+              .where("w.id", "=", input.workItemId)
+              .executeTakeFirst()
+          : undefined;
+      let children: { title: string }[] = [];
+      try {
+        children = childrenOf(w?.children ?? null);
+      } catch {
+        children = [];
+      }
+      if (!children.length) return `Approve the spec for ${await named(input.workItemId)}`;
+      const titles = children.map((c) => quoted(c.title)).join(", ");
+      return `Approve the plan and ${children.length} work item${children.length === 1 ? "" : "s"} for ${await named(input.workItemId)}: ${titles}`;
+    }
     case "spec.requestChanges":
       return `Request changes to the spec for ${await named(input.workItemId)}`;
     case "review.merge": {

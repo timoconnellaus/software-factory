@@ -138,6 +138,15 @@ export const SCREENS = [
     keys: ["f"],
     scrollTo: "split",
   },
+  // Review of #173: a child's whole slice, opened at the gate.
+  {
+    name: "plan-split-open",
+    path: "/work/wi_12?tab=plan",
+    design: "PlanFocus.html",
+    keys: ["f"],
+    scrollTo: "split",
+    clicks: ['[data-testid="split-child"]:nth-child(2) button'],
+  },
   { name: "item-split-parent", path: "/work/wi_9", design: "ItemOverview.html" },
   {
     name: "work-list-split",

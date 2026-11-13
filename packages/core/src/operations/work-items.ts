@@ -621,10 +621,12 @@ export const workItemGet = defineOperation({
           .select(["t.id", "t.number", "t.title", "t.status", "t.project_id"])
           .where("l.waits_for_id", "=", w.id),
         // Spec 24: the parent by primary key; the children by core_work_items_parent_idx (≤ 8).
+        // Only a plan's child has a parent to show (review of #173): no lookup otherwise.
         ctx.db
           .selectFrom("core_work_items")
           .select(["id", "number", "title", "status"])
-          .where("id", "=", w.source === "planning" ? (w.parent_work_item_id ?? "") : ""),
+          .where("id", "=", w.parent_work_item_id ?? "")
+          .where(sql<boolean>`${w.source === "planning" && w.parent_work_item_id ? 1 : 0} = 1`),
         ctx.db
           .selectFrom("core_work_items")
           .select(["id", "number", "title", "status", "stage", "size"])

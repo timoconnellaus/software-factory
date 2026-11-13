@@ -53,11 +53,8 @@ import {
 } from "../planning.ts";
 import { liveArtifact } from "../planning-visuals.ts";
 import { approverIds } from "../scope.ts";
-<<<<<<< HEAD
 import { childrenOf } from "../splits.ts";
-=======
 import { has } from "../workflow-features.ts";
->>>>>>> timoconnellaus/planning-splits
 import { ACTIVE_RUN } from "./runners.ts";
 import { fencingToken, jobId, requireWorkItem, workItemId } from "./shared.ts";
 import { RUNNER_OFFLINE_MS } from "./work-items.ts";
@@ -1551,6 +1548,8 @@ const specView = z.object({
   clarifications: z.array(z.record(z.string(), z.unknown())),
   /** Spec 24: the work items this version splits into, approved with it. */
   children: z.array(specChildSchema).default([]),
+  /** The stored split can't be read: approving is refused until the planner revises it. */
+  childrenUnreadable: z.boolean().default(false),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1780,7 +1779,14 @@ export const planningGet = defineOperation({
       assumptions: parseJson<string[]>(s.assumptions, []),
       coverage: parseJson<Record<string, unknown>[]>(s.coverage, []),
       clarifications: parseJson<Record<string, unknown>[]>(s.clarifications, []),
-      children: childrenOf(s.children),
+      ...(() => {
+        // An unreadable split is said, not shown as no split (review of #173).
+        try {
+          return { children: childrenOf(s.children), childrenUnreadable: false };
+        } catch {
+          return { children: [], childrenUnreadable: true };
+        }
+      })(),
       summary: s.summary,
       status: s.status,
       createdAt: s.created_at,

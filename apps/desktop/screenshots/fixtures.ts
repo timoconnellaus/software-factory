@@ -1406,6 +1406,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       bodyMd: live ? PLAN_MD : "## Goal\nVerify flags a change that weakens the tests.\n",
       acceptanceCriteria: live ? [] : CRITERIA,
       assumptions: live ? ["Edits after release are ignored"] : [],
+      childrenUnreadable: false,
       // Spec 24, as in PlanFocus: the plan splits into two work items, approved together.
       children: live
         ? [

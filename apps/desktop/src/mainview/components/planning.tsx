@@ -28,6 +28,7 @@ import {
   type PlanningView,
   questionOptions,
   sessionPill,
+  splitDigest,
 } from "@software-factory/client/planning";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
@@ -1251,7 +1252,7 @@ function Spec({
               </ul>
             </div>
           )}
-          <SplitList items={spec.children ?? []} />
+          <SplitList items={spec.children ?? []} unreadable={spec.childrenUnreadable === true} />
           {spec.clarifications.length > 0 && (
             <div data-testid="clarifications">
               <b>Clarifications</b>
@@ -1689,9 +1690,31 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
           </Button>
           <Button
             size="sm"
-            disabled={!canApprove || pending !== null || !writeBack}
-            title={canApprove ? undefined : "Only an approver on this project can approve the spec"}
-            onClick={() => decide({ kind: "spec.approve", workItemId: item.id })}
+            disabled={
+              !canApprove ||
+              pending !== null ||
+              !writeBack ||
+              !view.spec ||
+              view.spec.childrenUnreadable === true
+            }
+            title={
+              !canApprove
+                ? "Only an approver on this project can approve the spec"
+                : view.spec?.childrenUnreadable
+                  ? "This plan's split can't be read: request changes so the planner revises it"
+                  : undefined
+            }
+            onClick={async () => {
+              // A split is approved as shown (review of #173): the version and its work items.
+              const children = view.spec?.children ?? [];
+              decide({
+                kind: "spec.approve",
+                workItemId: item.id,
+                ...(children.length && view.spec
+                  ? { specVersion: view.spec.version, splitDigest: await splitDigest(children) }
+                  : {}),
+              });
+            }}
             data-testid="approve-spec"
           >
             {splitApproveLabel(view.spec?.children?.length ?? 0, writeBack?.kimCount) ??
