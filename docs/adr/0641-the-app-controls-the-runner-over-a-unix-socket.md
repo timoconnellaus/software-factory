@@ -1,6 +1,7 @@
 # ADR 0641: The app controls the runner over a Unix socket in a 0700 directory
 
-Status: proposed, 2026-11-13 (revised the same day after design review). Spec
+Status: proposed, 2026-11-13 (revised the same day after design review, and again after the second:
+the service re-verifies an offered version). Spec
 [45](../specs/45-runner-service-on-a-mac.md). Builds on
 [0640](0640-the-mac-runner-is-a-signed-bundle-run-by-a-launchagent.md).
 
@@ -23,7 +24,10 @@ argument and gets no answer, and files can't carry a request.
    logs), requests at most 4 KiB, zod schemas shared by the service and the app, a protocol number
    and `unknown_op` so versions can differ. Ops: `hello`, `status`, `drain`, `resume`, `stop` and
    `restart` (`when: idle | now`), `cancelRequest`, `logs`, `doctor`, `update.check`,
-   `update.offer` (a version the app already verified into the runner root) and `update.retry`.
+   `update.offer` (a version the app copied into the runner root) and `update.retry`. Since any
+   same-user process can send `update.offer`, the service takes only a version string, finds the
+   directory itself, re-verifies it as it would a download, and refuses a downgrade or another
+   channel's version.
 4. **Nothing secret crosses it,** and nothing on it adds authority: no op returns the runner key, a
    job token or a model credential, and none claims a job, changes config, pairs or approves a gate.
 5. **Starting is launchd's,** since a stopped service has no socket. When the socket isn't there,

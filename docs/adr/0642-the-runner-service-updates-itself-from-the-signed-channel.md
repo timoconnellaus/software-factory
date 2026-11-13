@@ -1,6 +1,9 @@
 # ADR 0642: The runner service updates itself from the app's signed channel
 
-Status: proposed, 2026-11-13 (revised the same day after design review). Spec
+Status: proposed, 2026-11-13 (revised the same day after design review, and again after the second:
+the sequence covers the bundle's build, stable comes from main's first-parent line, the deadline
+counts awake time and rolls back only on evidence against the version, corrupt state fails safe,
+repair never goes below the highest confirmed version, and crashes after confirming count). Spec
 [45](../specs/45-runner-service-on-a-mac.md) §5. Builds on
 [0640](0640-the-mac-runner-is-a-signed-bundle-run-by-a-launchagent.md),
 [0643](0643-the-runner-bundle-checks-its-own-seal-at-every-start.md),
@@ -24,7 +27,11 @@ counted starts, so a version that ran but never heartbeated stayed pending forev
 1. **A runner sequence orders versions.** The deploy computes `runnerSeq`, the first-parent count of
    `main` up to `runnerSha`, which only grows, and the engine's heartbeat answer gains an optional
    `desiredRunnerSeq` (an optional field, no compat bump). Each release seals its own `runnerSha`
-   and `runnerSeq` in `version.json`.
+   and `runnerSeq` in `version.json`. The runner's paths include what builds the bundle (the
+   launcher, `bundle-runner.mjs`, `vendor-node.mjs` with Node's pin), so a launcher or Node fix
+   publishes a higher sequence; checkouts pay one idle restart for it. Every release, stable
+   included, must be built from a commit on `main`'s first-parent line, or two builds could share a
+   sequence.
 2. **Versions come from the app's channel.** Each desktop release also publishes the notarized
    `SF Runner.app` as a zip and adds `{ version, sha, runnerSha, runnerSeq, compat, sha256, size }`
    to its channel's runner index, written after the zip.
@@ -40,16 +47,25 @@ counted starts, so a version that ran but never heartbeated stayed pending forev
    checks its own seal and loads every module.
 5. **When: ADR 0520, unchanged.** It keeps claiming while an update waits, then light only, then
    nothing, and swaps at the first heartbeat with no job running and no claim in flight.
-6. **Confirm within a deadline, or roll back.** The guard is the runner's parent process. The first
-   successful heartbeat confirms. The third unconfirmed start rolls back. Ten minutes after a start,
-   the runner's recorded heartbeat attempts decide: an answer from the engine that wasn't success,
-   or no attempt at all, is broken and rolls back; only "no answer at all" (DNS, connect, TLS) is
-   offline, which waits without counting. A rolled-back version is skipped for 24 hours, then 7
-   days, then until a person retries it.
-7. **The app is the backstop.** At every launch it repairs: installs its bundled copy when `current`
-   is missing, fails verification or was refused by its launcher; rolls back an update pending over
-   15 minutes with no guard running; and offers a newer bundled copy to the service, which applies
-   it when idle. An app update therefore always repairs the runner.
+6. **Confirm within a deadline, or roll back, only on evidence against the version.** The guard is
+   the runner's parent process. The first successful heartbeat confirms. Time is awake time (the
+   uptime clock), so sleep never runs a deadline out. The third **failed** start (a crash, exit 78,
+   a hang the guard killed; not a logout or stop, which the guard records on SIGTERM) rolls back.
+   At 10 awake minutes the recorded attempts decide: three engine refusals of what the version sent
+   (`rejected`) or failures in its own code (`error`) in a row, or no attempt at all, roll back; no
+   answer, a 5xx, 408, 429, a redirect or anything that isn't the engine's JSON is `unreachable`
+   and waits; a 401 or 403 is the key's problem, not the version's, so it never rolls back and the
+   person is asked to pair again. For 24 awake hours after confirming, the third failed start still
+   rolls back. State files are written by rename; one that doesn't parse is evidence of nothing, so
+   nothing rolls back on it, and the app rewrites it. A rolled-back version is skipped for 24 hours,
+   then 7 days, then until a person retries it.
+7. **The app is the backstop.** At every launch it repairs: when `current` is missing, fails
+   verification or was refused, it restores `previous` (if `current` was pending), else `current`'s
+   own version fetched again, else its bundled copy, but never below the highest sequence ever
+   confirmed without the person choosing; rolls back a pending update whose starts failed or that
+   never heartbeated, with no guard running; and offers a newer bundled copy to the service, which
+   re-verifies it (the socket is open to any same-user process) and applies it when idle. An app
+   update therefore always repairs the runner.
 8. **A compatibility bump needs a release, and the deploy enforces it.** `runner-compat.ts` refuses
    an engine deploy whose `RUNNER_COMPAT` is above a channel's newest runner: it waits up to 60
    minutes for canary's release of the same push, and refuses stable unless a person has set

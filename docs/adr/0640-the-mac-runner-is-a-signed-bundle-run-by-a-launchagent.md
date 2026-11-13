@@ -1,6 +1,7 @@
 # ADR 0640: The Mac runner is a signed bundle, run by a LaunchAgent from Application Support
 
-Status: proposed, 2026-11-13 (revised the same day after design review). Spec
+Status: proposed, 2026-11-13 (revised the same day after design review, and again after the second:
+commands run as launcher entries, and the owner-facing consequences listed). Spec
 [45](../specs/45-runner-service-on-a-mac.md). Amends [ADR 0390](0390-the-desktop-app-is-the-daily-ui.md)
 (the app no longer supervises the runner as a child). Builds on
 [0360](0360-runners-update-themselves-to-the-deployed-commit.md),
@@ -36,8 +37,9 @@ from a git checkout and updates with git. A person who installed the app has no 
    Only `current` and `previous` are kept once an update confirms.
 3. **launchd runs it as a LaunchAgent from a plist we write**, under the existing label
    `com.software-factory.runner` (one runner per Mac; the host lock refuses a second), written by
-   `sf-runner service install`, run by the app from its bundled copy, so the logic is
-   `local/runner-host`'s and tested there. Its program is the launcher, with no arguments and no
+   `sf-runner service install`, which the app runs as the launcher's `service-install` entry (every
+   command the app or a person runs is a launcher entry with a closed argument grammar, ADR 0643),
+   so the logic is `local/runner-host`'s and tested there. Its program is the launcher, with no arguments and no
    `EnvironmentVariables`. Key choices, each for a reason given in the spec:
    - `KeepAlive { SuccessfulExit: false }`: exit 0 means "stopped on purpose";
    - `ThrottleInterval 30` and `ExitTimeOut 120` (the runner needs up to 90 s to release its jobs);
@@ -82,5 +84,8 @@ from a git checkout and updates with git. A person who installed the app has no 
   Node moves into it.
 - launchd doesn't rotate logs. The runner copy-truncates its own at 20 MB, keeping three. The log
   directory is denied to agents and checks.
+- The crash stop's `launchctl disable` lasts across logins until a person presses *Start*; the app
+  shows it. A Mac restored from another's backup refuses the copied identity and must pair again.
+  Remove deletes the runner's logs. The checkout flavor's restarts now clean up leftover children.
 - A checkout under a TCC-protected folder makes macOS ask once, probably naming tmux rather than SF
   Runner. The answer is *Don't Allow* and moving the checkout; doctor never suggests a grant.

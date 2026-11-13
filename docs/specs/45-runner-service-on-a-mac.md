@@ -22,6 +22,12 @@ Revised 2026-11-13 after design review (PR #191): a native launcher that checks 
 at every start (§1), a runner sequence so stable Macs aren't stranded (§5), a build order that
 never ships a half-trusted or stranded service (Build order), a confirm deadline and an app repair
 path for rollback (§5), and lifecycle commands that actually re-read the environment (§2).
+Revised again 2026-11-13 after the second review: every command the app or a person runs is a
+launcher entry with a closed argument grammar (§1, *Entry points*); sealed scripts import nothing but
+`node:` built-ins and are read from a hashed file descriptor (§1); the launcher, the bundle script
+and the Node pin move the runner sequence (§5); the confirm deadline counts awake time and rolls
+back only on evidence against the version (§5); plus the requirement form, Node started outside the
+launcher, `update.offer`, repair order, crashes after confirmation, and stable's commit line.
 
 ## Goal
 The desktop app can quit, restart or update at any time without touching a running job. This
@@ -93,6 +99,21 @@ Choices this spec makes that change how the factory behaves on a Mac. Each is ea
 - **Logout and OS restarts still cancel jobs.** The service runs only in a logged-in session. At
   logout it releases its jobs; if macOS kills it first, the leases expire in 10 minutes and the
   Workflow retries them (§6).
+- **A crash stop lasts across logins.** After a crash loop the service runs `launchctl disable`, which
+  launchd keeps until something enables it, so the runner stays off after a restart or a new login,
+  not just until launchd gives up. The card and the menu bar show *Crashed* with the reason and the
+  log until a person presses *Start* (or *Repair*, then *Start*).
+- **A Mac restored from another Mac's backup must pair again.** The service binds its identity to
+  the hardware UUID (§4), so after Migration Assistant or a restored home folder the new Mac's
+  runner refuses to start (`copied-identity`) and the card asks to pair it; the old Mac keeps its
+  identity.
+- **At migration an orphaned in-app runner gets 10 minutes.** If the old app crashed and left its
+  runner running, the new app drains it and SIGTERMs it after at most 10 minutes; jobs still running
+  then are released and retried by the Workflow (§6).
+- **Remove deletes the runner's logs** along with the plist and the runner root (§6); copy them first
+  if they matter.
+- **The checkout flavor changes too:** a checkout runner that restarts now kills check children,
+  stale job tmux sessions and labeled containers left by its previous run, before it claims (§2).
 - **Owner decisions D1–D4** are at the end, as decided.
 
 ## 1. The bundle and its launcher
@@ -104,9 +125,26 @@ Choices this spec makes that change how the factory behaves on a Mac. Each is ea
 | --- | --- | --- |
 | `Contents/MacOS/sf-runner` | **the launcher**, Swift, `apps/desktop/native/sf-runner-launcher` | the bundle's main executable: hardened runtime, **no entitlements** |
 | `Contents/Helpers/node` | the pinned Node 24 (`vendor-node.mjs`, checked against its committed sha256) | nested code, identifier `com.software-factory.runner.node`, hardened runtime, `allow-jit` and `allow-unsigned-executable-memory` only (V8) |
-| `Contents/Resources/runner/service.mjs` | **the guard**, `node:` built-ins only | sealed resource |
-| `Contents/Resources/runner/sf-runner.mjs`, `check-sandbox-child.mjs` | the runner | sealed resources |
+| `Contents/Resources/runner/service.mjs` | **the guard** | sealed resource |
+| `Contents/Resources/runner/sf-runner.mjs`, `check-sandbox-child.mjs`, `hooks.mjs` | the runner, the check child (the sandbox runtime bundled in), the harness hooks | sealed resources |
+| `Contents/Resources/launcher-entries.json` | the entry table (*Entry points*) | sealed resource, also compiled into the launcher |
 | `Contents/Resources/version.json` | `{ version, channel, sha, runnerSha, runnerSeq, compat, contract }` | sealed resource |
+
+**Every sealed script is one self-contained file that imports nothing but `node:` built-ins.**
+Node resolves a bare specifier (`@anthropic-ai/sandbox-runtime`, or `fs` written without the prefix
+in a dependency) by walking up from the script's directory through every `node_modules` above it:
+`…/Runner/node_modules`, `~/Library/Application Support/node_modules`, `~/node_modules`, all
+writable by the user and none covered by the seal. A package planted there would load as SF
+Runner's code with no race at all. So `bundle-runner.mjs` builds each script with esbuild,
+dependencies included (the sandbox runtime goes into `check-sandbox-child.mjs`, which today imports
+it bare and isn't bundled); rewrites built-ins to their `node:` form; drops today's `createRequire`
+banner; and **fails the build** if the metafile shows any external that isn't `node:`, or the output
+contains `createRequire`, `import.meta.resolve`, a `require(` or `import(` whose argument isn't a
+`node:` string literal, or a `.node` file. `check-sandbox.ts`' `SRT_VENDOR` (today
+`import.meta.resolve`) comes from the bundle path under the service, and is null on macOS, where the
+sandbox runtime needs no vendored helper. Reading each script from a file descriptor (below) makes
+this a hard rule anyway: its URL is `file:///dev/fd/N`, so a relative or bare import couldn't find
+anything inside the bundle either.
 
 `version` is the app release's version, `sha` the commit built, `runnerSha` and `runnerSeq` the
 deploy's (§5), `compat` the code's `RUNNER_COMPAT`. Signed with the app's Developer ID, notarized
@@ -129,52 +167,128 @@ else:
 2. **Check the running code** (`SecCodeCheckValidity` on itself) and **the whole bundle on disk**
    (`SecStaticCodeCheckValidityWithErrors` with `kSecCSStrictValidate | kSecCSCheckNestedCode |
    kSecCSCheckAllArchitectures`, resources **not** skipped), against the requirement `anchor apple
-   generic and identifier "com.software-factory.runner" and certificate leaf[subject.OU] =
-   "<TEAM>"`. `<TEAM>` is compiled into the launcher at release (the release environment's Team ID)
-   and must also equal the Team ID in its own signing information (`kSecCodeInfoTeamIdentifier`);
-   the bundle's designated requirement must be that same requirement. Node is checked as nested
-   code against `identifier "com.software-factory.runner.node"` and the same anchor and Team ID.
+   generic and identifier "com.software-factory.runner" and certificate
+   1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and
+   certificate leaf[subject.OU] = "<TEAM>"`: the standard Developer ID form (Apple's root, the
+   Developer ID intermediate's marker, the Developer ID Application leaf's marker, the Team ID),
+   built with `SecRequirementCreateWithString` and passed to both checks. `<TEAM>` is compiled into
+   the launcher at release (the release environment's Team ID) and must also equal the Team ID in its
+   own signing information (`kSecCodeInfoTeamIdentifier`). The bundle's designated requirement is
+   **not** compared for equality: codesign's default one can carry more than this, and nothing
+   needs it to match. Node is checked as nested code against the same requirement with
+   `identifier "com.software-factory.runner.node"`. `bundle-verify.ts` uses the same string with
+   `codesign -R` (§2).
 3. **Build Node's environment from nothing**: `HOME`, `USER`, `LOGNAME` and `SHELL` from
    `getpwuid(getuid())`, `TMPDIR` from `confstr`, `PATH` from `service-env.json` (§2; absolute
    directories only, at most 4 KiB, else the default `/usr/bin:/bin:/usr/sbin:/sbin` and a warning
    in the log), and `SF_RUNNER_SERVICE=1`, `SF_RUNNER_ROOT`, `SF_RUNNER_BUNDLE` (the resolved
-   path). Nothing is copied from its own environment, so `NODE_OPTIONS`, `NODE_PATH`, `DYLD_*`,
+   path) and `SF_RUNNER_LIFELINE_FD` (step 6). Nothing is copied from its own environment, so `NODE_OPTIONS`, `NODE_PATH`, `DYLD_*`,
    `NODE_EXTRA_CA_CERTS` or anything else a plist sets never reaches Node.
-4. **Choose the script itself.** Its arguments select only among a fixed list of in-bundle entry
-   points: none (the guard, which is what launchd starts), `runner`, `check-child`, `selftest` and
-   `login-item-status` (§2). Any other argument, or more than one, exits 64. No argument ever names a
-   path.
-5. **Spawn** (not exec) `Contents/Helpers/node --disable-sigusr1 --no-addons <script>`, where the
-   entry fixes the script: none → `Resources/runner/service.mjs`, `runner` → `sf-runner.mjs run`,
-   `check-child` → `check-sandbox-child.mjs`, `selftest` → `service.mjs --selftest`
-   (`login-item-status` is answered by the launcher itself, without Node). With stdin, stdout and stderr passed through and a pipe on fd 3
-   that closes when the launcher dies (Node exits as on SIGTERM when it reads EOF). It forwards
-   SIGTERM, SIGINT, SIGUSR2 and SIGHUP to the child and exits with the child's code (a signal
-   becomes 128 + n). Spawning keeps the launcher the responsible process, so TCC and Login Items
-   name SF Runner; exec would turn the process into Node.
-6. A failed check writes one line to the log (`refused: <reason>`) and to
+4. **Choose the script itself.** The first argument names an entry from the fixed table below; the
+   rest must match that entry's grammar exactly. Anything else (an unknown entry, an extra or
+   repeated flag, a value outside its pattern, an argument over 2 KiB) exits 64. No argument ever
+   names a script.
+5. **Open the script and hash it on the descriptor.** The launcher opens the entry's script with
+   `O_RDONLY | O_NOFOLLOW`, checks with `fstat` that it is a regular file inside the bundle it just
+   validated, reads it through that descriptor and compares its SHA-256 with the file's hash in the
+   sealed `CodeResources` it just checked, then `lseek`s back to 0. A mismatch is a refusal (step 7).
+6. **Spawn** (not exec) `Contents/Helpers/node --disable-sigusr1 --no-addons /dev/fd/<N> <fixed
+   arguments> <validated arguments>`, with the script's descriptor inherited at `N` and nothing
+   else open beyond what the entry passes: stdin, stdout and stderr for every entry, and fd 3 for
+   `check-child` (its report pipe, as today). A **lifeline** pipe sits at the next descriptor, named
+   in `SF_RUNNER_LIFELINE_FD`, and closes when the launcher dies (Node exits as on SIGTERM when it
+   reads EOF). Arguments go after the script, so Node never reads them as its own options, and the
+   CLI parses them again with the same grammar. It forwards SIGTERM, SIGINT, SIGUSR2 and SIGHUP to
+   the child and exits with the child's code (a signal becomes 128 + n). Spawning keeps the
+   launcher the responsible process, so TCC and Login Items name SF Runner; exec would turn the
+   process into Node. Right after the spawn it checks the child's running code (by its audit token,
+   `SecCodeCopyGuestWithAttributes`) against Node's requirement and kills it if it doesn't match.
+7. A failed check writes one line to the log (`refused: <reason>`) and to
    `<stateDir>/service/launch-refused.json`, and exits 78 (`EX_CONFIG`). The guard and the app treat
    78 as "this version is untrustworthy" (§5).
 
+### Entry points
+Every command the service, the app or a person runs is an entry of the launcher. The table is
+`launcher-entries.json`, compiled into the launcher at build and imported by the CLI, so the two
+can't disagree (a test runs every entry and every refusal through both). Values: *name* is
+`^[A-Za-z0-9._-]{1,64}$`; *url* parses as `https:` with no user info, at most 2 KiB; *run dir* is a
+path whose `realpath` is a direct child of `<stateDir>/runs` (data, never a script).
+
+| Entry | Runs | Arguments allowed | Who runs it |
+| --- | --- | --- | --- |
+| (none) | `service.mjs` (the guard) | none | launchd |
+| `runner` | `sf-runner.mjs run` | none | the guard |
+| `check-child` | `check-sandbox-child.mjs` | none (inputs on stdin, report on fd 3) | the runner, per check |
+| `hook-status`, `hook-planning` | `hooks.mjs status` / `planning` | one *run dir* | Claude Code, per hook (§1, *Node outside the launcher*) |
+| `selftest` | `service.mjs --selftest` | none | the service, the app (§5) |
+| `login-item-status` | the launcher itself, no Node | none | `service start`, `service status`, doctor |
+| `service-install`, `service-start` | `sf-runner.mjs service install` / `start` | none | the app |
+| `service-stop`, `service-restart` | `sf-runner.mjs service stop` / `restart` | `--when idle\|now` | the app, a person |
+| `service-uninstall` | `sf-runner.mjs service uninstall` | `--when idle\|now`, `--forget-identity` | the app, a person |
+| `service-status` | `sf-runner.mjs service status` | `--json` | the app, a person |
+| `login` | `sf-runner.mjs login --no-install` | `--name` *name*, `--url` *url*, `--app` *url* | the app |
+| `status` | `sf-runner.mjs status` | `--json` | a person |
+| `doctor` | `sf-runner.mjs doctor` | `--fix`, `--json` | the app, a person |
+| `account` | `sf-runner.mjs account` | `list`; `add` *name* `--token-stdin` [`--oauth`\|`--api-key`] [`--no-login`]; `use` *name*; `remove` *name* | a person |
+| `sprites` | `sf-runner.mjs sprites` | `login` [`--no-check`]; `status`; `logout` | a person |
+
+Not entries: `run` (only the guard starts the runner), `pair` (pairing is the app's `login`), and
+the checkout flavor's `install` and `uninstall`; the bundled CLI refuses them under
+`SF_RUNNER_SERVICE`. **Which copy:** the app runs the installed `<root>/current/SF
+Runner.app/Contents/MacOS/sf-runner <entry>`, so the service's own version answers; it runs its
+bundled `Contents/Helpers/SF Runner.app` (verified first by `bundle-verify.ts`) only for
+`service-install`, for `login` before anything is installed, and when `current` is missing or
+refused (§5, *The app repairs*). A person runs the installed launcher by that path, which doctor
+and the card's *Copy command* print; no shim is put on PATH. **Nothing runs `Contents/Helpers/node`
+directly.**
+
+### Node outside the launcher
 `--disable-sigusr1` matters: without it, any same-user process can `kill -USR1` a Node process to
 open its inspector and run code in it. The hardened runtime without `get-task-allow` refuses a
 debugger attach, and ignores `DYLD_*` variables. `--no-addons` holds because the runner loads no
-native addon; the bundle build fails if one appears. Every Node process in the service starts
-through the launcher: the guard starts the runner with `<bundle>/Contents/MacOS/sf-runner runner`,
-and the runner starts each check child with `… check-child` (its inputs on stdin), so each script
-is checked just before Node reads it. The check costs about one hash of the bundle (about 120 MB
-unpacked, mostly Node); the launcher PR measures it on an M1 and records it here. A check child
-runs per check, not per command, so the cost is acceptable up to 1 s.
+native addon; the bundle build fails if one appears.
+
+Today the runner also starts Node itself: `harness-claude/src/project.ts` writes Claude Code hooks
+that run `process.execPath <runDir>/status-hook…` and the planning hooks, and the sprites adapter's
+script runs `process.execPath` for its TTY bridge. Under the service `process.execPath` is
+`Contents/Helpers/node`, so those would run unsealed scripts as SF Runner's grandchildren. The
+bundle flavor replaces each with a launcher entry: the hooks become `"<launcher>" hook-status
+<runDir>` (the scripts are sealed in `hooks.mjs`; the run dir carries only data), and the sprite
+bridge becomes an entry of its own when sprites are built for the service (until then sprites are
+refused under `SF_RUNNER_SERVICE`). The host passes a `nodeCommand` (`[launcher, entry]`) instead of
+`process.execPath`, and a test fails if any code path under `SF_RUNNER_SERVICE` spawns
+`process.execPath`.
+
+`Contents/Helpers/node` is also a Team-signed binary anyone as this user can run directly with a
+script of their choosing, under the identifier `com.software-factory.runner.node`. That identity has
+no TCC grants and no Login Items entry, and nothing in the factory asks for one, but a prompt naming
+it would look like ours. PR 2 prototypes a **launch constraint** on it (`codesign
+--launch-constraint-parent` with a plist requiring the parent to be `com.software-factory.runner` of
+`<TEAM>`), so the kernel refuses to start it from anything but the launcher. If the prototype shows
+it works on macOS 14 and later, the release signs Node with it and the launcher test checks it; if
+not, this paragraph stays as the honest limit.
+
+**Cost.** The check costs about one hash of the bundle (about 120 MB unpacked, mostly Node); PR 2
+measures it on an M1 and records it here. A check child or a hook runs per check or per hook, not
+per command, so the cost is acceptable up to 1 s.
 
 ### What remains possible for a same-user process
 Honestly, after the launcher:
 - **It can stop, remove or replace the service.** The plist and the runner root are the user's. A
   plist pointing at its own program runs that program, but not as SF Runner: TCC and Login Items
   attribute by the responsible binary's designated requirement, which it can't produce.
-- **It can race the check.** A script edited between the launcher's check and Node's read of it
-  runs as SF Runner. The window is milliseconds at each start. Version directories are made
-  read-only (`chmod -R a-w`) once verified, which a same-user process can undo, so this is a speed
-  bump, not a wall.
+- **It can race the check, in a narrower place.** It can copy the genuine bundle anywhere, start it
+  from a plist of its own as often as it likes, and change files while the ~1 s seal check runs.
+  Hashing the script on the descriptor Node then reads closes the gap between *checked* and
+  *opened*: a file swapped by rename after the check isn't the one Node reads, and one edited
+  before the hash fails it. What remains: the file is the user's, so a process can `chmod` it
+  writable and write into **the same inode** after the hash and before Node finishes reading it
+  (`chmod -R a-w` on version directories is a speed bump, not a wall). And it can swap
+  `Contents/Helpers/node` between the check and the spawn for another validly signed binary; the
+  launcher's check of the child's running code kills it, but not before its first instructions
+  run (a launch constraint, above, would stop it at exec). PR 2 tries passing the verified bytes
+  through a pipe instead of the file (Node reading `/dev/fd/N` on a pipe), which would close the
+  inode race; the result is recorded here.
 - **It reaches whatever SF Runner runs.** The runner and its jobs run `git`, `tmux`, `claude`,
   `docker` from PATH, and the repository's own build scripts. Those are user-writable or come from
   the repository, and they run as SF Runner's children, with its TCC grants. So **a TCC grant to SF
@@ -184,7 +298,8 @@ Honestly, after the launcher:
   know*), and use the control socket as the app does (§3).
 - **It can't** use the inspector (`--disable-sigusr1`), attach a debugger or inject a library
   (hardened runtime), redirect Node with environment (the launcher's environment is built from
-  nothing), or make the launcher run a path of its choosing.
+  nothing), plant a module (sealed scripts import only `node:` built-ins), or make the launcher run
+  a path of its choosing.
 
 ### TCC (privacy prompts)
 The runner itself needs no TCC access: its worktrees are under its state dir. A checkout a person
@@ -241,8 +356,9 @@ checkout.
 
 ### The plist
 `~/Library/LaunchAgents/com.software-factory.runner.plist`, written by `sf-runner service
-install` (`launchd.ts`, a second flavor beside the checkout's). The app runs that command from its
-bundled `SF Runner.app`, so the logic lives in `local/runner-host` and is tested there.
+install` (`launchd.ts`, a second flavor beside the checkout's). The app runs that command as the
+launcher's `service-install` entry (§1, *Entry points*), so the logic lives in `local/runner-host`
+and is tested there.
 
 | Key | Value | Why |
 | --- | --- | --- |
@@ -316,7 +432,7 @@ On the next start, **before claiming**:
   run out and the Workflow retries them. The server itself stays (its sessions' environments are
   the reason it exists). After spec 39, live sessions are re-adopted instead;
 - containers with this runner's label and no live job are removed (`docker rm -f`).
-The Node child of a killed launcher sees fd 3 close and exits as on SIGTERM, and a new launcher
+The Node child of a killed launcher sees its lifeline close and exits as on SIGTERM, and a new launcher
 waits up to 120 s for the host lock before giving up as a failed start.
 
 ### The checkout flavor
@@ -361,7 +477,7 @@ One JSON request line per connection, one JSON answer line (or a stream of lines
 | `logs {lines ≤ 1000, follow?}` | the tail of `runner.log` |
 | `doctor` | the doctor checks, run inside the service (§7) |
 | `update.check` | look for a new version now (it still applies only when idle) |
-| `update.offer {version}` | a version the app has already verified into `versions/` (§5, *The app repairs*); the service self-tests it and treats it as ready |
+| `update.offer {version}` | a version the app has already copied into `versions/` (§5, *The app repairs*). The service trusts nothing in the request: it takes only a version string (the version grammar, no path), looks up `versions/<version>` itself, **re-verifies** it exactly as a download (§5, *Verified before use*), refuses one that isn't above the installed version or is on another channel (`refused: downgrade`, `refused: channel`), then self-tests it and treats it as ready |
 | `update.retry {version}` | a person clears a rolled-back version's skip (§5) |
 
 `status` answers `{ version, sha, runnerSha, runnerSeq, channel, flavor: "bundle" | "checkout",
@@ -403,14 +519,13 @@ pair. Agents and checks inside their sandboxes can do none of it (above).
 - **The menu bar** keeps its runner line from the same status, polled over the socket every 5 s
   while the window is open and every 30 s otherwise. No polling of the engine is added.
 - **Quitting or updating the app** no longer touches the runner (once the flag is on: Build order).
-  Pairing stays in the app (`sf-runner login` from the bundled `SF Runner.app`), then `service
-  start`.
+  Pairing stays in the app (the launcher's `login` entry), then `service-start`.
 
 ## 4. Credentials
 | | In-app runner (today) | Service |
 | --- | --- | --- |
 | Runner identity | `runner.json` (0600), read by the child | the same file, read by the service |
-| Environment | HOME, PATH, `SF_RUNNER_DESKTOP` | built by the launcher: HOME, USER, LOGNAME, SHELL, TMPDIR, PATH, `SF_RUNNER_SERVICE`, `SF_RUNNER_ROOT`, `SF_RUNNER_BUNDLE`; nothing inherited |
+| Environment | HOME, PATH, `SF_RUNNER_DESKTOP` | built by the launcher: HOME, USER, LOGNAME, SHELL, TMPDIR, PATH, `SF_RUNNER_SERVICE`, `SF_RUNNER_ROOT`, `SF_RUNNER_BUNDLE`, `SF_RUNNER_LIFELINE_FD`; nothing inherited |
 | Model credentials | Claude's login in the keychain, accounts (spec 32), container env files | unchanged; `Aqua` sessions only, so the login keychain is there |
 | Repo access | per-job token from the channel, never written | unchanged |
 | App token, desktop device key, Touch ID | never given to the child | never given to the service |
@@ -441,6 +556,21 @@ including `runnerSha` (`git rev-list --count --first-parent <runnerSha>`), which
   is.
 - The release workflow (already `fetch-depth: 0`) computes `runnerSha` and `runnerSeq` for the
   commit it builds and seals them in `version.json` and the index entry.
+- **What moves it.** `runnerSha` is the last first-parent commit touching `RUNNER_ROOTS` or
+  `RUNNER_REPO_FILES` (`scripts/deploy/lib.ts`), which today leave out everything that builds the
+  bundle. A fix to the launcher or to Node would then publish a release with the old `runnerSeq`,
+  which no installed Mac takes. So the runner's paths gain the bundle's build:
+  `apps/desktop/native/sf-runner-launcher/**` (the launcher, its entry table, Node's entitlements
+  and launch constraint, the runner bundle's signing script), `apps/desktop/scripts/bundle-runner.mjs`
+  and `apps/desktop/scripts/vendor-node.mjs` (which holds Node's pinned version and sha256). The
+  cost is that a launcher-only change also moves checkout and Linux runners to the same code they
+  already run, one idle restart each: the safe side, as with lockfile-only changes. A test in
+  `scripts/deploy` asserts that every file `bundle-runner.mjs` reads from the repo is under a runner
+  path, so a new input can't be left out silently.
+- **Stable comes from main's first-parent line.** Two builds of commits off that line could share a
+  `runnerSeq` with different code. The release workflow refuses any channel whose commit isn't on
+  `origin/main`'s first-parent line (`git rev-list --first-parent origin/main` contains it), which
+  rules out `workflow_dispatch` from a branch or a merged-in side commit.
 
 ### The channel
 Each desktop release also publishes `runner/<version>/SF-Runner-<version>.zip` (the notarized,
@@ -479,7 +609,8 @@ Inputs: the installed `version.json`, the index, the heartbeat's `desiredRunnerS
 The zip's sha256 and size against the entry (transport only); `ditto -x -k` into `staging/`; the
 requirement and `spctl` (§2); the sealed `version.json` must name the entry's `version`,
 `runnerSha`, `runnerSeq` and the service's channel, and `version` must be higher than the installed
-one. Then a **self-test**: the *new* bundle's launcher runs `selftest`, which checks its own seal
+one. The same checks run on a version the app offers (`update.offer`). Then a **self-test**: the *new*
+bundle's launcher runs `selftest`, which checks its own seal
 (so a launcher that refuses its bundle, or can't start, fails here), then loads every module under
 the service's environment, parses `runner.json` and exits 0 within 30 s. Only then does it move into
 `versions/` and become ready.
@@ -497,24 +628,67 @@ write `last-exit = 75`, exit 75. launchd starts the new version.
 
 ### Confirm, or roll back
 The guard is the parent of the runner (launcher → guard → launcher `runner` → Node), so it can watch
-a runner that hangs as well as one that crashes. While the record is `pending`:
-- **Confirmed** by the first successful heartbeat of the new version. That prunes old versions.
-- **Start count:** the guard counts starts. The third start without a confirmation rolls back.
-- **Confirm deadline:** the runner writes `<stateDir>/service/heartbeat.json` on every heartbeat
-  attempt: `{ at, outcome: "ok" | "unreachable" | "rejected" | "error", status? }`, where
-  `unreachable` means no HTTP response at all (DNS, connect, TLS). Ten minutes after the start, and
-  each minute after, the guard decides:
+a runner that hangs as well as one that crashes. A rollback costs a good version 24 hours or more
+(the skip list), so it happens only on **evidence against the version**: things the network, the
+engine's health, sleep or a logout can't produce. While the record is `pending`:
+- **Confirmed** by the first successful heartbeat of the new version. That prunes old versions and
+  records its `runnerSeq` as the **highest confirmed** (`<root>/confirmed.json`).
+- **Heartbeat attempts.** The runner writes `<stateDir>/service/heartbeat.json` (temp file and
+  rename) on every attempt: `{ at, awakeMs, outcome, status? }`, where `outcome` is one of:
+  - `ok`;
+  - `unreachable`: no answer, **or an answer that isn't the engine's**: DNS, connect or TLS
+    failure, a timeout, a redirect, any 5xx, 408 or 429, or a body that doesn't parse as the
+    engine's JSON answer or error (a captive portal's page, a proxy's error, a deploy in flight);
+  - `auth`: the engine's own 401 or 403 (the key rejected, or the runner revoked);
+  - `rejected`: the engine's own error for any other 4xx, which means it refused what this version
+    sent;
+  - `error`: the runner failed to build or send the request itself (an exception in its own code).
+- **Awake time, not wall time.** The deadline and every window below count time the Mac was awake:
+  the guard accumulates `process.hrtime` (macOS's uptime clock, which stops during sleep) into the
+  record each minute and at exit. A laptop that sleeps a minute after the swap and wakes a day later
+  has been awake one minute.
+- **The deadline** is **10 awake minutes** of the new version having run. Then, and each awake minute
+  after:
   - any `ok`: confirmed (the runner normally does this itself);
-  - every attempt `unreachable`: **offline**, not broken. It waits, the start doesn't count, and the
-    record shows `waiting: offline` (the card: *Update installed; waiting for the network to confirm
-    it*). Offline has no expiry: a runner that can't reach the engine can't claim either, and the
-    first heartbeat that gets an answer decides;
-  - an answer that isn't `ok` (`rejected`, `error`), or **no attempt at all** in ten minutes (a
-    runner that hangs before heartbeating): **broken**. Roll back now.
+  - **three `rejected` or `error` attempts in a row**, with no `ok`: **broken**. Roll back now;
+  - **no attempt at all** in 10 awake minutes of a start (a runner that hangs before heartbeating):
+    broken. Roll back now;
+  - only `unreachable`: **offline**, not broken. It waits, and the record shows `waiting: offline`
+    (the card: *Update installed; waiting for the engine to confirm it*). No expiry: a runner that
+    can't reach the engine can't claim either;
+  - any `auth` (and no `ok`): **not the version's fault**. No rollback; the record shows `waiting:
+    auth`, `status` is `not-paired` with reason `rejected-key`, and the card says *The factory
+    rejected this Mac's runner key (revoked, or paired elsewhere); pair this Mac again*. Pairing
+    again restarts the runner, and its first `ok` confirms.
+- **Failed starts.** The guard counts **failed starts** of a pending version, not starts: an exit the
+  runner didn't announce (`last-exit`), a launcher exit 78, a version that can't load, or a runner
+  the guard killed for hanging. A start that ends with the guard having received SIGTERM (a logout,
+  a stop; it writes `sigterm` to `starts.json` on receipt, before forwarding it, so a SIGKILL that
+  follows at logout is still recognized) is not a failed start, nor is one that saw only
+  `unreachable`. **The third failed start** rolls back.
+- **Crashes after confirming.** A version that heartbeats once and then crashes every 11 minutes
+  would otherwise be healthy forever. For **24 awake hours after its confirmation** the guard keeps
+  counting its failed starts: the **third** rolls it back to `previous` as if it were unconfirmed
+  (skip list included). After that, six failed starts within six awake hours make the crash stop
+  (§6) even if every start heartbeated.
 - **Rolling back:** the guard stops the runner (SIGTERM, SIGKILL after 30 s), points `current` back
-  at `previous`, marks the record `rolled_back` with the reason, adds the version to the skip list
-  (above) and exits 75. A launcher that exits 78 (refused its own bundle) or a version that can't
-  even load counts as a failed start.
+  at `previous`, marks the record `rolled_back` with the reason and the evidence (the last attempts),
+  adds the version to the skip list (above) and exits 75.
+- **Corrupt or missing state fails to the safe side, and the app repairs it.** Every file here is
+  written by temp file and rename, so a torn write doesn't happen; a file that doesn't parse (zod)
+  was damaged from outside or by the disk. Then:
+  - `heartbeat.json` unparseable: no evidence either way. Nothing rolls back on it; the guard renames
+    it `.corrupt` and waits for the next attempt. Missing (never written) is "no attempt";
+  - `starts.json` unparseable: renamed `.corrupt` and started fresh (one line in the log), so a crash
+    loop is still caught within the next five starts;
+  - the update record unparseable: replaced by `{ state: "unknown" }`. Nothing is rolled back or
+    pruned on it, and the next `ok` heartbeat records the running version as confirmed;
+  - `confirmed.json` unparseable: treated as the running version's `runnerSeq` if it has confirmed,
+    else `previous`'s;
+  - the guard can't write its state at all (a full disk, a read-only root): it doesn't start the
+    runner. It makes the crash stop (§6) with reason `state-unwritable` (`launchctl disable` needs
+    nothing from the disk) and the card shows it.
+  `repairDecision` (below) rewrites each damaged file from what is on disk and says so on the card.
 - **A version that heartbeats but can't do its work** (say, fails every job) is not caught here. The
   Workflow retries those jobs elsewhere, and the next release fixes it; a person can roll back
   from the card (*Roll back to <previous>*).
@@ -525,15 +699,25 @@ guard runs. The app is the backstop, and every app launch (so every app update) 
 `repairDecision()` (pure) over: the bundled `SF Runner.app`'s `version.json`, the installed
 `current` (and whether it verifies), the service status (§3), the update record and its age, and
 whether a job is live (`live-jobs.json` and the host lock):
-- **No `current`, or `current` fails verification, or `refused`:** install the bundled copy
-  (verified), point `current` at it, then `start` if the runner is on.
-- **`update-stuck`:** a `pending` record over 15 minutes old, no confirmation, and no socket (the
-  guard isn't running): roll back as the guard would (by `app`), then `start`.
+- **No `current`, or `current` fails verification, or `refused`:** replace it with the first of
+  these that verifies, **never below the highest confirmed `runnerSeq`** (`confirmed.json`):
+  1. `previous`, if `current` was still `pending` (so `previous` is the last confirmed version);
+  2. `current`'s own version again, fetched from the channel index and verified like any download
+     (a tampered or damaged copy of a good version is restored to that version);
+  3. the bundled copy, if its `runnerSeq` is at least the highest confirmed.
+  Then `start` if the runner is on. If none qualifies (offline, and the app's copy is older), the
+  card shows `refused` with *Install <bundled version> (older)*: going below the highest confirmed
+  version is a person's choice. With no `current` and nothing ever confirmed, the bundled copy.
+- **`update-stuck`:** a `pending` record whose version has failed three starts (`starts.json`) or
+  has been loaded for 15 awake minutes with no attempt in `heartbeat.json`, and no socket (the guard
+  isn't running): roll back as the guard would (by `app`), then `start`. A record waiting `offline`
+  or `auth` is not stuck.
+- **Damaged state files** (above): rewrite them from what is on disk, and say so.
 - **`crashed`** (the crash stop below) with a bundled copy newer than `current`: install it, then
   offer *Start* (it doesn't start a crash-stopped runner on its own).
 - **Bundled newer than `current`** (higher `runnerSeq`, or `compat` enough where `current`'s
-  isn't): copy and verify it into `versions/` and send `update.offer`. The service self-tests it and
-  swaps when idle, under the usual caps, and the guard confirms or rolls it back.
+  isn't): copy and verify it into `versions/` and send `update.offer`. The service re-verifies and
+  self-tests it, and swaps when idle, under the usual caps, and the guard confirms or rolls it back.
 - **The plist differs** from what the bundled version writes: rewrite it at the next idle restart
   (`service restart {when: idle}` with the plist path above).
 - **Bundled older:** nothing. The app never downgrades the runner on its own.
@@ -565,8 +749,11 @@ their channel. `scripts/deploy/runner-compat.ts`, run by `deploy.yml` before the
   60 s, then 120 s before starting the runner, on top of launchd's 30 s throttle. **The fifth
   unhealthy start in a row within 15 minutes** writes `crash.json` (when, how many, the last 50 log
   lines), runs `launchctl disable`, and exits 0, so launchd leaves it stopped. The app shows
-  *Crashed* with the log, *Repair* and *Start* (which clears `crash.json`). Rollback (three starts,
-  or the deadline) runs before the crash stop (five).
+  *Crashed* with the log, *Repair* and *Start* (which clears `crash.json` and enables the job
+  again). The disable persists across logins until then. Starts that ended in a SIGTERM the guard
+  received (logout, stop) aren't unhealthy. Rollback (three failed starts, or the deadline: §5)
+  runs before the crash stop (five), and for 24 awake hours after a version confirms, its third
+  failed start rolls it back instead (§5, *Crashes after confirming*).
 - **Sleep and wake (D3):** launchd doesn't stop the service on sleep. On wake the next heartbeat
   runs at once. A lease that expired while asleep (10 minutes) comes back as `cancel`, and the job
   is released as today. While at least one job runs, the service holds `caffeinate -s -w <pid>`: an
@@ -683,14 +870,29 @@ the PR that turns the service on.
 1. **Launcher refuses a tampered bundle.** On macOS, a real bundle signed ad hoc with the launcher
    built for ad hoc: it starts the guard. Then each of these makes it exit 78 with the reason, and
    Node never starts: a changed byte in `sf-runner.mjs`, an added `.mjs` in `Resources/runner`, a
-   changed `version.json`, a replaced `Contents/Helpers/node`, and (for the Team ID path, with fake
-   signing information) a bundle signed by another team. *Test.*
+   changed `version.json`, a replaced `Contents/Helpers/node`, a script whose bytes differ from the
+   seal when read on the descriptor (the test swaps it between the seal check and the open, through
+   a hook built only into the test launcher), and (for the Team ID path, with fake signing
+   information) a bundle signed by another team. The requirement string is the Developer ID form in
+   §1 and a bundle whose designated requirement has more clauses is accepted. *Test.*
 2. **Launcher ignores its environment and arguments.** Started with `NODE_OPTIONS=--require
    /tmp/x.js`, `NODE_PATH`, `DYLD_INSERT_LIBRARIES` and a `PATH` without `/usr/bin`, the Node child's
    `process.env` has exactly the keys in §1 and `execArgv` is exactly `--disable-sigusr1
-   --no-addons`. An argument that is a path, an unknown entry, or two arguments, exits 64. Started
+   --no-addons`. Every entry in `launcher-entries.json` runs with its allowed arguments, and the
+   launcher and the CLI both refuse (64) a path in place of an entry, an unknown entry, an unknown,
+   repeated or extra flag, a value outside its pattern (a `--url` with user info or `http:`, a
+   *name* with `/`, a run dir outside `<stateDir>/runs`), and an argument over 2 KiB. Started
    through a symlink and with `argv[0]` set to another bundle's path, it checks and runs its own
    bundle. SIGUSR1 to the Node child opens no inspector port. *Test.*
+2a. **No module from outside the seal.** The bundle build fails on a fixture that imports a bare
+   specifier, uses `createRequire`, `import.meta.resolve` or a computed `require`/`import()`. Then
+   with a real bundle placed in a temp tree that has a `node_modules` holding a planted
+   `@anthropic-ai/sandbox-runtime`, `fs` and every package the runner's source names, in every
+   ancestor of the bundle and in the temp HOME (`~/node_modules`, `~/.node_modules`,
+   `~/.node_libraries`), the guard, `selftest`, `runner` (to its first claim against a fake engine)
+   and `check-child` run, and no planted module runs (each would write a marker). With the service
+   environment set, no code path spawns `process.execPath` (the hooks and the sprite bridge go
+   through entries). *Test* (macOS CI).
 3. **Verification:** a version moves into `versions/` only if the requirement, `spctl` and the sealed
    `version.json` pass. A wrong Team ID, a changed file, a lower version, the wrong channel, a
    `runnerSha` or `runnerSeq` mismatch, or a failed self-test is refused, and `current` is unchanged.
@@ -720,7 +922,7 @@ the PR that turns the service on.
 8. **Children after a kill:** with a fake process table, `children.json` entries whose start time
    matches are killed (TERM then KILL), reused pids are left, the tmux server stays, dead jobs'
    sessions and labeled containers are removed, all before the first claim. The Node child exits
-   when fd 3 closes. *Test.*
+   when its lifeline closes. *Test.*
 9. **Logs:** at 20 MB `runner.log` is copy-truncated to `.1` and older ones shift, never more than
    three; a write after truncation lands at the start of the file. *Test.*
 10. **Hardware binding:** a first start records `IOPlatformUUID`; a start with a different one refuses
@@ -761,14 +963,26 @@ the PR that turns the service on.
 19. **Self-test and swap:** a staged version whose self-test fails (including its launcher refusing
     its bundle) is never swapped in. A good one is swapped only when idle, and `previous` and
     `current` are right. After confirmation only those two remain. *Test.*
-20. **Guard and deadline:** with a fake clock and file system: backoff delays; the crash stop after
-    the fifth unhealthy start in 15 minutes (`crash.json`, `disable`, exit 0); rollback on the third
-    unconfirmed start; at the deadline, `ok` confirms, all-`unreachable` waits without counting,
-    `rejected`/`error` or no attempt rolls back; exit 78 counts as a failed start; announced exits
-    don't count. *Test.*
+20. **Guard and deadline:** with a fake clock (wall and awake separately) and file system: backoff
+    delays; the crash stop after the fifth unhealthy start in 15 minutes (`crash.json`, `disable`,
+    exit 0); rollback on the third failed start of a pending version; at 10 awake minutes, `ok`
+    confirms, three `rejected`/`error` in a row roll back, no attempt rolls back, only
+    `unreachable` waits without counting, and `auth` never rolls back and reports `rejected-key`; a
+    5xx, a 302 to a portal and an HTML 200 each record `unreachable`; a day asleep after the swap
+    is one awake minute and decides nothing; three starts ended by SIGTERM (logout) while offline
+    are not failed starts, nor is a SIGKILL after a recorded SIGTERM; exit 78 counts as a failed
+    start; announced exits don't count; within 24 awake hours of confirming, the third failed start
+    rolls back, and after that six in six awake hours make the crash stop. Corrupt `heartbeat.json`,
+    `starts.json`, update record and `confirmed.json` each behave as §5 says, and an unwritable
+    state dir makes the crash stop with `state-unwritable`. *Test.*
 21. **App repair:** `repairDecision` over {bundled version, `current` and whether it verifies,
-    status, update record and age, live jobs}: install, roll back a stuck update, offer a newer
-    bundled copy, rewrite the plist at idle, never downgrade. *Test.*
+    `previous`, the highest confirmed sequence, whether the channel has `current`'s version, status,
+    update record and its awake age, failed starts, damaged state files, live jobs}: a failing
+    pending `current` goes to `previous`, a failing confirmed `current` is re-fetched, the bundled
+    copy only at or above the highest confirmed sequence and otherwise a person's choice; roll back
+    a stuck update but not one waiting `offline` or `auth`; offer a newer bundled copy; rewrite the
+    plist at idle; rewrite damaged state; never downgrade. `update.offer` with a path, a lower
+    version, another channel or a bundle that fails verification is refused by the service. *Test.*
 22. **Channel switching:** canary → stable keeps the canary version until stable passes it; *Install
     stable's runner now* installs the bundled copy only when idle; `repairDecision` ignores the
     other channel's app. *Test.*
@@ -804,26 +1018,46 @@ the PR that turns the service on.
     directory, a bad signature, a launcher refusal, the Login Items switch, an update state and
     leftover children, each with its fix; no fix text mentions granting access. *Test* with fakes.
 31. `pnpm lint`, `pnpm typecheck` and the touched packages' tests pass.
+32. **The runner sequence moves with the bundle:** `runnerSha` changes for a commit touching only the
+    launcher, `bundle-runner.mjs` or `vendor-node.mjs`; every repo file `bundle-runner.mjs` reads is
+    under a runner path; the release workflow refuses a commit not on `main`'s first-parent line.
+    `RUNNER_SERVICE_ENABLED` is a compile-time constant with no environment or setting that
+    overrides it. *Test.*
 
 ## Build order
 Each PR is from `main` and not stacked on unmerged work. Every merge to `main` publishes a canary
 app, so **nothing installs, starts or replaces a service on anyone's Mac until the last PR**: until
 then the service exists only as `sf-runner service …` commands run by hand on a test account, and
 the app keeps its in-app runner. The app's service code sits behind `RUNNER_SERVICE_ENABLED`, a
-build constant that is `false` until PR 9.
+**build constant** (replaced at bundle time, not read from the environment, a file or a setting)
+that is `false` until PR 9. "Forced on locally" below means a local build with it set `true`, never a
+runtime switch on a released app.
 1. **This spec and ADRs 0640–0643.**
-2. **The bundle, the launcher and the verifier:** `apps/desktop/native/sf-runner-launcher`,
-   `bundle-runner.mjs`, `SF Runner.app` signed, notarized and nested in the app (unused), and
-   `bundle-verify.ts` shared with the app's updater. The launch cost measured and recorded in §1.
-   Criteria 1, 2, 3 (the verifier half).
-3. **The runner sequence and the channel:** `runnerSeq` in `scripts/deploy/lib.ts`, `RUNNER_SEQ`
+2. **The bundle, the launcher and the verifier:** `apps/desktop/native/sf-runner-launcher` with
+   `launcher-entries.json`, `bundle-runner.mjs` (self-contained scripts, the build's specifier
+   check, the check child bundled), `SF Runner.app` signed, notarized and nested in the app
+   (unused), and `bundle-verify.ts` shared with the app's updater. Criteria 1, 2, 2a (the bundle
+   half), 3 (the verifier half). **Before PR 4 starts, PR 2 prototypes and reports, with measured
+   results in its description:**
+   - a real Developer ID-signed, notarized bundle, unpacked with `ditto` and made `chmod -R a-w`,
+     passing the strict, nested, all-architectures check offline, and the check's cost per start
+     (the signing identity is only in the release environment, so the prototype runs in CI's macOS
+     job on a signed artifact; what a local ad-hoc signature could and couldn't show is stated);
+   - a launch constraint on `Helpers/node` (`--launch-constraint-parent`): does the kernel refuse
+     to start it from a shell and allow it from the launcher;
+   - `SMAppService.statusForLegacy(plistURL:)` called from the launcher (not the app), for a legacy
+     plist naming the app in `AssociatedBundleIdentifiers`;
+   - Node 24 loading an ESM script from `/dev/fd/N`, on a file and on a pipe (§1, *What remains*).
+   The results are recorded in §1 in the same PR.
+3. **The runner sequence and the channel:** `runnerSeq` in `scripts/deploy/lib.ts` with the
+   bundle's paths added to the runner's, the first-parent check in the release workflow, `RUNNER_SEQ`
    and the optional `desiredRunnerSeq` in the engine, the zip and index published by the release,
-   `runner-compat.ts` in `deploy.yml`. Nothing reads the index yet. Criterion 18.
+   `runner-compat.ts` in `deploy.yml`. Nothing reads the index yet. Criteria 18, 32.
 4. **runner-host, the service (CLI only):** the bundle flavor of `launchd.ts`, `service-env.json`,
    `service install|start|stop|restart|status|uninstall`, the Login Items check, the guard (crash
    loop), `children.json` and cleanup, the hardware binding, log rotation, the sleep assertion,
-   release-first on SIGTERM, niced jobs, `last-exit`, and the checkout plist's new keys. Criteria
-   5–12.
+   release-first on SIGTERM, niced jobs, `last-exit`, the hooks through launcher entries
+   (`nodeCommand`), and the checkout plist's new keys. Criteria 2a (the runner half), 5–12.
 5. **runner-host, control:** the socket and protocol, `runnerControl`, status snapshots, the log deny
    and the sandbox behaviour test. Criteria 4, 13, 14.
 6. **Self-update:** selection, download, verification, self-test, swap, the confirm deadline,
