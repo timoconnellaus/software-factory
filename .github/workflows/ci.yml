@@ -85,6 +85,8 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
+          # Only node runs here, no install: setup-node would look for pnpm to cache.
+          package-manager-cache: false
       - name: TEMPORARY diagnostic (the old stdin form), removed before merge
         continue-on-error: true
         run: |
