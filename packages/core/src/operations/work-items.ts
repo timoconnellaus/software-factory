@@ -47,6 +47,7 @@ import {
   setItemStatus,
   workItemId,
 } from "./shared.ts";
+import { queuePlaces, waitingOn, waitingOnOf, waitingOnSelections } from "./waiting-on.ts";
 
 export const SIZES = ["small", "medium", "large"] as const;
 export const ITEM_STATUSES = [
@@ -108,6 +109,8 @@ const itemSummary = z.object({
   releasedAt: z.string().nullable().optional(),
   /** Spec 24: the item whose plan split this one off (null when not split off a plan). */
   parentWorkItemId: z.string().nullable().optional(),
+  /** workItem.list: what a running or waiting item is waiting on (waiting-on.ts). */
+  waitingOn: waitingOn.optional(),
 });
 
 type ItemRow = NonNullable<HandlerContext["scope"]["workItem"]>;
@@ -356,13 +359,19 @@ export const workItemList = defineOperation({
     let query = ctx.db
       .selectFrom("core_work_items")
       .selectAll()
+      // What each running or waiting item waits on, in this same read (waiting-on.ts).
+      .select(waitingOnSelections())
       .orderBy(input.status?.length ? sql`+updated_at` : sql`updated_at`, "desc")
       .limit(input.limit);
     if (input.projectId) query = query.where("project_id", "=", input.projectId);
     else if (input.orgId) query = query.where("org_id", "=", input.orgId);
     if (input.status?.length) query = query.where("status", "in", input.status);
     if (input.number !== undefined) query = query.where("number", "=", input.number);
-    return { items: (await query.execute()).map(summarise) };
+    const rows = await query.execute();
+    const places = await queuePlaces(ctx, rows);
+    return {
+      items: rows.map((w) => ({ ...summarise(w), waitingOn: waitingOnOf(w, places.get(w.id)) })),
+    };
   },
 });
 

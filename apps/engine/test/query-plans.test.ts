@@ -539,6 +539,41 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     run: (e) => as(e, "workItem.list", { projectId: w.projectId }, w.human),
   },
   {
+    // What each item waits on (waiting-on.ts): subqueries on the items' own indexes, in the read.
+    name: "workItem.board by org (polled), with what each item waits on",
+    run: (e) => as(e, "workItem.board", { orgId: w.orgId }, w.human),
+  },
+  {
+    name: "workItem.board by project (polled)",
+    run: (e) => as(e, "workItem.board", { orgId: w.orgId, projectId: w.projectId }, w.human),
+  },
+  {
+    // An item in merge: the board and the list read the projects' merge queues once, and
+    // delivery.status and mergeQueue.list say which step the head is on.
+    name: "the board, list and delivery reads with an item in the merge queue",
+    run: async (e) => {
+      const item = await ok<{ workItemId: string }>(
+        "workItem.create",
+        { state: "queued", projectId: w.projectId, title: "In merge" },
+        w.human,
+      );
+      const now = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare(
+          "UPDATE core_work_items SET stage = 'merge', status = 'waiting' WHERE id = ?",
+        ).bind(item.workItemId),
+        env.DB.prepare(
+          `INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, enqueued_at, updated_at, driver)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'babysitter')`,
+        ).bind(uid("mq-"), w.projectId, item.workItemId, "a".repeat(40), "a".repeat(40), now, now),
+      ]);
+      await as(e, "workItem.board", { orgId: w.orgId }, w.human);
+      await as(e, "workItem.list", { orgId: w.orgId }, w.human);
+      await as(e, "delivery.status", { projectId: w.projectId }, w.human);
+      return as(e, "mergeQueue.list", { projectId: w.projectId }, w.human);
+    },
+  },
+  {
     name: "workItem.list by project and status",
     run: (e) =>
       as(e, "workItem.list", { projectId: w.projectId, status: ["queued", "running"] }, w.human),
