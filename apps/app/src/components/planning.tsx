@@ -172,17 +172,23 @@ function useLive(workItemId: string) {
     const key = ["workItem", workItemId, "planning"];
     let wait = PLANNING_REREAD_MS;
     let timer: ReturnType<typeof setTimeout>;
+    // Unmounted while a refetch was out: the tick that resumes after it mustn't arm another timer.
+    let cancelled = false;
     const tick = async () => {
       if (document.visibilityState === "visible") {
         const was = JSON.stringify(queryClient.getQueryData(key) ?? null);
         await queryClient.refetchQueries({ queryKey: key, exact: true }).catch(() => {});
+        if (cancelled) return;
         const now = JSON.stringify(queryClient.getQueryData(key) ?? null);
         wait = now !== was ? PLANNING_REREAD_MS : Math.min(wait * 2, PLANNING_REREAD_MAX_MS);
       }
-      timer = setTimeout(tick, wait);
+      if (!cancelled) timer = setTimeout(tick, wait);
     };
     timer = setTimeout(tick, wait);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [workItemId, queryClient]);
 }
 
