@@ -13,6 +13,7 @@ import {
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { parseTerminalPath } from "@software-factory/runner-contract";
+import { archiveAudit } from "./audit-archive.ts";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { deliverDue } from "./deliver/deliverer.ts";
@@ -78,6 +79,15 @@ export default {
     // Retention (AGENTS.md "Cloudflare cost", rule 3): every minute, a budgeted slice of the
     // oldest ended runs' events goes to R2; once an hour, expired rows go in bounded batches.
     await archiveRunEvents(env, now);
+    // Every five minutes (offset from the shadow pass): machine audit rows older than 90 days go
+    // to R2 as a hash chain, a day at a time (ADR 0590, 0591); a failure only delays the next tick.
+    if (now.getUTCMinutes() % 5 === 2) {
+      try {
+        await archiveAudit(env, now);
+      } catch (error) {
+        console.error("audit archive failed", error);
+      }
+    }
     // Once a day: the archive's expected drain time, and a few archived objects checked with a
     // HEAD, so a lost one opens its incident without waiting for someone to look.
     if (now.getUTCHours() === 0 && now.getUTCMinutes() === 43) {

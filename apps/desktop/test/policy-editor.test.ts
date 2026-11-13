@@ -51,3 +51,25 @@ describe("a software key's refusal", () => {
     );
   });
 });
+
+describe("the editors' save button and limits (review of #154)", () => {
+  it("sends a loosening for approval and saves anything else", async () => {
+    const { saveLabel } = await import("../src/mainview/components/config-editor.tsx");
+    expect(saveLabel(true, 12).full).toBe("Send for approval");
+    expect(saveLabel(false, 12).full).toBe("Save v13");
+  });
+
+  it("counts instructions against the schemas' cap", async () => {
+    const { INSTRUCTIONS_MAX } = await import("../src/mainview/components/config-editor.tsx");
+    const { projectPolicySchema } = await import("@software-factory/core");
+    const doc = (instructions: string) => ({
+      version: 1,
+      autonomyPolicy: "balanced",
+      agents: [{ name: "A", role: "review", instructions }],
+    });
+    expect(projectPolicySchema.safeParse(doc("x".repeat(INSTRUCTIONS_MAX))).success).toBe(true);
+    expect(projectPolicySchema.safeParse(doc("x".repeat(INSTRUCTIONS_MAX + 1))).success).toBe(
+      false,
+    );
+  });
+});
