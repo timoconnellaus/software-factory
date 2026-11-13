@@ -19,6 +19,7 @@ import {
   sameFootprint,
   specChildSchema,
   specReviseInputSchema,
+  splitDigest,
   structureMoves,
   whyNotKept,
 } from "@software-factory/runner-contract";
@@ -1550,6 +1551,8 @@ const specView = z.object({
   children: z.array(specChildSchema).default([]),
   /** The stored split can't be read: approving is refused until the planner revises it. */
   childrenUnreadable: z.boolean().default(false),
+  /** Spec 24: the digest of `children`, sent back with the approval. Null: no split. */
+  splitDigest: z.string().nullable().optional(),
   summary: z.string().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -1879,7 +1882,17 @@ export const planningGet = defineOperation({
         escalated: q.escalated_at !== null,
         planning: q.planning_session_id !== null,
       })),
-      spec: current ? toSpec(current) : null,
+      spec: current
+        ? await (async () => {
+            const out = toSpec(current);
+            // The digest the plan's screen sends back with its approval (review of #173): the app
+            // hashes nothing, it returns what it was given with what it showed.
+            return {
+              ...out,
+              splitDigest: out.children.length ? await splitDigest(out.children) : null,
+            };
+          })()
+        : null,
       previousSpec: previous ? toSpec(previous) : null,
       messages: messages.map((m) => ({
         id: m.id,

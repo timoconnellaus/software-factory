@@ -28,7 +28,6 @@ import {
   type PlanningView,
   questionOptions,
   sessionPill,
-  splitDigest,
 } from "@software-factory/client/planning";
 import { Badge } from "@software-factory/ui/components/badge";
 import { Button } from "@software-factory/ui/components/button";
@@ -1695,7 +1694,8 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
               pending !== null ||
               !writeBack ||
               !view.spec ||
-              view.spec.childrenUnreadable === true
+              view.spec.childrenUnreadable === true ||
+              ((view.spec.children?.length ?? 0) > 0 && !view.spec.splitDigest)
             }
             title={
               !canApprove
@@ -1704,17 +1704,17 @@ function GateBar({ view, detail }: { view: PlanningView; detail: WorkItemDetail 
                   ? "This plan's split can't be read: request changes so the planner revises it"
                   : undefined
             }
-            onClick={async () => {
-              // A split is approved as shown (review of #173): the version and its work items.
-              const children = view.spec?.children ?? [];
+            onClick={() =>
+              // A split is approved as shown (review of #173): the version and the digest the
+              // server sent with the plan this screen shows; nothing is hashed here.
               decide({
                 kind: "spec.approve",
                 workItemId: item.id,
-                ...(children.length && view.spec
-                  ? { specVersion: view.spec.version, splitDigest: await splitDigest(children) }
+                ...(view.spec?.children?.length && view.spec.splitDigest
+                  ? { specVersion: view.spec.version, splitDigest: view.spec.splitDigest }
                   : {}),
-              });
-            }}
+              })
+            }
             data-testid="approve-spec"
           >
             {splitApproveLabel(view.spec?.children?.length ?? 0, writeBack?.kimCount) ??

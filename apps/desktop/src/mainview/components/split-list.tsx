@@ -44,7 +44,8 @@ export function SplitList({ items, unreadable = false }: { items: Child[]; unrea
             data-testid="split-child"
           >
             {/* What is approved is shown (review of #173): each child's whole slice. */}
-            <Collapsible>
+            {/* Open by default: what is approved is read, not hidden behind a click. */}
+            <Collapsible defaultOpen>
               <CollapsibleTrigger className="group flex w-full items-start gap-2 px-3 py-2 text-left">
                 <ChevronRightIcon className="mt-0.5 size-3.5 flex-none transition-transform group-data-[state=open]:rotate-90" />
                 <span className="grid gap-0.5">

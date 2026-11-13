@@ -1,6 +1,7 @@
 // Spec 24: how a split reads in the app: each child's size and order, the gate's label, and a list
 // with children under their parent.
 import { describe, expect, it } from "vitest";
+import { releaseBlocker } from "../src/mainview/lib/backlog.ts";
 import { groupUnderParents, splitApproveLabel, splitLines } from "../src/mainview/lib/splits.ts";
 
 describe("splits in the app (spec 24)", () => {
@@ -41,5 +42,16 @@ describe("splits in the app (spec 24)", () => {
       ["c2", 1],
       ["orphan", 0],
     ]);
+  });
+
+  it("says a held child waits for its plan instead of offering Release (review of #173)", () => {
+    const project = {
+      repositories: [{ id: "r" }],
+      policy: { state: "valid" },
+    } as unknown as Parameters<typeof releaseBlocker>[1];
+    expect(
+      releaseBlocker({ status: "ready", repositoryId: "r", heldForParent: true }, project),
+    ).toBe("Held until the plan merges: it starts with its siblings");
+    expect(releaseBlocker({ status: "ready", repositoryId: "r" }, project)).toBeNull();
   });
 });

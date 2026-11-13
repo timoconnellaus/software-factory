@@ -804,6 +804,8 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
       assumptions: [],
       path: `docs/specs/wi-${n}.md`,
       commitSha: "a1b2c3d",
+      // Spec 24: #12's plan splits into two work items (its card opens the plan to approve).
+      splitInto: id === "wi_12" ? 2 : 0,
     },
     questions:
       n === 11
@@ -1409,6 +1411,7 @@ function planning(workItemId: string): OpOutput<"planning.get"> {
       acceptanceCriteria: live ? [] : CRITERIA,
       assumptions: live ? ["Edits after release are ignored"] : [],
       childrenUnreadable: false,
+      splitDigest: live ? "0".repeat(64) : null,
       // Spec 24, as in PlanFocus: the plan splits into two work items, approved together.
       children: live
         ? [

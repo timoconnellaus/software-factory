@@ -13,7 +13,7 @@ import { provableChecks, specRequired } from "../policy/project-policy.ts";
 import { needsInfoOf, parkIfNotReady, readinessHint } from "../readiness.ts";
 import { approverIds } from "../scope.ts";
 import { desiredRunnerVersion } from "../services.ts";
-import { childEnded, SPLIT_MAX, sliceHash } from "../splits.ts";
+import { childEnded, childrenOf, SPLIT_MAX, sliceHash } from "../splits.ts";
 import { tieCriteria } from "../verify/proof.ts";
 import { RULESET_KINDS, rulesetsUrl } from "../verify/protection.ts";
 import { has } from "../workflow-features.ts";
@@ -454,6 +454,7 @@ export const workItemGet = defineOperation({
         assumptions: z.array(z.string()),
         path: z.string().nullable(),
         commitSha: z.string().nullable(),
+        splitInto: z.number().default(0),
       })
       .nullable(),
     questions: z.array(
@@ -650,7 +651,7 @@ export const workItemGet = defineOperation({
           .select(["id", "number", "title", "status", "stage", "size"])
           .where("parent_work_item_id", "=", w.id)
           .where("source", "=", "planning")
-          .orderBy("number")
+          // At most SPLIT_MAX rows: sorted below, not by a temp B-tree (the query-plan guard).
           .limit(SPLIT_MAX),
       ]),
     ]);
@@ -695,7 +696,9 @@ export const workItemGet = defineOperation({
       waitedOnBy: waitedOnRows.map(toLink),
       split: {
         parent: parentRows[0] ?? null,
-        children: childRows.map((c) => ({ ...c, size: c.size ?? null })),
+        children: childRows
+          .map((c) => ({ ...c, size: c.size ?? null }))
+          .sort((a, b) => a.number - b.number),
       },
       stages: stages.map((s) => ({
         stage: s.stage,
@@ -715,6 +718,14 @@ export const workItemGet = defineOperation({
             assumptions: parseJson<string[]>(spec.assumptions, []),
             path: spec.path,
             commitSha: spec.commit_sha,
+            // Spec 24: how many work items approving it creates (-1: its split can't be read).
+            splitInto: (() => {
+              try {
+                return childrenOf(spec.children).length;
+              } catch {
+                return -1;
+              }
+            })(),
           }
         : null,
       questions: questions.map((q) => ({

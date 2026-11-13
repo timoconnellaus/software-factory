@@ -1477,6 +1477,8 @@ const boardItem = z.object({
   updatedAt: z.string(),
   /** Spec 24: the item whose plan split this one off; lists show it under its parent. */
   parentWorkItemId: z.string().nullable().optional(),
+  /** Spec 24: held until its parent's plan merges, so it can't be released or shaped yet. */
+  heldForParent: z.boolean().optional(),
   waitsFor: z.array(
     z.object({
       id: z.string(),
@@ -1548,6 +1550,9 @@ export const workItemBoard = defineOperation({
     let q = ctx.db
       .selectFrom("core_work_items")
       .selectAll()
+      // A plan's child held until its parent's plan merges (spec 24, review of #173): a point read
+      // of the parent by primary key, only for such a child.
+      .select(sql<number>`CASE WHEN ${NOT_HELD} THEN 0 ELSE 1 END`.as("held_for_parent"))
       .where("org_id", "=", input.orgId)
       .where("status", "in", states as never[]);
     if (input.projectId) q = q.where("project_id", "=", input.projectId);
@@ -1604,6 +1609,7 @@ export const workItemBoard = defineOperation({
           requesterUserId: w.requester_user_id,
           releasedAt: w.released_at,
           parentWorkItemId: w.source === "planning" ? w.parent_work_item_id : null,
+          heldForParent: w.held_for_parent === 1,
           createdAt: w.created_at,
           updatedAt: w.updated_at,
           waitsFor,

@@ -201,13 +201,32 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     case "spec.approve": {
       // A split approves its work items too (spec 24, review of #173): the count is a fact from
       // the gated spec in the engine's records, before the item's title.
+      // The spec the open gate was opened for (review of #173), not whatever is current.
       const w =
         typeof input.workItemId === "string"
           ? await ctx.db
               .selectFrom("core_work_items as w")
-              .leftJoin("core_specs as s", "s.id", "w.current_spec_id")
+              .leftJoin("core_pending_actions as g", (j) =>
+                j
+                  .onRef("g.work_item_id", "=", "w.id")
+                  .on("g.kind", "=", "spec")
+                  .on("g.status", "=", "pending"),
+              )
+              .leftJoin("core_specs as s", (j) =>
+                j.on((eb) =>
+                  eb(
+                    "s.id",
+                    "=",
+                    eb.fn.coalesce(
+                      eb.fn<string>("json_extract", ["g.input", eb.val("$.specId")]),
+                      eb.ref("w.current_spec_id"),
+                    ),
+                  ),
+                ),
+              )
               .select(["w.number", "w.title", "s.children"])
               .where("w.id", "=", input.workItemId)
+              .limit(1)
               .executeTakeFirst()
           : undefined;
       let n = 0;
