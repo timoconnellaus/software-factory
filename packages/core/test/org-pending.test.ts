@@ -109,3 +109,37 @@ describe("the rollback preview and agent saves are bound to a version (review of
     expect((stale as { code: string }).code).toBe("conflict");
   });
 });
+
+describe("a waiting rollback (review of #159, round 4)", () => {
+  it("carries the org's config now and as the rollback would make it", async () => {
+    const { w, got } = await orgWithWorkflow();
+    // Tighten (more required checks), then roll back to before: that loosens, so it waits.
+    const tighter = {
+      ...got.workflow,
+      stages: got.workflow.stages.map((s) =>
+        s.type === "checks"
+          ? {
+              ...s,
+              settings: { ...(s.settings as object), requiredChecks: ["ci", "typecheck", "e2e"] },
+            }
+          : s,
+      ),
+    };
+    const saved = await ok<{ version: number }>(
+      "workflow.save",
+      { orgId: w.orgId, baseVersion: got.version, workflow: tighter },
+      w.human,
+    );
+    const r = await call(
+      "orgConfig.rollback",
+      { orgId: w.orgId, baseVersion: saved.version, toVersion: got.version },
+      w.human,
+    );
+    expect(r.status).toBe("pending");
+    const org = await ok<Got>("orgConfig.get", { orgId: w.orgId }, w.human);
+    const p = org.pending.find((x) => x.operation === "orgConfig.rollback");
+    expect(p?.current?.workflows).toBeDefined();
+    expect(p?.proposal?.workflows).toBeDefined();
+    expect(p?.impact?.class).toBe("loosens");
+  });
+});
