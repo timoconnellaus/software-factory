@@ -84,6 +84,7 @@ export type ReadOpName =
   | "orgConfig.get"
   | "stageType.list"
   | "workflow.preview"
+  | "killSwitch.list"
   | "orgConfig.previewRollback"
   | "incident.listArchiveMissing"
   | "delivery.status";

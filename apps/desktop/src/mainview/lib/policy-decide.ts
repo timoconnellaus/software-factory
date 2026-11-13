@@ -18,7 +18,8 @@ type PolicyOp =
   | "orgConfig.adoptProjectWorkflows"
   | "override.approve"
   | "killSwitch.set"
-  | "approval.decide";
+  | "approval.decide"
+  | "workItem.markRepair";
 
 /** Runs one policy decision with a pending state, a toast and a refresh of the org's config. */
 export function usePolicyDecide() {
@@ -58,6 +59,8 @@ export function usePolicyDecide() {
         queryClient.invalidateQueries({ queryKey: ["workflow"] }),
         queryClient.invalidateQueries({ queryKey: ["config"] }),
         queryClient.invalidateQueries({ queryKey: ["inbox"] }),
+        // A repair marked or unmarked shows on the item at once.
+        queryClient.invalidateQueries({ queryKey: ["workItem"] }),
       ]);
     }
   }

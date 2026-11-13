@@ -132,7 +132,7 @@ describe("the sf CLI door (/cli/v1)", () => {
       on: true,
     });
     expect(on.status).toBe(200);
-    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false }, w.human);
+    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false, epoch: 1 }, w.human);
 
     const cancelled = await callOp(token, "workItem.cancel", {
       workItemId: result.workItemId,

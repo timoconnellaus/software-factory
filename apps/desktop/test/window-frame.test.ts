@@ -151,6 +151,36 @@ describe("FrameKeeper", () => {
     expect(writes.at(-1)).toMatchObject({ width: 900, fullScreen: true });
   });
 
+  it("full screen before any frame was read: keeps the flag, with the default size centred as the base", () => {
+    const { keeper, writes, win, set } = setup();
+    // The very first read is full screen (no frame read or saved before).
+    set({ full: true, frame: { x: 0, y: 0, width: 1512, height: 982 } });
+    keeper.flush(win);
+    const saved = writes.at(-1);
+    expect(saved).toEqual({
+      x: 156,
+      y: 91,
+      width: 1200,
+      height: 800,
+      zoomed: false,
+      fullScreen: true,
+    });
+    // And it comes back full screen on the next launch, on the laptop's work area.
+    expect(restoreFrame(saved ?? null, [LAPTOP])).toMatchObject({ fullScreen: true, width: 1200 });
+    // Zoomed on a display smaller than the default: no larger than it.
+    const small = setup();
+    small.set({ zoomed: true, frame: { x: 0, y: 25, width: 1000, height: 700 } });
+    small.keeper.flush(small.win);
+    expect(small.writes.at(-1)).toEqual({
+      x: 0,
+      y: 25,
+      width: 1000,
+      height: 700,
+      zoomed: true,
+      fullScreen: false,
+    });
+  });
+
   it("doesn't write what is already saved, and survives a window that throws", () => {
     const { keeper, writes, win } = setup({
       x: 10,

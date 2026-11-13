@@ -236,3 +236,40 @@ describe("an org change's notices are bounded (review of #128)", () => {
     expect(recipients).toContain(w.userId);
   });
 });
+
+describe("config.get's org overrides (ADR 0610, for the desktop's Approve)", () => {
+  it("say which override is looser and whether an org admin approved it", async () => {
+    const w = await world();
+    await unapprovedOverride(w);
+    const before = await ok<{
+      orgOverrides: { stageId: string; key: string; looser: boolean; approved: boolean }[];
+    }>("config.get", { projectId: w.projectId }, w.human);
+    expect(before.orgOverrides).toContainEqual(
+      expect.objectContaining({
+        stageId: "spec",
+        key: "requiredFrom",
+        looser: true,
+        approved: false,
+      }),
+    );
+    await ok(
+      "override.approve",
+      {
+        projectId: w.projectId,
+        stageId: "spec",
+        setting: "requiredFrom",
+        orgVersion: 2,
+        ...(await seen(w)),
+      },
+      w.human,
+    );
+    const after = await ok<{ orgOverrides: { key: string; approved: boolean }[] }>(
+      "config.get",
+      { projectId: w.projectId },
+      w.human,
+    );
+    expect(after.orgOverrides).toContainEqual(
+      expect.objectContaining({ key: "requiredFrom", approved: true }),
+    );
+  });
+});
