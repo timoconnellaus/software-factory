@@ -426,6 +426,67 @@ describe("workItem.repinWorkflow", () => {
     expect(told[0]?.payload).toMatch(/adds Design sign-off; not applied to this item/);
   });
 
+  it("an item whose workflow can't be read does no work on any Workflow row, and its owner is asked once (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    await rows(
+      "UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?",
+      item.workItemId,
+    );
+    const as = (op: string, input: Record<string, unknown>) =>
+      invoke(deps, op, input, { actor: FOREMAN, origin: { surface: "workflow" } }).catch(
+        (e: { code: string; message: string }) => e,
+      );
+    // A job for any stage: refused, whatever row the Workflow runs.
+    const enqueue = await as("job.enqueue", {
+      workItemId: item.workItemId,
+      stage: "build",
+      role: "implement",
+      prompt: "Build it",
+    });
+    expect(enqueue).toMatchObject({ code: "workflow_unreadable" });
+    // A merge, directly.
+    const merge = await as("pr.merge", {
+      workItemId: item.workItemId,
+      headSha: "a".repeat(40),
+      touchesFactoryConfig: false,
+    });
+    expect(merge).toMatchObject({ code: "workflow_unreadable" });
+    // One blocking question for the owner, however many refusals.
+    const asked = await rows<{ prompt: string; blocking: number }>(
+      "SELECT prompt, blocking FROM core_questions WHERE work_item_id = ?",
+      item.workItemId,
+    );
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ blocking: 1 });
+    expect(asked[0]?.prompt).toMatch(/^This item's workflow version can't be read/);
+    // Reads, and what asks or ends it, still work; a person isn't refused.
+    expect(
+      await as("workItem.repinWorkflow", { workItemId: item.workItemId, at: "verify #1" }),
+    ).toMatchObject({ status: "ok", output: { unreadable: expect.any(String) } });
+    const seen = await ok<{ workflowError?: string; workflows: unknown[] }>(
+      "workItem.get",
+      { workItemId: item.workItemId },
+      w.human,
+    );
+    expect(seen.workflowError).toMatch(/adopted/);
+    expect(seen.workflows).toEqual([]);
+  });
+
+  it("an item whose own pinned config doesn't parse fails closed too (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    await rows(
+      "UPDATE core_work_items SET policy_sha = ? WHERE id = ?",
+      "f".repeat(40),
+      item.workItemId,
+    );
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    expect(scope.pinnedError).toMatch(/the config the item started under can't be read/);
+  });
+
   it("an adopted list that can't be resolved fails closed, never the pinned workflow alone", async () => {
     const w = await world();
     await onShip(w);

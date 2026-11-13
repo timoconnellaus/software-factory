@@ -1011,8 +1011,9 @@ export const stageTypeList = defineOperation({
 /**
  * A decision gate this version adds doesn't reach an item whose merge gate is already open (ADR
  * 0510 as amended for #185): the gate's person is told, on the item, so it isn't bypassed silently.
- * Org saves only (rare); one bounded read of the org's open merge gates
- * (core_pending_actions_org_idx: org_id, status), at most 50.
+ * Org saves only (rare); one bounded read of the org's open merge gates, oldest first
+ * (core_pending_actions_org_idx: org_id, status, created_at), at most 50, and the org's admins told
+ * when there are more.
  */
 async function noticeOpenMergeGates(
   ctx: HandlerContext,
@@ -1039,9 +1040,39 @@ async function noticeOpenMergeGates(
     .where("pa.status", "=", "pending")
     .where("pa.kind", "=", "merge")
     .where("w.org_config_version", "is not", null)
-    .limit(50)
+    // Oldest first, so the gates waiting longest are told; past 50 the save says so (third review
+    // of #185).
+    .orderBy("pa.created_at")
+    .limit(51)
     .execute();
-  for (const g of open) {
+  if (open.length > 50) {
+    ctx.change({
+      entity: "org",
+      id: org,
+      after: {
+        notice: `v${version} adds ${[...added.values()].flat().join(", ")}; more than 50 open merge gates weren't told one by one: it isn't applied to items whose merge gate is open`,
+      },
+    });
+    const admins = await ctx.db
+      .selectFrom("core_member")
+      .select("user_id")
+      .where("organization_id", "=", org)
+      .where("role", "in", ["owner", "admin"])
+      .orderBy("created_at")
+      .limit(NOTIFY_ADMINS)
+      .execute();
+    for (const a of admins)
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "workflow.gateNotApplied",
+          userId: a.user_id,
+          title: `v${version} of the org's workflow adds ${[...added.values()].flat().join(", ")}; it isn't applied to the items whose merge gate is open (more than 50: their people were told for the first 50 only)`,
+          url: "/settings",
+        },
+      });
+  }
+  for (const g of open.slice(0, 50)) {
     const wf = projects.find((p) => p.id === g.project_id)?.policy?.workflow;
     const gates = wf ? added.get(wf) : undefined;
     if (!gates) continue;

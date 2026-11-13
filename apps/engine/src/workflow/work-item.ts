@@ -36,6 +36,7 @@ import {
   runEvent,
   SLOTS,
   splitSettledEvent,
+  UNREADABLE_WORKFLOW_PROMPT,
   WORKFLOW_VERSION_FEATURES,
 } from "@software-factory/core";
 import { createDb } from "@software-factory/db";
@@ -394,8 +395,12 @@ class ItemFlow {
   // `version === 1` the step sequence is exactly v1's, so v1 instances replay unchanged. v3 adds
   // steps the same way (`verify #b: mergeable…`, `build #b: conflict`, `verify #b: no ci…`).
 
+  /** v17: park on a `workflow_unreadable` refusal instead of ending (set once, from the version). */
+  private parksOnUnreadable = false;
+
   async runV1(version = 1): Promise<WorkItemOutcome> {
     const id = this.workItemId;
+    this.parksOnUnreadable = has(version, "repin-reverify");
     try {
       let meta = await this.meta();
       await this.act("triage: enter", "workItem.enterStage", {
@@ -746,7 +751,9 @@ class ItemFlow {
           }
 
           // v13: a tightened org workflow reaches the item here, before verify (spec 52, Q3).
-          if (plan && has(version, "repin-tightening"))
+          if (plan && has(version, "repin-reverify"))
+            plan = (await this.repinAt(`verify #${b}`, plan, meta)).plan;
+          else if (plan && has(version, "repin-tightening"))
             plan = await this.repin(`verify #${b}`, plan);
           if (plan) {
             const before = await this.runSlot(meta, plan, "beforeVerify", b, {
@@ -1532,7 +1539,18 @@ class ItemFlow {
         by?: string;
       }
   > {
-    const first = await this.call(name, op, input);
+    let first = await this.call(name, op, input);
+    // v17 (third review of #185): core refuses work on an item whose workflow version can't be read,
+    // on any Workflow row (and asks its owner); this row parks on that question instead of ending,
+    // and tries again once the version reads.
+    for (
+      let k = 1;
+      this.parksOnUnreadable && first.status === "refused" && first.code === "workflow_unreadable";
+      k++
+    ) {
+      await this.planOrPark(meta, `${name}: parked #${k}`, null, true);
+      first = await this.call(`${name} #after-park-${k}`, op, input);
+    }
     if (first.status === "refused")
       throw new Ended("failed", `${op} refused (${first.code}): ${first.message}`);
     if (first.status === "ok") return { decision: "approved", output: first.output };
@@ -2205,7 +2223,7 @@ class ItemFlow {
   }
 
   /** Waits until the open blocking questions are answered, escalating on each timeout. */
-  async waitForAnswers(meta: Meta, name: string): Promise<void> {
+  async waitForAnswers(meta: Meta | null, name: string): Promise<void> {
     const awaited = await this.act(`${name}: await questions`, "workItem.awaitQuestions", {
       workItemId: this.workItemId,
     });
@@ -2224,7 +2242,8 @@ class ItemFlow {
       try {
         await this.step.waitForEvent(`${name}: answers${sfx}`, {
           type: String(awaited.event),
-          timeout: meta.questionTimeoutMs,
+          // No meta (a park inside a gate call): the default question timeout, 72 hours.
+          timeout: meta?.questionTimeoutMs ?? 72 * 3_600_000,
         });
         return;
       } catch (error) {
@@ -2336,6 +2355,9 @@ class ItemFlow {
       workItemId: this.workItemId,
       at: name,
     });
+    // v17: the item's version stopped reading since it was planned: ask, never carry on unchecked.
+    if (meta && typeof moved.unreadable === "string")
+      return { plan: (await this.planOrPark(meta, name, plan, true)) ?? plan, behind: [] };
     if (moved.repinned !== true) return { plan, behind: [] };
     const behind = Array.isArray(moved.behind) ? (moved.behind as string[]) : [];
     const next = await this.workflowPlan(`${name}: workflow plan`);
@@ -2348,33 +2370,48 @@ class ItemFlow {
    * person, never runs it without its checks and gates. "Check again" re-reads it; "Stop" ends it.
    * An item that isn't on an org workflow keeps its plan (null: no workflow) as before.
    */
-  async planOrPark(meta: Meta, name: string, plan: WorkflowPlan | null) {
-    if (plan) return plan;
+  async planOrPark(meta: Meta | null, name: string, plan: WorkflowPlan | null, force = false) {
+    if (plan && !force) return plan;
     for (let k = 1; ; k++) {
+      // Any policy that doesn't resolve parks (third review of #185): an org version or adopted
+      // list that no longer reads, the item's config that doesn't parse, or no config row at all.
       const why = await this.step.do(`${name}: pinned workflow #${k}`, async () => {
         const got = await this.pinnedPolicyResult();
-        return got.pinned && !got.policy ? (got.error ?? "it doesn't resolve") : "";
+        return got.policy ? "" : (got.error ?? "the item's config can't be read");
       });
-      if (!why) return k === 1 ? plan : await this.workflowPlan(`${name}: workflow plan #${k}`);
-      const asked = await this.act(`${name}: unreadable #${k}: ask`, "question.ask", {
-        workItemId: this.workItemId,
-        questions: [
-          {
-            domain: "operations",
-            prompt: `This item's workflow version can't be read: ${why}. Work item #${meta.number} won't run without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
-            context:
-              "The item runs the org workflow version it pinned, with any tightenings it adopted since. That version no longer resolves, so the factory has stopped the item rather than run it under today's workflow.",
-            options: [UNREADABLE_RECHECK, CHECKS_STOP],
-            defaultAnswer: UNREADABLE_RECHECK,
-            recommendation: UNREADABLE_RECHECK,
-            recommendationReason:
-              "Once the version reads again, the item carries on where it stopped.",
-            blocking: true,
-          },
-        ],
+      // It reads (again): plan from it, even if the plan journaled before came out empty.
+      if (!why) return await this.workflowPlan(`${name}: workflow plan #${k}`);
+      // Core may have asked already (an item refused work on any Workflow row): wait on that one.
+      const open = await this.step.do(`${name}: unreadable #${k}: open`, async () => {
+        const row = await this.env.DB.prepare(
+          "SELECT id FROM core_questions WHERE work_item_id = ? AND answered_at IS NULL AND instr(prompt, ?) = 1 LIMIT 1",
+        )
+          .bind(this.workItemId, UNREADABLE_WORKFLOW_PROMPT)
+          .first<{ id: string }>();
+        return row?.id ?? "";
       });
+      const questionId =
+        open ||
+        ((
+          (await this.act(`${name}: unreadable #${k}: ask`, "question.ask", {
+            workItemId: this.workItemId,
+            questions: [
+              {
+                domain: "operations",
+                prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${why}. Work item${meta ? ` #${meta.number}` : ""} won't run without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
+                context:
+                  "The item runs the org workflow version it pinned, with any tightenings it adopted since. That version no longer resolves, so the factory has stopped the item rather than run it under today's workflow.",
+                options: [UNREADABLE_RECHECK, CHECKS_STOP],
+                defaultAnswer: UNREADABLE_RECHECK,
+                recommendation: UNREADABLE_RECHECK,
+                recommendationReason:
+                  "Once the version reads again, the item carries on where it stopped.",
+                blocking: true,
+              },
+            ],
+          })) as { questionIds: string[] }
+        ).questionIds[0] as string);
       await this.waitForAnswers(meta, `${name}: unreadable #${k}`);
-      const questionId = (asked.questionIds as string[])[0];
       const answer = await this.step.do(`${name}: unreadable #${k}: answer`, async () => {
         const row = await this.env.DB.prepare("SELECT answer FROM core_questions WHERE id = ?")
           .bind(questionId)

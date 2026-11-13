@@ -42,6 +42,7 @@ export const STATUS: Record<RefusalCode, number> = {
   invalid_input: 400,
   forbidden: 403,
   denied: 403,
+  workflow_unreadable: 403,
   killed: 409,
   fenced: 409,
   bad_approval: 409,

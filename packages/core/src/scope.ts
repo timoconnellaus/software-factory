@@ -159,11 +159,26 @@ export async function resolveScope(
     .execute();
   const repository = pickRepository(repositories, workItem, repositoryId);
   const raw = await loadPolicy(db, project);
-  const pinnedRaw =
+  const pinnedLoad =
     workItem?.policy_sha && workItem.policy_sha !== project.policy_sha
-      ? (await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })).policy
+      ? await loadPolicy(db, { id: project.id, policy_sha: workItem.policy_sha })
       : null;
-  const resolved = await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
+  const pinnedRaw = pinnedLoad?.policy ?? null;
+  // The config the item pinned doesn't parse (third review of #185): it fails closed, as an org
+  // version that doesn't read does.
+  const pinnedRawError =
+    pinnedLoad && !pinnedLoad.policy
+      ? `the config the item started under can't be read (${pinnedLoad.policyError ?? "missing"})`
+      : null;
+  const resolved = await withOrgWorkflow(
+    db,
+    project.org_id,
+    raw,
+    pinnedRaw,
+    workItem,
+    project.id,
+    pinnedRawError,
+  );
   return {
     orgId,
     projectId,
@@ -309,9 +324,17 @@ async function resolveBatched(
   const repository = pickRepository(repositories, workItem, ids.repositoryId);
   const raw = interpretPolicy(project, first<PolicyRow>(at.policy));
   const pinnedRow = first<PolicyRow>(at.pinned);
-  const pinnedRaw = pinnedRow
-    ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow).policy
+  const pinnedInterpreted = pinnedRow
+    ? interpretPolicy({ policy_sha: workItem?.policy_sha ?? null }, pinnedRow)
     : null;
+  const pinnedRaw = pinnedInterpreted?.policy ?? null;
+  const pinnedRawError =
+    at.pinned !== undefined &&
+    workItem?.policy_sha &&
+    workItem.policy_sha !== project.policy_sha &&
+    !pinnedRaw
+      ? `the config the item started under can't be read (${pinnedInterpreted?.policyError ?? "missing"})`
+      : null;
   // A read that uses none of what an org workflow decides (polled timelines, planning, the queue)
   // doesn't resolve it: the project's config as saved, and no org config read or parsed.
   const { policy, rawPolicy, policyError, pinnedPolicy, pinnedError } = skipOrgWorkflow
@@ -322,7 +345,15 @@ async function resolveBatched(
         pinnedPolicy: pinnedRaw,
         pinnedError: null,
       }
-    : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
+    : await withOrgWorkflow(
+        db,
+        project.org_id,
+        raw,
+        pinnedRaw,
+        workItem,
+        project.id,
+        pinnedRawError,
+      );
   return {
     orgId,
     projectId,
@@ -354,6 +385,8 @@ export async function withOrgWorkflow(
   pinnedRaw: ProjectPolicy | null,
   workItem: Pick<WorkItemRow, "org_config_version" | "org_config_adopted"> | null,
   projectId: string | null = null,
+  /** The config the item pinned (`policy_sha`) doesn't parse: fails closed (#185). */
+  pinnedRawError: string | null = null,
 ): Promise<{
   policy: ProjectPolicy | null;
   rawPolicy: ProjectPolicy | null;
@@ -382,9 +415,10 @@ export async function withOrgWorkflow(
     pinnedPolicy: pinned?.policy ?? null,
     // An item pinned to an org version that no longer resolves: fail closed (review of #185).
     pinnedError:
-      pinnedVersion !== null && pinned && !pinned.policy
+      pinnedRawError ??
+      (pinnedVersion !== null && pinned && !pinned.policy
         ? (pinned.error ?? `the org config v${pinnedVersion} can't be resolved`)
-        : null,
+        : null),
   };
 }
 

@@ -89,4 +89,12 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > tightenings from the most versions it takes (8). Only the item's Workflow re-pins it, and the
 > boundary is the item's own stage. A decision gate a version adds while an item's merge gate is
 > open is told to that gate's person on the item, not applied.
+>
+> Amended 2026-11-13 (third review of #185): the stop is in core, so it holds on **every Workflow
+> row**, with no replay changed. While an item's pinned workflow (its org version, an adopted
+> version, or the config it started under) can't be read, agents and runners on it may only read,
+> ask, wait, end it, re-resolve its version and let a run already under way finish; anything else
+> is refused (`workflow_unreadable`) and the first refusal puts one blocking question to its owner.
+> A Workflow from v17 parks on that question (Check again / Stop) instead of ending, at its plan, at
+> each re-pin and on any such refusal; earlier rows end failed before work starts.
 

@@ -2039,6 +2039,8 @@ export const workItemRepinWorkflow = defineOperation({
     skipped: z.array(z.string()).default([]),
     /** Told the project's approvers what it didn't take (once per version). */
     noticed: z.boolean().optional(),
+    /** What the item runs can't be read: the Workflow asks a person (v17). */
+    unreadable: z.string().optional(),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
@@ -2062,8 +2064,18 @@ export const workItemRepinWorkflow = defineOperation({
     if (pinned === null) return stay("the item isn't on an org workflow");
     if (!(ACTIVE_STATUSES as readonly string[]).includes(w.status))
       return stay("the item isn't running");
+    // Its pinned workflow stopped reading, whether or not the org moved on (third review of #185).
+    if (ctx.scope.pinnedError)
+      return {
+        ...stay(`the item's workflow can't be resolved: ${ctx.scope.pinnedError}`),
+        unreadable: ctx.scope.pinnedError,
+      };
     const adopted = parseAdopted(adoptedRaw);
-    if (!adopted) return stay("the item's adopted versions can't be read");
+    if (!adopted)
+      return {
+        ...stay("the item's adopted versions can't be read"),
+        unreadable: "the item's adopted versions can't be read",
+      };
     // The org's current version: a point read of its row; documents through the per-isolate cache.
     const at = (
       await ctx.db
@@ -2088,7 +2100,12 @@ export const workItemRepinWorkflow = defineOperation({
       adoptedRaw,
       project.id,
     );
-    if (!current.ok) return stay(`the item's workflow can't be resolved: ${current.error}`);
+    // What it runs no longer reads (third review of #185): the Workflow (v17) asks a person.
+    if (!current.ok)
+      return {
+        ...stay(`the item's workflow can't be resolved: ${current.error}`),
+        unreadable: current.error,
+      };
     const now = await orgConfigAt(ctx.db, project.org_id, at);
     if (!now.ok) return stay("an org config version can't be read");
     const nowDef = resolveProjectWorkflow(raw, now.config, {

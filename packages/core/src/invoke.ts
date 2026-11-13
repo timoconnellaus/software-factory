@@ -14,7 +14,7 @@ import {
   guardChanged,
   toStatement,
 } from "@software-factory/db";
-import type { Compilable } from "kysely";
+import { type Compilable, sql } from "kysely";
 import { type Actor, type DeviceSurface, isDeviceSurface, type Origin } from "./actors.ts";
 import { OperationError } from "./errors.ts";
 import { newId } from "./ids.ts";
@@ -360,29 +360,39 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
-    // An item whose pinned workflow can't be resolved never merges, deploys or changes the factory
-    // without a person: those are denied to agents and runners on it (review of #185). Everything
-    // else is the current policy's, so the Workflow can park it with its question.
     pinnedPolicy:
       scoped && scope.policy && scope.pinnedPolicy
         ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
           }
-        : scoped && scope.policy && scope.pinnedError
-          ? {
-              autonomyPolicy: scope.policy.autonomyPolicy,
-              overrides: {
-                "*": {
-                  merge: "deny",
-                  deploy: "deny",
-                  "check-merge": "deny",
-                  "self-modify": "deny",
-                },
-              },
-            }
-          : null,
+        : null,
   });
+
+  // An item whose pinned workflow can't be read does no work on any Workflow row (review of #185):
+  // agents and runners on it get only reads and what asks a person, waits or ends it; anything else
+  // is refused, and the first refusal puts a blocking question to the owner (once).
+  if (
+    scoped &&
+    scope.pinnedError &&
+    scope.workItemId &&
+    actor.type !== "human" &&
+    risk !== "read" &&
+    !(PINNED_ERROR_ALLOWED as readonly string[]).includes(op.name)
+  ) {
+    await askUnreadableWorkflow(deps, scope.workItemId, scope.pinnedError);
+    return refuse(
+      {
+        decision: "deny",
+        outcome: "denied",
+        reason: `the item's workflow version can't be read: ${scope.pinnedError}`,
+      },
+      new OperationError(
+        "workflow_unreadable",
+        `${op.name} denied: the item's workflow version can't be read (${scope.pinnedError})`,
+      ),
+    );
+  }
 
   // An approved re-run must match its pending action. `deny` still refuses it.
   let approval: PendingActionRow | undefined;
@@ -1029,4 +1039,62 @@ export async function auditDigest(input: unknown): Promise<Record<string, unknow
     bytes: new TextEncoder().encode(canonicalJson(input ?? {})).length,
     ...kept,
   };
+}
+
+/**
+ * What agents and runners may still do on an item whose pinned workflow can't be read (review of
+ * #185): ask and wait for a person, end it, re-resolve its version, and let a run already under way
+ * finish. Reads are allowed too.
+ */
+export const PINNED_ERROR_ALLOWED = [
+  "question.ask",
+  "question.escalate",
+  "workItem.awaitQuestions",
+  "workItem.finish",
+  "workItem.cancel",
+  "incident.open",
+  "workItem.repinWorkflow",
+  // A run already under way may finish or be let go (its result changes nothing on its own: the
+  // Workflow's next step is refused); it gets no new token or artifact.
+  "run.handBack",
+  "run.release",
+  "run.expire",
+  "run.reportEvents",
+  "run.takeSteers",
+  "lease.heartbeat",
+  "lease.release",
+] as const;
+
+/** The prompt's start: the Workflow (v17) and core ask the same question, once. */
+export const UNREADABLE_WORKFLOW_PROMPT = "This item's workflow version can't be read";
+
+/** Puts one blocking question to the item's owner, unless an open one already asks it. */
+async function askUnreadableWorkflow(deps: InvokeDeps, workItemId: string, why: string) {
+  const db = createDb(deps.d1);
+  const open = await db
+    .selectFrom("core_questions")
+    .select("id")
+    .where("work_item_id", "=", workItemId)
+    .where("answered_at", "is", null)
+    .where(sql<boolean>`instr(prompt, ${UNREADABLE_WORKFLOW_PROMPT}) = 1`)
+    .limit(1)
+    .executeTakeFirst();
+  if (open) return;
+  await runOperation(
+    deps,
+    getOperation("question.ask") as AnyOperation,
+    {
+      workItemId,
+      questions: [
+        {
+          domain: "operations",
+          prompt: `${UNREADABLE_WORKFLOW_PROMPT}: ${why}. The factory stopped it rather than run it without its checks and gates. Fix the org's workflow config, then check again, or stop the item.`,
+          options: ["Check again", "Stop this work item"],
+          defaultAnswer: "Check again",
+          blocking: true,
+        },
+      ],
+    },
+    { actor: { type: "agent", id: "foreman" }, origin: { surface: "workflow" } },
+  ).catch(() => undefined);
 }
