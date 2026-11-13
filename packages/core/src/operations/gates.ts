@@ -13,6 +13,7 @@ import { assertSpecGateCurrent } from "../planning.ts";
 import { backupOwnerId } from "../scope.ts";
 import { approvalEvent, type GateEventPayload } from "../workflow-events.ts";
 import { applyApprovedConfig, CONFIG_WRITES } from "./config.ts";
+import { startTrial } from "./improve.ts";
 import { openIncident } from "./incidents.ts";
 import {
   pendingActionId,
@@ -262,6 +263,21 @@ export const approvalDecide = defineOperation({
       (CONFIG_WRITES as readonly string[]).includes(pa.operation)
     ) {
       await applyApprovedConfig(ctx, pa);
+    }
+    // The improver's proposed instruction edit (Q17): accepted, its trial starts.
+    if (
+      input.decision === "approved" &&
+      !decided.alreadyDecided &&
+      pa.operation === "config.trial.start"
+    ) {
+      await startTrial(ctx, JSON.parse(pa.input), pa.actor_id);
+      ctx.writePendingStatus(
+        "apply",
+        ctx.db
+          .updateTable("core_pending_actions")
+          .set({ status: "applied" })
+          .where("id", "=", pa.id),
+      );
     }
     // So is an org config proposal (spec 52 PR (b)): an org admin approves it (Q6).
     if (
