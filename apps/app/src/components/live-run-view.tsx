@@ -33,17 +33,19 @@ function ArchiveNotice({
   state: LiveView["archive"] | null;
   loading: boolean;
   onRetry?: (() => void) | undefined;
-  /** The incident opened for it (one per run), once there is one. */
-  incident: { workItemId: string; number: number } | null;
+  /** The incident recorded for it (one per run, no work item), once there is one. */
+  incident: { id: string; resolvedAt: string | null } | null;
 }) {
   if (state === "missing") {
     return (
       <div role="alert" className="text-destructive text-sm" data-testid="live-archive-missing">
         This run's log is missing from the archive.{" "}
         {incident ? (
-          <a href={`/work/${incident.workItemId}`} className="underline">
-            Reported as incident #{incident.number}.
-          </a>
+          <span>
+            {incident.resolvedAt
+              ? "Its incident was resolved."
+              : "Recorded as an incident: see Checks and incidents in the desktop app."}
+          </span>
         ) : (
           <span className="text-muted-foreground">Reporting it…</span>
         )}
