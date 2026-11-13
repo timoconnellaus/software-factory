@@ -34,13 +34,17 @@ export const TERMINAL_LOW_WATER = 256 * 1024;
 export const TERMINAL_PATHS = {
   host: (jobId: string) => `/terminal/v1/jobs/${encodeURIComponent(jobId)}/host`,
   view: (jobId: string) => `/terminal/v1/jobs/${encodeURIComponent(jobId)}/view`,
+  /** The runner host's job line (spec 44 part B, ADR 0592). */
+  line: (jobId: string) => `/terminal/v1/jobs/${encodeURIComponent(jobId)}/line`,
 } as const;
 
-/** Parses `/terminal/v1/jobs/<id>/<host|view>`. */
-export function parseTerminalPath(path: string): { jobId: string; role: "host" | "view" } | null {
-  const m = path.match(/^\/terminal\/v1\/jobs\/([^/]+)\/(host|view)$/);
+/** Parses `/terminal/v1/jobs/<id>/<host|view|line>`. */
+export function parseTerminalPath(
+  path: string,
+): { jobId: string; role: "host" | "view" | "line" } | null {
+  const m = path.match(/^\/terminal\/v1\/jobs\/([^/]+)\/(host|view|line)$/);
   if (!m) return null;
-  return { jobId: decodeURIComponent(m[1] ?? ""), role: m[2] as "host" | "view" };
+  return { jobId: decodeURIComponent(m[1] ?? ""), role: m[2] as "host" | "view" | "line" };
 }
 
 export const TERMINAL_COLS = { min: 20, max: 400 } as const;

@@ -220,6 +220,19 @@ export interface GitHubService {
    */
   checkRunDetail(repo: RepoRef, checkRunId: string): Promise<string>;
   /**
+   * Asks GitHub to revert a merged PR (GraphQL `revertPullRequest`, what the PR page's Revert button
+   * does): GitHub makes a branch with the inverse of its merge commit and opens a PR from it. No
+   * code is written by the factory (spec 53 §5). Needs `contents` and `pull_requests: write`.
+   */
+  revertPullRequest(
+    repo: RepoRef,
+    input: { number: number; title: string; body: string },
+  ): Promise<{ number: number; branch: string; headSha: string; url: string }>;
+  /** Closes a PR without merging it, as the App (spec 53 §5: an abandoned revert). */
+  closePullRequest(repo: RepoRef, number: number): Promise<void>;
+  /** Comments on a PR as the App (spec 53 §5: what was reverted and what to reland). */
+  commentOnPullRequest(repo: RepoRef, number: number, body: string): Promise<void>;
+  /**
    * The App's installation covering `owner/repo`, asked as the App itself (its JWT, `GET
    * /repos/{owner}/{repo}/installation`): no user token involved. `reason` says why there is none.
    */

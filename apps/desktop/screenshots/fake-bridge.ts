@@ -66,6 +66,40 @@ if (KEY_FIXTURE === "signing-in")
     keyFingerprint: "3f2a-91c0-77be-d41e",
   });
 if (KEY_FIXTURE === "upgrade") Object.assign(session, { keyStorage: "software", keyUpgrade: true });
+
+/**
+ * Signing in and out as the main process does it (the behaviour tests): `?session=out` starts
+ * signed out, and every read answers "signed out" as the main process's door does then.
+ * `window.__sfSignIn()` completes a sign-in (the device approved in the browser) and
+ * `window.__sfRevoke()` ends the token mid-session (the device replaced): each pushes the session.
+ * `?crash=1` makes the shell's first read fail with an unexpected error (the root error screen).
+ */
+const SESSION_FIXTURE = new URLSearchParams(location.search).get("session");
+const CRASH = new URLSearchParams(location.search).get("crash") === "1";
+const SIGNED_IN = { ...session };
+const SIGNED_OUT_SESSION = {
+  signedIn: false,
+  login: null,
+  deviceId: null,
+  signingIn: false,
+  keyFingerprint: null,
+};
+if (SESSION_FIXTURE === "out") Object.assign(session, SIGNED_OUT_SESSION);
+const sessionListeners = new Set<(s: Session) => void>();
+const pushSession = () => {
+  for (const l of sessionListeners) l({ ...session });
+};
+Object.assign(window, {
+  __sfSignIn: () => {
+    Object.assign(session, SIGNED_IN);
+    pushSession();
+  },
+  __sfRevoke: () => {
+    Object.assign(session, SIGNED_OUT_SESSION);
+    pushSession();
+  },
+});
+const SIGNED_OUT: CallResult = { ok: false, code: "unauthenticated", error: "signed out" };
 // The open item's merge (#13), worded as the engine writes it (describeDecision).
 const TOUCH_ID_SUMMARY =
   'Merge 3f2a91c into main of example/software-factory: "Guard the tests in verify"';
@@ -77,7 +111,18 @@ const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLin
  */
 function updateStatus(): UpdateStatus {
   const which = new URLSearchParams(location.search).get("update");
+  // Restart to update under way (`?applying=verifying|waiting|restarting|refused`).
+  const step = new URLSearchParams(location.search).get("applying");
+  const applying = step
+    ? {
+        step: step as "verifying" | "waiting" | "restarting" | "refused",
+        version: "0.1.42",
+        reason:
+          step === "refused" ? "Version 0.1.42 was refused: its signature didn't check out." : null,
+      }
+    : null;
   return {
+    applying,
     required: !!which,
     ready: which === "ready" || which === "jobs" || which === "waiting",
     version: which === "ready" || which === "jobs" || which === "waiting" ? "0.1.42" : null,
@@ -100,7 +145,15 @@ function updateStatus(): UpdateStatus {
  */
 function checkState(): Pick<
   UpdateStatus,
-  "phase" | "checkedAt" | "installed" | "channel" | "reason" | "ready" | "version" | "jobs"
+  | "phase"
+  | "checkedAt"
+  | "installed"
+  | "channel"
+  | "reason"
+  | "ready"
+  | "version"
+  | "jobs"
+  | "installFailure"
 > {
   const which = new URLSearchParams(location.search).get("check") ?? "up-to-date";
   const at = Date.now() - 12 * 60_000;
@@ -118,6 +171,20 @@ function checkState(): Pick<
       return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 0 };
     case "jobs":
       return { ...base, phase: "ready", ready: true, version: "0.1.42", jobs: 2 };
+    // The last restart relaunched the old version (Electrobun's helper refused it).
+    case "not-installed":
+      return {
+        ...base,
+        phase: "ready",
+        ready: true,
+        version: "0.1.42",
+        jobs: 0,
+        installFailure: {
+          version: "0.1.42",
+          reason:
+            "The update to 0.1.42 didn't install: the updater's record of where the app is installed named another copy (the app was moved after it was first opened).",
+        },
+      };
     case "offline":
       return { ...base, phase: "failed", ready: false, version: null, jobs: 0, reason: offline };
     case "refused":
@@ -147,6 +214,9 @@ function checkState(): Pick<
 }
 
 function answer(op: string, input: unknown): CallResult {
+  if (!session.signedIn) return SIGNED_OUT;
+  if (CRASH && op === "org.list")
+    return { ok: false, code: "unavailable", error: "the door answered 502 Bad Gateway" };
   const f = ANSWERS[op as OpName] as ((i: unknown) => unknown) | undefined;
   if (!f) return { ok: false, code: "unavailable", error: `no fixture for ${op}` };
   try {
@@ -167,9 +237,14 @@ async function write(p: { op: string; input: unknown }): Promise<CallResult> {
   return answer(p.op, p.input);
 }
 
+/** `?session=slow`: the main process never answers, so the window shows its loading shell. */
+const SLOW = SESSION_FIXTURE === "slow";
 export const bun = {
-  session: async () => session,
-  signIn: async () => session,
+  session: async () => {
+    if (SLOW) await new Promise(() => undefined);
+    return { ...session };
+  },
+  signIn: async () => ({ ...session }),
   signOut: async () => session,
   signInAgain: async () => session,
   cancelTouchId: async () => ({ cancelled: true }),
@@ -274,7 +349,12 @@ export const onTerminal = (l: (e: TerminalEvent) => void) => {
     terminalListeners.delete(l);
   };
 };
-export const onSession = none;
+export const onSession = (l: (s: Session) => void) => {
+  sessionListeners.add(l);
+  return () => {
+    sessionListeners.delete(l);
+  };
+};
 export const onRunner = none;
 export const onInbox = none;
 export const onPlanningChanged = none;
