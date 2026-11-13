@@ -126,6 +126,11 @@ function Approve({ requestId }: { requestId: string }) {
           {d.keyStorage === "secure-enclave" ? " (Secure Enclave)" : " (software key: dev build)"}.
           Check it matches the app. Expires {new Date(d.expiresAt).toLocaleTimeString()}.
         </div>
+        {d.replacesSoftwareMac && (
+          <div className="text-sm" data-testid="desktop-device-replaces">
+            This replaces your software-key Mac {d.replacesSoftwareMac}: approving signs it out.
+          </div>
+        )}
       </div>
       <p className="text-muted-foreground text-xs">
         The app acts as you: it sees your work and can create, attach and cancel it. Approving a

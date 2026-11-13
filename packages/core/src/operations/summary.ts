@@ -2,8 +2,16 @@
 // engine's facts first, such text last, cleaned and cut. Used by every describeDecision case and
 // the config summaries (config.ts).
 
-/** The longest summary a Touch ID sheet or phone prompt is given (spec 40 M4b). */
+/**
+ * How long a summary grows with a title in it (spec 40 M4b). A title gets only the room the facts
+ * leave under this; the facts themselves are never cut for it.
+ */
 export const MAX_SUMMARY = 120;
+/**
+ * The most the facts alone may take: under the key helper's limit (300 characters, which it
+ * refuses above), with room to spare. Only a merge's branch name can push past it.
+ */
+export const MAX_FACTS = 280;
 
 /**
  * A title as a summary may show it: no double quotes (it is quoted), no format characters (Cf:
@@ -23,7 +31,8 @@ export function cleanTitle(title: string): string {
 /**
  * `facts "title"`: the facts whole and first, then the title, cut to the room the facts leave under
  * MAX_SUMMARY (and left out when there's too little). Whatever a title says, it can't push the
- * engine's facts off the prompt, nor pose as one of them; the facts are never truncated.
+ * engine's facts off the prompt, nor pose as one of them; and the facts are never truncated, so an
+ * unusual condition ("WITHOUT its checks") put first in them is always shown.
  */
 export function titled(
   facts: string,
