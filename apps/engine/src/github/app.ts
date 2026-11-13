@@ -711,6 +711,47 @@ export function githubApp(config: GitHubAppConfig): GitHubService & {
       }
       return out;
     },
+    async rerequestCheckRun(repo, checkRunId) {
+      const r = await api(
+        repo,
+        "POST",
+        `/check-runs/${encodeURIComponent(checkRunId)}/rerequest`,
+        undefined,
+        CHECKS_PERMISSIONS,
+      );
+      return r.status === 201
+        ? { ok: true, reason: "" }
+        : { ok: false, reason: `GitHub answered ${r.status} to the rerun` };
+    },
+    async checkRunDetail(repo, checkRunId) {
+      const id = encodeURIComponent(checkRunId);
+      const run = await api(repo, "GET", `/check-runs/${id}`, undefined, CHECKS_PERMISSIONS);
+      if (run.status !== 200) return `GitHub answered ${run.status} for check run ${checkRunId}`;
+      const output = (run.json as { output?: { title?: string; summary?: string; text?: string } })
+        .output;
+      const notes = await api(
+        repo,
+        "GET",
+        `/check-runs/${id}/annotations?per_page=50`,
+        undefined,
+        CHECKS_PERMISSIONS,
+      );
+      const annotations =
+        notes.status === 200
+          ? (
+              notes.json as {
+                path: string;
+                start_line: number;
+                annotation_level: string;
+                message: string;
+              }[]
+            ).map((a) => `${a.annotation_level} ${a.path}:${a.start_line}: ${a.message}`)
+          : [];
+      return [output?.title, output?.summary, output?.text, ...annotations]
+        .filter((x): x is string => typeof x === "string" && x.length > 0)
+        .join("\n")
+        .slice(0, 12_000);
+    },
     async postCheckRun(repo, check) {
       const body = {
         name: check.name,

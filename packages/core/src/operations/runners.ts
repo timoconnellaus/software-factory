@@ -1644,6 +1644,17 @@ export function finishRun(
   );
   // A planning run's session stops holding a slot: yielded, or interrupted (ADR 0350).
   if (run.stage === "planning") planningRunEnded(ctx, run);
+  // A babysit job belongs to the deliverer, not the item's Workflow (spec 53 §4): its end wakes the
+  // repository's queue, which acts on the result.
+  const w = ctx.scope.workItem;
+  if (run.stage === "babysit") {
+    ctx.emit({
+      kind: "delivery.wake",
+      payload: { projectId: w?.project_id ?? "", repositoryId: w?.repository_id ?? null },
+    });
+    ctx.change({ entity: "run", id: run.id, after: { status, outcome } });
+    return;
+  }
   ctx.emit({
     kind: "workflow.event",
     payload: {
@@ -1700,7 +1711,9 @@ export const runHandBack = defineOperation({
     if (input.branch !== run.branch) {
       return fail(`pushed ${input.branch}, but this run may only push ${run.branch}`);
     }
-    if (input.outcome === "completed" && run.stage === "build") {
+    // A babysit job that resolved a conflict pushed its run branch too (spec 53 §4).
+    const pushes = run.stage === "build" || (run.stage === "babysit" && !!input.headSha);
+    if (input.outcome === "completed" && pushes) {
       if (!input.headSha) return fail("a build hand-back needs the pushed head SHA");
       const pushed = await ctx.services.github.getBranchSha(
         await repoRef(ctx, requireRepository(ctx)),

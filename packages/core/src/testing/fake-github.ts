@@ -35,6 +35,10 @@ interface RepoState {
   checkOutputs?: Record<string, { title: string; summary: string }>;
   /** What a SHA with no check runs of its own reports (default: one green `ci`). */
   ciDefault?: Omit<CheckRunInfo, "id">[];
+  /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
+  reruns?: string[];
+  /** What `checkRunDetail` says, by check run id. */
+  checkDetails?: Record<string, string>;
   /** Files by ref or SHA, for `readFile`. */
   blobs?: Record<string, Record<string, string>>;
   guards?: RepoGuards;
@@ -105,6 +109,8 @@ export interface FakeGitHub extends GitHubService {
   state(repo: RepoRef): Promise<RepoState>;
   /** Sets the CI check runs GitHub reports for a SHA (replacing the default green `ci`). */
   setChecks(repo: RepoRef, sha: string, checks: Omit<CheckRunInfo, "id">[]): Promise<void>;
+  /** Sets what `checkRunDetail` says for a check run. */
+  setCheckDetail(repo: RepoRef, checkRunId: string, text: string): Promise<void>;
   /** Puts a file at a ref (or SHA) for `readFile`. */
   setFile(repo: RepoRef, ref: string, path: string, content: string): Promise<void>;
   setGuards(repo: RepoRef, guards: RepoGuards): Promise<void>;
@@ -698,6 +704,22 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
         id: `ci-${at.slice(0, 8)}-${i}`,
       }));
     },
+    async rerequestCheckRun(r, checkRunId) {
+      const state = await load(r);
+      state.reruns = [...(state.reruns ?? []), checkRunId];
+      // The rerun starts: the check is queued again until a test sets its result.
+      for (const runs of Object.values(state.checks ?? {})) {
+        for (const c of runs) {
+          if (c.id === checkRunId) Object.assign(c, { status: "queued", conclusion: null });
+        }
+      }
+      await save(r, state);
+      return { ok: true, reason: "" };
+    },
+    async checkRunDetail(r, checkRunId) {
+      const state = await load(r);
+      return state.checkDetails?.[checkRunId] ?? "";
+    },
     async postCheckRun(r, check) {
       const state = await load(r);
       const runs = [
@@ -804,6 +826,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     async setPermission(r, login, permission) {
       const state = await load(r);
       state.permissions = { ...(state.permissions ?? {}), [login.toLowerCase()]: permission };
+      await save(r, state);
+    },
+    async setCheckDetail(r, checkRunId, text) {
+      const state = await load(r);
+      state.checkDetails = { ...(state.checkDetails ?? {}), [checkRunId]: text };
       await save(r, state);
     },
     async setChecks(r, at, checks) {

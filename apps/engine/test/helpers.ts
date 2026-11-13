@@ -159,6 +159,8 @@ interface StageOut {
   result?: unknown;
   outcome?: "completed" | "failed";
   push?: Push;
+  /** The run branch's head when the test made the commit itself (a crafted merge). */
+  headSha?: string;
   checks?: {
     name: string;
     exitCode: number | null;
@@ -192,7 +194,7 @@ export async function runStage(
   if (!job || job.stage !== stage)
     throw new Error(`expected a ${stage} job, got ${job?.stage ?? "none"}`);
   const out = await result(job);
-  let headSha: string | undefined;
+  let headSha: string | undefined = out.headSha;
   if (out.push) {
     const base = (await github.getBranchSha(w.repo, job.repo.baseRef)) ?? undefined;
     headSha = await github.push(w.repo, job.branch, base, out.push);

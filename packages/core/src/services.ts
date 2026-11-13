@@ -205,6 +205,17 @@ export interface GitHubService {
   /** Creates (or, with `checkRunId`, updates) a check run as the App. Needs `checks: write`. */
   postCheckRun(repo: RepoRef, check: CheckRunPost): Promise<{ id: string }>;
   /**
+   * Asks GitHub to run a check again (`POST /check-runs/{id}/rerequest`; for GitHub Actions it
+   * re-runs the job). Needs `checks: write`. The babysitter's one flake rerun (spec 53 §4).
+   */
+  rerequestCheckRun(repo: RepoRef, checkRunId: string): Promise<{ ok: boolean; reason: string }>;
+  /**
+   * What a check run reported about itself: its output's title, summary and text, and its first
+   * annotations (path:line and message), clipped. The babysit job's evidence for "flake or
+   * regression?": the agent has no GitHub credentials of its own (ADR 0033). Needs `checks: read`.
+   */
+  checkRunDetail(repo: RepoRef, checkRunId: string): Promise<string>;
+  /**
    * The App's installation covering `owner/repo`, asked as the App itself (its JWT, `GET
    * /repos/{owner}/{repo}/installation`): no user token involved. `reason` says why there is none.
    */
