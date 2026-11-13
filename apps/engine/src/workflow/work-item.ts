@@ -150,7 +150,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 14;
+export const WORKFLOW_VERSION = 15;
 /** v14: the stage note when verify finished on a head a person has since pushed past (ADR 0587). */
 const movedNote = (was: string, now: string): string =>
   now === was
@@ -400,12 +400,18 @@ class ItemFlow {
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const scores = has(version, "triage-readiness");
+      // `triage-ties`: the checks triage may tie each criterion to (the code drops any other name).
+      let provable = has(version, "triage-ties")
+        ? ((await this.act("triage: checks", "checks.provable", { workItemId: id })).checks as {
+            name: string;
+          }[])
+        : undefined;
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta, options, scores ? { answers: [] } : undefined),
+        triagePrompt(meta, options, scores ? { answers: [] } : undefined, provable),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
@@ -453,12 +459,19 @@ class ItemFlow {
               .all<{ prompt: string; answer: string }>();
             return results;
           });
+          // Each round reads the checks again under its own step name: a cached list from the
+          // first round would be stale if the config changed while answers were awaited.
+          if (provable) {
+            provable = (
+              await this.act(`triage #${k}: checks`, "checks.provable", { workItemId: id })
+            ).checks as { name: string }[];
+          }
           const again = await this.runWithRetries(
             meta,
             `triage #${k}`,
             "triage",
             "triage",
-            triagePrompt(meta, options, { answers }),
+            triagePrompt(meta, options, { answers }, provable),
             {},
             (r) => triageResultSchema.safeParse(r),
           );
