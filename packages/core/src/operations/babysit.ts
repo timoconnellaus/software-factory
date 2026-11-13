@@ -303,6 +303,7 @@ export const ciRerun = defineOperation({
         work_item_id: w.id,
         test_name: input.test ?? null,
         run_url: run.url,
+        check_run_id: run.id,
         asked_at: ctx.now,
         passed: null,
       }),

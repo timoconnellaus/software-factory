@@ -338,6 +338,40 @@ describe("an episode's suspects and culprit (spec 53 §5)", () => {
     );
   });
 
+  it("a release GitHub refuses stays held, and the sweep retries until it lands", async () => {
+    const w = await world();
+    await mainCi(w, await mainHead(w), "success");
+    const a = await toMergeGate(w, "Released through an outage", "src/a.ts");
+    await mainCi(w, await mainHead(w), "failure");
+    const head = await gateHead(a);
+    await waitFor("held", async () =>
+      (await verifyCheck(head))?.title === HELD_TITLE ? true : null,
+    );
+    // Main goes green, and GitHub refuses the release post.
+    await github.failNextPosts(w.repo, 5);
+    await mainCi(w, await mainHead(w), "success");
+    const row = await waitFor("still held here", async () => {
+      const r = await first<{ held_at: string | null }>(
+        "SELECT held_at FROM core_verify_checks WHERE head_sha = ?",
+        head,
+      );
+      return r?.held_at ? r : null;
+    });
+    expect(row.held_at).not.toBeNull();
+    await github.failNextPosts(w.repo, 0);
+    await env.DB.prepare("UPDATE core_verify_checks SET release_after = NULL WHERE head_sha = ?")
+      .bind(head)
+      .run();
+    await releaseHeldChecks(env);
+    expect(await verifyCheck(head)).toMatchObject({ conclusion: "success" });
+    expect(
+      await first<{ held_at: string | null; release_attempts: number }>(
+        "SELECT held_at, release_attempts FROM core_verify_checks WHERE head_sha = ?",
+        head,
+      ),
+    ).toEqual({ held_at: null, release_attempts: 0 });
+  });
+
   it("the cron releases a held check whose repository is green again, or whose item ended; idempotently", async () => {
     const w = await world();
     await mainCi(w, await mainHead(w), "success");

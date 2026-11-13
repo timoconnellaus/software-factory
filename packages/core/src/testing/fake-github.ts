@@ -39,6 +39,8 @@ interface RepoState {
   readOnlyTokens?: number;
   /** Check run ids `rerequestCheckRun` was asked to run again, in order. */
   reruns?: string[];
+  /** How many of the next `postCheckRun` calls fail (an outage, a rate limit). */
+  failPosts?: number;
   /** What `checkRunDetail` says, by check run id. */
   checkDetails?: Record<string, string>;
   /** Files by ref or SHA, for `readFile`. */
@@ -111,6 +113,8 @@ export interface FakeGitHub extends GitHubService {
   state(repo: RepoRef): Promise<RepoState>;
   /** Sets the CI check runs GitHub reports for a SHA (replacing the default green `ci`). */
   setChecks(repo: RepoRef, sha: string, checks: Omit<CheckRunInfo, "id">[]): Promise<void>;
+  /** Makes the next `n` check-run posts fail, as GitHub's 5xx or rate limit does. */
+  failNextPosts(repo: RepoRef, n: number): Promise<void>;
   /** Sets what `checkRunDetail` says for a check run. */
   setCheckDetail(repo: RepoRef, checkRunId: string, text: string): Promise<void>;
   /** Puts a file at a ref (or SHA) for `readFile`. */
@@ -728,6 +732,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
     },
     async postCheckRun(r, check) {
       const state = await load(r);
+      if ((state.failPosts ?? 0) > 0) {
+        state.failPosts = (state.failPosts ?? 0) - 1;
+        await save(r, state);
+        throw new Error("GitHub answered 502 to the check run");
+      }
       const runs = [
         ...(state.checks?.[check.headSha] ??
           (state.ciDefault ?? [GREEN_CI]).map((c, i) => ({
@@ -834,6 +843,11 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       state.permissions = { ...(state.permissions ?? {}), [login.toLowerCase()]: permission };
       await save(r, state);
     },
+    async failNextPosts(r, n) {
+      const state = await load(r);
+      state.failPosts = n;
+      await save(r, state);
+    },
     async setCheckDetail(r, checkRunId, text) {
       const state = await load(r);
       state.checkDetails = { ...(state.checkDetails ?? {}), [checkRunId]: text };
@@ -844,7 +858,15 @@ export function fakeGitHub(d1: D1Database, defaultBranch = "main"): FakeGitHub {
       const own = (state.checks?.[at] ?? []).filter((c) => c.appSlug === FAKE_APP.slug);
       state.checks = {
         ...(state.checks ?? {}),
-        [at]: [...checks.map((c, i) => ({ ...c, id: `ci-${at.slice(0, 6)}-${i}` })), ...own],
+        [at]: [
+          ...checks.map((c, i) => {
+            // A check GitHub ran again is a new run with a new id, as on GitHub.
+            const id = `ci-${at.slice(0, 6)}-${i}`;
+            const again = (state.reruns ?? []).filter((x) => x.startsWith(id)).length;
+            return { ...c, id: again ? `${id}-r${again}` : id };
+          }),
+          ...own,
+        ],
       };
       await save(r, state);
     },

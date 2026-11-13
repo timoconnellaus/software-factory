@@ -131,7 +131,15 @@ export async function postVerify(
     updated_at: ctx.now,
     repository_id: repositoryId ?? existing?.repository_id ?? null,
     // Decision 7: when it was set to held, so the release sweep finds it; null otherwise.
-    held_at: HELD_TITLES.has(args.output.title) ? (existing?.held_at ?? ctx.now) : null,
+    // A post GitHub refused leaves what GitHub shows unchanged: a held check stays held here too, so
+    // the release sweep tries again (it reads only held rows).
+    held_at: HELD_TITLES.has(args.output.title)
+      ? (existing?.held_at ?? ctx.now)
+      : error
+        ? (existing?.held_at ?? null)
+        : null,
+    // Held anew, or released: the sweep's backoff starts over.
+    ...(error ? {} : { release_attempts: 0, release_after: null }),
   };
   ctx.write(
     ctx.db

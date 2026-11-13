@@ -1001,6 +1001,8 @@ export interface CoreCiRerunsTable {
   work_item_id: string;
   test_name: string | null;
   run_url: string | null;
+  /** 0391: the check run this rerun replaced (proof needs a newer one). */
+  check_run_id: string | null;
   asked_at: Iso;
   /** 1 when the rerun passed, 0 when it failed again, null until known. */
   passed: number | null;

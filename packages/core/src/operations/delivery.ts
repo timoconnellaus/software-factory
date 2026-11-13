@@ -212,6 +212,13 @@ async function recheckHeads(
   }
 }
 
+/** Whether check run `id` is newer than the rerun one (ids compared as numbers when they are). */
+function newerRun(id: string, rerun: string | null): boolean {
+  if (!rerun) return false;
+  const [a, b] = [Number(id), Number(rerun)];
+  return Number.isSafeInteger(a) && Number.isSafeInteger(b) ? a > b : id !== rerun;
+}
+
 /** How an unproven candidate's attribution starts (shown as such until it reproduces). */
 const CANDIDATE_PREFIX = "candidate, not proven: ";
 
@@ -231,7 +238,7 @@ async function redReproduced(
 ): Promise<boolean> {
   const reruns = await ctx.db
     .selectFrom("core_ci_reruns")
-    .select(["check_name", "asked_at", "passed"])
+    .select(["check_name", "asked_at", "passed", "check_run_id"])
     .where("repository_id", "=", repositoryId)
     .where("head_sha", "=", head)
     .limit(20)
@@ -244,7 +251,9 @@ async function redReproduced(
         c.status === "completed" &&
         RED.has(c.conclusion ?? "") &&
         !!c.completedAt &&
-        Date.parse(c.completedAt) > Date.parse(r.asked_at),
+        Date.parse(c.completedAt) > Date.parse(r.asked_at) &&
+        // A run newer than the one rerun (GitHub's rerun is a new check run with a higher id).
+        newerRun(c.id, r.check_run_id),
     ),
   );
 }
@@ -502,6 +511,7 @@ export const mainObserve = defineOperation({
               work_item_id: candidate.workItemId,
               test_name: null,
               run_url: run.url,
+              check_run_id: run.id,
               asked_at: ctx.now,
               passed: null,
             })
@@ -737,7 +747,9 @@ export const mainRedAttribute = defineOperation({
           culprit_work_item_id: w.id,
           attribution: input.why,
           attributed_by: by,
-          candidate_work_item_id: null,
+          // A person's naming ends the candidate's proof; an agent's leaves it running, so a
+          // reproduced red can still prove (and outrank) it.
+          ...(by === "person" ? { candidate_work_item_id: null } : {}),
         })
         .where("repository_id", "=", w.repository_id)
         .where("red_since", "=", row.red_since)

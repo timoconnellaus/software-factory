@@ -1,4 +1,4 @@
--- Migration 0391 (spec 53 part e, ADR 0584): who turned main red.
+-- Migration 0391 (spec 53 part e, ADR 0621): who turned main red.
 --
 -- The merge commit each factory landing made (pr.merge's answer), so an episode's suspects are the
 -- factory's own landings and the one that turned main red can be proven, not guessed. Kept with
@@ -40,5 +40,8 @@ CREATE INDEX core_verify_checks_held_idx ON core_verify_checks (release_after)
 -- open merge gates, and only the project's.
 CREATE INDEX core_pending_actions_open_merge_idx ON core_pending_actions (project_id)
   WHERE kind = 'merge' AND status = 'pending';
+
+-- The check run a rerun replaced: proof needs a newer run, not only a later time.
+ALTER TABLE core_ci_reruns ADD COLUMN check_run_id TEXT;
 
 UPDATE core_meta SET value = MAX(CAST(value AS INTEGER), 391) WHERE key = 'schema_version';
