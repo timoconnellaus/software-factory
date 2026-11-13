@@ -37,6 +37,7 @@ import type { CheckDirs } from "./check-sandbox.ts";
 import { checkLoop, type Exec, GuardTripped, hasChecks } from "./checks.ts";
 import { paths } from "./config.ts";
 import { assertPushable, type HostGit, revokeToken } from "./git.ts";
+import { JobLine, type LineSocketFactory } from "./job-line.ts";
 import { type RunningRelay, startPlanningRelay } from "./planning-relay.ts";
 import { type Connect, terminalLoop } from "./terminal.ts";
 
@@ -173,12 +174,19 @@ export async function steerLoop(options: {
   log: (message: string) => void;
   /** First back-off after a failed call (default 5 s). */
   retryMs?: number;
+  /** The job line: when it is up, wait on its pushes and call without holding (spec 44 part B). */
+  line?: JobLine;
 }): Promise<void> {
   const { adapter, cp, job, signal, log } = options;
   if (!adapter.steer || !cp.steers) return;
   if (!(await adapter.manifest()).capabilities.includes("steer")) return;
   const take = cp.steers.bind(cp);
   let failures = 0;
+  // Host ack (spec 44): every call says which steers this host has received since the last one,
+  // so a steer is delivered only once the host has it (a take by a call whose host had gone is
+  // offered again a minute later). A steer offered twice is dropped here by its id.
+  let received: string[] = [];
+  const seen = new Set<string>();
   while (!signal.aborted) {
     let steers: {
       id: string;
@@ -186,13 +194,19 @@ export async function steerLoop(options: {
       interrupt?: boolean;
       kind?: "message" | "takeover";
     }[];
+    const viaLine = options.line?.up() ?? false;
     try {
       ({ steers } = await take(
         job.jobId,
-        { fencingToken: job.lease.fencingToken, waitMs: STEER_WAIT_MAX_MS },
+        {
+          fencingToken: job.lease.fencingToken,
+          waitMs: viaLine || received.length > 0 ? 0 : STEER_WAIT_MAX_MS,
+          ack: received,
+        },
         signal,
       ));
       failures = 0;
+      received = [];
     } catch (error) {
       if (signal.aborted) return;
       if (isStop(error)) {
@@ -210,6 +224,9 @@ export async function steerLoop(options: {
     }
     for (const s of steers) {
       if (signal.aborted) return;
+      received.push(s.id);
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
       if (s.kind === "takeover") {
         try {
           if (!options.takeover) throw new Error("this session can't be taken over from here");
@@ -247,6 +264,11 @@ export async function steerLoop(options: {
           })
           .catch(() => {});
       }
+    }
+    // On the line: wait for a push (or the line going up or down, or the 5-minute safety poll).
+    // Acks to send go at once (the next call, not held); else, on the line, wait for a push.
+    if (received.length === 0 && viaLine && options.line?.up()) {
+      await options.line.next("steer", signal);
     }
   }
 }
@@ -286,6 +308,13 @@ export interface RunJobOptions<W extends WorkspaceHandle, S extends SessionHandl
   checkSlot?: (signal: AbortSignal) => Promise<() => void>;
   /** The disk bound for a check's tree carried to the next check (runner.json `checks.maxTreeGb`). */
   maxTreeBytes?: number;
+  /**
+   * Whether the engine's last heartbeat declared `job-line` (spec 44 part B, ADR 0592). Absent: no
+   * job line, the steer, terminal and planning calls are held as before.
+   */
+  engineHasLine?: () => boolean;
+  /** How the job line's socket is opened (default Node's WebSocket; tests use a fake). */
+  lineSocket?: LineSocketFactory;
 }
 
 /**
@@ -375,6 +404,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
   let steering: Promise<void> = Promise.resolve();
   let terminal: Promise<void> = Promise.resolve();
   const steerStop = new AbortController();
+  // The job line (spec 44 part B): open while the job runs, closed when it ends.
+  const lineStop = new AbortController();
+  let line: JobLine | undefined;
+  let lining: Promise<void> = Promise.resolve();
   let outcome: SessionOutcome = "failed";
   let summary: string | undefined;
   let error: string | undefined;
@@ -574,9 +607,22 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       const existing = adapter.resolveCheckout ? await adapter.resolveCheckout(job) : null;
       const clone = await git.ensureRepo(job, token.token, existing);
       if (signal.aborted) throw signal.reason;
+      // The job line, when both this host and the engine have it (spec 44 part B, ADR 0592).
+      if (options.engineHasLine && cp.line) {
+        line = new JobLine({
+          cp,
+          job,
+          signal: AbortSignal.any([signal, lineStop.signal]),
+          log,
+          engineHasLine: options.engineHasLine,
+          ...(options.lineSocket ? { socket: options.lineSocket } : {}),
+        });
+        lining = line.run();
+      }
       // A planning session reaches its planning operations through the host's relay (ADR 0350).
       if (planning) {
         relay = await startPlanningRelay(job, cp, {
+          ...(line ? { line } : {}),
           onYield: () => {
             if (yielded || stopped) return;
             yielded = true;
@@ -651,6 +697,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         adapter,
         cp,
         job,
+        ...(line ? { line } : {}),
         signal: AbortSignal.any([signal, steerStop.signal]),
         steer: (text) => (adapter.steer as NonNullable<typeof adapter.steer>)(live, text),
         ...(adapter.interrupt
@@ -671,6 +718,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         adapter,
         cp,
         job,
+        ...(line ? { line } : {}),
         open: (o) => (adapter.openTerminal as NonNullable<typeof adapter.openTerminal>)(live, o),
         signal: AbortSignal.any([signal, steerStop.signal]),
         onStop: (error) => stop(`${error.code}: ${error.message}`, error.code === "fenced"),
@@ -865,6 +913,9 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     clearTimeout(timer);
     clearInterval(flusher);
     await relay?.close().catch(() => {});
+    lineStop.abort();
+    // Bounded: the job's end never waits on its line (it closes itself; this is a backstop).
+    await Promise.race([lining.catch(() => {}), sleep(5_000)]);
     if (checksRoot) {
       await rm(checksRoot, { recursive: true, force: true }).catch(() => {});
       await rm(`${checksRoot}.index`, { force: true }).catch(() => {});

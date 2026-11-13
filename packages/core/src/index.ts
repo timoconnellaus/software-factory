@@ -71,6 +71,7 @@ export {
   PLANNING_SESSION_TIMEOUT_MS,
   PRESENCE_TTL_MS,
   planningReadyEvent,
+  USER_EVENTS,
 } from "./planning.ts";
 export * from "./policy/gate.ts";
 export * from "./policy/impact.ts";
@@ -78,6 +79,7 @@ export * from "./policy/project-policy.ts";
 export * from "./registry.ts";
 export * from "./scope.ts";
 export * from "./services.ts";
+export { childrenOf, SPLIT_MAX, splitSettledEvent } from "./splits.ts";
 export * from "./verify/index.ts";
 export * from "./workflow-events.ts";
 export * from "./workflow-features.ts";

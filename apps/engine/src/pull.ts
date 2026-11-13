@@ -43,8 +43,13 @@ export async function pullQueuedWork(env: Env, limit = 20): Promise<number> {
        AND NOT EXISTS (
          SELECT 1 FROM core_work_item_links l JOIN core_work_items t ON t.id = l.waits_for_id
          WHERE l.work_item_id = w.id AND t.status != 'done')
+       -- A plan's child still held for its parent's plan (spec 24) isn't startable.
+       AND NOT (w.source = 'planning' AND w.parent_work_item_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM core_work_items h WHERE h.id = w.parent_work_item_id
+         AND h.awaiting_children = 0 AND h.status != 'done'))
        AND (SELECT count(*) FROM core_work_items a
-            WHERE a.project_id = w.project_id AND a.status IN ('running', 'waiting', 'paused'))
+            WHERE a.project_id = w.project_id AND a.status IN ('running', 'waiting', 'paused')
+              AND a.awaiting_children = 0)
            < COALESCE(json_extract(CASE WHEN json_valid(pp.raw) THEN pp.raw END, '$.activeLimit'), 10)
        -- Never a project the pull would refuse anyway, so it can't hold a slot of the LIMIT:
        -- a kill switch on it or its org,

@@ -14,6 +14,7 @@ export async function liveArtifact(ctx: Pick<HandlerContext, "db">, workItem: st
     .select([
       "a.id",
       "a.kind",
+      "a.design_type",
       "a.title",
       "a.revision",
       "a.work_item_id",

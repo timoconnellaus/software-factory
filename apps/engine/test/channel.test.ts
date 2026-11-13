@@ -11,7 +11,6 @@ import {
 } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
-import { EngineApi } from "../src/rpc.ts";
 import { all, first, MANIFEST, ok, uid, waitFor, world } from "./helpers.ts";
 import { type Recorded, recordingEnv } from "./query-plans.ts";
 
@@ -44,6 +43,7 @@ describe("the signed runner channel", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     const seen = await first<{ capacity_max: number; last_seen_at: string }>(
       "SELECT capacity_max, last_seen_at FROM core_runners WHERE id = ?",
@@ -569,6 +569,7 @@ describe("device login over the channel (ADR 0056)", () => {
       leases: [],
       desiredVersion: null,
       minRunnerCompat: RUNNER_COMPAT,
+      engine: { capabilities: ["job-line"] },
     });
     expect(
       await (await post(DEVICE_PATHS.poll, { deviceCode: s.deviceCode })).json(),
@@ -667,7 +668,6 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
       });
     const e = {
       ...recordingEnv(env, seen),
-      PLANNING_HUB: counted(env.PLANNING_HUB as never, "PlanningHub"),
       TERMINAL_RELAY: counted(env.TERMINAL_RELAY as never, "TerminalRelay"),
     } as Env;
     const c = await httpControlPlane({
@@ -702,38 +702,6 @@ describe("planning over the channel (spec 20, ADR 0350)", () => {
     console.log(
       `spec 44 measure: an idle ${hold} ms planning hold = ${seen.length} D1 statements, ${sessionWrites.length} session writes, ${objects.length} object calls`,
     );
-  });
-
-  it("streams a change to an open Planning tab from the engine's RPC", async () => {
-    const w = await world();
-    const { c, job, item } = await planningJob(w);
-    const api = new EngineApi(
-      { waitUntil: () => {}, passThroughOnException: () => {}, props: {} } as never,
-      env,
-    );
-    const opened = await api.planningStream(item.workItemId, {
-      actor: w.human,
-      origin: { surface: "app" },
-    });
-    if (!opened.ok) throw new Error(opened.error.message);
-    const reader = opened.stream.getReader();
-    const decoder = new TextDecoder();
-    const first = decoder.decode((await reader.read()).value);
-    expect(first).toContain("event: changed");
-    await c.planning?.(job.jobId, {
-      fencingToken: job.lease.fencingToken,
-      op: "chat.reply",
-      input: { text: "Drafting now" },
-    });
-    const next = decoder.decode((await reader.read()).value);
-    expect(next).toContain("event: changed");
-    await reader.cancel();
-    // A stranger may not open it.
-    const stranger = await api.planningStream(item.workItemId, {
-      actor: { type: "human", id: "usr_nobody" },
-      origin: { surface: "app" },
-    });
-    expect(stranger.ok).toBe(false);
   });
 });
 

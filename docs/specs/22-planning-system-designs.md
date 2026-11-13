@@ -91,8 +91,65 @@ Creating a design system when none exists, unless asked (as in kim).
 - Tests: `packages/core/test/designs.test.ts` and the db late-migrations test (0373 after
   everything on main).
 
-### Part B (next): the checks package and the System tab
-Checks on the runner (errors refuse a save, layout warnings save with the warning), `.svg` previews
-written with each design, the System tab drawing designs with changes highlighted against the base,
-and comments pinned on tables, boxes and arrows (criteria 1, 2, 3's highlighting, 4's previews).
+### Part B1: the runner's checks, previews and the `.svg` write-back
+- **`packages/planning-designs`** (Node, on the runner): `checkDesign(type, source)` parses with
+  each notation's own engine, as kim does: DBML with `@dbml/parse`, D2 with `@terrastruct/d2`
+  (wasm, dagre layout), Mermaid with `mermaid.parse` (parsing only), OpenAPI with `yaml` plus the
+  shape OpenAPI 3 needs. An error refuses the save with each problem's line, the line's text and a
+  fix (at most 8). It then **draws the design itself** to a static SVG (D2 from its compiled shapes
+  and routes; the data model, sequences and states laid out here, the last two read by a small
+  reader of its own after Mermaid accepted them; OpenAPI as endpoints and schema cards), with every
+  part's id, label, signature and box: tables, enums and relations; boxes and arrows; participants
+  and messages; states and transitions; endpoints and schemas. Layout warnings save with it and
+  name the parts: crossing arrows, arrows through a box they don't connect, and text too small once
+  fitted to a 1280×800 window. Ported in part from kim (`designCheck.ts`, `design/errors.ts`,
+  `design/layoutCheck.ts`, `design/dataModel.ts`).
+- **The planning MCP server** checks a design before relaying `artifact.add` or `artifact.update`:
+  refused, nothing reaches the cloud; saved, the preview goes with it (`preview`, never in the
+  model's tool schema) and the warnings come back to the planner as `layoutWarnings`. After a
+  `design.pull` of a design it reads the base, draws it, and stores its preview with
+  **`design.preview`** (revision 0, and revision 1 on a first pull), a harness-only call.
+- **The cloud** keeps the preview with the revision (`core_planning_artifact_revisions.preview`,
+  migration 0400) only if it was drawn from exactly that content (its SHA-256) and the SVG passes
+  `unsafeSvg`, a tokeniser over an allow-list of exactly the elements and attributes the package
+  draws (no prefixed names, comments, doctypes, or `url()` other than `#id`); it counts in the revision's size (the item's byte budget and pruning cover it).
+  `artifact.get` returns `designType` and `preview`; `artifact.read` returns `kind` and
+  `designType` and reads revision 0.
+- **Write-back** (criterion 4): each kept design's preview is written beside it as its own path
+  plus `.svg` (`system.d2.svg`: stable, and two designs never share one; kim writes `system.svg`),
+  recorded in the approval's `kim_files` with `preview: true` and committed in the same commit. A
+  drawing never overwrites an `.svg` the factory didn't draw (on the item's branch or the default
+  branch; the factory's carry `data-drawn-by="software-factory"`). The gate's list shows it as an
+  image.
+- **Bounds** (review of #163): a design over 300 KB is refused; a check runs in a worker thread and
+  is stopped after 30 s; part ids and labels are cut to 300 characters; a drawing over 500 KB, or
+  one the cloud wouldn't take, saves the design without it (with a warning); Mermaid lines the
+  drawing leaves out (notes, alt/loop blocks, composite nesting) are named in a warning; a re-pull
+  clears the old base's drawing.
+- **Rendering untrusted design text**: no design text is executed. The SVG is this repo's code's
+  drawing, its text escaped; the app only ever shows it as an image (`<img>` with a data URL), where
+  nothing runs or loads.
+- Tests: `packages/planning-designs/test/designs.test.ts` (criterion 1), `harness-claude`
+  `planning-designs.test.ts`, `core` `design-previews.test.ts` (criterion 4's previews).
 
+### Part B2: the System tab and pins on designs
+- **The System tab** (`apps/desktop` `components/planning-system.tsx`, between Mockups and Canvas
+  as in PlanFocus): the item's designs as a toggle row, each drawn from its preview **as an image**
+  (`<img>` with a data URL, `lib/design-view.ts`). The app lays its own boxes over the image from
+  the parts the runner measured; nothing in the SVG runs or is read into the app's DOM.
+- **What changed against the pulled base** (criterion 3): a pulled design compares its parts with
+  revision 0's by id and signature: added parts are outlined green, changed ones amber, and removed
+  ones listed struck through under the drawing, with counts in the header ("Hide changes" turns it
+  off). The Source view shows the text with added and removed lines marked against the base.
+- **Pins on parts** (criterion 2): in comment mode (C) a click on a table, box, arrow, message,
+  state or endpoint pins a chat comment to it. The pin's `element` is the part's id (`table users`,
+  `edge api -> db`), and its place within the part's box is kept, so the marker follows the part
+  across revisions. The planner reads it in its news as any pin, and the planner's instructions say
+  what `pin.element` names.
+- Layout warnings and the drawing's own notes (lines left out, a drawing too big to keep) are shown
+  under it. A revision without a preview shows its source. "Open full size" shows the drawing at
+  its own size.
+- Tests: `apps/desktop/test/design-view.test.ts` (changes, pins following parts, image only),
+  `core/test/design-previews.test.ts` (a pin on a table reaches the planner naming it).
+- Screenshots: `docs/screenshots/planning-system/`, from fixtures drawn by the real checks
+  (`apps/desktop/screenshots/design-fixtures.json`).

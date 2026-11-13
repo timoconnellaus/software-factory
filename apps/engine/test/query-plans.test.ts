@@ -19,6 +19,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneBabysit, pruneCheckResults } from "../src/index.ts";
+import { deliverOutbox } from "../src/outbox.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
 import { archiveRunEvents, pruneExpired, sampleArchive } from "../src/retention.ts";
 import { github, MANIFEST, ok, uid, type World, waitFor, world } from "./helpers.ts";
@@ -48,6 +49,49 @@ function minute17(): number {
 
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
+  {
+    // Spec 24: a split's parent waits for its children (each event, and once a day in its held
+    // wait), by core_work_items_parent_idx (migration 0401).
+    // Review of #171: a child's end (its siblings, and who waits for it), the release, and the
+    // existing-children check at approval.
+    name: "a split's child ends: its siblings and who waits for it",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT * FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT work_item_id FROM core_work_item_links WHERE waits_for_id = ? AND work_item_id IN (?, ?)",
+      )
+        .bind("wi_child", "wi_a", "wi_b")
+        .all();
+    },
+  },
+  {
+    name: "a split's release and its existing-children check",
+    run: async (e) => {
+      await e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' AND status = 'ready' LIMIT 8",
+      )
+        .bind("wi_parent")
+        .all();
+      return e.DB.prepare(
+        "SELECT id FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 1",
+      )
+        .bind("wi_parent")
+        .all();
+    },
+  },
+  {
+    name: "a split's parent reads its children",
+    run: (e) =>
+      e.DB.prepare(
+        "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
+        .bind("wi_parent")
+        .all(),
+  },
   {
     // The minute cron, on the minute that also sweeps attachment blobs and runs the improver.
     name: "the minute cron",
@@ -105,6 +149,18 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
         fencingToken: job.fencingToken,
         waitMs: 3_500,
+      });
+    },
+  },
+  {
+    // Spec 44 host ack: an acking host's held steer call, whose poll also skips steers on offer.
+    name: "the held steer call's poll, for a host that acks (spec 44)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).steers?.(job.jobId, {
+        fencingToken: job.fencingToken,
+        waitMs: 3_500,
+        ack: [],
       });
     },
   },
@@ -173,6 +229,40 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         op: "planning.wait",
         input: { timeoutMs: 3_500 },
       });
+    },
+  },
+  {
+    // Spec 44 part B: the job line's call (the fenced run check, then a ticket from the relay).
+    name: "the job line call (spec 44 part B)",
+    run: async (e) => {
+      if (!job) return null;
+      return (await channel(e, w.runner.runnerId)).line?.(job.jobId, {
+        fencingToken: job.fencingToken,
+      });
+    },
+  },
+  {
+    // Spec 44 part B: delivering a run.steered queued before it carried jobId, and a
+    // planning.changed, each finds the item's running job on UNIQUE (work_item_id, run_no).
+    name: "the job line's routing of run.steered and planning.changed",
+    run: async (e) => {
+      if (!job) return null;
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job.jobId)
+        .first<string>("work_item_id");
+      const ids = [uid("ob_"), uid("ob_")];
+      const now = new Date().toISOString();
+      await env.DB.batch(
+        [
+          ["run.steered", { workItemId: item }],
+          ["planning.changed", { workItemId: item }],
+        ].map(([kind, payload], i) =>
+          env.DB.prepare(
+            "INSERT INTO core_outbox (id, at, kind, payload, attempts, next_at) VALUES (?, ?, ?, ?, 0, ?)",
+          ).bind(ids[i], now, kind, JSON.stringify(payload), now),
+        ),
+      );
+      return deliverOutbox(e, ids);
     },
   },
   { name: "inbox.list (polled)", run: (e) => as(e, "inbox.list", {}, w.human) },

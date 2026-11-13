@@ -301,14 +301,21 @@ const sayingOf = (text: string) =>
   /^\s*(```|~~~)/.test(text) ? text : foldSpace(content(text)).toLowerCase();
 
 /**
- * What an edit removed that must stay out: not what the edit itself wrote back in another case or
- * marker ("- use postgres" → "- Use Postgres"). Footprints stored before the case-insensitive
- * comparison (review of #160) counted `max` by exact text, so such an entry would otherwise forbid
- * the very line the edit asks to keep.
+ * What an edit removed that must stay out, with `max` at least the number of blocks the edit itself
+ * wrote that say the same ("- use postgres" → "- Use Postgres" keeps one). Footprints stored before
+ * the case-insensitive comparison (review of #160) counted `max` by exact text (0 here), which would
+ * forbid the very line the edit asks to keep; a second copy of the old line still counts as back.
  */
 function standingGone(footprint: EditFootprint): EditFootprint["gone"] {
-  const own = new Set(footprint.blocks.map((b) => `${b.section}␟${sayingOf(b.text)}`));
-  return footprint.gone.filter((g) => !own.has(`${g.section}␟${sayingOf(g.text)}`));
+  const own = new Map<string, number>();
+  for (const b of footprint.blocks) {
+    const k = `${b.section}␟${sayingOf(b.text)}`;
+    own.set(k, (own.get(k) ?? 0) + 1);
+  }
+  return footprint.gone.map((g) => ({
+    ...g,
+    max: Math.max(g.max, own.get(`${g.section}␟${sayingOf(g.text)}`) ?? 0),
+  }));
 }
 
 /** How many times each block (section, parent and text) appears in a plan. */

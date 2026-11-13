@@ -14,6 +14,7 @@
 //
 // The app isn't anyone before it signs in, so sf-engine calls authStart and authExchange unsigned,
 // as DESKTOP_DEVICE_ACTOR.
+
 import type { KeyStorage } from "@software-factory/db";
 import { z } from "zod";
 import { type Actor, type DeviceSurface, isDeviceSurface } from "../actors.ts";
@@ -22,6 +23,7 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
+import { childrenOf } from "../splits.ts";
 import { CONFIG_WRITES, describeConfigDecision, overrideOrgValue } from "./config.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
 import { randomToken, sha256Hex } from "./onboarding.ts";
@@ -196,8 +198,49 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
     return w ? titled(`${prefix} #${w.number}`, w.title) : `${prefix} a work item`;
   };
   switch (op) {
-    case "spec.approve":
-      return onItem("Approve the spec for", input.workItemId);
+    case "spec.approve": {
+      // A split approves its work items too (spec 24, review of #173): the count is a fact from
+      // the gated spec in the engine's records, before the item's title.
+      // The spec the open gate was opened for (review of #173), not whatever is current.
+      const w =
+        typeof input.workItemId === "string"
+          ? await ctx.db
+              .selectFrom("core_work_items as w")
+              .leftJoin("core_pending_actions as g", (j) =>
+                j
+                  .onRef("g.work_item_id", "=", "w.id")
+                  .on("g.kind", "=", "spec")
+                  .on("g.status", "=", "pending"),
+              )
+              .leftJoin("core_specs as s", (j) =>
+                j.on((eb) =>
+                  eb(
+                    "s.id",
+                    "=",
+                    eb.fn.coalesce(
+                      eb.fn<string>("json_extract", ["g.input", eb.val("$.specId")]),
+                      eb.ref("w.current_spec_id"),
+                    ),
+                  ),
+                ),
+              )
+              .select(["w.number", "w.title", "s.children"])
+              .where("w.id", "=", input.workItemId)
+              .limit(1)
+              .executeTakeFirst()
+          : undefined;
+      let n = 0;
+      try {
+        n = childrenOf(w?.children ?? null).length;
+      } catch {
+        n = 0;
+      }
+      if (!w || n === 0) return onItem("Approve the spec for", input.workItemId);
+      return titled(
+        `Approve the plan and ${n} work item${n === 1 ? "" : "s"} for #${w.number}`,
+        w.title,
+      );
+    }
     case "spec.requestChanges":
       return onItem("Request changes to the spec for", input.workItemId);
     case "review.merge": {
