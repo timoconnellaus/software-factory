@@ -25,7 +25,10 @@ export function quotedName(name: string): string {
     // Line breaks and tabs are spaces; other control and invisible characters go.
     .replace(/\s+/g, " ")
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
-    .replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁯﻿"“”]/g, "")
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff"\u201c\u201d]/g,
+      "",
+    )
     .replace(/\s+/g, " ")
     .trim();
   return `"${clean.length > 60 ? `${clean.slice(0, 59)}…` : clean}"`;
