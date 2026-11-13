@@ -116,6 +116,11 @@ export interface Scope {
    * the org config version the item pinned. Null otherwise, or when it isn't valid.
    */
   pinnedPolicy: ProjectPolicy | null;
+  /**
+   * Why the workflow version a work item pinned can't be resolved (a version or adopted list that
+   * no longer reads): the item is never run under the current policy instead (review of #185).
+   */
+  pinnedError?: string | null;
 }
 
 /** What a call names in its input, from which `invoke()` resolves the scope. */

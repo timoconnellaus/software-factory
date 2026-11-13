@@ -314,12 +314,13 @@ async function resolveBatched(
     : null;
   // A read that uses none of what an org workflow decides (polled timelines, planning, the queue)
   // doesn't resolve it: the project's config as saved, and no org config read or parsed.
-  const { policy, rawPolicy, policyError, pinnedPolicy } = skipOrgWorkflow
+  const { policy, rawPolicy, policyError, pinnedPolicy, pinnedError } = skipOrgWorkflow
     ? {
         policy: raw.policy,
         rawPolicy: raw.policy,
         policyError: raw.policyError,
         pinnedPolicy: pinnedRaw,
+        pinnedError: null,
       }
     : await withOrgWorkflow(db, project.org_id, raw, pinnedRaw, workItem, project.id);
   return {
@@ -335,6 +336,7 @@ async function resolveBatched(
     policySha: project.policy_sha,
     policyError,
     pinnedPolicy,
+    pinnedError,
     role,
   };
 }
@@ -357,6 +359,7 @@ export async function withOrgWorkflow(
   rawPolicy: ProjectPolicy | null;
   policyError: string | null;
   pinnedPolicy: ProjectPolicy | null;
+  pinnedError: string | null;
 }> {
   const current = await resolveOrgWorkflow(db, orgId, raw.policy, null, projectId);
   const pinnedVersion = workItem?.org_config_version ?? null;
@@ -377,6 +380,11 @@ export async function withOrgWorkflow(
     rawPolicy: raw.policy,
     policyError: raw.policyError ?? current.error,
     pinnedPolicy: pinned?.policy ?? null,
+    // An item pinned to an org version that no longer resolves: fail closed (review of #185).
+    pinnedError:
+      pinnedVersion !== null && pinned && !pinned.policy
+        ? (pinned.error ?? `the org config v${pinnedVersion} can't be resolved`)
+        : null,
   };
 }
 
@@ -712,19 +720,41 @@ export async function adoptedDefinition(
   const base = await resolveAt(pinned);
   if (!base) return { ok: false, error: `the pinned org version v${pinned} can't be resolved` };
   let def = base.def;
-  const configs = [base.config];
+  // Each stage judged by the agent of the version it came from (review of #185): a stage adopted
+  // from a later version brings that version's agent; when the name is already bound to another
+  // definition (the pinned one's), the adopted stage's agent is bound under a versioned name.
+  const bound = new Map<string, OrgConfig["agents"][number]>();
+  for (const a of agentsFrom(def, [base.config])) bound.set(a.name.toLowerCase(), a);
   for (const v of versions) {
     const next = await resolveAt(v);
     if (!next) return { ok: false, error: `the adopted org version v${v} can't be resolved` };
-    def = stricterDefinition(def, next.def, {
-      before: agentsFrom(def, configs),
+    const taken = stricterDefinition(def, next.def, {
+      before: [...bound.values()],
       after: agentsFrom(next.def, [next.config]),
     }).def;
-    configs.push(next.config);
+    def = {
+      ...taken,
+      stages: taken.stages.map((s) => {
+        if (!s.agent || !next.def.stages.includes(s)) return s;
+        const a = next.config.agents.find((x) => x.name.toLowerCase() === s.agent?.toLowerCase());
+        if (!a) return s;
+        const was = bound.get(a.name.toLowerCase());
+        if (!was) {
+          bound.set(a.name.toLowerCase(), a);
+          return s;
+        }
+        if (JSON.stringify(was) === JSON.stringify(a)) return s;
+        const name = `${a.name} (v${v})`;
+        bound.set(name.toLowerCase(), { ...a, name });
+        return { ...s, agent: name };
+      }),
+    };
   }
   const cant = versions.length ? runsOnToday(def) : null;
   if (cant) return { ok: false, error: cant };
-  return { ok: true, def, agents: agentsFrom(def, configs), versions };
+  const named = new Set(def.stages.flatMap((s) => (s.agent ? [s.agent.toLowerCase()] : [])));
+  const agents = [...bound.entries()].filter(([k]) => named.has(k)).map(([, a]) => a);
+  return { ok: true, def, agents, versions };
 }
 
 /** The org agents a definition names, from several org versions (the earliest's first, by name). */

@@ -360,13 +360,28 @@ export async function runOperation<O = unknown>(
       : { autonomyPolicy: "cautious", overrides: {} },
     ...(scope.policyError ? { policyError: scope.policyError } : {}),
     floor,
+    // An item whose pinned workflow can't be resolved never merges, deploys or changes the factory
+    // without a person: those are denied to agents and runners on it (review of #185). Everything
+    // else is the current policy's, so the Workflow can park it with its question.
     pinnedPolicy:
       scoped && scope.policy && scope.pinnedPolicy
         ? {
             autonomyPolicy: scope.pinnedPolicy.autonomyPolicy,
             overrides: scope.pinnedPolicy.overrides,
           }
-        : null,
+        : scoped && scope.policy && scope.pinnedError
+          ? {
+              autonomyPolicy: scope.policy.autonomyPolicy,
+              overrides: {
+                "*": {
+                  merge: "deny",
+                  deploy: "deny",
+                  "check-merge": "deny",
+                  "self-modify": "deny",
+                },
+              },
+            }
+          : null,
   });
 
   // An approved re-run must match its pending action. `deny` still refuses it.

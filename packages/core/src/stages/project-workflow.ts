@@ -499,14 +499,21 @@ export function stricterDefinition(
   pinned: WorkflowDefinition,
   newer: WorkflowDefinition,
   agents: { before: readonly AgentConfig[]; after: readonly AgentConfig[] },
-): { def: WorkflowDefinition; adopted: ImpactChange[] } {
+): { def: WorkflowDefinition; adopted: ImpactChange[]; skipped: ImpactChange[] } {
   const adopted: ImpactChange[] = [];
+  // Tightenings not taken because the same stage's change also loosens (review of #185): told to
+  // a person, never applied silently or dropped silently.
+  const skipped: ImpactChange[] = [];
   const one = (s: StageInstance): WorkflowDefinition => ({ ...pinned, stages: [s] });
   const stages: StageInstance[] = pinned.stages.map((s) => {
     const n = newer.stages.find((x) => x.id === s.id);
     if (!n || same(n, s)) return s;
     const c = workflowImpact(one(s), one(n), agents).changes;
-    if (c.some((x) => x.class === "loosens") || !c.some((x) => x.class === "tightens")) return s;
+    if (c.some((x) => x.class === "loosens")) {
+      skipped.push(...c.filter((x) => x.class === "tightens"));
+      return s;
+    }
+    if (!c.some((x) => x.class === "tightens")) return s;
     adopted.push(...c.filter((x) => x.class === "tightens"));
     return n;
   });
@@ -524,7 +531,7 @@ export function stricterDefinition(
     if (c.length && c.every((x) => x.class === "tightens")) {
       stages.splice(at, 0, n);
       adopted.push(...c);
-    }
+    } else skipped.push(...c.filter((x) => x.class === "tightens"));
   });
-  return { def: { ...pinned, stages }, adopted };
+  return { def: { ...pinned, stages }, adopted, skipped };
 }

@@ -119,6 +119,26 @@ describe("policy summaries the key helper signs (ADR 0610)", () => {
     );
   });
 
+  it("an override of a long list says what it drops and adds (review of #185)", async () => {
+    const w = await world();
+    const db = createDb(env.DB);
+    const long = Array.from({ length: 8 }, (_, i) => `integration-suite-${i}`);
+    const summary = await describeOverrideApprove(
+      db,
+      { ok: true, floor: {} } as const,
+      {
+        projectId: w.projectId,
+        stageId: "verify",
+        setting: "requiredChecks",
+        value: long.slice(0, 7),
+        configVersion: 2,
+        orgVersion: 3,
+      },
+      long,
+    );
+    expect(summary).toMatch(/requiredChecks: drops integration-suite-7 against the org's value/);
+  });
+
   it("a software key gets no challenge for a policy decision, whatever DESKTOP_ALLOW_SOFTWARE_KEYS says", async () => {
     const w = await world();
     const id = `dsk_${crypto.randomUUID().replaceAll("-", "")}`;

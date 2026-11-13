@@ -1,7 +1,9 @@
 // Spec 09 M2: workflows fill the skeleton's slots (Workflow v6, ADR 0371); agents are
 // harness-neutral and pick a model tier (ADR 0372).
-import { resolveModel } from "@software-factory/core";
+import { env } from "cloudflare:workers";
+import { resolveModel, resolveScope } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
+import { createDb } from "@software-factory/db";
 import { describe, expect, it } from "vitest";
 import {
   definitionFor,
@@ -21,6 +23,7 @@ import {
   runStage,
   triage,
   verifyPass,
+  waitFor,
   world,
 } from "./helpers.ts";
 
@@ -342,6 +345,46 @@ describe("the default builder", () => {
     expect(journal).toHaveLength(1);
     expect(journal[0]?.diff).toMatch(/"workflow":"repinned"/);
   });
+  it("an item whose pinned workflow version can't be read never reaches a stage (v17, review of #185)", async () => {
+    const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
+    const plain = {
+      ...SOFTWARE,
+      id: "wf_ship_it",
+      name: "Ship it",
+      template: { id: SOFTWARE.id, version: 1 },
+    };
+    await ok("workflow.save", { orgId: w.orgId, baseVersion: 0, workflow: plain }, w.human);
+    const item = await create(w);
+    // During triage (after the pull pinned its version) the item's adopted list stops resolving.
+    await runStage(w, item.workItemId, "triage", async () => {
+      await env.DB.prepare("UPDATE core_work_items SET org_config_adopted = '[99]' WHERE id = ?")
+        .bind(item.workItemId)
+        .run();
+      return triage("small");
+    });
+    const asked = await waitFor("the question", () =>
+      first<{ prompt: string }>(
+        "SELECT prompt FROM core_questions WHERE work_item_id = ? AND instr(prompt, 'workflow version') > 0",
+        item.workItemId,
+      ),
+    );
+    expect(asked.prompt).toMatch(/can't be read/);
+    // Parked: no build was queued, and no stage past triage started.
+    const jobs = await all<{ stage: string }>(
+      "SELECT stage FROM core_jobs WHERE work_item_id = ? AND stage != 'triage'",
+      item.workItemId,
+    );
+    expect(jobs).toEqual([]);
+    const stages = await all<{ stage: string }>(
+      "SELECT stage FROM core_stages WHERE work_item_id = ? AND stage IN ('build', 'verify', 'merge')",
+      item.workItemId,
+    );
+    expect(stages).toEqual([]);
+    // Agents can't merge, deploy or change the factory on it while its version can't be read.
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    expect(scope.pinnedError).toMatch(/adopted/);
+  });
+
   it("a tightening of a stage already passed sends the item back to verify at the merge boundary (v17)", async () => {
     const w = await world({ ...BALANCED, workflow: "wf_ship_it" });
     await ok(

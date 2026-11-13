@@ -2011,10 +2011,10 @@ export const workItemRepinWorkflow = defineOperation({
   actors: ["agent"],
   permission: "signed-in",
   // Called at every boundary: an audit row only when the item moved (ADR 0590).
-  audit: { changesOnly: true, changed: (out) => out.repinned },
+  audit: { changesOnly: true, changed: (out) => out.repinned || out.noticed === true },
   input: z.object({
     workItemId,
-    /** The boundary, for the journal (the stage the item is about to enter). */
+    /** The boundary's label, for the journal only: the boundary itself is the item's stage. */
     at: z.string().max(40),
   }),
   output: z.object({
@@ -2026,10 +2026,20 @@ export const workItemRepinWorkflow = defineOperation({
     reason: z.string().nullable(),
     /** Tightenings at stages the item has passed (review of #139): it doesn't go back by itself. */
     behind: z.array(z.string()).default([]),
+    /** Tightenings it didn't take: the same stage's change also loosens (review of #185). */
+    skipped: z.array(z.string()).default([]),
+    /** Told the project's approvers what it didn't take (once per version). */
+    noticed: z.boolean().optional(),
   }),
   async handler(input, ctx) {
     const w = requireWorkItem(ctx);
     const project = requireProject(ctx);
+    // Only the item's Workflow moves it between versions (review of #185).
+    if (ctx.origin.surface !== "workflow" && ctx.origin.surface !== "test")
+      throw new OperationError(
+        "forbidden",
+        "an item moves between workflow versions only at its own Workflow's stage boundaries",
+      );
     const pinned = w.org_config_version;
     const adoptedRaw = w.org_config_adopted;
     const stay = (reason: string) => ({
@@ -2085,7 +2095,9 @@ export const workItemRepinWorkflow = defineOperation({
     // At the merge boundary, the stages verify can act on again: verify and the checks between the
     // build and it (review of #185). A tightening of triage, spec or the build itself is behind the
     // item for good: journaled, never re-run.
-    const merge = input.at.startsWith("merge");
+    // The boundary from the item's own state, never the caller's label (review of #185): at the merge
+    // boundary verify has run (the item is still in verify).
+    const merge = w.stage === "verify" || w.stage === "merge";
     const split = (
       changes: { path: string; summary: string }[],
       def: { stages: readonly { id: string }[] },
@@ -2109,16 +2121,51 @@ export const workItemRepinWorkflow = defineOperation({
     let tightens = impact.changes.filter((c) => c.class === "tightens");
     let movesOnto: { stages: readonly { id: string }[] } = nowDef.value;
     let nextAdopted: number[] | null = null;
+    // Tightenings it won't take, told to the project's approvers once per version (review of #185).
+    const notice = async (why: string, skipped: string[]) => {
+      const marker = `"noticeFor":${at},`;
+      const told = await ctx.db
+        .selectFrom("core_audit")
+        .select("id")
+        .where("work_item_id", "=", w.id)
+        .where("operation", "=", "workItem.repinWorkflow")
+        .where(sql<boolean>`instr(diff, ${marker}) > 0`)
+        .limit(1)
+        .executeTakeFirst();
+      if (told) return { ...stay(why), skipped };
+      ctx.change({
+        entity: "work_item",
+        id: w.id,
+        after: { noticeFor: at, workflow: "not adopted", why, skipped },
+      });
+      for (const userId of (await approverIds(ctx.db, project.org_id, ctx.scope.policy)).slice(
+        0,
+        5,
+      ))
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.notAdopted",
+            userId,
+            workItemId: w.id,
+            title: `Work item #${w.number} doesn't take v${at} of the org's workflow: ${why}`,
+            url: `/?item=${w.id}`,
+          },
+        });
+      return { ...stay(why), skipped, noticed: true };
+    };
+    let skipped: string[] = [];
     if (loosening.length) {
       // Only the tightened parts, stage by stage (review of #139).
       const stricter = stricterDefinition(current.def, nowDef.value, agents);
+      skipped = stricter.skipped.map((c) => c.summary);
+      const why = `v${at} loosens against what the item runs: ${loosening.map((c) => c.summary).join(" ")}`;
       if (stricter.adopted.length === 0 || runsOnToday(stricter.def))
-        return stay(
-          `v${at} loosens against what the item runs: ${loosening.map((c) => c.summary).join(" ")}`,
-        );
+        return skipped.length ? notice(why, skipped) : stay(why);
       if (adopted.length >= MAX_ADOPTED)
-        return stay(
-          `the item already took tightenings from ${adopted.length} later versions: a person moves it (workItem.moveWorkflowVersion)`,
+        return notice(
+          `the item already took tightenings from ${adopted.length} later versions, the most it takes: it finishes on what it runs, unless a person stops it`,
+          stricter.adopted.map((c) => c.summary),
         );
       partial = true;
       tightens = stricter.adopted;
@@ -2155,8 +2202,25 @@ export const workItemRepinWorkflow = defineOperation({
         tightens: tightens.map((c) => c.summary),
         ...(behind.length ? { behind } : {}),
         ...(past.length ? { passed: past } : {}),
+        // Tightenings in stages it didn't take (the same stage also loosens), for a person to see.
+        ...(skipped.length ? { notAdopted: skipped } : {}),
       },
     });
-    return { repinned: true, partial, from: pinned, to: at, reason: null, behind };
+    if (skipped.length)
+      for (const userId of (await approverIds(ctx.db, project.org_id, ctx.scope.policy)).slice(
+        0,
+        5,
+      ))
+        ctx.emit({
+          kind: "notify",
+          payload: {
+            event: "workflow.notAdopted",
+            userId,
+            workItemId: w.id,
+            title: `Work item #${w.number} took part of v${at} of the org's workflow; not: ${skipped.join(" ")}`,
+            url: `/?item=${w.id}`,
+          },
+        });
+    return { repinned: true, partial, from: pinned, to: at, reason: null, behind, skipped };
   },
 });

@@ -836,7 +836,7 @@ and after.
   item only its tightenings, stage by stage (`stricterDefinition`), over what it already runs: the
   item keeps its pin and appends the newer version to `org_config_adopted` (migration 0287, at most
   8), folded in order, so a later version that drops what an earlier one added never takes it away;
-  journaled as `workflow: tightened parts adopted`. An unresolvable list fails closed. From Workflow v17 (`repin-reverify`), a tightening of a stage the item already
+  journaled as `workflow: tightened parts adopted`. An unresolvable pinned version or list fails closed: the item parks with a question (v17), never runs under today's workflow. Tightenings inside a stage that also loosens aren't applied; the approvers are told once per version (ADR 0510 as amended). From Workflow v17 (`repin-reverify`), a tightening of a stage the item already
   passed (a check added before verify, found at the merge boundary) sends it back to verify its head
   again, with the checks before verify, instead of skipping it.
 - **Moving an item by hand** is `workItem.moveWorkflowVersion` (human): allowed at a stage boundary

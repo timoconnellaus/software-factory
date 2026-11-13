@@ -77,4 +77,16 @@ queued, done) from a workflow's stages, and lists org-level workflows as a follo
 > would discard a decision in progress for a change they can see on the org's workflow, and every
 > boundary before the gate already applies tightenings. Dark factory mode (ADR 0515) re-checks its
 > own conditions at merge, against the settings then.
+>
+> Amended 2026-11-13 (second review of #185): **a pinned workflow that can't be read fails closed.**
+> An item whose pinned org version, or a version it adopted tightenings from, no longer resolves is
+> never run under today's workflow: from Workflow v17 it parks with a question for a person ("this
+> item's workflow version can't be read"), and agents and runners on it can't merge, deploy or
+> change the factory. An adopted stage is judged by the agent of the version it came from (bound
+> under a versioned name when the pinned version's agent of that name differs). Tightenings a
+> version makes inside a stage it also loosens (a required check swapped for another) aren't
+> applied: the project's approvers are told once per version, as they are when an item has taken
+> tightenings from the most versions it takes (8). Only the item's Workflow re-pins it, and the
+> boundary is the item's own stage. A decision gate a version adds while an item's merge gate is
+> open is told to that gate's person on the item, not applied.
 

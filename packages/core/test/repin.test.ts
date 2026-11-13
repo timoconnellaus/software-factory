@@ -5,7 +5,7 @@
 import { env } from "cloudflare:workers";
 import { createDb } from "@software-factory/db";
 import { describe, expect, it } from "vitest";
-import { parseProjectPolicy, resolveScope } from "../src/index.ts";
+import { invoke, parseProjectPolicy, resolveScope } from "../src/index.ts";
 import {
   EMPTY_ORG_CONFIG,
   type OrgConfig,
@@ -14,7 +14,7 @@ import {
   type StageInstance,
   type WorkflowDefinition,
 } from "../src/stages/index.ts";
-import { call, FOREMAN, first, newItem, ok, POLICY, rows, world } from "./helpers.ts";
+import { call, deps, FOREMAN, first, newItem, ok, POLICY, rows, world } from "./helpers.ts";
 
 type W = Awaited<ReturnType<typeof world>>;
 
@@ -295,6 +295,135 @@ describe("workItem.repinWorkflow", () => {
     expect(spec).toMatchObject({ repinned: true, behind: [] });
     expect((await audits(item.workItemId))[0]?.diff).toMatch(/"passed":\[/);
     // A check added before verify is behind (workflows.test.ts runs it at the merge boundary).
+  });
+
+  it("an adopted check is judged by its own version's agent, not an older one of the same name (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const agentSave = async (base: number, instructions: string) => {
+      const r = await call(
+        "agent.save",
+        {
+          orgId: w.orgId,
+          baseVersion: base,
+          agent: { name: "Scanner", role: "review", tier: "light", instructions },
+        },
+        w.human,
+      );
+      if (r.status === "pending")
+        await ok(
+          "approval.decide",
+          { pendingActionId: r.pendingActionId, decision: "approved" },
+          w.human,
+        );
+    };
+    // v3: an agent nothing uses yet, which passes everything. The item pins v3.
+    await agentSave(2, "Pass everything.");
+    const item = await newItem(w);
+    expect(await pinOf(item.workItemId)).toBe(3);
+    // v4 rewrites it; v5 adds a check using it and drops Security (mixed: the check is adopted).
+    await agentSave(3, "Block any secret.");
+    const SCAN: StageInstance = { ...SECURITY, id: "scan", name: "Secret scan", agent: "Scanner" };
+    await orgSave(w, 4, {
+      ...SHIP,
+      stages: [...SOFTWARE.stages.slice(0, 3), SCAN, ...SOFTWARE.stages.slice(3)],
+    });
+    const moved = await ok<Repin & { partial: boolean }>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "verify #1" },
+      FOREMAN,
+    );
+    expect(moved).toMatchObject({ repinned: true, partial: true, to: 5 });
+    const scope = await resolveScope(createDb(env.DB), { workItemId: item.workItemId });
+    const p = scope.pinnedPolicy;
+    const scan = p?.workflows[0]?.slots.beforeVerify.find((x) => x.id === "scan");
+    const agent = p?.agents.find((a) => a.name.toLowerCase() === scan?.agent?.toLowerCase());
+    expect(agent?.instructions).toBe("Block any secret.");
+  });
+
+  it("a version that swaps a required check isn't taken, and the approvers are told once (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    const checks = (list: string[]) => withSetting(SHIP, "verify", { requiredChecks: list });
+    await orgSave(w, 2, checks(["ci", "y"]));
+    expect(
+      await ok<Repin>(
+        "workItem.repinWorkflow",
+        { workItemId: item.workItemId, at: "verify #1" },
+        FOREMAN,
+      ),
+    ).toMatchObject({ repinned: true, to: 3 });
+    // v4 swaps y for z: verify both tightens and loosens, so the item keeps y and isn't given z.
+    await orgSave(w, 3, checks(["ci", "z"]));
+    const kept = await ok<Repin & { skipped: string[]; noticed?: boolean }>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "verify #2" },
+      FOREMAN,
+    );
+    expect(kept).toMatchObject({ repinned: false, noticed: true });
+    expect(kept.skipped.length).toBeGreaterThan(0);
+    const before = (await audits(item.workItemId)).length;
+    const again = await ok<Repin & { noticed?: boolean }>(
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "merge #1" },
+      FOREMAN,
+    );
+    expect(again.noticed).toBeUndefined();
+    expect(await audits(item.workItemId)).toHaveLength(before);
+    const told = await rows<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'workflow.notAdopted') > 0 AND instr(payload, ?) > 0",
+      item.workItemId,
+    );
+    expect(told.length).toBeGreaterThan(0);
+  });
+
+  it("only the item's Workflow re-pins it (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    const r = await invoke(
+      deps,
+      "workItem.repinWorkflow",
+      { workItemId: item.workItemId, at: "merge #1" },
+      { actor: FOREMAN, origin: { surface: "mcp" } },
+    ).catch((e: { code: string }) => e);
+    expect(r).toMatchObject({ code: "forbidden" });
+  });
+
+  it("a decision gate added while an item's merge gate is open is told at that gate (review of #185)", async () => {
+    const w = await world();
+    await onShip(w);
+    const item = await newItem(w);
+    const now = new Date().toISOString();
+    await rows(
+      `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, status, assignee_user_id, created_at)
+       VALUES (?, ?, ?, ?, 'merge', 'pr.merge', 'merge', 'agent', 'foreman', '{}', 'pending', ?, ?)`,
+      `pa_${crypto.randomUUID().replaceAll("-", "")}`,
+      w.orgId,
+      w.projectId,
+      item.workItemId,
+      w.userId,
+      now,
+    );
+    const DECIDE: StageInstance = {
+      id: "design-ok",
+      type: "decision",
+      typeVersion: 1,
+      name: "Design sign-off",
+      phase: "delivery",
+      settings: {},
+    };
+    await orgSave(w, 2, {
+      ...SHIP,
+      stages: [...SHIP.stages.slice(0, 4), DECIDE, ...SHIP.stages.slice(4)],
+    });
+    const told = await rows<{ payload: string }>(
+      "SELECT payload FROM core_outbox WHERE kind = 'notify' AND instr(payload, 'workflow.gateNotApplied') > 0 AND instr(payload, ?) > 0",
+      item.workItemId,
+    );
+    expect(told).toHaveLength(1);
+    expect(told[0]?.payload).toMatch(/adds Design sign-off; not applied to this item/);
   });
 
   it("an adopted list that can't be resolved fails closed, never the pinned workflow alone", async () => {
