@@ -11,7 +11,7 @@ import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext, type PendingActionRow } from "../operation.ts";
 import { ALWAYS_REVIEW } from "../policy/gate.ts";
 import { formatPolicy, versionOf, writeVersion } from "./config.ts";
-import { decidePending } from "./gates.ts";
+import { approvingSpecGate, decidePending } from "./gates.ts";
 import { pendingActionId, projectId, requireProject } from "./shared.ts";
 
 export const ADJUDICATOR_MIN_DECISIONS = 20;
@@ -271,13 +271,27 @@ export const adjudicatorRecord = defineOperation({
       .where("verdict", "=", "approve")
       .executeTakeFirst();
     const sampled = ((priorApprovals?.n ?? 0) + 1) % ADJUDICATOR_SAMPLE_EVERY === 0;
-    const act =
+    let act =
       mode === "active" &&
       stats.eligible &&
       verdict === "approve" &&
       pa.status === "pending" &&
       adjudicatorKind(pa) === kind &&
       !sampled;
+    // A plan gate approved by the adjudicator goes through what a person's approval does (review of
+    // #130): the planner still stands behind it, no pulled `.kim/` file changed since, and the kept
+    // designs the gate shows are recorded so the commit writes them. When that refuses, the gate
+    // stays with its person, who is told why.
+    let blocked: string | null = null;
+    if (act && pa.kind === "spec") {
+      try {
+        await approvingSpecGate(ctx, pa);
+      } catch (e) {
+        if (!(e instanceof OperationError)) throw e;
+        act = false;
+        blocked = e.message;
+      }
+    }
     ctx.write(
       ctx.db
         .updateTable("core_adjudications")
@@ -288,8 +302,27 @@ export const adjudicatorRecord = defineOperation({
     ctx.change({
       entity: "adjudication",
       id: row.id,
-      after: { verdict, reason, mode, acted: act, sampled: mode === "active" && sampled },
+      after: {
+        verdict,
+        reason,
+        mode,
+        acted: act,
+        sampled: mode === "active" && sampled,
+        ...(blocked ? { blocked } : {}),
+      },
     });
+    if (blocked && pa.assignee_user_id) {
+      ctx.emit({
+        kind: "notify",
+        payload: {
+          event: "adjudicator.blocked",
+          userId: pa.assignee_user_id,
+          workItemId: pa.work_item_id,
+          title: `The adjudicator approved a plan, but it can't be approved yet: ${blocked}`,
+          url: pa.work_item_id ? `/?item=${pa.work_item_id}` : "/",
+        },
+      });
+    }
     if (act) {
       decidePending(ctx, pa, "approved", `Adjudicator: ${reason}`);
       return { status: "approved" as const, verdict };
