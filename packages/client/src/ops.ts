@@ -16,6 +16,7 @@ export interface OpMap {
   "workItem.get": Def<typeof operations.workItemGet>;
   "workItem.list": Def<typeof operations.workItemList>;
   "workItem.timeline": Def<typeof operations.workItemTimeline>;
+  "audit.verify": Def<typeof operations.auditVerify>;
   "workItem.cancel": Def<typeof operations.workItemCancel>;
   "workItem.setWorkflow": Def<typeof operations.workItemSetWorkflow>;
   "workItem.attachPr": Def<typeof operations.workItemAttachPr>;

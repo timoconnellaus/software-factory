@@ -71,6 +71,10 @@ function tableAliases(sql: string): Map<string, string> {
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
+    match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
+    why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
+  },
+  {
     match: /FROM core_outbox WHERE next_at <= \?/,
     why: "due outbox rows only (core_outbox_next_idx); a delivered row is deleted",
   },

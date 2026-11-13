@@ -1028,6 +1028,34 @@ function run(
   };
 }
 
+/** #13's activity: routine entries older than 90 days are in the audit archive (ADR 0591). */
+const timeline = (archived: boolean): OpOutput<"workItem.timeline"> => ({
+  ...TIMELINE,
+  entries: archived
+    ? [
+        ...[
+          ["lease.claim", "agent", "foreman", 60 * 25],
+          ["job.claim", "runner", RUNNER, 60 * 25 - 1],
+          ["run.handBack", "runner", RUNNER, 60 * 24],
+        ].map(([operation, actorType, actorId, min], i) => ({
+          id: `aud_old_${i}`,
+          at: ago(min as number),
+          operation: operation as string,
+          actorType: actorType as string,
+          actorId: actorId as string,
+          decision: "allow",
+          outcome: "ok",
+          reason: null,
+          pendingActionId: null,
+          result: null,
+          archived: true,
+        })),
+        ...TIMELINE.entries,
+      ].sort((a, b) => (a.at < b.at ? -1 : 1))
+    : TIMELINE.entries,
+  archive: { rows: 3, chunks: 1, state: archived ? "read" : "available", more: false },
+});
+
 const TIMELINE: OpOutput<"workItem.timeline"> = {
   entries: [
     ["workItem.create", "human", ME, 60 * 26],
@@ -1047,6 +1075,7 @@ const TIMELINE: OpOutput<"workItem.timeline"> = {
     pendingActionId: null,
     result: null,
   })),
+  archive: { rows: 0, chunks: 0, state: "none", more: false },
 };
 
 const SETUP: OpOutput<"setup.status"> = {
@@ -1692,7 +1721,8 @@ export const ANSWERS: Answers = {
   "workItem.get": (input) => detail(input.workItemId),
   "workItem.board": (input) => board(input),
   "project.workflow": (input) => workflowOf(input.projectId),
-  "workItem.timeline": () => TIMELINE,
+  "workItem.timeline": (input) =>
+    input.workItemId === "wi_13" ? timeline(!!input.archived) : TIMELINE,
   "workItem.attachment.list": () => ({ attachments: [] }),
   "planning.get": (input) => planning(input.workItemId),
   // Review of #130: what approving the plan writes, listed at the gate.

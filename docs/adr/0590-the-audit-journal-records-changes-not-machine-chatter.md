@@ -196,3 +196,13 @@ archived machine rows, as the proposal describes. The build is the next Cloudfla
 #118 (the run-event archive), in block AQ. Run logs, the other answer, are archived 30 days after
 the run ends and read back from the archive (#118). Request logs on sf-engine are not sampled
 (#124): every request is logged.
+
+## Built, 2026-11-13
+The archive is built as [ADR 0591](0591-the-audit-archive-as-built.md) describes (migration 0366).
+Three things are more precise than the proposal above:
+- "Machine row" is a fixed list of 36 routine operations, not every runner, scheduler, foreman or
+  intake call. The proposal's "kept forever" line named `agent` calls; the owner's decision named the
+  foreman's routine calls as archived. The foreman's calls on the list are archived, and every other
+  agent's calls stay in D1.
+- The archiver finds old rows by rowid windows, so `core_audit` gains no index.
+- A day may be several objects (chunks of at most 1,000 rows or 1 MB), chained in order.

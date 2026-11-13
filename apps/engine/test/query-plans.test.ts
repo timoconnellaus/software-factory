@@ -14,6 +14,7 @@ import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { beforeAll, describe, expect, it } from "vitest";
+import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
 import worker, { pruneCheckResults } from "../src/index.ts";
 import { pruneReconcileShadow, SHADOW_LAG_MS, shadowPass } from "../src/reconcile-shadow.ts";
@@ -304,6 +305,43 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         .first<string>("work_item_id");
       await as(e, "run.live", { workItemId: run }, w.human);
       return as(e, "run.live", { workItemId: run, afterSeq: 0 }, w.human);
+    },
+  },
+  {
+    // Every five minutes: the audit archiver's tick (ADR 0591). With a day recorded 100 days ago,
+    // the days after it are due: each takes its lease, finds the rowid floor with probes, bounds
+    // the window, reads a page and records the (empty) day. Its chunk batches run over real old
+    // rows in audit-archive.test.ts, under the same check.
+    name: "the audit archive's tick",
+    run: async (e) => {
+      const day = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES (?, 0, 0, ?, ?, ?)",
+      )
+        .bind(day, "0".repeat(64), "0".repeat(64), new Date().toISOString())
+        .run();
+      return archiveAudit(e, new Date(), { rows: 1_000 });
+    },
+  },
+  {
+    // Polled by an open item's Activity tab: the D1 entries and the item's archived chunks, one
+    // request; then, on demand, the archived entries read back.
+    name: "workItem.timeline, with its archived entries",
+    run: async (e) => {
+      const item = await env.DB.prepare("SELECT work_item_id FROM core_runs WHERE job_id = ?")
+        .bind(job?.jobId)
+        .first<string>("work_item_id");
+      await as(e, "workItem.timeline", { workItemId: item }, w.human);
+      return as(e, "workItem.timeline", { workItemId: item, archived: true }, w.human);
+    },
+  },
+  {
+    // An org admin's verify of the chain (on demand): the days and their chunks by primary key.
+    name: "audit.verify",
+    run: (e) => {
+      const to = new Date(Date.now() - 95 * 86_400_000).toISOString().slice(0, 10);
+      const from = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+      return as(e, "audit.verify", { orgId: w.orgId, from, to }, w.human);
     },
   },
 ];

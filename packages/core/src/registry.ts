@@ -7,6 +7,7 @@ import * as adopt from "./operations/adopt.ts";
 import * as artifacts from "./operations/artifacts.ts";
 import * as attach from "./operations/attach.ts";
 import * as attachments from "./operations/attachments.ts";
+import * as audit from "./operations/audit.ts";
 import * as backlog from "./operations/backlog.ts";
 import * as cli from "./operations/cli.ts";
 import * as config from "./operations/config.ts";
@@ -206,6 +207,7 @@ export const OPERATIONS: readonly AnyOperation[] = [
   connector.pushObserve,
   connector.githubInstallation,
   incidents.incidentOpen,
+  audit.auditVerify,
   runners.runnerRegister,
   runners.runnerRotateKey,
   runners.runnerList,

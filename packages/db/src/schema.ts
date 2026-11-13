@@ -560,6 +560,48 @@ export interface CoreIncidentsTable {
   proposed_fix: string | null;
 }
 
+/** 0366: one row per archived UTC day of machine audit rows (ADR 0590, 0591). */
+export interface CoreAuditArchivesTable {
+  day: string;
+  chunks: number;
+  rows: number;
+  root: string;
+  prev_root: string;
+  archived_at: Iso;
+}
+
+/** 0366: one row per archived object (a chunk of a day). */
+export interface CoreAuditArchiveChunksTable {
+  day: string;
+  seq: number;
+  r2_key: string;
+  first_at: Iso;
+  first_id: string;
+  last_at: Iso;
+  last_id: string;
+  rows: number;
+  bytes: number;
+  sha256: string;
+  prev_hash: string;
+  last_hash: string;
+  archived_at: Iso;
+}
+
+/** 0366: which archived chunks hold a work item's rows. */
+export interface CoreAuditArchiveItemsTable {
+  work_item_id: string;
+  day: string;
+  seq: number;
+  rows: number;
+}
+
+/** 0366: the audit archiver's lease on a day. */
+export interface CoreAuditArchiveLeasesTable {
+  day: string;
+  holder: string;
+  expires_at: Iso;
+}
+
 export type AuditDecision = "allow" | "review" | "deny" | "n/a";
 export type AuditOutcome =
   | "ok"
@@ -1303,6 +1345,10 @@ export interface CoreDatabase {
   core_review_packets: CoreReviewPacketsTable;
   core_incidents: CoreIncidentsTable;
   core_audit: CoreAuditTable;
+  core_audit_archives: CoreAuditArchivesTable;
+  core_audit_archive_chunks: CoreAuditArchiveChunksTable;
+  core_audit_archive_items: CoreAuditArchiveItemsTable;
+  core_audit_archive_leases: CoreAuditArchiveLeasesTable;
   core_outbox: CoreOutboxTable;
   core_runners: CoreRunnersTable;
   core_runner_shares: CoreRunnerSharesTable;
