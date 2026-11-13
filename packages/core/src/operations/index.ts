@@ -2,6 +2,7 @@ export * from "./adjudicator.ts";
 export * from "./artifacts.ts";
 export * from "./attach.ts";
 export * from "./attachments.ts";
+export * from "./babysit.ts";
 export * from "./backlog.ts";
 export * from "./cli.ts";
 export * from "./config.ts";

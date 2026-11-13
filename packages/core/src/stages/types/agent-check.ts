@@ -44,7 +44,8 @@ export const agentCheck: StageType<typeof settings> = {
   // Reads and reports pass, send back (to what it checks) or ask (a person decides, workflow.gate).
   next: (ctx) => {
     const at = ctx.entry.stageId;
-    const work = jobStep(ctx, "check", 0);
+    // Retried like today's slot steps (`runWithRetries`), up to the item's retry limit.
+    const work = jobStep(ctx, "check", ctx.item.retryLimit);
     if (work) return work;
     const verdict = latest(ctx.steps, "check")?.step.output?.verdict ?? "pass";
     if (verdict === "sendBack")
