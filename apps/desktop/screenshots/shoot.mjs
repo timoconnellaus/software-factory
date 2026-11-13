@@ -102,6 +102,31 @@ export const SCREENS = [
     design: "ItemReview.html",
     scrollTo: "factory-checks",
   },
+  // Honest proof at the gate (the owner's decision, 2026-11-13): no checks set up at all says so,
+  // with no count; checks with every criterion proven; checks with some criteria tied to none.
+  {
+    name: "item-review-proof-no-checks",
+    path: "/work/wi_13?tab=review&fixture=nochecks",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-all-proven",
+    path: "/work/wi_13?tab=review&fixture=allproven",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "item-review-proof-some-untied",
+    path: "/work/wi_13?tab=review",
+    design: "ItemReview.html",
+    scrollTo: "criteria",
+  },
+  {
+    name: "inbox-merge-no-checks",
+    path: "/?item=wi_13&fixture=nochecks",
+    design: "InboxMerge.html",
+  },
   // The runner could not run the checks (ADR 0501, third review): shown plainly, not passed.
   {
     name: "item-review-not-run",
