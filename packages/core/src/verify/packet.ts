@@ -63,6 +63,8 @@ export interface PacketInput {
   hostChecks?: boolean | undefined;
   /** The approved spec's acceptance criteria, for the links a person approved (ADR 0501). */
   specCriteria?: readonly string[] | null | undefined;
+  /** Who wrote `specCriteria`'s links: the approved spec, or triage (Workflow v13). */
+  linksFrom?: "spec" | "triage" | undefined;
 }
 
 export interface AssembledPacket {
@@ -172,6 +174,7 @@ export function assemblePacket(input: PacketInput): AssembledPacket {
   const proof = hostChecks
     ? proveCriteria(evidence.criteria, executed, ci, {
         specCriteria: input.specCriteria,
+        linksFrom: input.linksFrom,
         requiredCi: input.requiredCi,
         gateFilesChanged: intact.findings.some((f) => f.kind === "gate-file"),
       })
@@ -431,7 +434,8 @@ function storedUnproven(sections: Record<string, unknown>): string[] {
       provenBy: [],
       unproven: Array.isArray(r.unproven) ? r.unproven : [],
       notCounted: Array.isArray(r.notCounted) ? r.notCounted : [],
-      linkedBy: r.linkedBy === "spec" ? "spec" : "reviewer",
+      linkedBy: r.linkedBy === "spec" || r.linkedBy === "triage" ? r.linkedBy : "reviewer",
+      uncovered: r.uncovered === true,
     });
     return [`Not proven: ${r.criterion} (${why})`];
   });

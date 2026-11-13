@@ -62,7 +62,8 @@ type ProofRow = {
   provenBy: string[];
   unproven: string[];
   notCounted: string[];
-  linkedBy: "spec" | "reviewer";
+  linkedBy: "spec" | "triage" | "reviewer";
+  uncovered?: boolean;
   weakened: boolean;
   reviewerMet: boolean;
   opinion: string;
@@ -72,7 +73,14 @@ function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<stri
   const which = proofFixture();
   const proof =
     which === "nochecks"
-      ? rows.map((r) => ({ ...r, proven: false, provenBy: [], unproven: [], notCounted: [] }))
+      ? rows.map((r) => ({
+          ...r,
+          proven: false,
+          provenBy: [],
+          unproven: [],
+          notCounted: [],
+          uncovered: false,
+        }))
       : which === "allproven"
         ? rows.map((r) => ({
             ...r,
@@ -81,6 +89,7 @@ function shapedProof(rows: ProofRow[]): { proof: ProofRow[]; proven: Record<stri
             unproven: [],
             notCounted: [],
             linkedBy: "spec" as const,
+            uncovered: false,
           }))
         : notRunFixture()
           ? notProven(rows)
@@ -877,7 +886,9 @@ function pipelineDetail(id: string): OpOutput<"workItem.get"> {
                 provenBy: [],
                 unproven: [],
                 notCounted: [],
-                linkedBy: "reviewer",
+                // The spec says no declared check can prove it: honest, "not covered by a check".
+                linkedBy: "spec",
+                uncovered: true,
                 weakened: false,
                 reviewerMet: true,
                 opinion: "review.ts › the merge gate reads the guard's findings (read, no test)",

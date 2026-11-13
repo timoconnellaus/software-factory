@@ -502,9 +502,9 @@ describe("the merge gate's words", () => {
     expect(verdictHeadline(waived).text).not.toMatch(/could not be run/);
   });
 
-  it("chips the checks, criteria, reviewer and risk", () => {
+  it("chips CI, the criteria, the proof, the reviewer and risk", () => {
     expect(verdictChips(packet).map((c) => c.label)).toEqual([
-      "Checks 1 of 1",
+      "CI 1 of 1",
       "Criteria 4 met",
       "Proven 2 of 4",
       "Reviewer approves",

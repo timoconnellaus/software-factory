@@ -140,7 +140,7 @@ export type WorkItemOutcome =
 export const isKnownVersion = (version: number): boolean =>
   Number.isInteger(version) && Object.hasOwn(WORKFLOW_VERSION_FEATURES, version);
 
-export const WORKFLOW_VERSION = 12;
+export const WORKFLOW_VERSION = 13;
 /** v8: the answers when the factory's checks still fail after the session's fixes. */
 export const CHECKS_BUILD_AGAIN = "Build again with the failure";
 export const CHECKS_STOP = "Stop this work item";
@@ -385,12 +385,19 @@ class ItemFlow {
       // v6: it also picks one of the project's workflows (ADR 0371).
       const options = has(version, "workflow-plan") ? await this.workflowOptions() : [];
       const scores = has(version, "triage-readiness");
+      // v13: the checks triage may tie each criterion to (the code drops any other name).
+      const provable = has(version, "triage-ties")
+        ? ((await this.act("triage: checks", "checks.provable", { workItemId: id })).checks as {
+            name: string;
+            static: boolean;
+          }[])
+        : undefined;
       const triageRun = await this.runWithRetries(
         meta,
         "triage",
         "triage",
         "triage",
-        triagePrompt(meta, options, scores ? { answers: [] } : undefined),
+        triagePrompt(meta, options, scores ? { answers: [] } : undefined, provable),
         {},
         (r) => triageResultSchema.safeParse(r),
       );
@@ -443,7 +450,7 @@ class ItemFlow {
             `triage #${k}`,
             "triage",
             "triage",
-            triagePrompt(meta, options, { answers }),
+            triagePrompt(meta, options, { answers }, provable),
             {},
             (r) => triageResultSchema.safeParse(r),
           );

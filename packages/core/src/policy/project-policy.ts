@@ -319,6 +319,8 @@ function checksError(project: CheckDecl[], workflows: WorkflowConfig[]): string 
     const seen = new Set<string>();
     for (const c of list) {
       const key = c.name.toLowerCase();
+      // `[checks: none]` on a criterion means no check proves it (ADR 0501, amended 2026-11-13).
+      if (key.trim() === "none") return `a check can't be called "none": it means no check`;
       if (seen.has(key)) return `two checks are called "${c.name}"`;
       seen.add(key);
     }
@@ -343,6 +345,23 @@ export function declaredChecks(
     run: c.run,
     timeoutMs: c.timeoutMinutes * 60_000,
   }));
+}
+
+/**
+ * The names triage may tie a criterion to (Workflow v13, `triage-ties`): the item's declared checks,
+ * then the CI checks the config requires (never `factory/verify`). Nothing else can prove anything.
+ */
+export function provableChecks(
+  policy: Pick<ProjectPolicy, "checks" | "workflows" | "protection"> | null,
+  workflow: string | null,
+): string[] {
+  if (!policy) return [];
+  const names = declaredChecks(policy, workflow).map((c) => c.name);
+  for (const r of policy.protection.requiredChecks) {
+    if (r.toLowerCase() === "factory/verify") continue;
+    if (!names.some((n) => n.toLowerCase() === r.toLowerCase())) names.push(r);
+  }
+  return names;
 }
 
 /** Cross-references between agents and workflows that the schema alone can't check. */

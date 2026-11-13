@@ -251,8 +251,13 @@ const proofSection = z.array(
     unproven: z.array(z.string()).default([]),
     /** Linked checks that passed but can't prove it (a static check, a reviewer-picked CI job). */
     notCounted: z.array(z.string()).default([]),
-    /** Who linked the checks: the approved spec, or the reviewer agent. */
-    linkedBy: z.enum(["spec", "reviewer"]).default("reviewer"),
+    /**
+     * Who linked the checks: the approved spec, triage for an item without a spec (Workflow v13,
+     * validated in code before any check ran), or the reviewer agent.
+     */
+    linkedBy: z.enum(["spec", "triage", "reviewer"]).default("reviewer"),
+    /** The spec or triage said no declared check can prove it: "not covered by a check". */
+    uncovered: z.boolean().optional(),
     /** The tests-intact guard found gate-file edits on this SHA. */
     weakened: z.boolean().default(false),
     reviewerMet: z.boolean(),

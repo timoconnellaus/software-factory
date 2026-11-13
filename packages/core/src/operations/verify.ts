@@ -12,7 +12,7 @@ import {
   type ProjectRow,
   type WorkItemRow,
 } from "../operation.ts";
-import { declaredChecks } from "../policy/project-policy.ts";
+import { declaredChecks, provableChecks } from "../policy/project-policy.ts";
 import type { ChangedFile, RepoRef } from "../services.ts";
 import { checkOnlyDiff } from "../verify/auto-merge.ts";
 import { type CiSummary, summarizeCi, VERIFY_CHECK_NAME } from "../verify/ci.ts";
@@ -28,11 +28,13 @@ import {
   type CheckRun,
   executedChecks,
   hostChecksOn,
+  isStaticCheck,
   notRunLines,
   notRunTitle,
 } from "../verify/proof.ts";
 import { testFindingLines } from "../verify/tests-intact.ts";
 import { approvalEvent, ciEvent, type GateEventPayload, prHeadEvent } from "../workflow-events.ts";
+import { has } from "../workflow-features.ts";
 import { requireQueueHead } from "./merge-queue.ts";
 import { inspectProtection } from "./protection.ts";
 import {
@@ -233,7 +235,26 @@ export const reviewPacketRecord = defineOperation({
       .where("status", "=", "approved")
       .orderBy("version", "desc")
       .executeTakeFirst();
-    const specCriteria = spec ? strings(parseJson(spec.acceptance_criteria)) : null;
+    // An item without a spec on Workflow v13 (`triage-ties`): triage's criteria, whose ties to
+    // checks `workItem.triage` validated in the triage stage, before any check ran. The reviewer
+    // can't add or change them: its own links never prove (ADR 0501, amended 2026-11-13).
+    const triaged =
+      !spec && w.spec_required === 0 && w.current_spec_id && has(w.workflow_version, "triage-ties")
+        ? await ctx.db
+            .selectFrom("core_specs")
+            .select("acceptance_criteria")
+            // The primary key: one row.
+            .where("id", "=", w.current_spec_id)
+            .where("work_item_id", "=", w.id)
+            .where("status", "=", "draft")
+            .executeTakeFirst()
+        : undefined;
+    const linksFrom = spec ? ("spec" as const) : triaged ? ("triage" as const) : undefined;
+    const specCriteria = spec
+      ? strings(parseJson(spec.acceptance_criteria))
+      : triaged
+        ? strings(parseJson(triaged.acceptance_criteria))
+        : null;
     const sameModel =
       (input.reviewer?.sameModelAsImplementer ?? false) ||
       reviewerMatchesImplementer(ctx.scope.policy?.modelRoles ?? {});
@@ -252,6 +273,7 @@ export const reviewPacketRecord = defineOperation({
       runnerVerdict: input.verdict,
       hostChecks,
       specCriteria,
+      linksFrom,
       declaredChecks: declared,
       requiredCi: ctx.scope.policy?.protection.requiredChecks ?? [],
       checksRun: ran.map(checkRunOf),
@@ -468,6 +490,34 @@ function checkRunOf(r: {
     isolation: r.isolation ?? null,
   };
 }
+
+/**
+ * The check names triage may tie a criterion to (Workflow v13, `triage-ties`): the item's declared
+ * checks and the CI checks its config requires. Read once by the Workflow before triage.
+ */
+export const checksProvable = defineOperation({
+  name: "checks.provable",
+  description:
+    "The names of the checks that can prove a work item's acceptance criteria: the project's declared checks for the item's workflow (run by the runner host), then the CI checks its config requires (never factory/verify). Triage names one of these for each criterion it writes, or none when no declared check can prove it; workItem.triage drops any other name. Static checks (lint, typecheck, format) are listed with `static: true`: they run but never prove a criterion.",
+  risk: "read",
+  actors: ["agent", "human"],
+  permission: "member",
+  input: z.object({ workItemId }),
+  output: z.object({
+    checks: z.array(z.object({ name: z.string(), static: z.boolean() })),
+  }),
+  async handler(_input, ctx) {
+    const w = requireWorkItem(ctx);
+    const policy = ctx.scope.policy ?? null;
+    const runs = new Map(declaredChecks(policy, w.workflow).map((c) => [c.name, c.run]));
+    return {
+      checks: provableChecks(policy, w.workflow).map((name) => ({
+        name,
+        static: isStaticCheck(name, runs.get(name) ?? ""),
+      })),
+    };
+  },
+});
 
 export const checksForHead = defineOperation({
   name: "checks.forHead",

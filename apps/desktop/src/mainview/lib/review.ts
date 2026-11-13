@@ -38,7 +38,13 @@ export function verdictChips(p: ParsedPacket): { label: string; status: Status }
   const checks = checkCounts(p);
   const chips: { label: string; status: Status }[] = [
     {
-      label: checks.total ? `Checks ${checks.passed} of ${checks.total}` : "No checks reported",
+      // GitHub's CI, or what the reviewer reported: never the factory's own declared checks, whose
+      // state is the proof chip below ("No checks set up" / "Proven N of M").
+      label: checks.total
+        ? `${checks.source === "ci" ? "CI" : "Checks"} ${checks.passed} of ${checks.total}`
+        : checks.source === "ci"
+          ? "No CI reported"
+          : "No checks reported",
       status: checks.failed ? "failed" : checks.total ? "done" : "idle",
     },
     {

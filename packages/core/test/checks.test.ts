@@ -12,10 +12,12 @@ import {
   parseFloor,
   parseProjectPolicy,
   policyImpact,
+  provableChecks,
   proveCriteria,
   specCheckLinks,
   storedProof,
   summarizeCi,
+  tieCriteria,
   verifyCheckOutput,
   whyNotProven,
 } from "../src/index.ts";
@@ -434,6 +436,60 @@ describe("executed checks and proof (pure)", () => {
       checksRun: [ran("tests", 0)],
     });
     expect(declared.sections.proven).toMatchObject({ checksSetUp: true });
+  });
+
+  it("keeps only declared or required check names in triage's ties; none is an honest answer", () => {
+    const tied = tieCriteria(
+      ["A.", "B", "C", "D", "E [checks: tests]", "F"],
+      [
+        { criterion: "a", checks: ["TESTS", "tests"] },
+        { criterion: "B", checks: ["made-up"] },
+        { criterion: "C", checks: [] },
+        { criterion: "D", checks: ["ci", "factory/verify", "none"] },
+        // A tag in the text is not a tie: only the field ties, and E has no entry.
+      ],
+      ["lint", "tests", "ci"],
+    );
+    expect(tied.criteria).toEqual([
+      "A. [checks: tests]",
+      "B",
+      "C [checks: none]",
+      "D [checks: ci]",
+      "E",
+      "F",
+    ]);
+    expect(tied.dropped).toEqual(["made-up", "factory/verify", "none"]);
+    expect(specCheckLinks("C [checks: none]")).toEqual({ text: "C", checks: [], uncovered: true });
+  });
+
+  it("proves against triage's ties like a spec's, says 'not covered' for none, and never the reviewer's", () => {
+    const executed = executedChecks(SHA, ["tests"], [ran("tests", 0)]);
+    const proof = proveCriteria(
+      [
+        { criterion: "A", met: true, evidence: "x" },
+        { criterion: "B [checks: tests]", met: true, evidence: "x" },
+        { criterion: "C", met: true, evidence: "x", checks: ["tests"] },
+      ],
+      executed,
+      { checks: [] },
+      { specCriteria: ["A [checks: tests]", "B [checks: none]", "C"], linksFrom: "triage" },
+    );
+    expect(proof.map((p) => [p.proven, p.linkedBy, whyNotProven(p)])).toEqual([
+      [true, "triage", ""],
+      [false, "triage", "not covered by a check"],
+      [false, "reviewer", "only the reviewer named tests, and a reviewer's link proves nothing"],
+    ]);
+  });
+
+  it("lists what triage may name: declared checks, then required CI, never factory/verify; no check is called none", () => {
+    const policy = parsed({
+      ...WITH_CHECKS,
+      protection: { requiredChecks: ["ci", "factory/verify", "TESTS"] },
+    });
+    expect(provableChecks(policy, null)).toEqual(["lint", "tests", "ci"]);
+    expect(
+      parseProjectPolicy(JSON.stringify({ ...POLICY, checks: [{ name: "None", run: "x" }] })).ok,
+    ).toBe(false);
   });
 
   it("says why a criterion is not proven", () => {

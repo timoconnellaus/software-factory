@@ -195,7 +195,9 @@ export function CriterionProofNote({ proof }: { proof: CriterionProof }) {
       {/* Not proven already says why (whyNotProven); proven says who tied it. */}
       {proof.proven && (
         <div className="text-ink-3" data-testid="criterion-linked-by">
-          Linked in the approved spec
+          {proof.linkedBy === "triage"
+            ? "Tied by triage to a declared check, before any check ran"
+            : "Linked in the approved spec"}
         </div>
       )}
     </div>
