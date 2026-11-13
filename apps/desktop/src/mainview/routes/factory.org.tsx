@@ -30,8 +30,14 @@ import { useQuery } from "@tanstack/react-query";
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { CannotApproveYet, useCanDecide } from "../components/cannot-approve.tsx";
-import { ChangeDiff, ImpactList, LeaveGuard } from "../components/config-editor.tsx";
-import { CharCount, ImpactChip, Segmented } from "../components/config-fields.tsx";
+import {
+  ChangeDiff,
+  CharCount,
+  ImpactChip,
+  ImpactList,
+  LeaveGuard,
+  Segmented,
+} from "../components/config-fields.tsx";
 import { Cell, Empty, Row, TablePanel, When, WIDE } from "../components/data-table.tsx";
 import { type OrgWorkflow, OrgWorkflowForm } from "../components/org-workflow-form.tsx";
 import { Reads } from "../components/read-state.tsx";
@@ -282,7 +288,7 @@ function EditOne({
             </div>
             <CannotApproveYet />
             <OrgWorkflowForm
-              key={`${workflowId}:${got.data.version}`}
+              key={`${orgId}:${workflowId}`}
               orgId={orgId}
               baseVersion={got.data.version}
               saved={got.data.workflow as unknown as OrgWorkflow}

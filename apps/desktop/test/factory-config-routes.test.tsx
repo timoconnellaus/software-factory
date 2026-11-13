@@ -253,3 +253,34 @@ describe("Org workflows (spec 52, ADR 0610)", () => {
     expect(textOf(html)).toContain("This Mac can't approve yet");
   });
 });
+
+describe("Org workflows: deciding a waiting change (review of #159)", () => {
+  it("shows the engine's classification and the difference before Approve", async () => {
+    const html = await renderPage("/factory/org-workflows");
+    const text = textOf(html);
+    expect(html).toContain('data-testid="org-pending-impact"');
+    expect(text).toContain("Removes the agent check Reviewer.");
+    expect(text).toContain("Stages after: Planning → Build → Verify → Merge");
+    expect(html).toContain('data-testid="org-pending-approve"');
+  });
+
+  it("offers only Reject when a change can't be shown or no longer applies", async () => {
+    const { cannotApproveOrg } = await import("../src/mainview/routes/factory.org.tsx");
+    const base = {
+      pendingActionId: "pa_1",
+      operation: "workflow.save",
+      note: null,
+      by: null,
+      createdAt: "",
+      baseVersion: 4,
+      proposal: { id: "wf_x" },
+      current: null,
+      toVersion: null,
+      impact: { class: "loosens" as const, changes: [] },
+    };
+    expect(cannotApproveOrg(base, 4)).toBeNull();
+    expect(cannotApproveOrg(base, 5)).toMatch(/drafted on v4/);
+    expect(cannotApproveOrg({ ...base, impact: null }, 4)).toMatch(/couldn't classify/);
+    expect(cannotApproveOrg({ ...base, proposal: null }, 4)).toMatch(/can't be shown/);
+  });
+});
