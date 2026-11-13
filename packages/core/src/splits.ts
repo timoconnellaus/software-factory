@@ -138,6 +138,7 @@ export async function releaseSplitChildren(ctx: HandlerContext, parent: WorkItem
     .selectFrom("core_work_items")
     .select(["id", "status"])
     .where("parent_work_item_id", "=", parent.id)
+    .where("source", "=", "planning")
     .where("status", "=", "ready")
     .limit(SPLIT_MAX)
     .execute();
@@ -152,6 +153,7 @@ export async function releaseSplitChildren(ctx: HandlerContext, parent: WorkItem
         updated_at: ctx.now,
       })
       .where("parent_work_item_id", "=", parent.id)
+      .where("source", "=", "planning")
       .where("status", "=", "ready"),
   );
   for (const h of held) {
@@ -174,7 +176,7 @@ export async function releaseSplitChildren(ctx: HandlerContext, parent: WorkItem
  */
 export async function childEnded(
   ctx: HandlerContext,
-  child: Pick<WorkItemRow, "id" | "number" | "parent_work_item_id">,
+  child: Pick<WorkItemRow, "id" | "number" | "parent_work_item_id" | "source">,
   outcome: string,
 ): Promise<void> {
   // A parent that ends without merging its plan leaves no children held for it (spec 24): those
@@ -190,14 +192,17 @@ export async function childEnded(
           updated_at: ctx.now,
         })
         .where("parent_work_item_id", "=", child.id)
+        .where("source", "=", "planning")
         .where("status", "=", "ready"),
     );
   }
-  if (!child.parent_work_item_id) return;
+  // Only a plan's children (an incident is a child of its item too, ADR 0080, and isn't split work).
+  if (!child.parent_work_item_id || child.source !== "planning") return;
   const siblings = await ctx.db
     .selectFrom("core_work_items")
     .selectAll()
     .where("parent_work_item_id", "=", child.parent_work_item_id)
+    .where("source", "=", "planning")
     .limit(SPLIT_MAX + 1)
     .execute();
   const statusOf = (s: (typeof siblings)[number]) => (s.id === child.id ? outcome : s.status);

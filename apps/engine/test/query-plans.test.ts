@@ -50,7 +50,9 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     // wait), by core_work_items_parent_idx (migration 0401).
     name: "a split's parent reads its children",
     run: (e) =>
-      e.DB.prepare("SELECT status FROM core_work_items WHERE parent_work_item_id = ? LIMIT 9")
+      e.DB.prepare(
+        "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
+      )
         .bind("wi_parent")
         .all(),
   },

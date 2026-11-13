@@ -1067,7 +1067,7 @@ class ItemFlow {
       const settled = await this.step.do(`split: children #${i}`, async () => {
         // core_work_items_parent_idx (migration 0401), bounded by the split's size.
         const { results } = await this.env.DB.prepare(
-          "SELECT status FROM core_work_items WHERE parent_work_item_id = ? LIMIT 9",
+          "SELECT status FROM core_work_items WHERE parent_work_item_id = ? AND source = 'planning' LIMIT 9",
         )
           .bind(id)
           .all<{ status: string }>();
