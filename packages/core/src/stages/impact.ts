@@ -154,6 +154,14 @@ function stageImpact(
   }
   if (before.phase !== after.phase)
     out.push(loosens(`${at}.phase`, `${after.name} moves from ${before.phase} to ${after.phase}.`));
+  // Skills attached to a stage (ADR 0513): practice, except where the stage judges the work. What a
+  // judge follows is policy (Q16): adding, changing or removing one there is a person's decision.
+  if (!same(before.skills ?? [], after.skills ?? []))
+    out.push(
+      type.judges
+        ? loosens(`${at}.skills`, `${after.name} judges the work: the skills it follows changed.`)
+        : { path: `${at}.skills`, class: "neutral", summary: `${after.name}'s skills changed.` },
+    );
   const judgeChanged =
     type.judges === "agent" && agents
       ? !same(judgeBody(agents.before, before.agent), judgeBody(agents.after, after.agent))
@@ -228,6 +236,12 @@ export function workflowImpact(
           `stages.${s.id}`,
           `Adds ${s.name}, which acts outside the factory (${type.reversibility}).`,
         ),
+      );
+    else if (check && type?.judges && (s.skills?.length ?? 0) > 0)
+      // A judge that arrives with skills follows text accepted as practice: what it is told is
+      // policy (Q16, review of #155), so it loosens.
+      changes.push(
+        loosens(`stages.${s.id}`, `Adds ${s.name}, a judge that follows attached skills.`),
       );
     else if (check)
       changes.push({
