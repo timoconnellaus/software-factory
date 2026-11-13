@@ -21,7 +21,11 @@ export function revertWithoutPerson(def: WorkflowDefinition | null | undefined):
 export interface RevertFacts {
   /** The switch on the revert's workflow. */
   switchOn: boolean;
-  /** The PR is the engine's own revert of a suspect of the open episode, unchanged since. */
+  /**
+   * The PR is the engine's own revert of a suspect of the open episode, unchanged since: computed
+   * with `exactInverse()` on the head being merged, at the moment of the verdict, never from the
+   * `exact_inverse` recorded when the revert opened (its head can have moved; review of #178).
+   */
   engineRevertOfSuspect: boolean;
   /** How long the episode has been red. */
   redForMs: number;

@@ -15,6 +15,7 @@ export const factoryLayout = createRoute({
 export const FACTORY_PAGES = [
   { to: "/factory", label: "Overview", testId: "nav-factory-overview" },
   { to: "/factory/workflows", label: "Workflows", testId: "nav-factory-workflows" },
+  { to: "/factory/org-workflows", label: "Org workflows", testId: "nav-factory-org" },
   { to: "/factory/agents", label: "Agents", testId: "nav-factory-agents" },
   { to: "/factory/incidents", label: "Checks and incidents", testId: "nav-factory-incidents" },
   { to: "/factory/runners", label: "Runners", testId: "nav-factory-runners" },

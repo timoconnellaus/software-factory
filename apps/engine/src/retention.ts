@@ -453,7 +453,7 @@ async function finishRun(
   nowIso: string,
 ): Promise<number> {
   const { results: steers } = await env.DB.prepare(
-    `SELECT id, author_user_id, text, kind, interrupt, created_at, delivered_at
+    `SELECT id, author_user_id, text, kind, interrupt, created_at, delivered_at, undeliverable_at
      FROM core_run_steers WHERE run_id = ? ORDER BY created_at, id LIMIT 1000`,
   )
     .bind(runId)
