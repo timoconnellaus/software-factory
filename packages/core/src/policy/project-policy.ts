@@ -12,6 +12,7 @@ import {
   MODEL_ROLES,
 } from "@software-factory/runner-contract";
 import { z } from "zod";
+import { checkProves, ciCheckProves } from "../verify/proof.ts";
 import { DEFAULT_REQUIRED_CHECKS } from "../verify/protection.ts";
 import { AUTONOMY_POLICIES, type DecisionRules, rulesError } from "./gate.ts";
 
@@ -97,6 +98,12 @@ export const checkDeclSchema = z
     name: checkName,
     run: z.string().trim().min(1).max(1_000),
     timeoutMinutes: z.number().int().min(1).max(60).default(15),
+    /**
+     * Whether a pass can prove an acceptance criterion (ADR 0501, amended 2026-11-13). Omitted: only
+     * a check that runs tests does (by its name or command); setup (install, build) and static
+     * checks (lint, typecheck, format) never do. Saying `true` where the default is false loosens.
+     */
+    proves: z.boolean().optional(),
   })
   .strict();
 export type CheckDecl = z.infer<typeof checkDeclSchema>;
@@ -344,6 +351,8 @@ function checksError(project: CheckDecl[], workflows: WorkflowConfig[]): string 
     const seen = new Set<string>();
     for (const c of list) {
       const key = c.name.toLowerCase();
+      // `[checks: none]` on a criterion means no check proves it (ADR 0501, amended 2026-11-13).
+      if (key.trim() === "none") return `a check can't be called "none": it means no check`;
       if (seen.has(key)) return `two checks are called "${c.name}"`;
       seen.add(key);
     }
@@ -368,6 +377,45 @@ export function declaredChecks(
     run: c.run,
     timeoutMs: c.timeoutMinutes * 60_000,
   }));
+}
+
+/**
+ * The item's declared checks with whether each can prove a criterion (`checkProves`): what
+ * `reviewPacket.record` passes to the proof, and what `checks.provable` filters on.
+ */
+export function declaredProof(
+  policy: Pick<ProjectPolicy, "checks" | "workflows"> | null,
+  workflow: string | null,
+): { name: string; run: string; proves: boolean }[] {
+  if (!policy) return [];
+  const w = workflow
+    ? policy.workflows.find((x) => x.name.toLowerCase() === workflow.toLowerCase())
+    : undefined;
+  return [...policy.checks, ...(w?.checks ?? [])].map((c) => ({
+    name: c.name,
+    run: c.run,
+    proves: checkProves(c.name, c.run, c.proves),
+  }));
+}
+
+/**
+ * The names triage may tie a criterion to (Workflow v13, `triage-ties`): the item's declared checks,
+ * then the CI checks the config requires (never `factory/verify`). Nothing else can prove anything.
+ */
+export function provableChecks(
+  policy: Pick<ProjectPolicy, "checks" | "workflows" | "protection"> | null,
+  workflow: string | null,
+): string[] {
+  if (!policy) return [];
+  // A check that can't prove a criterion (setup, static, `proves: false`) is never offered.
+  const names = declaredProof(policy, workflow)
+    .filter((c) => c.proves)
+    .map((c) => c.name);
+  for (const r of policy.protection.requiredChecks) {
+    if (r.toLowerCase() === "factory/verify" || !ciCheckProves(r)) continue;
+    if (!names.some((n) => n.toLowerCase() === r.toLowerCase())) names.push(r);
+  }
+  return names;
 }
 
 /** Cross-references between agents and workflows that the schema alone can't check. */

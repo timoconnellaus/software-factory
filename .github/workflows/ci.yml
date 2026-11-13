@@ -70,6 +70,16 @@ jobs:
       # Every Worker must bundle; a dry run catches what typecheck can't (bad bindings, imports).
       - run: pnpm build
 
+  # The key helper's Swift unit tests (spec 40 M4b): the presence-message parser, the tag
+  # allowlist, the exit codes. GitHub's macOS VMs have no Secure Enclave, so nothing here makes a key.
+  key-helper-macos:
+    name: key helper (macOS)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift test --package-path apps/desktop/native/sf-keys-app
+
   # The real check sandbox on macOS (ADR 0501, third review): sandbox-exec, the real home and its
   # toolchain under it (hostedtoolcache, setup-pnpm), required.
   check-sandbox-macos:

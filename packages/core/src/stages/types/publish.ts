@@ -69,6 +69,9 @@ export const publish: StageType<typeof settings> = {
     risk: "merge",
     // With `autoApprove` on, the gate is still a pending `merge` action; the factory decides it only
     // under ADR 0515's conditions, in code (`autoApproveVerdict`), never a delegate.
+    // Its condition "every acceptance criterion is proven by a check that ran" counts only a tie a
+    // person approved; a criterion that passed the check triage (an agent) named is not proven for
+    // it (ADR 0501, amended 2026-11-13).
     delegable: [],
     // `merge` is in ALWAYS_REVIEW (ADR 0008); `autoApprove` decides only under ADR 0515's conditions.
     alwaysReview: true,

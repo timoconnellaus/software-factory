@@ -32,7 +32,8 @@ new backend come in later slices, once that backend lands.
   - Inbox, with the count of what waits on you;
   - Work;
   - Pinned: work items pinned on this Mac;
-  - Settings, at the bottom.
+  - Settings, at the bottom, with the rail's orange dot while setup isn't finished (amended
+    2026-11-13, see "Setup is a dot, not an Inbox item").
 - **The content panel**: white, radius 12, on the grey window. A section's nested list (212px) sits
   on its left, and the page fills the rest.
 - **The status bar** (28px), from real data:
@@ -101,7 +102,7 @@ rather than shown empty:
 3. The toolbar, org rail, sidebar, panel and status bar match the design's sizes (44, 52, 196, 212,
    28px; panel radius 12).
 4. The sidebar's Inbox count equals the gates and questions waiting on you (`inbox.list`), scoped to
-   the chosen org.
+   the chosen org. Unfinished setup is never an Inbox item and never counted (amended 2026-11-13).
 5. The status bar shows each runner's state and the heavy and light slots from `inbox.list`, the
    running and waiting counts, and the sync state from the last successful read. It shows no budget
    and no update notice.
@@ -409,3 +410,18 @@ then This Mac and Devices (yours). Screenshots are with slice 5's in
   so it never measures an element a tab switch replaced.
 - **Screenshots** of the terminal in the panel use the fixture door's made-up session
   (`?terminal=fixture`), never a real shell.
+
+## Amended 2026-11-13: setup is a dot, not an Inbox item
+The owner: setup doesn't belong in the Inbox. The Inbox no longer has a "Finish setup" notice (its
+card, `finish-setup.tsx`, is gone); it lists only what waits on you in your work (merges, specs,
+questions, approvals, and protection that changed). `inbox.list` never returned setup (the desktop
+added the notice from `setup.status`), so no other client changes. The Inbox count, the dock badge,
+the menu bar title and the notifications already counted only gates, questions and release flags.
+
+Instead, while `setup.status` says setup isn't complete, the sidebar's **Settings** and **Setup** in
+Settings' nested list each show the rail's orange dot (`StatusDot` "waiting", the
+`status-waiting` colour token), labelled "Setup isn't finished". Both read the one `setup.status` query
+for the org Setup shows (the chosen org, else Personal), which the shell's loader starts without
+waiting and which polls every 30 seconds, so the dots go once setup is finished, without a restart.
+No dot while the read is out or when it failed. The Setup page and the Setup window that opens by
+itself on first run are unchanged. Screenshots: `docs/screenshots/setup-dot/` (before and after).

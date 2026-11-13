@@ -2,6 +2,7 @@
 // the workflow's `autoApprove` setting is on and every condition holds, each checked here in code.
 // It only approves: the babysitter (spec 53) lands approved work, whoever approved it.
 import { z } from "zod";
+import { type CriterionProof, everyCriterionProven } from "../verify/proof.ts";
 
 /**
  * The merge stage's setting (ADR 0515 §4): off by default. Turning it on, raising a limit or
@@ -578,8 +579,9 @@ export function stricterAutoApprove(
 export function criteriaProven(sections: Record<string, unknown>): boolean {
   const proof = sections.proof;
   if (!Array.isArray(proof) || proof.length === 0) return false;
-  return proof.every((p) => {
-    const x = p as { proven?: unknown; linkedBy?: unknown; fromTriage?: unknown };
-    return x.proven === true && x.linkedBy === "spec" && x.fromTriage !== true;
-  });
+  // #146's own rule (only a person-approved tie, never triage's), and the spec's links only.
+  return (
+    everyCriterionProven(proof as CriterionProof[]) &&
+    proof.every((p) => (p as { linkedBy?: unknown }).linkedBy === "spec")
+  );
 }

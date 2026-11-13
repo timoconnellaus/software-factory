@@ -66,3 +66,12 @@ as "loosens if …, otherwise neutral", so every case nobody thought of came out
 - A stage type that adds a setting must classify it in `impact()`, or every change to it loosens.
 - Archiving a workflow a project runs is refused from spec 52 PR (d), when projects run org
   workflows; until then no org workflow is in use.
+
+## Amendment, 2026-11-13: org config is decided on the desktop too (ADR 0610)
+Decision 5's "browser-only ... in the app only ... never from a desktop device (even with a presence
+proof)" is loosened by the owner's decision of 2026-11-13 ("Move everything to the desktop app now
+and accept the risk until the helper exists"): the org config writes and an org config proposal's
+`approval.decide` are also decidable on the `desktop` surface with a presence proof for that exact
+call ([ADR 0610](0610-everything-but-sign-in-moves-to-the-desktop-app.md), which states the risk).
+Still never from the CLI, MCP, a phone, a runner, an agent or any other token. The classifier, and
+who may decide (an org admin), are unchanged.
