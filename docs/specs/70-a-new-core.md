@@ -15,6 +15,8 @@ agents and people each doing their part. Nothing in the core knows what kind of 
 - **Owner**: an agent, a person, or nobody.
 - **Run**: one execution of an agent on an item, on a runner.
 - **Plugin**: a manifest and a module, loaded as a Dynamic Worker.
+- **Card**: a rich entry in an item's timeline (a plan, a pull request, a chart, a document), drawn
+  by the host from a kind and data that the core or a plugin supplies.
 - **Hook**: a named point where plugins run: an item enters or leaves a status, a run starts or
   ends, an action is about to happen.
 
@@ -42,13 +44,14 @@ Each ends with something that runs.
    and the thread. The reconciler assigns a person or queues a run on entering a status, and moves
    the item on done or rejected. Proof: a workflow "Draft → Review → Done", with an agent on Draft
    and a person on Review, runs end to end on a real runner, with no code that names either status.
-2. **Plugins.** The Dynamic Worker host, hooks, grants, and the plugin MCP. Proof: an agent with
-   the plugin MCP writes a plugin whose hook posts to the thread when an item enters a status; an
-   agent without it can't.
+2. **Plugins.** The Dynamic Worker host, hooks, grants, cards and the plugin MCP, with the optional
+   approval on plugin edits. Proof: an agent with the plugin MCP writes a plugin whose hook posts
+   a card to the timeline when an item enters a status; an agent without it can't; with the
+   approval turned on, the edit waits for a person.
 3. **The software plugin.** A pull-request panel, a check step, a merge action behind a person's
    decision. Proof: this repo's own work runs on the new core.
-4. **The layout.** The desktop app's rail, sidebar, board, item page and run view on the new
-   operations.
+4. **The UI, redesigned.** New mockups first, then the desktop app's rail, sidebar, board, the item
+   panel with its timeline of cards, and the run view, on the new operations.
 5. **Cutover.** Move the data that matters, delete the old core, rewrite `AGENTS.md`, `CONTEXT.md`
    and `docs/architecture.md`.
 
@@ -64,7 +67,8 @@ Each ends with something that runs.
 ## Open questions
 1. Does a status allow more than one owner at once (parallel work), or is that a later plugin?
 2. Does the old data move at cutover, or does the new core start empty?
-3. Which panels does the item page need on day one besides the thread and properties?
+3. Which card kinds ship with the core on day one (comment, plan, document, chart), and which come
+   from the software plugin (pull request, checks)?
 
 ## Acceptance criteria (milestone 1)
 1. A workflow is created, edited and read through operations, and is refused if a status points at

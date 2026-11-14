@@ -36,15 +36,23 @@ model and the layout; grokbot-headless is the reference for plugins on Cloudflar
    systems, operations, and panels drawn by the host. It gets only the grants its manifest names.
 6. **Plugins are edited through an MCP server.** There is one plugin MCP server (list, read, write,
    enable). An agent can change plugins if, and only if, that server is assigned to it. Assigning
-   it is a person's action. There is no separate approval flow for plugin edits.
+   it is a person's action. An approval can be added to the flow: the org can set plugin edits to
+   wait for a person's decision before they go live. It is off unless someone turns it on, and the
+   engine never requires it.
 7. **Gates stay in the core.** A status can require a person's decision, and the engine enforces
    it. A plugin can add a gate or a check; it cannot remove or answer one. This is the one rule
    kept from "policy is enforced in code", and it is what makes decision 6 safe enough to be simple.
 8. **Software development is the first plugin.** GitHub, pull requests, `factory/verify`, the merge
    queue and the babysitter leave the core. Each is ported only when the new core needs it.
 9. **The layout follows Multica's**, without copying it: a rail (Inbox, Work, Team, Chat, Auto), a
-   section sidebar, a board with one column per status, an item page with a thread, properties and
-   plugin panels, and a run view.
+   section sidebar, a board with one column per status, and a run view. An item opens as a panel
+   on the right of the board.
+10. **The item's timeline is made of rich cards.** The timeline shows status changes and handoffs
+    as one-line entries, and what an agent or person produced as a card: a plan with its steps, a
+    pull request with its diff size and checks, a chart, a document preview. A card is drawn by
+    the host from components the app ships; a plugin supplies the card's kind and data, never its
+    own markup. Cards are the main way a plugin shows up in the UI. The existing UI and its
+    mockups (`docs/design/factory-ui/`, `.kim/mockups/`) are redesigned around this.
 
 ## What is kept from the old core
 The operations registry and `invoke()` (ADR 0003, 0004), the runner contract and channel, jobs,
