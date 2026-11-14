@@ -31,7 +31,7 @@ model and the layout; grokbot-headless is the reference for plugins on Cloudflar
 4. **Small modules.** The core is split into packages with one job each, and no source file is over
    400 lines. CI checks the limit.
 5. **Plugins are Dynamic Workers.** A plugin is a manifest and one module, loaded as a Cloudflare
-   Dynamic Worker, as in grokbot-headless ([its ADR 0026](https://github.com/timoconnellaus/grokbot-headless/blob/main/docs/adr/0026-plugins.md)).
+   Dynamic Worker, as in grokbot-headless (its ADR 0026, `docs/adr/0026-plugins.md` in that repo).
    A plugin can add step kinds, hooks on the engine's events, triggers, connectors to outside
    systems, operations, and panels drawn by the host. It gets only the grants its manifest names.
 6. **Plugins are edited through an MCP server.** There is one plugin MCP server (list, read, write,
