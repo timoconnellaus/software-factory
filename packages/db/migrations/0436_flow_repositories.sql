@@ -9,7 +9,7 @@ ALTER TABLE flow_projects ADD COLUMN repo_name TEXT;
 ALTER TABLE flow_projects ADD COLUMN repo_default_branch TEXT;
 ALTER TABLE flow_projects ADD COLUMN repo_installation_id TEXT;
 
--- The item's branch, `factory/flow/<key>-<number>`: set when its first run on a project with a
+-- The item's branch, `factory/flow-<key>-<number>`: set when its first run on a project with a
 -- repository is claimed, and reused by every later run. `head_sha` is the branch's head as the last
 -- run that ended `done` pushed it (null until then).
 ALTER TABLE flow_items ADD COLUMN branch TEXT;

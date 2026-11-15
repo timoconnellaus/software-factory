@@ -101,7 +101,7 @@ describe("run settings", () => {
       baseRef: "main",
       defaultBranch: "main",
     };
-    const flow = { stage: "flow" as const, repo, branch: "factory/flow/acm-7" };
+    const flow = { stage: "flow" as const, repo, branch: "factory/flow-acm-7" };
     const options = { worktree: "/w/job", runDir: "/r/job", platform: "darwin" as const };
     const s = runSettings(flow, options);
     const build = runSettings({ stage: "build" }, options);
@@ -116,7 +116,7 @@ describe("run settings", () => {
     expect(s.sandbox.autoAllowBashIfSandboxed).toBe(true);
     // The launch's --permission-mode follows.
     const argv = claudeArgv(
-      { ...job("flow"), repo, branch: "factory/flow/acm-7" },
+      { ...job("flow"), repo, branch: "factory/flow-acm-7" },
       {
         settingsPath: "/r/job/settings.json",
       },

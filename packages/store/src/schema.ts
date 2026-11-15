@@ -59,7 +59,7 @@ export interface FlowItemsTable {
   updated_at: string;
   /** JSON: the item's plugin fields, field id to value. */
   fields: string;
-  /** `factory/flow/<key>-<number>`, set when its first run with a repository is claimed (0436). */
+  /** `factory/flow-<key>-<number>`, set when its first run with a repository is claimed (0436). */
   branch: string | null;
   /** The branch's head as the last run that ended `done` pushed it. */
   head_sha: string | null;

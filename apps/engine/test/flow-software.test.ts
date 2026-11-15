@@ -179,7 +179,7 @@ describe("a project with a repository", () => {
     const job = await claim(p);
     if (!job) throw new Error("no job");
     expect(jobSchema.safeParse(job).success).toBe(true);
-    const branch = "factory/flow/app-1";
+    const branch = "factory/flow-app-1";
     expect(job).toMatchObject({
       stage: "flow",
       repo: {
@@ -240,13 +240,13 @@ describe("a project with a repository", () => {
       fencingToken: job.lease.fencingToken,
       outcome: "failed",
       artifactIds: [],
-      branch: "factory/flow/app-1",
+      branch: "factory/flow-app-1",
       summary: "The tests wouldn't run.",
     });
     // It pushed before it failed: the branch is on GitHub though the item has no head.
-    await github.push(gh.ref, "factory/flow/app-1");
+    await github.push(gh.ref, "factory/flow-app-1");
     await p.call("flow.item.retry", { itemId: item.id });
-    expect(await claim(p)).toMatchObject({ repo: { baseRef: "factory/flow/app-1" } });
+    expect(await claim(p)).toMatchObject({ repo: { baseRef: "factory/flow-app-1" } });
   });
 
   it("gives a run on a project without a repository no repo, branch or token", async () => {
@@ -461,7 +461,7 @@ describe("the software plugin (plugins/software/plugin.js)", () => {
     expect(PLUGIN_GUIDE).toContain(SOFTWARE_PLUGIN.trim());
     const rest = fakeRest("acme", gh.name);
     const item = await newItem(p, project.id);
-    const branch = "factory/flow/app-1";
+    const branch = "factory/flow-app-1";
     const head = sha("b");
     rest.heads.set(branch, head);
     rest.setChecks(head, [
