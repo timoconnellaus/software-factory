@@ -677,3 +677,11 @@ function handedTo(effects: Effect[], names: Names): string | null {
 
 /** "3h ago", "just now". */
 export const when = (iso: string, now = Date.now()) => ago(iso, now);
+
+/**
+ * A stopped item's error while it's folded to four lines: blank lines dropped, so each of the four
+ * shows text (a real error's paragraph break left the fourth line holding only the ellipsis).
+ */
+export function foldedError(error: string): string {
+  return error.trim().replace(/\n[ \t]*(?:\n[ \t]*)+/g, "\n");
+}
