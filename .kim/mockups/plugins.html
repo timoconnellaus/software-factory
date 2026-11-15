@@ -1,0 +1,91 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Plugins</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script><style>
+:root{--bg:#f6f6f5;--surface:#fff;--line:#e7e6e3;--soft:#f0efec;--text:#1b1b1a;--muted:#6f6e6a;--faint:#a3a29d;--accent:#2f5fd0;--accent-soft:#eaf0fd;--need:#b45f06;--need-soft:#fdf1df;--need-line:#f0c078;--ok:#2c8a4b;--bad:#c2372d;--font:"Inter",system-ui,-apple-system,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.all{background:none;color:var(--muted)}.orgs b.all.on{background:var(--text);color:#fff}
+.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:224px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.side h2{font-size:11px;font-weight:500;color:var(--faint);margin:14px 8px 3px}
+.side a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text);text-decoration:none}
+.side a.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}.side a.cur{background:#e9e8e4}
+.side a .c{margin-left:auto;color:var(--faint);font-size:11.5px}.side a .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.grow{flex:1}
+.shell{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.top{height:48px;flex:none;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:12px;padding:0 18px}
+.top b{font-size:14px}
+.tabs{display:flex;gap:2px;height:100%}.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.pill{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.pill.need{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}.pill.work{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.body{flex:1;overflow:auto;padding:20px 22px;background:#fbfbfa}
+.av{width:18px;height:18px;border-radius:5px;background:var(--bg);border:1px solid var(--line);display:inline-grid;place-items:center;font-size:9px;font-weight:600;flex:none}.av.p{border-radius:50%}
+.dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--c,#999);flex:none;display:inline-block}.dot.half{background:linear-gradient(90deg,var(--c) 50%,transparent 50%)}.dot.full{background:var(--c)}
+h3{font-size:12px;font-weight:600;margin:0 0 8px;color:var(--muted)}
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:22px;max-width:860px}
+.rows>div{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--soft)}.rows>div:last-child{border:0}
+.rows .t{font-weight:500}.rows .m{color:var(--muted);font-size:12px}.rows .r{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 12px;font-weight:500}.btn.pri{background:var(--text);border-color:var(--text);color:#fff}
+@media(max-width:800px){.side{display:none}}@media(max-width:500px){.orgs{display:none}.shell{margin:0;border:0;border-radius:0}}
+
+.two{display:flex;gap:18px;align-items:flex-start;height:100%}
+.lst{width:300px;flex:none;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.lst>div{padding:10px 13px;border-bottom:1px solid var(--soft);display:flex;gap:9px;align-items:flex-start}.lst>div:last-child{border:0}
+.lst>div.sel{background:var(--accent-soft)}
+.lst .t{font-weight:500}.lst .m{color:var(--muted);font-size:12px}.lst .r{margin-left:auto;color:var(--faint);font-size:11.5px;white-space:nowrap}
+.card{flex:1;min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px;max-width:760px}
+.card h1{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}.card .sub{color:var(--muted);margin:0 0 16px}
+.sec{font-size:12px;font-weight:600;color:var(--muted);margin:18px 0 7px}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:7px 12px;font-size:12.5px}.kv span:nth-child(odd){color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{border:1px solid var(--line);border-radius:7px;padding:2px 8px;font-size:12px;display:inline-flex;gap:5px;align-items:center}
+.chip.hl{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}
+.ln{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--soft);font-size:12.5px}.ln:last-child{border:0}
+.ln .m{color:var(--muted);font-size:12px;white-space:nowrap}.ln .r{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.ev{display:flex;gap:8px;font-size:12px;color:var(--muted);align-items:baseline;margin:9px 0}.ev time{margin-left:auto;color:var(--faint)}.ev b{font-weight:500;color:var(--text)}.ev .hand{display:block;color:var(--faint)}
+.entry{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:9px 0;background:var(--surface)}
+.entry .who{display:flex;align-items:center;gap:7px;font-weight:600;margin-bottom:4px}.entry .who time{font-weight:400;color:var(--faint);font-size:11.5px}
+.entry p{margin:0 0 8px}
+.rich{background:#fbfbfa;border:1px solid var(--soft);border-radius:8px;padding:9px 11px;font-size:12px}
+.rich .hd{display:flex;justify-content:space-between;font-weight:600}.rich .hd span{font-weight:400;color:var(--faint)}
+.rich .checks{display:flex;gap:12px;color:var(--muted);margin-top:7px;padding-top:7px;border-top:1px solid var(--soft)}.rich .checks svg{color:var(--ok);width:13px;height:13px;vertical-align:-2px}
+.rich ul{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px}.rich li::before{content:"✓";color:var(--ok);margin-right:7px}
+.run{display:flex;gap:14px;color:var(--muted);font-size:11.5px;margin-top:8px}.run a{margin-left:auto;color:var(--accent);text-decoration:none}
+.decide{border:1px solid var(--need-line);background:var(--need-soft);border-radius:10px;padding:11px 12px;margin:9px 0}.decide .q{font-weight:600}.decide p{margin:3px 0 9px;color:#5b4a2e}
+.say{border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--faint);background:var(--surface);margin-top:12px}
+.sw{display:inline-block;vertical-align:middle;width:30px;height:18px;border-radius:9px;background:var(--text);position:relative}.sw::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.sw.off{background:#d6d5d1}.sw.off::after{right:auto;left:2px}
+table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden;max-width:980px}
+th{text-align:left;font-weight:500;color:var(--faint);font-size:11.5px;padding:9px 14px;border-bottom:1px solid var(--soft)}
+td{padding:10px 14px;border-bottom:1px solid var(--soft)}tr:last-child td{border:0}td.m{color:var(--muted)}
+.props{width:250px;flex:none}
+
+.ask{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;max-width:860px;margin-bottom:20px;display:flex;gap:10px;align-items:center;color:var(--faint)}
+.ask .btn{margin-left:auto}
+.pl{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:13px 16px;max-width:860px;margin-bottom:10px}
+.pl .h{display:flex;align-items:center;gap:9px}.pl .h b{font-size:14px}.pl .h .sw{margin-left:auto}
+.pl .q{color:#3c3c3a;margin:5px 0 9px;font-style:italic}
+.pl .f{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:12px;color:var(--muted)}
+.pl .f .sp{width:10px}
+.gw{border-color:#cfd9f3;background:var(--accent-soft);color:var(--accent)}
+.err{color:var(--bad);font-size:12px;margin-top:8px}
+</style></head><body>
+<div class="orgs" data-name="org strip"><b class="all " data-name="all orgs"><i data-lucide="layout-grid"></i></b><b class="on">A</b><b>C</b><b class="add">+</b></div>
+<nav class="side" data-name="sidebar"><div class="org">Acme <i data-lucide="chevron-down"></i></div><a href="#" class=""><i data-lucide="inbox"></i>Inbox<span class="c need">2</span></a><a href="#" class=""><i data-lucide="square-check"></i>Work</a><a href="#" class=""><i data-lucide="users"></i>Team</a><a href="#" class=""><i data-lucide="zap"></i>Auto</a><a href="#" class="on"><i data-lucide="puzzle"></i>Plugins</a><h2>Projects</h2><a href="#" class=""><i data-lucide="folder"></i>API Platform<span class="c">12</span></a><a href="#" class=""><i data-lucide="folder"></i>Autopilots launch<span class="c">9</span></a><a href="#" class=""><i data-lucide="folder"></i>Customer feedback<span class="c">7</span></a><a href="#" class=""><i data-lucide="folder"></i>Mobile app<span class="c">5</span></a><div class="grow"></div><a href="#"><i data-lucide="settings"></i>Settings</a></nav>
+<div class="shell"><div class="top"><b>Plugins</b><div class="tabs" data-name="plugin tabs"><span class="on">Plugins</span><span>Gateways</span></div></div><div class="body"><div class="ask" data-name="ask for a plugin"><i data-lucide="sparkles"></i>Say what you want the app to do…<button class="btn pri">Ask Lead</button></div><div class="pl" data-name="plugin"><div class="h"><i data-lucide="puzzle"></i><b>Publish to the blog</b><span class="sw "></span></div>
+<div class="q">“When an item reaches Published, post it to our blog and put the link on the item.”</div>
+<div class="f"><span>Adds</span><span class="chip">A step: Publish</span><span class="chip">A card: Published link</span><span class="sp"></span><span>Uses</span><span class="chip gw">Blog</span><span style="margin-left:auto">Built by Lead · 2 days ago</span></div></div><div class="pl" data-name="plugin"><div class="h"><i data-lucide="puzzle"></i><b>Customers on feedback</b><span class="sw "></span></div>
+<div class="q">“Items in Customer feedback need a Customer field shown on the board, and a new support email should create an item.”</div>
+<div class="f"><span>Adds</span><span class="chip">A field: Customer</span><span class="chip">A trigger: new email</span><span class="sp"></span><span>Uses</span><span class="chip gw">Gmail</span><span style="margin-left:auto">Built by Lead · last week</span></div></div><div class="pl" data-name="plugin"><div class="h"><i data-lucide="puzzle"></i><b>Software</b><span class="sw "></span></div>
+<div class="q">“Show the pull request and its checks on the item, and don’t let it move to Approve until the checks pass.”</div>
+<div class="f"><span>Adds</span><span class="chip">A step: Open a pull request</span><span class="chip">A step: Merge</span><span class="chip">A rule: checks pass</span><span class="chip">A card: Pull request</span><span class="sp"></span><span>Uses</span><span class="chip gw">GitHub</span><span style="margin-left:auto">Built by Lead · changed today</span></div></div><div class="pl" data-name="plugin"><div class="h"><i data-lucide="puzzle"></i><b>Agent spend</b><span class="sw "></span></div>
+<div class="q">“Give me a page that shows what each agent cost this week.”</div>
+<div class="f"><span>Adds</span><span class="chip">A screen: Spend</span><span class="sp"></span><span>Uses</span><span>nothing outside</span><span style="margin-left:auto">Built by Lead · yesterday</span></div></div><div class="pl" data-name="plugin"><div class="h"><i data-lucide="puzzle"></i><b>Slack updates</b><span class="sw "></span></div>
+<div class="q">“Tell #launch in Slack whenever a launch item changes status.”</div>
+<div class="f"><span>Adds</span><span class="chip">A reaction: status changed</span><span class="sp"></span><span>Uses</span><span class="chip gw">Slack</span><span style="margin-left:auto">Built by Lead · 3 days ago</span></div><div class="err">Failed 20 minutes ago on ACM-212: Slack said “channel not found”. The item is stopped. <a href="#" style="color:var(--accent);text-decoration:none">Ask Lead to fix it</a> · <a href="#" style="color:var(--accent);text-decoration:none">Retry</a></div></div></div></div>
+<script>lucide.createIcons()</script></body></html>

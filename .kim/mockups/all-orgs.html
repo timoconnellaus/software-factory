@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>All orgs</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script><style>
+:root{--bg:#f6f6f5;--surface:#fff;--line:#e7e6e3;--soft:#f0efec;--text:#1b1b1a;--muted:#6f6e6a;--faint:#a3a29d;--accent:#2f5fd0;--accent-soft:#eaf0fd;--need:#b45f06;--need-soft:#fdf1df;--need-line:#f0c078;--ok:#2c8a4b;--bad:#c2372d;--font:"Inter",system-ui,-apple-system,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.all{background:none;color:var(--muted)}.orgs b.all.on{background:var(--text);color:#fff}
+.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:224px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.side h2{font-size:11px;font-weight:500;color:var(--faint);margin:14px 8px 3px}
+.side a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text);text-decoration:none}
+.side a.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}.side a.cur{background:#e9e8e4}
+.side a .c{margin-left:auto;color:var(--faint);font-size:11.5px}.side a .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.grow{flex:1}
+.shell{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.top{height:48px;flex:none;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:12px;padding:0 18px}
+.top b{font-size:14px}
+.tabs{display:flex;gap:2px;height:100%}.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.pill{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.pill.need{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}.pill.work{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.body{flex:1;overflow:auto;padding:20px 22px;background:#fbfbfa}
+.av{width:18px;height:18px;border-radius:5px;background:var(--bg);border:1px solid var(--line);display:inline-grid;place-items:center;font-size:9px;font-weight:600;flex:none}.av.p{border-radius:50%}
+.dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--c,#999);flex:none;display:inline-block}.dot.half{background:linear-gradient(90deg,var(--c) 50%,transparent 50%)}.dot.full{background:var(--c)}
+h3{font-size:12px;font-weight:600;margin:0 0 8px;color:var(--muted)}
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:22px;max-width:860px}
+.rows>div{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--soft)}.rows>div:last-child{border:0}
+.rows .t{font-weight:500}.rows .m{color:var(--muted);font-size:12px}.rows .r{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 12px;font-weight:500}.btn.pri{background:var(--text);border-color:var(--text);color:#fff}
+@media(max-width:800px){.side{display:none}}@media(max-width:500px){.orgs{display:none}.shell{margin:0;border:0;border-radius:0}}
+</style></head><body>
+<div class="orgs" data-name="org strip"><b class="all on" data-name="all orgs"><i data-lucide="layout-grid"></i></b><b class="">A</b><b>C</b><b class="add">+</b></div>
+<nav class="side" data-name="sidebar"><div class="org">All orgs</div><a href="#" class=""><i data-lucide="inbox"></i>Inbox<span class="c need">3</span></a><a href="#" class="on"><i data-lucide="square-check"></i>Work</a><div class="grow"></div><a href="#"><i data-lucide="settings"></i>Settings</a></nav>
+<div class="shell"><div class="top"><b>Everything</b><span class="grow"></span><span class="pill work">5 agents working</span><span class="pill need">3 need you</span></div><div class="body"><h3>Needs you</h3><div class="rows" data-name="needs you list"><div data-name="item row"><span class="av">A</span><span><span class="t">Merge #318?</span><br><span class="m">Acme · API Platform · ACM-142 Add rate limiting to the public API</span></span><button class="btn pri" style="margin-left:auto">Open</button><span class="r" style="margin-left:10px">8m</span></div><div data-name="item row"><span class="av">A</span><span><span class="t">Publish this post?</span><br><span class="m">Acme · Autopilots launch · ACM-212 Launch post for Autopilots</span></span><button class="btn pri" style="margin-left:auto">Open</button><span class="r" style="margin-left:10px">34m</span></div><div data-name="item row"><span class="av">C</span><span><span class="t">Which address should the invoice use?</span><br><span class="m">Cove · Website · CV-31 Invoice footer</span></span><button class="btn pri" style="margin-left:auto">Open</button><span class="r" style="margin-left:10px">1h</span></div></div><h3>Working now</h3><div class="rows" data-name="working now list"><div data-name="item row"><span class="av">A</span><span><span class="t">Move auth webhooks onto the job queue</span><br><span class="m">Acme · API Platform · Build · Backend</span></span><span class="r">2m</span></div><div data-name="item row"><span class="av">A</span><span><span class="t">Fix the flaky checkout test on CI</span><br><span class="m">Acme · API Platform · Review · QA</span></span><span class="r">just now</span></div><div data-name="item row"><span class="av">A</span><span><span class="t">Customer story: Northwind Robotics</span><br><span class="m">Acme · Autopilots launch · Research · Research</span></span><span class="r">3m</span></div><div data-name="item row"><span class="av">C</span><span><span class="t">Booking page loads slowly on phones</span><br><span class="m">Cove · Website · Build · Builder</span></span><span class="r">11m</span></div><div data-name="item row"><span class="av">C</span><span><span class="t">Weekly traffic report</span><br><span class="m">Cove · Reports · Draft · Analyst</span></span><span class="r">14m</span></div></div><h3>Orgs</h3><div class="rows" data-name="org list"><div><span class="av">A</span><span class="t">Acme</span><span class="m">4 projects · 33 open items</span><span class="r">3 working · 2 need you</span></div><div><span class="av">C</span><span class="t">Cove</span><span class="m">2 projects · 9 open items</span><span class="r">2 working · 1 needs you</span></div></div></div></div>
+<script>lucide.createIcons()</script></body></html>
