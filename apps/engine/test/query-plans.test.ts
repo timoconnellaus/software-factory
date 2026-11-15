@@ -23,11 +23,17 @@ import {
   createItem,
   createProject,
   createWorkflow,
+  declaredFields,
+  enabledPlugins,
   expireRuns,
   finishRun,
+  gatewayForHost,
+  getPluginById,
   inbox,
+  loadItem,
   recentComments,
   renewLease,
+  runForToken,
   timeline,
 } from "@software-factory/store";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -229,9 +235,19 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       if (!run) throw new Error("nothing to claim");
       await recentComments(e.DB, item.id, 10);
       await renewLease(e.DB, run.id, "runner_qp", now, 60_000);
+      // Milestone 2: the MCP server's token check (by primary key), the plugin host's reads around
+      // every item event (the item and its workflow, the org's enabled plugins), a gateway by name,
+      // and a trigger's plugin.
+      await runForToken(e.DB, run.id);
+      await loadItem(e.DB, item.id);
+      await enabledPlugins(e.DB, orgId);
+      await gatewayForHost(e.DB, undefined, orgId, "blog");
+      await getPluginById(e.DB, "fplg_qp");
       await finishRun(e.DB, run.id, run.fencingToken, { outcome: "done", summary: "ok" });
       // The desktop app's polled reads: the board, the inbox and the timeline, each capped.
       await board(e.DB, project.id);
+      // And the fields the org's plugins declare, read with every board and item.
+      await declaredFields(e.DB, orgId);
       await inbox(e.DB, orgId, "u_qp");
       await timeline(e.DB, item.id);
       // The door's org check for a flow.* call (packages/ops scope.ts), with each kind of id named.

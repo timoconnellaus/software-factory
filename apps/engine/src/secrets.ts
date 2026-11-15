@@ -9,6 +9,11 @@ export interface EngineSecrets {
   GH_APP_PRIVATE_KEY?: string;
   /** The GitHub App's webhook secret: every delivery's `x-hub-signature-256` is checked with it. */
   GH_APP_WEBHOOK_SECRET?: string;
+  /**
+   * The key the new core's gateway secrets are sealed with (AES-GCM, spec 70 milestone 2). Unset:
+   * storing a gateway secret is refused, and gateways with no auth still work.
+   */
+  FLOW_GATEWAY_KEY?: string;
 }
 
 export function secrets(env: Env): EngineSecrets {

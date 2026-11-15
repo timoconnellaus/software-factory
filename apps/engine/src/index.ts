@@ -13,13 +13,17 @@ import {
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
+import { expireRunsWithHooks } from "@software-factory/plugins";
 import { parseTerminalPath } from "@software-factory/runner-contract";
-import { expireRuns } from "@software-factory/store";
 import { archiveAudit } from "./audit-archive.ts";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
 import { deliverDue } from "./deliver/deliverer.ts";
 import { invokeDeps } from "./deps.ts";
+import { flowHost } from "./flow/door.ts";
+import { handleMcp } from "./flow/mcp.ts";
+import { MCP_PATH } from "./flow/mcp-auth.ts";
+import { handleTrigger, TRIGGER_PREFIX } from "./flow/triggers.ts";
 import { retryOutbox } from "./outbox.ts";
 import { pullQueuedWork } from "./pull.ts";
 import { pruneReconcileShadow, shadowPass } from "./reconcile-shadow.ts";
@@ -50,6 +54,10 @@ export default {
       return handleCli(request, env);
     }
     if (url.pathname === WEBHOOK_PATH) return handleGitHubWebhook(request, env);
+    // The new core (spec 70 milestone 2): the MCP server a flow run's agent uses (its bearer token
+    // names the run), and plugins' public triggers (the plugin's key is the check).
+    if (url.pathname === MCP_PATH) return handleMcp(request, env);
+    if (url.pathname.startsWith(TRIGGER_PREFIX)) return handleTrigger(request, env);
     return new Response("Not found", { status: 404 });
   },
 
@@ -57,9 +65,10 @@ export default {
     const now = new Date(controller.scheduledTime);
     await retryOutbox(env, now);
     await expireQuietRuns(env, now);
-    // The new core's runs whose lease lapsed (spec 70): at most 10 a tick, through flow_runs_lease_idx.
-    // Caught, so a failure here never stops the rest of the tick.
-    await expireRuns(env.DB, now.getTime(), 10).catch((error) => {
+    // The new core's runs whose lease lapsed (spec 70): at most 10 a tick, through flow_runs_lease_idx,
+    // each with its org's plugins' `runEnded` hooks. Caught, so a failure here never stops the rest
+    // of the tick.
+    await expireRunsWithHooks(flowHost(env), now.getTime(), 10).catch((error) => {
       console.error("flow expireRuns failed", error);
     });
     await pruneChannelStore(env.DB, now);

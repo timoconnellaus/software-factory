@@ -3,9 +3,10 @@
 import { guardChanged, toStatement } from "@software-factory/db";
 import type { Actor } from "@software-factory/flow";
 import { sql } from "kysely";
+import { parseMcp } from "./agents.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
 import type { FlowRunsTable, RunStatus } from "./schema.ts";
-import { advance, type Item } from "./step.ts";
+import { advance, type Item, type Stepped } from "./step.ts";
 
 export interface RunResult {
   outcome: "done" | "rejected";
@@ -64,7 +65,7 @@ export interface ClaimedRun {
   leaseExpiresAt: string;
   item: { number: number; title: string; body: string };
   /** Null when the workflow names an agent the org doesn't have. */
-  agent: { id: string; name: string; instructions: string } | null;
+  agent: { id: string; name: string; instructions: string; mcp: string[] } | null;
 }
 
 const STOPPED_RESPONDING = "The runner stopped responding.";
@@ -92,7 +93,7 @@ export async function claimRun(
     .leftJoin("flow_agents as a", "a.id", "r.agent_id")
     .select(["r.id", "r.org_id", "r.item_id", "r.agent_id", "r.status_id", "r.stay", "r.brief"])
     .select(["r.fencing_token", "i.number", "i.title", "i.body"])
-    .select(["a.name as agent_name", "a.instructions as agent_instructions"])
+    .select(["a.name as agent_name", "a.instructions as agent_instructions", "a.mcp as agent_mcp"])
     .where("r.status", "=", sql.lit("queued"))
     .where(
       sql<boolean>`(i.created_by = (SELECT owner_user_id FROM core_runners WHERE id = ${runnerId})
@@ -135,6 +136,7 @@ export async function claimRun(
             id: run.agent_id,
             name: run.agent_name,
             instructions: run.agent_instructions ?? "",
+            mcp: parseMcp(run.agent_mcp),
           },
   };
 }
@@ -167,18 +169,29 @@ export async function getRun(d1: D1Database, runId: string): Promise<Run | null>
   return row ? toRun(row) : null;
 }
 
+/** How a run ended. `stopWith` records it done but stops the item with that error instead. */
+export type RunEnding =
+  | { status: "done"; result: RunResult; stopWith?: string }
+  | { status: "failed"; error: string };
+
+/** A run that ended: the run as it now is, its item after the step, and the step's effects. */
+export interface EndedRun extends Stepped {
+  run: Run;
+}
+
 /**
- * Ends a claimed run: marks it, then applies `event` to its item, in one batch. With `lapsedBefore`
- * the run's update also requires its lease to have lapsed before then, at write time, so a lease
- * renewed after the sweep read it is never failed (the batch is a conflict instead).
+ * Ends a claimed run: marks it, then applies `run.ended` (or `run.failed`) to its item, in one
+ * batch. With `lapsedBefore` the run's update also requires its lease to have lapsed before then,
+ * at write time, so a lease renewed after the sweep read it is never failed (the batch is a
+ * conflict instead). A stale fencing token is refused.
  */
-async function end(
+export async function endRun(
   d1: D1Database,
   runId: string,
   fencingToken: number,
-  ended: { status: "done"; result: RunResult } | { status: "failed"; error: string },
+  ended: RunEnding,
   lapsedBefore?: string,
-): Promise<Item> {
+): Promise<EndedRun> {
   const db = flowDb(d1);
   const run = await db
     .selectFrom("flow_runs")
@@ -192,13 +205,21 @@ async function end(
       `Run ${runId} is ${run.status} with fencing token ${run.fencing_token}; this call holds ${fencingToken}.`,
     );
   }
+  const now = iso();
+  const after: FlowRunsTable = {
+    ...run,
+    status: ended.status,
+    result: ended.status === "done" ? JSON.stringify(ended.result) : null,
+    error: ended.status === "failed" ? ended.error : null,
+    finished_at: now,
+  };
   let finish = db
     .updateTable("flow_runs")
     .set({
-      status: ended.status,
-      result: ended.status === "done" ? JSON.stringify(ended.result) : null,
-      error: ended.status === "failed" ? ended.error : null,
-      finished_at: iso(),
+      status: after.status,
+      result: after.result,
+      error: after.error,
+      finished_at: now,
     })
     .where("id", "=", runId)
     .where("status", "=", "claimed")
@@ -206,43 +227,47 @@ async function end(
   if (lapsedBefore !== undefined) finish = finish.where("lease_expires_at", "<", lapsedBefore);
   const agent: Actor = { kind: "agent", id: run.agent_id };
   const summary = ended.status === "done" ? ended.result.summary.trim() : "";
-  return advance(
+  const stopWith = ended.status === "done" ? ended.stopWith : undefined;
+  const stepped = await advance(
     d1,
     run.item_id,
-    ended.status === "done"
-      ? { type: "run.ended", stay: run.stay, outcome: ended.result.outcome }
-      : { type: "run.failed", stay: run.stay, error: ended.error },
+    ended.status === "failed"
+      ? { type: "run.failed", stay: run.stay, error: ended.error }
+      : stopWith !== undefined
+        ? { type: "run.failed", stay: run.stay, error: stopWith }
+        : { type: "run.ended", stay: run.stay, outcome: ended.result.outcome },
     agent,
     {
       before: [toStatement(d1, finish), guardChanged(d1, "flow_runs.fencing_token")],
       ...(summary ? { comment: { actor: agent, text: summary } } : {}),
     },
   );
+  return { ...stepped, run: toRun(after) };
 }
 
 /** The agent finished: the item moves on (or back). A stale fencing token is refused. */
-export function finishRun(
+export async function finishRun(
   d1: D1Database,
   runId: string,
   fencingToken: number,
   result: RunResult,
 ): Promise<Item> {
-  return end(d1, runId, fencingToken, { status: "done", result });
+  return (await endRun(d1, runId, fencingToken, { status: "done", result })).item;
 }
 
 /** The run failed: the item stops with the error until someone retries it. */
-export function failRun(
+export async function failRun(
   d1: D1Database,
   runId: string,
   fencingToken: number,
   error: string,
 ): Promise<Item> {
-  return end(d1, runId, fencingToken, { status: "failed", error });
+  return (await endRun(d1, runId, fencingToken, { status: "failed", error })).item;
 }
 
 /**
  * Fails one claimed run as the lease sweep does: only if, at write time, it still holds
- * `fencingToken` and its lease lapsed before `now`. False when it ended, was claimed again, or its
+ * `fencingToken` and its lease lapsed before `now`. Null when it ended, was claimed again, or its
  * runner renewed the lease after the sweep read it.
  */
 export async function expireRun(
@@ -250,12 +275,17 @@ export async function expireRun(
   runId: string,
   fencingToken: number,
   now: number,
-): Promise<boolean> {
+): Promise<EndedRun | null> {
   try {
-    await end(d1, runId, fencingToken, { status: "failed", error: STOPPED_RESPONDING }, iso(now));
-    return true;
+    return await endRun(
+      d1,
+      runId,
+      fencingToken,
+      { status: "failed", error: STOPPED_RESPONDING },
+      iso(now),
+    );
   } catch (error) {
-    if (error instanceof StoreError) return false;
+    if (error instanceof StoreError) return null;
     throw error;
   }
 }
@@ -263,9 +293,15 @@ export async function expireRun(
 /**
  * Fails claimed runs whose lease lapsed before `now`, oldest first, through expireRun. Reads
  * flow_runs_lease_idx. At most 10 a call (AGENTS.md cost rule 8: each one is a few queries); a run
- * that ended or was renewed meanwhile is skipped. Returns how many it failed.
+ * that ended or was renewed meanwhile is skipped. `onEnded` runs after each one that failed (the
+ * plugin hooks). Returns how many it failed.
  */
-export async function expireRuns(d1: D1Database, now: number, limit: number): Promise<number> {
+export async function expireRuns(
+  d1: D1Database,
+  now: number,
+  limit: number,
+  onEnded?: (ended: EndedRun) => Promise<void>,
+): Promise<number> {
   const lapsed = await flowDb(d1)
     .selectFrom("flow_runs")
     .select(["id", "fencing_token"])
@@ -276,7 +312,10 @@ export async function expireRuns(d1: D1Database, now: number, limit: number): Pr
     .execute();
   let failed = 0;
   for (const run of lapsed) {
-    if (await expireRun(d1, run.id, run.fencing_token, now)) failed++;
+    const ended = await expireRun(d1, run.id, run.fencing_token, now);
+    if (!ended) continue;
+    failed++;
+    await onEnded?.(ended);
   }
   return failed;
 }
@@ -290,4 +329,33 @@ export async function itemRuns(d1: D1Database, itemId: string): Promise<Run[]> {
     .orderBy("stay")
     .execute();
   return rows.map(toRun);
+}
+
+/** Stores the hash of a claimed run's MCP bearer token. */
+export async function setMcpTokenHash(d1: D1Database, runId: string, hash: string): Promise<void> {
+  await flowDb(d1)
+    .updateTable("flow_runs")
+    .set({ mcp_token_hash: hash })
+    .where("id", "=", runId)
+    .execute();
+}
+
+/**
+ * What the MCP server needs to authenticate a run's token: the run, its token's hash, and who
+ * created its item (the person the agent acts for). One read by primary key.
+ */
+export async function runForToken(
+  d1: D1Database,
+  runId: string,
+): Promise<{ run: Run; tokenHash: string | null; itemCreatedBy: string } | null> {
+  const row = await flowDb(d1)
+    .selectFrom("flow_runs as r")
+    .innerJoin("flow_items as i", "i.id", "r.item_id")
+    .selectAll("r")
+    .select("i.created_by as item_created_by")
+    .where("r.id", "=", runId)
+    .executeTakeFirst();
+  if (!row) return null;
+  const { item_created_by, ...run } = row;
+  return { run: toRun(run), tokenHash: run.mcp_token_hash, itemCreatedBy: item_created_by };
 }

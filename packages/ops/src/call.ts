@@ -1,9 +1,12 @@
 // The registry and `call`: look the operation up, validate its input, check the caller may act in
 // the org it names, run it, and answer { ok, result } or { ok: false, error }.
 import { FlowError } from "@software-factory/flow";
+import { NoLoaderError, type PluginHostEnv, PluginRefusal } from "@software-factory/plugins";
 import { StoreError } from "@software-factory/store";
+import { z } from "zod";
 import { itemOps } from "./items.ts";
-import { type ErrorCode, OpError, type Operation, type Person } from "./operation.ts";
+import { type Caller, type ErrorCode, OpError, type Operation } from "./operation.ts";
+import { gatewayOps, pluginOps } from "./plugins.ts";
 import { agentOps, projectOps } from "./projects.ts";
 import { readOps } from "./reads.ts";
 import { checkScope } from "./scope.ts";
@@ -15,6 +18,8 @@ const OPERATIONS: readonly Operation[] = [
   ...agentOps,
   ...itemOps,
   ...readOps,
+  ...pluginOps,
+  ...gatewayOps,
 ];
 
 const BY_NAME = new Map(OPERATIONS.map((op) => [op.name, op]));
@@ -31,9 +36,21 @@ export function describe(): { name: string; description: string; risk: "read" | 
   return OPERATIONS.map(({ name, description, risk }) => ({ name, description, risk }));
 }
 
+/** Names, descriptions, risk and each input's JSON Schema: what an agent reads to call them. */
+export function describeWithInputs() {
+  return OPERATIONS.map(({ name, description, risk, input }) => ({
+    name,
+    description,
+    risk,
+    input: z.toJSONSchema(input, { io: "input", unrepresentable: "any" }),
+  }));
+}
+
 export interface CallContext {
   d1: D1Database;
-  actor: Person;
+  actor: Caller;
+  /** The plugin host's bindings; default D1 alone (plugins with hooks then fail when they run). */
+  host?: PluginHostEnv;
   /** Milliseconds since the epoch; defaults to now. */
   now?: number;
 }
@@ -54,6 +71,8 @@ const STORE_CODES: Record<StoreError["code"], ErrorCode> = {
   not_found: "not_found",
   conflict: "conflict",
   stale_run: "conflict",
+  invalid: "invalid_input",
+  unavailable: "unavailable",
 };
 
 export async function call(name: string, rawInput: unknown, ctx: CallContext): Promise<CallResult> {
@@ -74,9 +93,10 @@ export async function call(name: string, rawInput: unknown, ctx: CallContext): P
   }
   const input = parsed.data;
   try {
-    await checkScope(ctx.d1, input.orgId, ctx.actor.id, input as Record<string, unknown>);
+    await checkScope(ctx.d1, input.orgId, ctx.actor, input as Record<string, unknown>);
     const result = await op.handler(input, {
       d1: ctx.d1,
+      host: ctx.host ?? { DB: ctx.d1 },
       orgId: input.orgId,
       actor: ctx.actor,
       now: ctx.now ?? Date.now(),
@@ -93,11 +113,24 @@ export async function call(name: string, rawInput: unknown, ctx: CallContext): P
         },
       };
     }
+    if (error instanceof PluginRefusal) {
+      return {
+        ok: false,
+        error: {
+          code: "conflict",
+          message: error.message,
+          details: { refusedBy: error.plugin, reason: error.reason },
+        },
+      };
+    }
     if (error instanceof FlowError) {
       return { ok: false, error: { code: FLOW_CODES[error.code], message: error.message } };
     }
     if (error instanceof StoreError) {
       return { ok: false, error: { code: STORE_CODES[error.code], message: error.message } };
+    }
+    if (error instanceof NoLoaderError) {
+      return { ok: false, error: { code: "unavailable", message: error.message } };
     }
     console.error(`${name} failed`, error);
     return { ok: false, error: { code: "internal", message: `${name} failed. Try again.` } };

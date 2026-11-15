@@ -1,0 +1,26 @@
+{
+  "name": "@software-factory/plugins",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The new core's plugin host (ADR 0660, spec 70 milestone 2): each plugin's code as a Cloudflare Dynamic Worker, its hooks run around every item event, its ctx served back by RPC, and its gateway calls made with the org's credentials.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/flow": "workspace:*",
+    "@software-factory/store": "workspace:*",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

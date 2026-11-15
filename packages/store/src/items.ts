@@ -9,8 +9,16 @@ import {
   type Workflow,
 } from "@software-factory/flow";
 import { flowDb, iso, newId, StoreError, writeBatch } from "./db.ts";
-import type { FlowEventsTable, FlowItemsTable } from "./schema.ts";
-import { advance, type Item, stateColumns, stepStatements, timelineRow, toItem } from "./step.ts";
+import type { EntryKind, FlowEventsTable, FlowItemsTable } from "./schema.ts";
+import {
+  advance,
+  type Item,
+  type Stepped,
+  stateColumns,
+  stepStatements,
+  timelineRow,
+  toItem,
+} from "./step.ts";
 
 export type { Item } from "./step.ts";
 
@@ -20,7 +28,17 @@ export type { Item } from "./step.ts";
  */
 export async function createItem(
   d1: D1Database,
-  input: { orgId: string; projectId: string; title: string; body: string; createdBy: string },
+  input: {
+    orgId: string;
+    projectId: string;
+    title: string;
+    body: string;
+    createdBy: string;
+    /** Plugin fields to start with. */
+    fields?: Record<string, unknown>;
+    /** Who the timeline says created it; default the person `createdBy`. */
+    actor?: Actor;
+  },
 ): Promise<Item> {
   const db = flowDb(d1);
   const project = await db
@@ -48,8 +66,9 @@ export async function createItem(
     created_by: input.createdBy,
     created_at: now,
     updated_at: now,
+    fields: JSON.stringify(input.fields ?? {}),
   };
-  const actor: Actor = { kind: "person", id: input.createdBy };
+  const actor: Actor = input.actor ?? { kind: "person", id: input.createdBy };
   await writeBatch(d1, [
     toStatement(
       d1,
@@ -80,20 +99,41 @@ export async function createItem(
  * the effects carried out, in one batch. A FlowError propagates unchanged and writes nothing; a
  * concurrent change to the same item is a StoreError "conflict".
  */
-export function applyEvent(
+export async function applyEvent(
   d1: D1Database,
   itemId: string,
   event: ItemEvent,
   actor: Actor,
 ): Promise<Item> {
+  return (await advance(d1, itemId, event, actor)).item;
+}
+
+/** As applyEvent, with the effects the step carried out (for the plugin hooks around it). */
+export function applyEventStep(
+  d1: D1Database,
+  itemId: string,
+  event: ItemEvent,
+  actor: Actor,
+): Promise<Stepped> {
   return advance(d1, itemId, event, actor);
 }
 
-export async function addComment(
+export function addComment(
   d1: D1Database,
   itemId: string,
   actor: Actor,
   text: string,
+): Promise<void> {
+  return appendEntry(d1, itemId, "comment", actor, { text });
+}
+
+/** Appends one entry (a comment, a card) to the item's timeline, after its last. */
+export async function appendEntry(
+  d1: D1Database,
+  itemId: string,
+  kind: "comment" | "card",
+  actor: Actor,
+  data: unknown,
 ): Promise<void> {
   const db = flowDb(d1);
   const item = await db
@@ -114,9 +154,9 @@ export async function addComment(
       org_id: item.org_id,
       item_id: itemId,
       seq: (item.last_seq ?? 0) + 1,
-      kind: "comment",
+      kind,
       actor,
-      data: { text },
+      data,
       created_at: iso(),
     }),
   ]);
@@ -176,7 +216,7 @@ export async function board(
 
 export interface TimelineEntry {
   seq: number;
-  kind: "event" | "effect" | "comment";
+  kind: EntryKind;
   actor: Actor;
   data: unknown;
   createdAt: string;
