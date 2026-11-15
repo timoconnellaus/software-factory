@@ -21,6 +21,7 @@ import type {
   FlowMember,
   FlowPluginDetail,
 } from "@software-factory/client/flow-edit";
+import { CHAT_ANSWERS, CHAT_WORKFLOWS } from "./chat-fixtures.ts";
 // A refused write carries its problems as the door does (`details`). fixtures.ts imports this file;
 // Refusal is only used when an answer runs, after both have loaded.
 import { Refusal } from "./fixtures.ts";
@@ -59,6 +60,15 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "QA",
     instructions: "Check the change does what the item asks. Say what you tried.",
+    createdAt: ago(9000),
+  },
+  {
+    // Chat's agent (flow.agent.ensureBuilder): the Plugin editor's "factory" server.
+    id: "fagt_chat",
+    orgId: FLOW_ORG,
+    name: "Builder",
+    instructions: "Set up how this org works when a person asks you to.",
+    mcp: ["factory"],
     createdAt: ago(9000),
   },
   {
@@ -535,7 +545,8 @@ export const FLOW_ANSWERS: FlowAnswers = {
     workflows: WORKFLOWS.filter((w) => w.orgId === input.orgId),
   }),
   "flow.workflow.get": (input) =>
-    WORKFLOWS.find((w) => w.id === input.workflowId) ?? (WORKFLOWS[0] as FlowWorkflow),
+    [...WORKFLOWS, ...CHAT_WORKFLOWS].find((w) => w.id === input.workflowId) ??
+    (WORKFLOWS[0] as FlowWorkflow),
   "flow.agent.list": (input) => ({ agents: AGENTS.filter((a) => a.orgId === input.orgId) }),
   "flow.board.get": (input) => ({
     columns: STATUSES.map((status) => ({
@@ -632,4 +643,6 @@ export const FLOW_ANSWERS: FlowAnswers = {
   "flow.gateway.list": () => ({ gateways: GATEWAYS }),
   "flow.gateway.save": () => ({ ok: true }),
   "flow.gateway.delete": () => ({ ok: true }),
+  // Chat (chat-fixtures.ts).
+  ...CHAT_ANSWERS,
 };

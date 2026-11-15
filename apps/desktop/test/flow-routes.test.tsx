@@ -57,8 +57,8 @@ describe("the shell", () => {
   });
 
   it("gives a section still to come one line", async () => {
-    const text = textOf(await renderPage(`/flow/${ORG}/chat`));
-    expect(text).toContain("Chat Coming next.");
+    const text = textOf(await renderPage(`/flow/${ORG}/auto`));
+    expect(text).toContain("Auto Coming next.");
   });
 });
 

@@ -37,6 +37,7 @@ import {
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { Switch } from "@software-factory/ui/components/switch";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { CableIcon, PlusIcon, PuzzleIcon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -47,6 +48,7 @@ import {
 } from "../../lib/flow-edit-queries.ts";
 import { useFlowRefresh } from "../../lib/flow-queries.ts";
 import { OpError, op, submitKey } from "../../lib/op.ts";
+import { useStartChat } from "./chat.tsx";
 import { PageHeader, Pill } from "./parts.tsx";
 
 export type PluginsTab = "plugins" | "gateways";
@@ -109,25 +111,53 @@ function Plugins({
 }) {
   const plugins = useQuery(flowPluginsQuery(orgId));
   const list = plugins.data?.plugins ?? [];
+  const navigate = useNavigate();
+  const start = useStartChat(orgId);
+  const [ask, setAsk] = useState("");
+  const [asking, setAsking] = useState(false);
+  // Asking starts a chat with the org's builder and goes to it, where the plugin is built.
+  async function submit() {
+    const text = ask.trim();
+    if (!text || asking) return;
+    setAsking(true);
+    try {
+      const chat = await start(text);
+      void navigate({ to: "/flow/$orgId/chat", params: { orgId }, search: { chat } });
+    } catch (error) {
+      toast.error(failed(error, "Couldn't start the chat"));
+      setAsking(false);
+    }
+  }
   return (
     <div className="grid max-w-[860px] gap-3.5">
-      <div
+      <form
         className="flex items-center gap-3 rounded-xl border border-line bg-panel px-3.5 py-2.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
         data-testid="plugin-ask"
       >
         <SparklesIcon className="size-4 flex-none text-ink-faint" />
         <Input
-          disabled
+          value={ask}
+          onChange={(e) => setAsk(e.target.value)}
           placeholder="Say what you want the app to do…"
           aria-label="Say what you want the app to do"
-          className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 disabled:opacity-100 dark:bg-transparent"
+          className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 dark:bg-transparent"
+          data-testid="plugin-ask-input"
         />
-        <Button size="md" disabled>
+        <Button
+          type="submit"
+          size="md"
+          disabled={!ask.trim() || asking}
+          data-testid="plugin-ask-send"
+        >
           Ask
         </Button>
-      </div>
+      </form>
       <p className="-mt-1.5 px-1 text-[12.5px] text-ink-muted">
-        Plugins are built in Chat: say what you want there, and an agent builds it.
+        Plugins are built in Chat: asking here starts one, and an agent builds it while you watch.
       </p>
       {plugins.error ? (
         <p className="text-bad">Couldn't load the plugins. {plugins.error.message}</p>
