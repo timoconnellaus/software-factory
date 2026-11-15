@@ -230,6 +230,9 @@ importers:
       '@software-factory/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@software-factory/store':
+        specifier: workspace:*
+        version: link:../../packages/store
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -580,6 +583,34 @@ importers:
         version: 5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
   packages/sdk:
+    devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 1.5.1
+        version: 1.5.1(@cloudflare/workers-types@5.20261104.1)(@types/node@24.19.2)(vitest@5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
+      '@cloudflare/workers-types':
+        specifier: 5.20261104.1
+        version: 5.20261104.1
+      '@software-factory/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 5.1.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  packages/store:
+    dependencies:
+      '@software-factory/db':
+        specifier: workspace:*
+        version: link:../db
+      '@software-factory/flow':
+        specifier: workspace:*
+        version: link:../flow
+      kysely:
+        specifier: 0.29.8
+        version: 0.29.8
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 1.5.1

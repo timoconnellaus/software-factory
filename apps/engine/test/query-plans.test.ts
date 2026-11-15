@@ -15,6 +15,16 @@ import {
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
+import {
+  claimRun,
+  createAgent,
+  createItem,
+  createProject,
+  createWorkflow,
+  expireRuns,
+  finishRun,
+  renewLease,
+} from "@software-factory/store";
 import { beforeAll, describe, expect, it } from "vitest";
 import { archiveAudit } from "../src/audit-archive.ts";
 import { invokeDeps } from "../src/deps.ts";
@@ -174,6 +184,43 @@ async function skillsScenario(e: Env) {
 
 /** The registered hot paths: each runs once, then every statement it ran is EXPLAINed. */
 const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
+  {
+    // The new core (packages/store, ADR 0660): a runner claims the oldest queued run
+    // (flow_runs_queue_idx), renews its lease, finishes it (the item's step), and the cron's sweep
+    // fails runs whose lease lapsed (flow_runs_lease_idx).
+    name: "the new core: claim a run, renew its lease, finish it, and sweep lapsed leases",
+    run: async (e) => {
+      const orgId = `org_${crypto.randomUUID()}`;
+      const agent = await createAgent(e.DB, { orgId, name: "Writer", instructions: "" });
+      const wf = await createWorkflow(e.DB, orgId, {
+        name: "Draft, done",
+        statuses: [
+          { id: "draft", name: "Draft", owner: { kind: "agent", agentId: agent.id } },
+          { id: "done", name: "Done", owner: { kind: "none" } },
+        ],
+      });
+      if (!wf.ok) throw new Error("workflow refused");
+      const project = await createProject(e.DB, {
+        orgId,
+        name: "P",
+        key: "P",
+        workflowId: wf.workflow.id,
+      });
+      await createItem(e.DB, {
+        orgId,
+        projectId: project.id,
+        title: "t",
+        body: "",
+        createdBy: "u",
+      });
+      const now = Date.now();
+      const run = await claimRun(e.DB, "runner_qp", now, 60_000);
+      if (!run) throw new Error("nothing to claim");
+      await renewLease(e.DB, run.id, "runner_qp", now, 60_000);
+      await finishRun(e.DB, run.id, run.fencingToken, { outcome: "done", summary: "ok" });
+      return expireRuns(e.DB, now, 10);
+    },
+  },
   {
     // Spec 24: a split's parent waits for its children (each event, and once a day in its held
     // wait), by core_work_items_parent_idx (migration 0401).

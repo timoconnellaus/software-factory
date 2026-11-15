@@ -57,7 +57,7 @@ export function recordingEnv(env: Env, seen: Recorded[]): Env {
 function tableAliases(sql: string): Map<string, string> {
   const names = new Map<string, string>();
   const re =
-    /\b(?:from|join|update|into)\s+"?(core_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural|indexed)\b)(\w+)"?)?/gi;
+    /\b(?:from|join|update|into)\s+"?((?:core|flow)_\w+)"?(?:\s+(?:as\s+)?"?(?!(?:on|where|join|left|inner|cross|set|values|group|order|limit|using|natural|indexed)\b)(\w+)"?)?/gi;
   for (const m of sql.matchAll(re)) {
     const table = m[1] as string;
     names.set(table, table);
@@ -180,7 +180,8 @@ export async function growingScans(db: D1Database, seen: Recorded[]): Promise<Sc
       const m = /^SCAN (\w+)(?: USING (?:COVERING )?INDEX (\w+))?/.exec(detail);
       if (!m || (m[2] && partial.has(m[2]))) continue;
       const table = aliases.get(m[1] as string) ?? (m[1] as string);
-      if (!table.startsWith("core_") || SMALL_TABLES.has(table)) continue;
+      // The old core's tables and the new core's (packages/store, ADR 0660).
+      if (!/^(?:core|flow)_/.test(table) || SMALL_TABLES.has(table)) continue;
       scans.push({ sql: sql.replace(/\s+/g, " ").trim(), table, detail });
     }
   }
