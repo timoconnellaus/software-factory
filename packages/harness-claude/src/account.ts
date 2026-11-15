@@ -2,13 +2,11 @@
 // learns which one a run gets: its config dir and, for a token account, the file the token is in.
 // The launch script reads the token from that file just before `exec`, so no file the harness
 // writes ever holds it, and every other model credential is unset first: exactly one reaches Claude.
-import { copyFile, mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_ACCOUNT } from "@software-factory/runner-contract";
 import { shellQuote } from "./launch.ts";
 import type { StatusLine } from "./status.ts";
-import { projectDirName } from "./transcript.ts";
 
 /** The variable a token goes in: a `claude setup-token` OAuth token, or an Anthropic API key. */
 export const TOKEN_ENVS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
@@ -75,38 +73,6 @@ export function accountLaunchLines(account: HarnessAccount | undefined): string[
   }
   return lines;
 }
-
-/**
- * A planning session resumed on another account than the one it started on (the owner switched in
- * between): copies its conversation into this account's config dir, where `claude --resume` looks.
- * Returns the file it copied from, or null when there was nothing to do.
- */
-export async function carryConversation(options: {
-  cwd: string;
-  sessionId: string;
-  to: string;
-  from: readonly string[];
-}): Promise<string | null> {
-  const file = `${options.sessionId}.jsonl`;
-  const project = projectDirName(options.cwd);
-  const target = join(options.to, "projects", project, file);
-  if (await isFile(target)) return null;
-  for (const dir of options.from) {
-    if (dir === options.to) continue;
-    const source = join(dir, "projects", project, file);
-    if (!(await isFile(source))) continue;
-    await mkdir(join(options.to, "projects", project), { recursive: true, mode: 0o700 });
-    await copyFile(source, target);
-    return source;
-  }
-  return null;
-}
-
-const isFile = (path: string) =>
-  stat(path).then(
-    (s) => s.isFile(),
-    () => false,
-  );
 
 /** What Claude says when an account is out of usage, in a hook message or a final reply. */
 const USAGE_LIMIT =

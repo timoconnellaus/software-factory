@@ -1,6 +1,6 @@
 // Git on the runner host (ADR 0033, 0035, 0052). The host, not the harness, talks to GitHub: it
 // keeps one clone per repo, fetches the job's base with the job token, and after the session pushes
-// the run branch, and only the run branch, with a fresh job token. Every git call it makes runs with
+// the item's branch, and only that branch, with a fresh job token. Every git call it makes runs with
 // no system or global config (so never the owner's keychain helper or `gh auth git-credential`),
 // hooks off, and a credential helper that answers only github.com with the job token. The token is
 // passed in the environment of that one git process, never in its arguments or on disk.
@@ -15,10 +15,7 @@ import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
 import { type Artifact, isFlowBranch, type RepoJob } from "@software-factory/runner-contract";
 import type { Exec } from "@software-factory/runner-local";
 
-/**
- * The oldest git the host works with: the check export reads the tree with `--attr-source`
- * (`exportTree`), which git 2.40 added. On an older git every check export fails, so doctor checks it.
- */
+/** The oldest git the host is tested with; doctor checks it. */
 export const MIN_GIT: [number, number] = [2, 40];
 
 /** Whether `git --version` output (`git version 2.39.5 (Apple Git-154)`) is at least `min`. */
@@ -42,10 +39,7 @@ const HELPER = [
   "}; f",
 ].join(" ");
 
-/** Where the host keeps the item branches it fetched, in any checkout. */
-/** Git's empty tree: no `.gitattributes`, for an export with no filters. */
-const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
+/** Where the host keeps the branches it fetched, in any checkout. */
 export const FETCH_NAMESPACE = "refs/software-factory/heads";
 
 /** Variables the host's own git calls never inherit. */
@@ -66,29 +60,12 @@ export class GitError extends Error {
 }
 
 /**
- * The run branch a job may push: its own `factory/<n>-<slug>-run-<k>`, nothing else (ADR 0035). A
- * `flow` job (spec 70) pushes its item's branch `factory/flow-<key>-<n>`, the job's `branch`, and
- * nothing else.
+ * The branch a job may push (spec 70): its item's branch `factory/flow-<key>-<n>`, the job's
+ * `branch`, and nothing else.
  */
-export function assertPushable(
-  job: Pick<RepoJob, "branch" | "repo" | "runNo"> & { stage?: RepoJob["stage"] },
-  pushBranch?: string,
-) {
-  if (job.stage === "flow") {
-    if (!isFlowBranch(job.branch)) {
-      throw new GitError(`refusing to push ${job.branch}: not a flow item branch`);
-    }
-    if (pushBranch !== undefined && pushBranch !== job.branch) {
-      throw new GitError(`the job token is for ${pushBranch}, not ${job.branch}`);
-    }
-    return;
-  }
-  const expected = `${job.repo.baseRef}-run-${job.runNo}`;
-  if (job.branch !== expected) {
-    throw new GitError(`job branch ${job.branch} is not the run branch ${expected}`);
-  }
-  if (!/^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(job.branch)) {
-    throw new GitError(`refusing to push ${job.branch}: not a factory run branch`);
+export function assertPushable(job: Pick<RepoJob, "branch">, pushBranch?: string) {
+  if (!isFlowBranch(job.branch)) {
+    throw new GitError(`refusing to push ${job.branch}: not a flow item branch`);
   }
   if (pushBranch !== undefined && pushBranch !== job.branch) {
     throw new GitError(`the job token is for ${pushBranch}, not ${job.branch}`);
@@ -173,7 +150,7 @@ export function hostGit(options: HostGitOptions) {
     },
 
     /**
-     * Makes sure the job's base (the item branch) is in the checkout the job will run in, and
+     * Makes sure the job's base (the item's branch, or the default branch) is in the checkout the job will run in, and
      * returns that checkout's path. `existing` is the checkout the adapter resolved for the repo
      * (ADR 0260): the host fetches into it and leaves everything else alone. Only when there is
      * none does the host clone, once, into `clonePath(job)`.
@@ -214,12 +191,6 @@ export function hostGit(options: HostGitOptions) {
             "--no-tags",
             url,
             `+refs/heads/${job.repo.baseRef}:${FETCH_NAMESPACE}/${job.repo.baseRef}`,
-            // The default branch too, so a build can merge it before the session (ADR 0320).
-            ...(job.repo.defaultBranch && job.repo.defaultBranch !== job.repo.baseRef
-              ? [
-                  `+refs/heads/${job.repo.defaultBranch}:${FETCH_NAMESPACE}/${job.repo.defaultBranch}`,
-                ]
-              : []),
           ],
           token,
         );
@@ -227,19 +198,8 @@ export function hostGit(options: HostGitOptions) {
       });
     },
 
-    /**
-     * Where the job's worktree should start, as a SHA in `checkout`: the reviewed head for verify,
-     * else the item branch as just fetched.
-     */
+    /** Where the job's worktree should start, as a SHA in `checkout`: its base as just fetched. */
     async startPoint(job: RepoJob, checkout: string): Promise<string> {
-      const head = typeof job.context.headSha === "string" ? job.context.headSha : null;
-      if (job.stage === "verify" && head && /^[0-9a-f]{40}$/.test(head)) {
-        const has = await exec("git", ["cat-file", "-e", `${head}^{commit}`], {
-          cwd: checkout,
-          env: env(),
-        });
-        if (has.code === 0) return head;
-      }
       return (
         await git(checkout, [
           "rev-parse",
@@ -247,64 +207,6 @@ export function hostGit(options: HostGitOptions) {
           `${FETCH_NAMESPACE}/${job.repo.baseRef}^{commit}`,
         ])
       ).trim();
-    },
-
-    /**
-     * Merges the default branch, as just fetched, into the job's worktree (ADR 0320), so the run's
-     * PR stays mergeable while `main` moves. Merge commits only, never a rebase. A conflict is left
-     * in progress (MERGE_HEAD and the conflict markers) for the build agent to resolve; the prompt
-     * says so. `ahead`: whether the branch had commits of its own before the merge.
-     */
-    async mergeDefault(
-      job: RepoJob,
-      worktree: string,
-    ): Promise<
-      | { status: "skipped" | "up-to-date"; ahead: boolean }
-      | { status: "merged"; sha: string; ahead: boolean }
-      | { status: "conflict"; files: string[]; ahead: boolean }
-    > {
-      const branch = job.repo.defaultBranch;
-      if (!branch || branch === job.repo.baseRef) return { status: "skipped", ahead: true };
-      const ref = `${FETCH_NAMESPACE}/${branch}`;
-      const has = await exec("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
-        cwd: worktree,
-        env: env(),
-      });
-      if (has.code !== 0) return { status: "skipped", ahead: true };
-      const ahead =
-        Number((await git(worktree, ["rev-list", "--count", `${ref}..HEAD`])).trim()) > 0;
-      const contained = await exec("git", ["merge-base", "--is-ancestor", ref, "HEAD"], {
-        cwd: worktree,
-        env: env(),
-      });
-      if (contained.code === 0) return { status: "up-to-date", ahead };
-      const merged = await exec(
-        "git",
-        [...base, "merge", "--no-ff", "--no-edit", "-m", `Merge ${branch} into ${job.branch}`, ref],
-        { cwd: worktree, timeoutMs: 10 * 60_000, env: env() },
-      );
-      if (merged.code === 0) return { status: "merged", sha: await this.headSha(worktree), ahead };
-      const files = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]))
-        .split("\n")
-        .filter(Boolean);
-      if (files.length === 0) {
-        // Not a content conflict (a dirty tree, an unrelated history): undo and say why.
-        await exec("git", [...base, "merge", "--abort"], { cwd: worktree, env: env() });
-        throw new GitError(`git merge ${branch} exited ${merged.code}: ${merged.stderr.trim()}`);
-      }
-      return { status: "conflict", files, ahead };
-    },
-
-    /** Paths still unmerged, and whether a merge is still in progress (MERGE_HEAD). */
-    async mergeState(worktree: string): Promise<{ inProgress: boolean; unmerged: string[] }> {
-      const head = await exec("git", ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
-        cwd: worktree,
-        env: env(),
-      });
-      const unmerged = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]))
-        .split("\n")
-        .filter(Boolean);
-      return { inProgress: head.code === 0, unmerged };
     },
 
     /** The config keys that could redirect a push or run code, for a before/after check. */
@@ -332,60 +234,7 @@ export function hostGit(options: HostGitOptions) {
       return (await git(worktree, ["status", "--porcelain"])).trim().length > 0;
     },
 
-    /**
-     * Writes the tree of `sha` into `dest` (an empty directory) and nothing else: no ignored files
-     * the session left (`node_modules`, `dist/`, caches), no git dir (ADR 0501). Through a
-     * throwaway index, so the worktree's own index is untouched, and with `checkout-index` rather
-     * than `git archive`, which would honour an `export-ignore` the agent wrote.
-     *
-     * No filter runs: the export is the host's own git, outside every sandbox, so a smudge filter in
-     * the checkout's config (git-lfs, an owner's own) paired with a `.gitattributes` the agent wrote
-     * would run the owner's command on the agent's content. Attributes come from the empty tree (no
-     * in-tree `.gitattributes`), no attributes file, and every filter driver the config names is
-     * blanked (an empty `smudge`/`process` is no filter), so the copy is the blobs as committed.
-     */
-    async exportTree(worktree: string, sha: string, dest: string, index: string): Promise<void> {
-      if (!/^[0-9a-f]{40}$/.test(sha)) throw new GitError(`not a commit: ${sha}`);
-      const indexEnv = { ...env(), GIT_INDEX_FILE: index, GIT_ATTR_NOSYSTEM: "1" };
-      const listed = await exec("git", ["config", "--name-only", "--get-regexp", "^filter\\."], {
-        cwd: worktree,
-        env: env(),
-      });
-      const drivers = new Set(
-        listed.stdout
-          .split("\n")
-          .map((k) => /^filter\.(.+)\.[^.]+$/.exec(k.trim())?.[1])
-          .filter((d): d is string => !!d),
-      );
-      const noFilters = [
-        `--attr-source=${EMPTY_TREE}`,
-        "-c",
-        "core.attributesFile=/dev/null",
-        ...[...drivers].flatMap((d) => [
-          "-c",
-          `filter.${d}.smudge=`,
-          "-c",
-          `filter.${d}.process=`,
-          "-c",
-          `filter.${d}.required=false`,
-        ]),
-      ];
-      for (const args of [
-        ["read-tree", sha],
-        ["checkout-index", "--all", "--force", `--prefix=${dest.replace(/\/?$/, "/")}`],
-      ]) {
-        const result = await exec("git", [...noFilters, ...base, ...args], {
-          cwd: worktree,
-          timeoutMs: 10 * 60_000,
-          env: indexEnv,
-        });
-        if (result.code !== 0) {
-          throw new GitError(`git ${args[0]} exited ${result.code}: ${result.stderr.trim()}`);
-        }
-      }
-    },
-
-    /** Commits whatever the session left uncommitted, so a build never loses work. */
+    /** Commits whatever the session left uncommitted, so a run never loses work. */
     async commitLeftovers(worktree: string, message: string): Promise<boolean> {
       if (!(await this.dirty(worktree))) return false;
       await git(worktree, ["add", "-A"]);
@@ -393,22 +242,14 @@ export function hostGit(options: HostGitOptions) {
       return true;
     },
 
-    /**
-     * Pushes HEAD (or `commit`) to the run branch with the job token. Never forces, never pushes
-     * anything else.
-     */
+    /** Pushes HEAD to the job's branch with the job token. Never forces, never pushes anything else. */
     async pushRunBranch(
       job: RepoJob,
       worktree: string,
       token: { token: string; pushBranch: string },
-      /** The commit to push (the last one the checks ran on, ADR 0501); default HEAD. */
-      commit?: string,
     ): Promise<string> {
       assertPushable(job, token.pushBranch);
-      if (commit !== undefined && !/^[0-9a-f]{40}$/.test(commit)) {
-        throw new GitError(`not a commit: ${commit}`);
-      }
-      const sha = commit ?? (await this.headSha(worktree));
+      const sha = await this.headSha(worktree);
       await git(
         worktree,
         [

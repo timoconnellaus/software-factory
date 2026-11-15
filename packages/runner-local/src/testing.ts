@@ -8,10 +8,6 @@ import { dirname, join } from "node:path";
 import { PID_FILE, STATUS_FILE, type StatusLine } from "@software-factory/harness-claude";
 import { type Exec, type ExecResult, nodeExec } from "./exec.ts";
 
-export * from "./container/testing.ts";
-export * from "./sprites/fake.ts";
-export * from "./sprites/ws-server.ts";
-
 /**
  * Whether tests that start tmux control-mode clients should skip (spec 43): inside a factory job
  * (the harness sets `SOFTWARE_FACTORY_RUN=1` for Claude and every command it runs), so a job's
@@ -33,11 +29,9 @@ export interface FakeSession {
   screen: string;
   /** What has been typed since the last Enter. */
   typed: string;
-  /** Text submitted with Enter, in order (the prompt pointer, then steering). */
+  /** Text submitted with Enter, in order (the prompt pointer first). */
   submitted: string[];
   trustPending: boolean;
-  /** What the pane runs, when the test spawned it (`spawn`): keys are written to it. */
-  proc?: { write(data: string): void };
 }
 
 export interface ScriptedTmuxOptions {
@@ -45,29 +39,14 @@ export interface ScriptedTmuxOptions {
   trustDialog?: boolean;
   /** Don't record SessionStart (Claude never comes up). */
   noSessionStart?: boolean;
-  /** A steer typed after the prompt doesn't record UserPromptSubmit (the test does, later). */
-  queueSteers?: boolean;
   /** What the agent does after the first prompt is submitted. */
   onPrompt?: (session: FakeSession, append: (line: Partial<StatusLine>) => void) => unknown;
   /** Runs everything that isn't tmux (default: the real thing). */
   base?: Exec;
   pid?: number;
-  /**
-   * Runs the pane's script instead of standing in for Claude (a sprite job's bridge, ADR 0480):
-   * typed text and keys go to what it returns, and the pane is dead once it sets `session.dead`.
-   */
-  spawn?: (session: FakeSession, script: string) => { write(data: string): void };
 }
 
 const ok = (stdout = ""): ExecResult => ({ stdout, stderr: "", code: 0 });
-/** What a named key sends to a spawned pane. */
-const KEYS: Record<string, string> = {
-  Enter: "\r",
-  Down: "\x1b[B",
-  Up: "\x1b[A",
-  Escape: "\x1b",
-  "C-c": "\x03",
-};
 const err = (stderr: string): ExecResult => ({ stdout: "", stderr, code: 1 });
 
 export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
@@ -111,10 +90,6 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
           trustPending: !!options.trustDialog,
         };
         sessions.set(name, s);
-        if (options.spawn) {
-          s.proc = options.spawn(s, script);
-          return ok();
-        }
         writeFileSync(join(runDir, PID_FILE), `${options.pid ?? 4242}\n`);
         if (s.trustPending) {
           s.screen = "Quick safety check\n❯ No, exit\n  Yes, I trust this folder";
@@ -141,16 +116,6 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
         const s = sessions.get(target(rest));
         if (!s) return err(`can't find pane: ${target(rest)}`);
         const li = rest.indexOf("-l");
-        if (s.proc) {
-          if (li >= 0) {
-            s.proc.write(rest[li + 1] ?? "");
-            return ok();
-          }
-          for (const key of rest.slice(rest.indexOf("-t") + 2)) {
-            s.proc.write(KEYS[key] ?? "");
-          }
-          return ok();
-        }
         if (li >= 0) {
           s.typed += rest[li + 1] ?? "";
           return ok();
@@ -169,10 +134,7 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
             const text = s.typed;
             s.typed = "";
             s.submitted.push(text);
-            // Claude queues a message typed mid-turn: its turn (and the hook) comes after the Stop.
-            if (s.submitted.length === 1 || !options.queueSteers) {
-              append(s, { event: "UserPromptSubmit" });
-            }
+            append(s, { event: "UserPromptSubmit" });
             if (s.submitted.length === 1 && options.onPrompt) {
               await options.onPrompt(s, (line) => append(s, line));
             }
@@ -237,16 +199,16 @@ export function scriptedTmux(options: ScriptedTmuxOptions = {}) {
 
 /** What the stand-in stream-json `claude` does (`fakeStreamClaude`). */
 export interface FakeStreamClaudeOptions {
-  /** Every stdin line is appended here, so a test can see the prompt and the steers. */
+  /** Every stdin line is appended here, so a test can see the prompt. */
   stdinLog: string;
-  /** ms the first turn takes before it answers (a steer can arrive meanwhile). */
+  /** ms the first turn takes before it answers. */
   firstTurnMs?: number;
   /** Commit a change to README.md during the first turn (a build that made something). */
   commit?: boolean;
-  /** Write the stage result file (`.factory-result.json`) during the first turn. */
+  /** Write the result file (`.factory-result.json`) during the first turn. */
   writeResult?: boolean;
-  /** Exit after the first turn's result instead of waiting for more input. */
-  exitAfterFirst?: boolean;
+  /** Exit during the first turn, before its result line. */
+  exitBeforeResult?: boolean;
   /** The first turn's result is an error. */
   failFirst?: boolean;
   /** Ask for a permission once (as if `--permission-prompts none` were ignored). */
@@ -257,7 +219,7 @@ export interface FakeStreamClaudeOptions {
  * A stand-in `claude` that speaks stream-json (ADR 0450), for runner-local's and the runner
  * host's tests: an executable Node script the launch script `exec`s. It answers each JSON user
  * message with a turn (system init first, assistant text, a tool call and its result, then a
- * `result` with usage), answers an `interrupt`, and exits when stdin closes. Not used at runtime.
+ * `result` with usage), and exits when stdin closes. Not used at runtime.
  */
 export function fakeStreamClaude(options: FakeStreamClaudeOptions): string {
   return `#!${process.execPath}
@@ -269,13 +231,12 @@ const argv = process.argv.slice(2);
 const at = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
 const sessionId = at("--session-id") ?? at("--resume") ?? "no-session";
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
-let n = 0, inited = false, busy = Promise.resolve(), interrupted = false, asked = false;
-let wake = () => {};
+let n = 0, inited = false, busy = Promise.resolve(), asked = false;
 // A permission request waits for its answer, as Claude Code does: the turn goes on only once the
 // runner's control_response for it arrives (else the test raced the job's end).
 let answered = () => {};
 const answer = new Promise((r) => { answered = r; });
-const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function turn(text) {
   n++;
   const k = n;
@@ -288,16 +249,15 @@ async function turn(text) {
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "text", text: "Turn " + k + ": " + text.slice(0, 40) }] } });
   out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "tool_use", id: "tu_" + k, name: "Bash", input: { command: "echo " + k } }] } });
   if (k === 1 && opts.firstTurnMs) await sleep(opts.firstTurnMs);
-  if (interrupted) { interrupted = false; out({ type: "result", subtype: "error_during_execution", is_error: true, session_id: sessionId, num_turns: k }); return; }
   out({ type: "user", session_id: sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_" + k, content: "out " + k, is_error: false }] } });
   if (k === 1 && opts.commit) {
     appendFileSync("README.md", "hello from the stream\\n");
     execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@x.invalid", "-c", "core.hooksPath=/dev/null", "commit", "-qam", "stream change"]);
   }
   if (k === 1 && opts.writeResult) writeFileSync(".factory-result.json", JSON.stringify({ ok: true }));
+  if (k === 1 && opts.exitBeforeResult) process.exit(0);
   const fail = k === 1 && opts.failFirst;
   out({ type: "result", subtype: fail ? "error_max_turns" : "success", is_error: !!fail, result: "Done with turn " + k, session_id: sessionId, duration_ms: 1200, num_turns: 2, total_cost_usd: 0.5, usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 } });
-  if (k === 1 && opts.exitAfterFirst) process.exit(0);
 }
 let buf = "";
 process.stdin.setEncoding("utf8");
@@ -311,12 +271,6 @@ process.stdin.on("data", (chunk) => {
     let msg;
     try { msg = JSON.parse(line); } catch { continue; }
     if (msg.type === "control_response" && msg.response?.request_id === "perm-1") answered();
-    if (msg.type === "control_request" && msg.request?.subtype === "interrupt") {
-      interrupted = true;
-      wake();
-      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id } });
-      continue;
-    }
     if (msg.type === "user") {
       const text = typeof msg.message?.content === "string" ? msg.message.content : "";
       busy = busy.then(() => turn(text));

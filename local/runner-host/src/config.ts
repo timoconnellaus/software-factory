@@ -9,20 +9,6 @@ import { CAPABILITIES, type Capability } from "@software-factory/runner-contract
 import { z } from "zod";
 import { loadPolicySchema } from "./load.ts";
 
-/** runner.json `checks`: see `checks` in the config below (ADR 0501, fourth and fifth reviews). */
-export const checkSettingsSchema = z
-  .object({
-    weakerMacSandbox: z.boolean().default(false),
-    cpus: z.number().min(0.5).max(64).default(2),
-    memoryGb: z.number().min(0.5).max(256).default(4),
-    tmpGb: z.number().min(0.1).max(64).default(1),
-    maxTreeGb: z.number().min(0.1).max(1024).default(10),
-    maxConcurrent: z.number().int().min(1).max(16).default(1),
-  })
-  .strict()
-  .refine((c) => c.tmpGb < c.memoryGb, "checks.tmpGb must be less than checks.memoryGb");
-export type CheckSettings = z.output<typeof checkSettingsSchema>;
-
 export const DEFAULT_BASE_URL = "https://sf-engine.zerobsai.com";
 /** The app, where a person approves `sf-runner login` (when the engine's link is relative). */
 export const DEFAULT_APP_URL = "https://software-factory.zerobsai.com";
@@ -32,8 +18,9 @@ export const configSchema = z.object({
   runnerId: z.string().regex(/^r_[a-z0-9]{6,32}$/),
   key: z.string().min(20),
   name: z.string().max(80).optional(),
+  /** The heavy pool's size (ADR 0301), as reported; no job uses it now. */
   maxConcurrent: z.number().int().min(1).max(16).default(2),
-  /** Light slots (triage, spec, planning sessions), ADR 0301. An idle planning session holds one. */
+  /** Concurrent jobs: the light pool, where every flow job runs (ADR 0301). */
   maxLight: z.number().int().min(0).max(32).default(6),
   heartbeatMs: z.number().int().min(2_000).max(120_000).default(20_000),
   /** Capabilities to declare (default: everything the adapter supports). */
@@ -41,8 +28,8 @@ export const configSchema = z.object({
   identity: z.object({ name: z.string(), email: z.string() }).optional(),
   /**
    * How jobs' sessions run (ADR 0450): `tmux`, Claude Code's TUI in tmux (takeover by `tmux
-   * attach`), or `stream-json`, Claude headless as a two-way stream the dashboard shows as a chat
-   * (declares `chat`; takeover by `claude --resume`). Changing it takes a restart.
+   * attach`), or `stream-json`, Claude headless as a stream whose events carry tool results and
+   * token counts (declares `chat`). Changing it takes a restart.
    */
   session: z.enum(["tmux", "stream-json"]).default("tmux"),
   /**
@@ -74,83 +61,12 @@ export const configSchema = z.object({
     .strict()
     .optional(),
   /**
-   * Where jobs run (ADR 0430): `sandbox` (default) is a worktree with Claude Code's OS sandbox on
-   * this machine (ADR 0270); `container` is a Docker container per job, every stage with
-   * permissions off; `sprites` is a cloud sandbox per job on Sprites, made by this host (ADR 0480).
+   * Where jobs run: `sandbox` (default) is a worktree or a plain directory with Claude Code's OS
+   * sandbox on this machine (ADR 0270). `container` (ADR 0430) and `sprites` (ADR 0480) were
+   * removed with the old pipeline (spec 70): a runner.json that still names one is read, and the
+   * runner takes no jobs until it is changed back to `sandbox`.
    */
   isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
-  /**
-   * Where a `sandbox` runner runs the project's checks (ADR 0501, fourth review). On a Mac they run
-   * in a fresh check container when a container runtime answers (`container.docker`, else `docker`
-   * on PATH); with none, they are "not run". `weakerMacSandbox: true` lets them run under the macOS
-   * OS sandbox instead, which can't stop a process a check leaves from outliving it, nor give a
-   * check a loopback of its own: the merge gate then says they ran in the weaker sandbox. Only this
-   * file sets it: never the repo, never the cloud. Linux runners always use the OS sandbox.
-   *
-   * The limits (fifth review): a Mac's check container gets `cpus` CPUs and `memoryGb` of memory,
-   * its `/tmp` is a `tmpGb` tmpfs inside that memory, and a check whose tree grew past `maxTreeGb`
-   * isn't copied for the next check (that one is not run). At most `maxConcurrent` checks run at
-   * once on this runner, each counted as a heavy job while it runs, and a check waits to start
-   * while the load backoff (`load`) has stopped heavy work.
-   */
-  checks: checkSettingsSchema.optional(),
-  /** Container isolation's settings (ADR 0430). */
-  container: z
-    .object({
-      /** The `docker` CLI (default: found on PATH, Homebrew's or ~/.local/bin). */
-      docker: z.string().optional(),
-      /**
-       * The model credential that goes into the container: `CLAUDE_CODE_OAUTH_TOKEN` (from
-       * `claude setup-token`) or `ANTHROPIC_API_KEY`. Default: the same variable in sf-runner's own
-       * environment. This file is 0600, like the runner key.
-       */
-      env: z
-        .object({
-          CLAUDE_CODE_OAUTH_TOKEN: z.string().min(1).optional(),
-          ANTHROPIC_API_KEY: z.string().min(1).optional(),
-        })
-        .strict()
-        .optional(),
-      /** More egress hosts for every job on this runner, on top of the stage's. */
-      allowedHosts: z.array(z.string().min(1).max(260)).max(100).optional(),
-      cpus: z.number().positive().max(256).optional(),
-      /** Docker's syntax: `8g`, `512m`. */
-      memory: z
-        .string()
-        .regex(/^\d+[bkmg]?$/i)
-        .optional(),
-      pids: z.number().int().min(64).max(1_000_000).optional(),
-    })
-    .strict()
-    .optional(),
-  /**
-   * Sprites isolation's settings (ADR 0480): a fresh sprite per job, made by this host with the
-   * owner's Sprites token. The token is not here: `sf-runner sprites login` keeps it in its own
-   * 0600 file next to this one. The model credential is the active Claude account's token.
-   */
-  sprites: z
-    .object({
-      /** The Sprites API (default `https://api.sprites.dev`). */
-      apiUrl: z.string().url().optional(),
-      /** More egress hosts for every job on this runner, on top of the stage's. */
-      allowedHosts: z.array(z.string().min(1).max(260)).max(100).optional(),
-      /** Each sprite's size, sent at creation (defaults: 4 CPUs, 8192 MB, 50 GB). */
-      cpus: z.number().int().min(1).max(16).optional(),
-      memoryMb: z.number().int().min(1024).max(65_536).optional(),
-      storageGb: z.number().int().min(10).max(500).optional(),
-      /**
-       * The most a sprite may live, in minutes (default 240): Claude is stopped then, and the
-       * host's sweep destroys any of its sprites older than this.
-       */
-      maxLifetimeMinutes: z
-        .number()
-        .int()
-        .min(10)
-        .max(24 * 60)
-        .optional(),
-    })
-    .strict()
-    .optional(),
   /** Test only: clone/push URL per canonical GitHub URL. */
   repoUrlMap: z.record(z.string(), z.string()).optional(),
 });
@@ -168,30 +84,6 @@ export interface Paths {
    * must read its own worktree (incident 2026-11-11-bootstrap #10).
    */
   worktreesDir: string;
-  /**
-   * The jobs' check trees (ADR 0501): `<checksDir>/<jobId>-…`. Not the system temp dir, which every
-   * agent may write, and not under the state dir, which the harness's floor denies (a check could
-   * then not read its own tree). Every harness's protectPaths names it, so no agent reaches it.
-   */
-  checksDir: string;
-  /**
-   * The check sandbox's own sockets (ADR 0501, amended 2026-11-12, third review): the sandbox
-   * runtime's proxy sockets go in a short private dir here (`<checkSocketsDir>/c…`), not in the
-   * check's temp, whose path is too long for a unix socket (104 bytes on macOS, 108 on Linux). No
-   * check can write it, and every harness's protectPaths names it, so no agent reaches it.
-   */
-  checkSocketsDir: string;
-  /** Each run's attachments (`<attachmentsDir>/<jobId>`), which the agent reads: also not under state. */
-  attachmentsDir: string;
-  /**
-   * Container jobs' dirs (`<containersDir>/sf-<jobId>/`: the job repo, home, temp) and their
-   * credential env files (ADR 0430). Under the data dir: Docker Desktop shares the home dir.
-   */
-  containersDir: string;
-  /** The owner's Sprites token (ADR 0480): 0600, under the config dir every run denies. */
-  spritesTokenFile: string;
-  /** Sprites jobs' host-side dirs (`<spritesDir>/sf-<jobId>/`: the job repo and mirrored files). */
-  spritesDir: string;
   /**
    * Claude accounts (ADR 0410): the registry (the active name, each account's kind; no secret),
    * the token files (0600), both under the config dir every run denies, and each account's Claude
@@ -228,12 +120,6 @@ export function paths(
     reposDir: join(stateDir, "repos"),
     runsDir: join(stateDir, "runs"),
     worktreesDir: join(dataDir, "worktrees"),
-    attachmentsDir: join(dataDir, "attachments"),
-    checksDir: join(dataDir, "checks"),
-    checkSocketsDir: join(dataDir, "s"),
-    containersDir: join(dataDir, "containers"),
-    spritesTokenFile: join(configDir, "sprites.token"),
-    spritesDir: join(dataDir, "sprites"),
     accountsFile: join(configDir, "accounts.json"),
     accountTokensDir: join(configDir, "accounts"),
     accountConfigsDir: join(dataDir, "accounts"),
@@ -263,19 +149,7 @@ export async function saveConfig(file: string, config: RunnerConfig): Promise<vo
 
 /** The config without its key, for `status`. */
 export function redacted(config: RunnerConfig): Omit<RunnerConfig, "key"> & { key: string } {
-  const env = config.container?.env;
-  return {
-    ...config,
-    key: `${config.key.slice(0, 4)}…(redacted)`,
-    ...(config.container && env
-      ? {
-          container: {
-            ...config.container,
-            env: Object.fromEntries(Object.keys(env).map((k) => [k, "(redacted)"])),
-          },
-        }
-      : {}),
-  };
+  return { ...config, key: `${config.key.slice(0, 4)}…(redacted)` };
 }
 
 export type { Capability };

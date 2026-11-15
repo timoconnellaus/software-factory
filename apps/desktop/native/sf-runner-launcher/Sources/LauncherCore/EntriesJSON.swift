@@ -22,16 +22,6 @@ let entriesJSON = #"""
         }
       ]
     },
-    "check-child": {
-      "script": "check-sandbox-child.cjs",
-      "fixed": [],
-      "fd3": true,
-      "forms": [
-        {
-          "words": []
-        }
-      ]
-    },
     "selftest": {
       "script": "service.cjs",
       "fixed": ["--selftest"],
@@ -185,24 +175,6 @@ let entriesJSON = #"""
         },
         {
           "words": ["remove", "<name>"]
-        }
-      ]
-    },
-    "sprites": {
-      "script": "sf-runner.cjs",
-      "fixed": ["sprites"],
-      "forms": [
-        {
-          "words": ["login"],
-          "flags": {
-            "--no-check": null
-          }
-        },
-        {
-          "words": ["status"]
-        },
-        {
-          "words": ["logout"]
         }
       ]
     }

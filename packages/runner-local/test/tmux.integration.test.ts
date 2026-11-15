@@ -8,7 +8,6 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_POINTER, psCommand } from "@software-factory/harness-claude";
 import { type AdapterEvent, RESULT_FILE, type RepoJob } from "@software-factory/runner-contract";
 import { afterAll, describe, expect, it } from "vitest";
@@ -68,10 +67,6 @@ hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "echo hello >> RE
 appendFileSync("README.md", "hello\\n");
 hook("PostToolUse", { tool_name: "Bash" });
 writeFileSync("${RESULT_FILE}", JSON.stringify({ notes: "ok", prompt }));
-// Steering (a person typing after takeover) reaches the agent before it stops.
-const steer = await next();
-writeFileSync("steered.txt", steer);
-hook("UserPromptSubmit", { prompt: steer });
 hook("Stop", {});
 await new Promise(() => {});
 `;
@@ -86,7 +81,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!hasTmux)("runner-local on the real tmux", { timeout: 60_000 }, () => {
-  it("runs a session end to end, takes steering, releases cleanly, leaves the default server alone", async () => {
+  it("runs a session end to end, releases cleanly, leaves the default server alone", async () => {
     const before = defaultLs();
     const root = await realpath(await mkdtemp(join(tmpdir(), "sf-tmux-")));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -121,7 +116,7 @@ describe.skipIf(!hasTmux)("runner-local on the real tmux", { timeout: 60_000 }, 
       jobId: "job_tmux1",
       runId: "run_1",
       runNo: 1,
-      stage: "build",
+      stage: "flow",
       workItem: { id: "wi_1", number: 7, title: "Add a line" },
       repo: { url: "https://github.com/acme/app.git", owner: "acme", name: "app", baseRef: "main" },
       branch: "factory/7-add-a-line-run-1",
@@ -141,14 +136,8 @@ describe.skipIf(!hasTmux)("runner-local on the real tmux", { timeout: 60_000 }, 
       encoding: "utf8",
     }).stdout.trim();
 
-    // A person types into the live session (what `tmux attach` does), and it reaches the agent.
     const events: AdapterEvent[] = [];
-    const steered = (async () => {
-      for (let i = 0; i < 100 && !existsSync(join(ws.path, RESULT_FILE)); i++) await sleep(50);
-      await runner.steer?.(session, "also say thanks");
-    })();
     for await (const e of runner.events(j, session, signal)) events.push(e);
-    await steered;
     const kinds = events.filter((e) => e.type !== "log");
     expect(kinds).toEqual([
       { type: "agent.status", status: "working" },
@@ -163,7 +152,6 @@ describe.skipIf(!hasTmux)("runner-local on the real tmux", { timeout: 60_000 }, 
     expect(events.some((e) => e.type === "log" && e.text.includes("working line"))).toBe(true);
     const result = JSON.parse(await readFile(join(ws.path, RESULT_FILE), "utf8"));
     expect(result.prompt).toBe(PROMPT_POINTER);
-    expect(await readFile(join(ws.path, "steered.txt"), "utf8")).toBe("also say thanks");
     const artifacts = await runner.collectArtifacts(j, ws, session);
     expect(artifacts.find((a) => a.kind === "log" && a.name === "terminal-screen")).toBeTruthy();
 

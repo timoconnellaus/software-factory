@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type AccountCliDeps, accountCommand } from "../src/account-cli.ts";
 import {
   type AccountPaths,
-  accountConfigDirs,
   accountsInUse,
   accountsReport,
   activeAccount,
@@ -79,7 +78,6 @@ describe("accounts on a host", () => {
       active: "work",
       limits: [],
     });
-    expect(await accountConfigDirs(p)).toContain(join(p.accountConfigsDir, "work"));
     await expect(addLoginAccount(p, "work")).rejects.toThrow(/already/);
     await expect(addLoginAccount(p, "default")).rejects.toThrow(/already/);
     await expect(addLoginAccount(p, "Work!")).rejects.toThrow(/isn't an account name/);

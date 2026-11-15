@@ -1,6 +1,6 @@
 // runner-local against a scripted tmux (src/testing.ts) over real git: the workspace in the owner's
 // checkout, the launch and its check, the prompt as a file, status from the hook file, takeover,
-// steering, release and reaping.
+// release and reaping.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -52,7 +52,7 @@ function job(overrides: Partial<RepoJob> = {}): RepoJob {
     jobId: "job_1",
     runId: "run_1",
     runNo: 1,
-    stage: "build",
+    stage: "flow",
     workItem: { id: "wi_1", number: 7, title: "Add a line" },
     repo: { url: URL, owner: "acme", name: "app", baseRef: "factory/7-add-a-line" },
     branch: "factory/7-add-a-line-run-1",
@@ -139,21 +139,11 @@ const ownerState = (owner: string) => ({
 });
 
 describe("runner-local adapter", { timeout: 30_000 }, () => {
-  it("declares hooks, takeover, own hardware, attachments, steer, interrupt and terminal; no browser, no auto-register", async () => {
+  it("declares hooks, takeover and own hardware; no browser, no auto-register", async () => {
     const { runner } = await world();
     const m = await runner.manifest();
     expect(m.runnerKind).toBe("local");
-    expect([...m.capabilities].sort()).toEqual(
-      [
-        "hooks",
-        "interrupt",
-        "own-hardware",
-        "steer",
-        "terminal",
-        "ui-takeover",
-        "work-item-attachments",
-      ].sort(),
-    );
+    expect([...m.capabilities].sort()).toEqual(["hooks", "own-hardware", "ui-takeover"]);
   });
 
   it("runs a job: a worktree of the owner's checkout, tmux on its own socket, status from the hook file, clean release", async () => {
@@ -322,77 +312,6 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     await w.runner.release(job(), ws, session);
   });
 
-  it("keeps a planning session (spec 20) in its session's worktree, through Stop and waiting, until the host stops it", async () => {
-    const w = await world(
-      {
-        onPrompt: (_s, append) => {
-          append({ event: "PreToolUse", tool: "mcp__planning__ask" });
-          append({ event: "Stop" });
-          append({ event: "Notification", type: "idle_prompt", message: "waiting" });
-        },
-      },
-      { waitingInputTimeoutMs: 5 },
-    );
-    const planningJob = job({
-      stage: "planning",
-      harness: { id: "claude-code", role: "triage", prompt: "plan it" },
-      planning: {
-        sessionId: "ps_0123456789abcdef0123456789abcdef",
-        sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
-        resume: true,
-      },
-    });
-    const controller = new AbortController();
-    await expect(w.runner.prepareWorkspace(planningJob, controller.signal)).rejects.toThrow(
-      /relay/,
-    );
-    const ws = await w.runner.prepareWorkspace(planningJob, controller.signal, {
-      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
-    });
-    // The same path for every job of the session, so `claude --resume` finds the conversation.
-    expect(ws.path).toBe(
-      join(
-        await realpathOf(join(w.root, "worktrees")),
-        "sf-plan-ps-0123456789abcdef0123456789abcdef",
-      ),
-    );
-    expect(ws.launch.argv).toContain("--resume");
-    const session = await w.runner.startSession(planningJob, ws, controller.signal);
-    expect(session.name).toBe("sf-job_1");
-    // A reap while it runs leaves it alone: the worktree names its job.
-    const dirs = { worktreesDir: w.config.worktreesDir, runsDir: w.runsDir, exec: w.tmux.exec };
-    expect(await reapOrphans(dirs, new Set(["job_1"]))).toEqual([]);
-    expect(existsSync(ws.path)).toBe(true);
-    setTimeout(() => controller.abort(new Error("the planning session yielded its slot")), 80);
-    const events = await drain(w.runner.events(planningJob, session, controller.signal));
-    expect(events.filter((e) => e.type === "session.ended")).toEqual([
-      { type: "session.ended", outcome: "cancelled" },
-    ]);
-    expect(events).toContainEqual({ type: "agent.status", status: "idle" });
-    await w.runner.release(planningJob, ws, session);
-    expect(existsSync(ws.path)).toBe(false);
-  });
-
-  it("reaps a planning worktree whose job the host no longer runs", async () => {
-    const w = await world();
-    const planningJob = job({
-      stage: "planning",
-      planning: {
-        sessionId: "ps_1",
-        sessionRef: "6f2c3a9e-1b2d-4c5e-8f90-123456789abc",
-        resume: false,
-      },
-    });
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(planningJob, signal, {
-      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
-    });
-    const dirs = { worktreesDir: w.config.worktreesDir, runsDir: w.runsDir, exec: w.tmux.exec };
-    expect(await reapOrphans(dirs, new Set())).toEqual(["job_1"]);
-    expect(existsSync(ws.path)).toBe(false);
-    expect(existsSync(join(w.runsDir, "job_1"))).toBe(false);
-  });
-
   it("waits on a permission prompt, then fails after the timeout", async () => {
     const w = await world(
       {
@@ -522,7 +441,7 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(existsSync(mcpConfig)).toBe(false);
   });
 
-  it("gives a flow job without MCP servers, and any other stage, no MCP config", async () => {
+  it("gives a job without MCP servers no MCP config", async () => {
     const w = await world();
     const signal = new AbortController().signal;
     const { repo: _repo, branch: _branch, ...rest } = job();
@@ -531,17 +450,11 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(flowWs.launch.argv).not.toContain("--mcp-config");
     expect(existsSync(join(w.runsDir, "job_1", "mcp.json"))).toBe(false);
     await w.runner.release(flow, flowWs, undefined);
-    // A build job that somehow carried the field (the contract refuses it) ignores it.
-    const build = {
-      ...job(),
-      mcpServers: [{ name: "factory", url: "https://engine.example.com/flow/mcp" }],
-    } as Job;
-    const ws = await w.runner.prepareWorkspace(build, signal);
+    const ws = await w.runner.prepareWorkspace(job(), signal);
     expect(ws.launch.argv).not.toContain("--mcp-config");
-    expect(existsSync(join(w.runsDir, "job_1", "mcp.json"))).toBe(false);
     const settings = JSON.parse(await readFile(join(ws.path, SETTINGS_FILE), "utf8"));
     expect(settings.permissions.allow.some((r: string) => r.startsWith("mcp__"))).toBe(false);
-    await w.runner.release(build, ws, undefined);
+    await w.runner.release(job(), ws, undefined);
   });
 
   it("ends when the tmux session goes: completed with a result file, failed without", async () => {
@@ -639,44 +552,6 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     await w.runner.release(job(), ws, undefined);
   });
 
-  it("runs verify in dontAsk", async () => {
-    const w = await world();
-    const ws = await w.runner.prepareWorkspace(
-      job({ stage: "verify" }),
-      new AbortController().signal,
-    );
-    const record = await readLaunchRecord(join(w.runsDir, "job_1"));
-    expect(record?.argv.slice(1, 3)).toEqual(["--permission-mode", "dontAsk"]);
-    await w.runner.release(job(), ws, undefined);
-  });
-
-  it("puts attachments outside the worktree, lets the harness read them, removes them on release", async () => {
-    const w = await world();
-    const ws = await w.runner.prepareWorkspace(job(), new AbortController().signal);
-    const dir = join(w.root, "attachments", "job_1");
-    expect(ws.attachmentsDir).toBe(dir);
-    const settings = JSON.parse(await readFile(join(ws.path, SETTINGS_FILE), "utf8"));
-    expect(settings.permissions.additionalDirectories).toEqual([dir]);
-    const note = await w.runner.attachFiles?.(job(), ws, [
-      {
-        meta: {
-          id: "att_1",
-          filename: "log.txt",
-          contentType: "text/plain",
-          sizeBytes: 2,
-          sha256: "0".repeat(64),
-          createdAt: new Date().toISOString(),
-        },
-        bytes: new TextEncoder().encode("hi"),
-      },
-    ]);
-    const path = join(dir, "att_1", "log.txt");
-    expect(await readFile(path, "utf8")).toBe("hi");
-    expect(note).toContain(`path: ${path}`);
-    await w.runner.release(job(), ws, undefined);
-    await expect(readFile(path, "utf8")).rejects.toThrow();
-  });
-
   it("emits what the agent says from its transcript, in order with the hook's events (ADR 0400)", async () => {
     const w = await world({
       onPrompt: async (s, append) => {
@@ -727,94 +602,6 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
       type: "session.ended",
       summary: "Done: added the line.",
     });
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("types a long or multi-line steer as one sanitised line, in pieces, then Enter", async () => {
-    const w = await world();
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const long = `first line\nsecond\u001b[2J ${"y".repeat(450)}`;
-    await w.runner.steer?.(session, long);
-    const typed = w.tmux.calls.filter((c) => c.includes("-l")).slice(1);
-    expect(typed.length).toBeGreaterThan(1);
-    expect(typed.every((c) => (c.at(-1) ?? "").length <= 200)).toBe(true);
-    const submitted = w.tmux.sessions.get("sf-job_1")?.submitted.at(-1) ?? "";
-    expect(submitted.startsWith("first line second[2J y")).toBe(true);
-    expect(submitted.includes("\n") || submitted.includes(String.fromCharCode(27))).toBe(false);
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("steers by typing the text and pressing Enter", async () => {
-    const w = await world();
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    await w.runner.steer?.(session, "also update the changelog");
-    expect(w.tmux.sessions.get("sf-job_1")?.submitted).toEqual([
-      PROMPT_POINTER,
-      "also update the changelog",
-    ]);
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("closes Claude Code's Rewind menu before typing when the Escape opened it (review of #71)", async () => {
-    const w = await world();
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const fake = w.tmux.sessions.get("sf-job_1");
-    if (!fake) throw new Error("no session");
-    fake.screen =
-      " Rewind\n Restore the code and/or conversation to the point before…\n ❯ (current)\n Enter to continue · Esc to cancel";
-    const before = w.tmux.calls.length;
-    await w.runner.interrupt?.(session, "read your planning news");
-    const keys = w.tmux.calls
-      .slice(before)
-      .filter((c) => c.includes("send-keys"))
-      .map((c) => c.at(-1));
-    expect(keys).toEqual(["Escape", "Escape", "read your planning news", "Enter"]);
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("isn't fooled by the agent's own text about Rewind higher up the screen (review of #71, D)", async () => {
-    const w = await world();
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const fake = w.tmux.sessions.get("sf-job_1");
-    if (!fake) throw new Error("no session");
-    fake.screen = [
-      " Rewind",
-      " Restore the code and/or conversation to the point before…",
-      " Enter to continue · Esc to cancel",
-      ...Array.from({ length: 30 }, (_, i) => `⏺ line ${i} of the agent's answer`),
-      "❯ ",
-    ].join("\n");
-    const before = w.tmux.calls.length;
-    await w.runner.interrupt?.(session, "read your planning news");
-    const keys = w.tmux.calls
-      .slice(before)
-      .filter((c) => c.includes("send-keys"))
-      .map((c) => c.at(-1));
-    expect(keys).toEqual(["Escape", "read your planning news", "Enter"]);
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("interrupts by pressing Escape, then typing the line and pressing Enter (ADR 0470)", async () => {
-    const w = await world();
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const before = w.tmux.calls.length;
-    await w.runner.interrupt?.(session, "read your planning news");
-    const keys = w.tmux.calls
-      .slice(before)
-      .filter((c) => c.includes("send-keys"))
-      .map((c) => c.at(-1));
-    expect(keys).toEqual(["Escape", "read your planning news", "Enter"]);
-    expect(w.tmux.sessions.get("sf-job_1")?.submitted.at(-1)).toBe("read your planning news");
     await w.runner.release(job(), ws, session);
   });
 
@@ -922,37 +709,6 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     });
     expect(usage).toEqual([["work", "You've hit your usage limit · resets 5pm"]]);
     await w.runner.release(job(), ws, session);
-  });
-
-  it("carries a resumed planning session's conversation into the account it resumes on", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sf-acc-dirs-"));
-    cleanups.push(() => rm(root, { recursive: true, force: true }));
-    const oldDir = join(root, "old");
-    const newDir = join(root, "new");
-    const w = await world(
-      {},
-      {
-        account: () => ({ name: "new", configDir: newDir }),
-        accountConfigDirs: () => [oldDir, newDir],
-      },
-    );
-    const planningJob = job({
-      stage: "planning",
-      harness: { id: "claude-code", role: "triage", prompt: "plan it" },
-      planning: { sessionId: "ps_carry", sessionRef: "sess-carry", resume: true },
-    });
-    const worktree = join(await realpathOf(join(w.root)), "worktrees", "sf-plan-ps-carry");
-    const project = worktree.replace(/[^A-Za-z0-9]/g, "-");
-    await mkdir(join(oldDir, "projects", project), { recursive: true });
-    await writeFile(join(oldDir, "projects", project, "sess-carry.jsonl"), "{}\n");
-    const ws = await w.runner.prepareWorkspace(planningJob, new AbortController().signal, {
-      planningRelay: { url: "http://127.0.0.1:1", token: "t" },
-    });
-    expect(ws.path).toBe(worktree);
-    expect(await readFile(join(newDir, "projects", project, "sess-carry.jsonl"), "utf8")).toBe(
-      "{}\n",
-    );
-    await w.runner.release(planningJob, ws, undefined);
   });
 
   it("reads tmux versions", () => {

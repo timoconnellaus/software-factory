@@ -4,12 +4,9 @@
 // RUNNER_COMPAT in ./types.ts: optional, additive fields and growing enums only, new kinds of job
 // gated on a capability, and anything else bumps RUNNER_COMPAT in the same PR.
 import { z } from "zod";
-import { executedCheckSchema, jobChecksSchema } from "./checks.ts";
-import { PLANNING_OPS } from "./planning.ts";
 import {
   CAPABILITIES,
   CONTRACT_VERSION,
-  HARNESS_PERMISSION_MODES,
   HARNESSES,
   JOB_STAGES,
   MODEL_ROLES,
@@ -24,8 +21,8 @@ export const MESSAGE_MAX = 8_000;
 export const TOOL_OUTPUT_MAX = 4_000;
 /** Most characters of a `turn` event's error (ADR 0450). */
 export const TURN_ERROR_MAX = 2_000;
-/** Most characters of a `takeover` event's hint (ADR 0450). */
-export const TAKEOVER_HINT_MAX = 4_000;
+/** Most characters of a `takeover` event's hint (ADR 0450; only older runners sent one). */
+const TAKEOVER_HINT_MAX = 4_000;
 const sha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const fencingToken = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
@@ -38,11 +35,6 @@ export const capabilityManifestSchema = z.object({
   runnerKind: z.string().min(1).max(40),
   harnesses: z.array(z.enum(HARNESSES)).min(1),
   capabilities: z.array(capabilitySchema),
-  /**
-   * One line on where the project's checks run on this runner, or why they can't (ADR 0501, fifth
-   * review): what `sf-runner doctor` says, shown in Factory > Runners. Optional: older hosts omit it.
-   */
-  checksNote: z.string().max(300).optional(),
 });
 
 export const capacityPausedSchema = z.object({
@@ -59,18 +51,15 @@ export const capacityPausedSchema = z.object({
 
 export const capacitySchema = z.object({
   /**
-   * Concurrent jobs this runner will take. With `light` reported, this is the heavy pool (build,
-   * verify) only (ADR 0301); without it, one pool for every job.
+   * Concurrent jobs this runner will take. With `light` reported, this is the heavy pool only
+   * (ADR 0301), which no job uses now; without it, one pool for every job.
    */
   max: z.number().int().min(0).max(64),
   /** Jobs currently holding a workspace on this runner (in the heavy pool when `light` is set). */
   inUse: z.number().int().min(0),
   /** False while draining (the owner paused it); the scheduler sends nothing new. */
   accepting: z.boolean(),
-  /**
-   * The light pool (triage, spec, planning), ADR 0301. Optional: a runner that reports none
-   * shares one pool and takes no planning jobs.
-   */
+  /** The light pool (ADR 0301), where flow jobs run. Optional: without it, one pool. */
   light: z
     .object({ max: z.number().int().min(0).max(64), inUse: z.number().int().min(0) })
     .optional(),
@@ -84,148 +73,65 @@ export const capacitySchema = z.object({
   paused: capacityPausedSchema.optional(),
 });
 
-/** A host name a sandboxed command may reach: `example.com` or `*.example.com`, never `*`. */
-const allowedDomain = z
-  .string()
-  .max(253)
-  .regex(/^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "a host name, or *.host");
-
-/** A Claude Code permission rule: `Tool` or `Tool(specifier)`. */
-const permissionRule = z
-  .string()
-  .max(500)
-  .regex(/^[A-Za-z][A-Za-z0-9_]*(\(.+\))?$/, "a permission rule like Bash(pnpm test:*)");
-
-/**
- * The project's harness settings (ADR 0270), from `.factory/policy.json` on the default branch,
- * carried on each job. They can only choose a mode and add to allowlists: the deny rules, the
- * sandbox and its `allowUnsandboxedCommands: false` are the harness's floor and can't be changed.
- */
-export const harnessProfileSchema = z
-  .object({
-    /** Permission mode per stage. Default: `bypassPermissions` (sandboxed) for build, else `dontAsk`. */
-    permissionMode: z
-      .partialRecord(z.enum(JOB_STAGES), z.enum(HARNESS_PERMISSION_MODES))
-      .optional(),
-    /** Extra allow rules per stage, on top of the stage's own. Deny rules still win. */
-    allow: z.partialRecord(z.enum(JOB_STAGES), z.array(permissionRule).max(100)).optional(),
-    /** Extra hosts sandboxed commands may reach, on top of the registry, GitHub and Cloudflare. */
-    allowedDomains: z.array(allowedDomain).max(100).optional(),
-  })
-  .strict();
-export type HarnessProfile = z.infer<typeof harnessProfileSchema>;
-
-/** One stage job the scheduler assigned to a runner. Everything a runner needs, nothing more. */
-export const jobSchema = z
-  .object({
-    jobId: id,
-    runId: id,
-    /** Run number within the work item (1, 2, …). Retries and send-backs get a new run. */
-    runNo: z.number().int().positive(),
-    stage: z.enum(JOB_STAGES),
-    workItem: z.object({ id, number: z.number().int().positive(), title: z.string() }),
+/** One job the scheduler assigned to a runner. Everything a runner needs, nothing more. */
+export const jobSchema = z.object({
+  jobId: id,
+  runId: id,
+  /** Run number within the item (or the chat). */
+  runNo: z.number().int().positive(),
+  stage: z.enum(JOB_STAGES),
+  workItem: z.object({ id, number: z.number().int().positive(), title: z.string() }),
+  /** The repository, when the item's project has one. Without it: a plain directory, no token or push. */
+  repo: z
+    .object({
+      /** Canonical clone URL; the runner maps it to a local checkout or clones it. */
+      url: z.string().url(),
+      owner: z.string(),
+      name: z.string(),
+      /** Where the run starts: the item's branch, or the default branch for its first run. */
+      baseRef: z.string(),
+      /** The project's default branch. */
+      defaultBranch: z.string().optional(),
+    })
+    .optional(),
+  /** The item's branch, `factory/flow-<key>-<n>`: the only branch this run may push. With a repo only. */
+  branch: z.string().optional(),
+  harness: z.object({
+    id: z.enum(HARNESSES),
+    role: z.enum(MODEL_ROLES),
+    /** The model the role resolves to (ADR 0018); the harness may ignore it. */
+    model: z.string().optional(),
     /**
-     * The repository. Required for every stage but `flow` (refined below), which may have none: a
-     * job without one gets a plain directory, no token, no push and no checks.
+     * How hard the model works (spec 70, Chat): the CLI's effort level ("low" … "max"), a chat's
+     * choice or its agent's; absent, or one the harness doesn't know, means the harness's
+     * default. A runner that predates it ignores it.
      */
-    repo: z
-      .object({
-        /** Canonical clone URL; the runner maps it to a local checkout or clones it. */
+    effort: z.string().max(20).optional(),
+    prompt: z.string(),
+  }),
+  /** What the run is about (its org and status, or its chat). */
+  context: z.record(z.string(), z.unknown()),
+  /** Capabilities the job needs. A runner refuses a job whose needs its manifest doesn't cover. */
+  requires: z.array(capabilitySchema),
+  limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
+  /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
+  lease: z.object({ fencingToken, expiresAt: iso }),
+  /**
+   * MCP servers (streamable HTTP) to give the session, such
+   * as the engine's own `factory` server with a bearer token valid while the run is claimed.
+   * Optional and additive: a runner that predates it ignores it.
+   */
+  mcpServers: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(64),
         url: z.string().url(),
-        owner: z.string(),
-        name: z.string(),
-        /** Where the run starts: the work item branch `factory/<n>-<slug>`. */
-        baseRef: z.string(),
-        /**
-         * The project's default branch (ADR 0320). A build merges it into the run branch before the
-         * session, so the PR stays mergeable. Optional: a job without it skips the merge.
-         */
-        defaultBranch: z.string().optional(),
-      })
-      .optional(),
-    /**
-     * The run branch, `factory/<n>-<slug>-run-<k>`. The only branch this run may push (ADR 0035).
-     * Required with a repo; a `flow` job without one has none.
-     */
-    branch: z.string().optional(),
-    harness: z.object({
-      id: z.enum(HARNESSES),
-      role: z.enum(MODEL_ROLES),
-      /** The model the role resolves to (ADR 0018); the harness may ignore it. */
-      model: z.string().optional(),
-      /**
-       * How hard the model works (spec 70, Chat): the CLI's effort level ("low" … "max"). Only a
-       * `flow` job sets it (a chat's choice, or its agent's); absent, or one the harness doesn't
-       * know, means the harness's default. A runner that predates it ignores it.
-       */
-      effort: z.string().max(20).optional(),
-      prompt: z.string(),
-      /**
-       * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it
-       * ignores it, and a job without one gets the harness defaults.
-       */
-      profile: harnessProfileSchema.optional(),
-    }),
-    /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
-    context: z.record(z.string(), z.unknown()),
-    /**
-     * A planning job (ADR 0300, 0350): the session it belongs to, the harness conversation to start
-     * (`--session-id`) or resume (`--resume`), and whether this is a resume. The workspace is the
-     * session's, kept across yields.
-     */
-    planning: z
-      .object({
-        sessionId: id,
-        sessionRef: z.string().regex(/^[0-9a-f-]{36}$/),
-        resume: z.boolean(),
-      })
-      .optional(),
-    /** Capabilities the job needs. A runner refuses a job whose needs its manifest doesn't cover. */
-    requires: z.array(capabilitySchema),
-    /** Visual evidence to capture after the session, when the runner has `browser`. */
-    evidence: z.object({ screenshotUrls: z.array(z.string()).optional() }).optional(),
-    limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
-    /**
-     * The project's checks (ADR 0501): the host runs them itself in the worktree, on the commit it
-     * hands back, and reports each on the hand-back. Optional: a runner that predates it ignores it,
-     * and the verdict then fails for want of results.
-     */
-    checks: jobChecksSchema.optional(),
-    /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
-    lease: z.object({ fencingToken, expiresAt: iso }),
-    /**
-     * Flow jobs only (spec 70 milestone 2): MCP servers (streamable HTTP) to give the session, such
-     * as the engine's own `factory` server with a bearer token valid while the run is claimed.
-     * Optional and additive: a runner that predates it ignores it.
-     */
-    mcpServers: z
-      .array(
-        z.object({
-          name: z.string().min(1).max(64),
-          url: z.string().url(),
-          headers: z.record(z.string(), z.string()).optional(),
-        }),
-      )
-      .max(10)
-      .optional(),
-  })
-  .superRefine((job, ctx) => {
-    // Every stage but `flow` needs a repo and a run branch, exactly as before they were optional.
-    if (job.stage === "flow") return;
-    if (job.mcpServers !== undefined) {
-      ctx.addIssue({ code: "custom", path: ["mcpServers"], message: "only a flow job has these" });
-    }
-    if (job.repo === undefined) {
-      ctx.addIssue({ code: "custom", path: ["repo"], message: `a ${job.stage} job needs a repo` });
-    }
-    if (job.branch === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["branch"],
-        message: `a ${job.stage} job needs a branch`,
-      });
-    }
-  });
+        headers: z.record(z.string(), z.string()).optional(),
+      }),
+    )
+    .max(10)
+    .optional(),
+});
 
 const eventBase = { jobId: id, seq: z.number().int().nonnegative(), at: iso };
 const takeoverSchema = z.object({ label: z.string(), hint: z.string() });
@@ -272,10 +178,7 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
     /** Pairs the call with its `tool.result` (ADR 0450). Optional, additive. */
     id: z.string().max(100).optional(),
   }),
-  /**
-   * A stream session's tool result, its call's `id` as `toolId` (ADR 0450). Additive: only a
-   * runner with `chat`, at the engine's deployed commit, sends it.
-   */
+  /** A stream session's tool result, its call's `id` as `toolId` (ADR 0450). */
   z.object({
     ...eventBase,
     type: z.literal("tool.result"),
@@ -300,7 +203,7 @@ export const runnerEventSchema = z.discriminatedUnion("type", [
       .optional(),
     error: z.string().max(TURN_ERROR_MAX).optional(),
   }),
-  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). Additive. */
+  /** A stream session handed to a person (ADR 0450): only older runners send it. Kept on the wire. */
   z.object({
     ...eventBase,
     type: z.literal("takeover"),
@@ -386,14 +289,12 @@ export const handbackSchema = z.object({
   outcome: z.enum(["completed", "failed", "timed_out", "cancelled"]),
   summary: z.string().max(20_000).optional(),
   artifactIds: z.array(z.string()),
-  /** The branch the run pushed. Must be the job's run branch. */
+  /** The branch the run pushed (the job's branch), or empty for a job without a repository. */
   branch: z.string(),
-  /** The run branch's head after the push. Required for `build` (the cloud checks it on GitHub). */
+  /** The branch's head after the push. */
   headSha: sha.optional(),
-  /** The stage's structured result (./stage-results.ts), parsed by the cloud per stage. */
+  /** The run's result (`flowResultSchema`), parsed by the cloud. */
   result: z.unknown().optional(),
-  /** The job's checks as the host ran them (ADR 0501), on `headSha` (or the verify job's head). */
-  checks: z.array(executedCheckSchema).max(60).optional(),
 });
 
 // ---- requests and responses ----
@@ -430,8 +331,7 @@ export const runnerVersionSchema = z.object({
     /**
      * What it claims while `waiting` (ADR 0520): `all` as usual, `light` jobs only (the update has
      * waited past its first cap), or `none` (past the second cap, or the engine needs a newer
-     * runner). On `none` the engine asks its idle planning sessions to yield. Optional: older
-     * runners omit it.
+     * runner). Optional: older runners omit it.
      */
     claims: z.enum(["all", "light", "none"]).optional(),
   }),
@@ -480,7 +380,6 @@ export const heartbeatRequestSchema = z.object({
 
 export const runnerCommandSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cancel"), jobId: id, reason: z.string() }),
-  z.object({ kind: z.literal("steer"), jobId: id, text: z.string() }),
   z.object({ kind: z.literal("drain") }),
   /** The owner picked this account for new jobs (ADR 0410). Older hosts ignore it. */
   z.object({ kind: z.literal("account.use"), name: accountNameSchema }),
@@ -502,11 +401,6 @@ export const heartbeatResponseSchema = z.object({
    * updated. Optional: an older engine omits it, and then nothing forces a drain.
    */
   minRunnerCompat: z.number().int().min(0).optional(),
-  /**
-   * What this engine supports beyond the contract (spec 44 part B): `job-line`. Optional and
-   * additive: an older engine omits it, and a host then keeps its held calls.
-   */
-  engine: z.object({ capabilities: z.array(z.string()) }).optional(),
 });
 
 export const claimRequestSchema = z.object({
@@ -543,85 +437,6 @@ export const releaseRequestSchema = z.object({
   reason: z.string().max(2_000).optional(),
 });
 
-/** One work item attachment as a run sees it (ADR 0310). Its filename is untrusted data. */
-export const attachmentMetaSchema = z.object({
-  id: z.string(),
-  filename: z.string(),
-  contentType: z.string(),
-  sizeBytes: z.number().int().nonnegative(),
-  sha256: z.string(),
-  createdAt: iso,
-});
-
-export const attachmentsRequestSchema = z.object({ fencingToken });
-export const attachmentsResponseSchema = z.object({ attachments: z.array(attachmentMetaSchema) });
-export const attachmentRequestSchema = z.object({ fencingToken, attachmentId: z.string() });
-export const attachmentResponseSchema = z.object({
-  attachment: attachmentMetaSchema,
-  /** The file's bytes, base64. */
-  base64: z.string(),
-});
-
-/**
- * The held steer call (ADR 0400): the run's queued messages, at once if there are any, else when one
- * arrives or after about `waitMs` (at most STEER_WAIT_MAX_MS) with none.
- */
-export const steersRequestSchema = z.object({
-  fencingToken,
-  waitMs: z.number().int().min(0).max(60_000).optional(),
-  /**
-   * The steers this host has received since its last call (spec 44, host ack). Sending the field
-   * at all, even empty, opts in: a take then only offers steers (for STEER_OFFER_MS), and a steer
-   * is delivered when the host acks it, so a take by a call whose host had gone is offered again.
-   * An older host never sends it, and its takes deliver as before.
-   */
-  ack: z.array(z.string().min(1).max(64)).max(100).optional(),
-});
-
-/** How long a taken steer stays offered to an acking host before it is offered again. */
-export const STEER_OFFER_MS = 60_000;
-export const steersResponseSchema = z.object({
-  steers: z.array(
-    z.object({
-      id: z.string(),
-      text: z.string(),
-      at: iso,
-      /** Stop the current step first (`adapter.interrupt`, ADR 0470); else type it as is. */
-      interrupt: z.boolean().optional(),
-      /**
-       * `takeover`: stop the stream session for a person (ADR 0450), not a message to type.
-       * Optional, additive: absent is a message.
-       */
-      kind: z.enum(["message", "takeover"]).optional(),
-    }),
-  ),
-});
-export type SteersRequest = z.infer<typeof steersRequestSchema>;
-
-/**
- * The held terminal call (ADR 0440): answers with the job relay's socket URL, carrying a one-use
- * ticket, when someone is waiting to watch and no host is connected; else `connect: null` after
- * about `waitMs` (at most TERMINAL_WAIT_MAX_MS).
- */
-export const terminalCallRequestSchema = z.object({
-  fencingToken,
-  waitMs: z.number().int().min(0).max(60_000).optional(),
-});
-export const terminalCallResponseSchema = z.object({
-  connect: z.object({ url: z.string() }).nullable(),
-});
-export type TerminalCallRequest = z.infer<typeof terminalCallRequestSchema>;
-
-/** The job line call's answer: the one-use socket URL (spec 44 part B, ADR 0592). */
-export const lineCallResponseSchema = z.object({ connect: z.object({ url: z.string() }) });
-export type LineCallResponse = z.infer<typeof lineCallResponseSchema>;
-
-/** What the relay pushes down a job line: a wake only, never data (spec 44 rule 1). */
-export const lineMessageSchema = z.object({ t: z.enum(["steer", "viewer", "planning"]) });
-export type LineMessage = z.infer<typeof lineMessageSchema>;
-export type TerminalCallResponse = z.infer<typeof terminalCallResponseSchema>;
-export type SteersResponse = z.infer<typeof steersResponseSchema>;
-
 /** Every non-2xx answer from the channel carries this body. */
 export const channelErrorSchema = z.object({
   error: z.string(),
@@ -640,17 +455,3 @@ export type EventsRequest = z.infer<typeof eventsRequestSchema>;
 export type ArtifactRequest = z.infer<typeof artifactRequestSchema>;
 export type ReleaseRequest = z.infer<typeof releaseRequestSchema>;
 export type ChannelError = z.infer<typeof channelErrorSchema>;
-export type AttachmentMeta = z.infer<typeof attachmentMetaSchema>;
-export type AttachmentsResponse = z.infer<typeof attachmentsResponseSchema>;
-export type AttachmentResponse = z.infer<typeof attachmentResponseSchema>;
-
-/**
- * A planning operation from a planning job's harness, relayed by the host (ADR 0350). The cloud adds
- * the job id from the path and runs `op` as the runner, scoped to the job's work item.
- */
-export const planningCallRequestSchema = z.object({
-  fencingToken,
-  op: z.enum(PLANNING_OPS),
-  input: z.record(z.string(), z.unknown()).default({}),
-});
-export type PlanningCallRequest = z.infer<typeof planningCallRequestSchema>;

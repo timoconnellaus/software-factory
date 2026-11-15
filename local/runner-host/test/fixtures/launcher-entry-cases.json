@@ -10,10 +10,6 @@
       "run": ["sf-runner.cjs", "run"]
     },
     {
-      "args": ["check-child"],
-      "run": ["check-sandbox-child.cjs"]
-    },
-    {
       "args": ["selftest"],
       "run": ["service.cjs", "--selftest"]
     },
@@ -122,11 +118,7 @@
       "run": null
     },
     {
-      "args": ["sprites", "login", "--no-check"],
-      "run": ["sf-runner.cjs", "sprites", "login", "--no-check"]
-    },
-    {
-      "args": ["sprites", "logout", "--no-check"],
+      "args": ["sprites", "login"],
       "run": null
     },
     {

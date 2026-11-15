@@ -9,15 +9,7 @@ import { RunnerHost } from "../src/host.ts";
 import { runJob } from "../src/job.ts";
 import { DEFAULT_LOAD_POLICY, LoadGate, loadPolicySchema } from "../src/load.ts";
 import type { SelfUpdate } from "../src/self-update.ts";
-import {
-  controlPlane,
-  fakeAdapter,
-  fakeCloud,
-  git,
-  job,
-  NO_GIT_ATTR_SOURCE,
-  scratchRepo,
-} from "./helpers.ts";
+import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -128,92 +120,6 @@ describe("the host under load", () => {
     expect(cloud.heartbeats[0]?.capacity.paused).toBeUndefined();
     expect(claimed).toBe(1);
   });
-});
-
-describe("the project's checks under load (fifth review)", () => {
-  async function host(opts: { load: number; maxChecks?: number; checkLoadWaitMs?: number }) {
-    const repo = await scratchRepo();
-    cleanups.push(repo.cleanup);
-    const cloud = fakeCloud();
-    const cp = await controlPlane(cloud);
-    const checks = { commands: [{ name: "tests", run: "true", timeoutMs: 5_000 }], fixRounds: 0 };
-    cloud.queue.push(
-      job({ jobId: "job_c1", checks }),
-      job({
-        jobId: "job_c2",
-        checks,
-        runId: "run_2",
-        runNo: 2,
-        branch: "factory/7-add-a-line-run-2",
-      }),
-    );
-    let load = opts.load;
-    let now = 0;
-    let most = 0;
-    const capacities: number[] = [];
-    const logs: string[] = [];
-    // The host's capacity as the heartbeat reports it (private: read through a cast).
-    const inUse = () =>
-      (h as unknown as { capacity(): Promise<{ inUse: number }> }).capacity().then((c) => c.inUse);
-    const started: string[] = [];
-    const h = new RunnerHost({
-      adapter: fakeAdapter((x) => repo.host.clonePath(x), edit),
-      cp,
-      git: repo.host,
-      maxConcurrent: 4,
-      heartbeatMs: 60_000,
-      log: (m) => logs.push(m),
-      load: new LoadGate(DEFAULT_LOAD_POLICY, () => ({ load1: load, cores: 8 })),
-      maxChecks: opts.maxChecks ?? 1,
-      checkLoadWaitMs: opts.checkLoadWaitMs ?? 60_000,
-      checkPollMs: 10,
-      checkSandbox: (j) => async () => {
-        started.push(j.jobId);
-        now++;
-        most = Math.max(most, now);
-        // While it runs, the check is a heavy job of its own on the heartbeat's capacity.
-        capacities.push(await inUse());
-        await new Promise((r) => setTimeout(r, 50));
-        now--;
-        return { exitCode: 0, timedOut: false, output: "" };
-      },
-    });
-    await h.start();
-    const setLoad = (l: number) => {
-      load = l;
-    };
-    return { h, cloud, started, logs, most: () => most, capacities, setLoad };
-  }
-
-  it.skipIf(NO_GIT_ATTR_SOURCE)(
-    "runs at most `maxChecks` at once across jobs, each counted as a heavy job while it runs",
-    async () => {
-      const { h, started, most, capacities, logs } = await host({ load: 0 });
-      await h.idle();
-      await h.stop();
-      expect(started.sort(), logs.join("\n")).toEqual(["job_c1", "job_c2"]);
-      expect(most()).toBe(1);
-      // Two jobs, one with its check running: three heavy in use.
-      expect(capacities).toContain(3);
-    },
-  );
-
-  it.skipIf(NO_GIT_ATTR_SOURCE)(
-    "waits to start a check while the load backoff has stopped heavy work, then runs it anyway after its wait",
-    async () => {
-      const r = await host({ load: 0, maxChecks: 2, checkLoadWaitMs: 300 });
-      // Both jobs were claimed at load 0; the load rises before their checks start.
-      r.setLoad(13);
-      const t0 = Date.now();
-      await r.h.idle();
-      await r.h.stop();
-      expect(r.started.sort()).toEqual(["job_c1", "job_c2"]);
-      expect(Date.now() - t0).toBeGreaterThanOrEqual(250);
-      expect(
-        r.logs.some((m) => m.includes("a check waits to start (the machine is overloaded)")),
-      ).toBe(true);
-    },
-  );
 });
 
 describe("a draining host", () => {

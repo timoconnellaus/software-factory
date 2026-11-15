@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The generic runner host daemon: connects outbound to the factory over the signed channel, claims jobs, pushes run branches with the job token, and drives a runner adapter (runner-local). Runs on a person's machine.",
+  "description": "The generic runner host daemon: connects outbound to the factory over the signed channel, claims flow jobs, pushes their item branches with the job token, and drives a runner adapter (runner-local). Runs on a person's machine.",
   "bin": {
     "sf-runner": "./bin/sf-runner"
   },
@@ -17,7 +17,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "0.0.81",
     "@software-factory/harness-claude": "workspace:*",
     "@software-factory/runner-contract": "workspace:*",
     "@software-factory/runner-local": "workspace:*",

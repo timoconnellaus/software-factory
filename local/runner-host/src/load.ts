@@ -1,7 +1,7 @@
 // Back off claiming under load (spec 43, ADR 0552; incident #11 (2026-11-12)). On a shared machine
 // the factory's own sessions are not the only load: when the 1-minute load average passes a
-// multiple of the CPU count, the host stops claiming heavy jobs (build, verify) first, then light
-// ones (triage, spec, planning), and resumes each below a lower threshold (hysteresis), so a load
+// multiple of the CPU count, the host stops claiming in the heavy pool first, then the light one
+// (where flow jobs run), and resumes each below a lower threshold (hysteresis), so a load
 // hovering at the line doesn't flap. Running jobs are never touched. The reason rides on the
 // heartbeat's capacity (`paused: { reason: "load", pools, load1, cores }`).
 import { availableParallelism, loadavg } from "node:os";

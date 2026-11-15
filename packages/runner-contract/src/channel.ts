@@ -1,7 +1,6 @@
 // The signed runner channel (ADR 0016, ADR 0100; the same construction as Relationship OS ADR 0250). The
 // runner host only connects outbound: every call is an HTTPS request from the host to the cloud,
-// and cloud → runner commands (cancel, drain) ride back on the heartbeat response; a person's
-// steers come back on a held `steer` call (ADR 0400).
+// and cloud → runner commands (cancel, drain, account.use) ride back on the heartbeat response.
 //
 // Each runner has its own key, derived from one cloud master secret, so nothing per runner is
 // stored in the cloud and one runner's key can't sign for another:

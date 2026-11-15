@@ -55,7 +55,7 @@ function job(overrides: Partial<RepoJob> = {}): RepoJob {
     jobId: "job_1",
     runId: "run_1",
     runNo: 1,
-    stage: "build",
+    stage: "flow",
     workItem: { id: "wi_1", number: 7, title: "Add a line" },
     repo: { url: URL, owner: "acme", name: "app", baseRef: "factory/7-add-a-line" },
     branch: "factory/7-add-a-line-run-1",
@@ -605,72 +605,6 @@ describe("run branches are the factory's own, whatever their names (ADR 0551)", 
     expect((await diagnose({ ...dirs, live: new Set() })).map((f) => f.kind)).not.toContain(
       "orphan-branch",
     );
-  });
-});
-
-describe("a steer typed mid-turn (tmux)", { timeout: 30_000 }, () => {
-  it("doesn't end at the current turn's Stop: it ends at the steered turn's", async () => {
-    const w = await world({ queueSteers: true }, { turnGraceMs: 10_000 });
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const events: AdapterEvent[] = [];
-    const run = (async () => {
-      for await (const e of w.runner.events(job(), session, signal)) events.push(e);
-    })();
-    await w.runner.steer?.(session, "also update the changelog");
-    w.tmux.append("sf-job_1", { event: "Stop" }); // the first turn's Stop
-    await until("the Stop is read", () =>
-      events.some((e) => e.type === "agent.status" && e.status === "idle"),
-    );
-    expect(events.some((e) => e.type === "session.ended")).toBe(false);
-    // Claude takes the queued steer as its next turn, then stops.
-    w.tmux.append("sf-job_1", { event: "UserPromptSubmit" });
-    w.tmux.append("sf-job_1", { event: "Stop" });
-    await run;
-    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("a steered turn that shows work but no UserPromptSubmit (a late hook) isn't cut off at the grace", async () => {
-    const w = await world({ queueSteers: true }, { turnGraceMs: 50 });
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    const events: AdapterEvent[] = [];
-    const run = (async () => {
-      for await (const e of w.runner.events(job(), session, signal)) events.push(e);
-    })();
-    await w.runner.steer?.(session, "also update the changelog");
-    w.tmux.append("sf-job_1", { event: "Stop" });
-    await until("the Stop is read", () =>
-      events.some((e) => e.type === "agent.status" && e.status === "idle"),
-    );
-    // The steered turn works; its UserPromptSubmit never comes.
-    w.tmux.append("sf-job_1", { event: "PreToolUse", tool: "Edit" });
-    await until("the tool is read", () => events.some((e) => e.type === "tool"));
-    // Well past the grace period: still running.
-    const past = Date.now() + 200;
-    await until("past the grace", () => Date.now() > past);
-    expect(events.some((e) => e.type === "session.ended")).toBe(false);
-    w.tmux.append("sf-job_1", { event: "Stop" });
-    await run;
-    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
-    await w.runner.release(job(), ws, session);
-  });
-
-  it("ends after the grace period when Claude folded the steer into the turn that stopped", async () => {
-    const w = await world({ queueSteers: true }, { turnGraceMs: 60 });
-    const signal = new AbortController().signal;
-    const ws = await w.runner.prepareWorkspace(job(), signal);
-    const session = await w.runner.startSession(job(), ws, signal);
-    await w.runner.steer?.(session, "and the docs");
-    w.tmux.append("sf-job_1", { event: "Stop" });
-    const started = Date.now();
-    const events = await drain(w.runner.events(job(), session, signal));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
-    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
-    await w.runner.release(job(), ws, session);
   });
 });
 

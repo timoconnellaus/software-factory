@@ -10,11 +10,6 @@
 //   artifacts   art:<job>:<artifact id>        artifact ids are content hashes
 //   handback    hand:<job>
 //   release     rel:<job>
-//   attachments att:<job>:<uuid>               NOT stored: the job's work item's attachments (list)
-//   attachment  att:<job>:<uuid>               NOT stored: one attachment's bytes (ADR 0310)
-//   planning    plan:<job>:<uuid>              NOT stored: a planning operation (ADR 0350)
-//   steer       steer:<job>:<uuid>             NOT stored: a held wait for the run's steers (ADR 0400)
-//   terminal    term:<job>:<uuid>              NOT stored: a held wait for a web terminal viewer (ADR 0440)
 //
 // Every job-scoped call carries the job's fencing token; after a takeover or a lost lease the cloud
 // answers 409 with code `fenced`, and the host must stop the run (ADR 0035).
@@ -22,20 +17,12 @@
 import { sha256Hex, signRunnerRequest, verifyRunnerResponse } from "./channel.ts";
 import type { Handback, StoredArtifact } from "./types.ts";
 import type {
-  AttachmentResponse,
-  AttachmentsResponse,
   ClaimRequest,
   ClaimResponse,
   EventsRequest,
   HeartbeatRequest,
   HeartbeatResponse,
-  LineCallResponse,
-  PlanningCallRequest,
   ReleaseRequest,
-  SteersRequest,
-  SteersResponse,
-  TerminalCallRequest,
-  TerminalCallResponse,
   TokenResponse,
 } from "./wire.ts";
 
@@ -47,37 +34,7 @@ export const PATHS = {
   artifacts: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/artifacts`,
   handback: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/handback`,
   release: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/release`,
-  attachments: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachments`,
-  attachment: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/attachment`,
-  planning: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/planning`,
-  steer: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/steer`,
-  terminal: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/terminal`,
-  /** The job line's one-use socket URL (spec 44 part B, ADR 0592). */
-  line: (jobId: string) => `/runner/v1/jobs/${encodeURIComponent(jobId)}/line`,
 } as const;
-
-/**
- * What the engine supports beyond the contract, declared in its heartbeat answer
- * (`engine.capabilities`, spec 44 part B): a host uses the job line only when both declare it.
- */
-export const ENGINE_CAPABILITIES = ["job-line"] as const;
-export type EngineCapability = (typeof ENGINE_CAPABILITIES)[number];
-
-/**
- * What the host sends to ping its job line, and what comes back. The relay answers exactly this
- * text without waking (`setWebSocketAutoResponse`): any other text would wake it on every ping.
- */
-export const LINE_PING = "ping";
-export const LINE_PONG = "pong";
-/** The host pings its job line this often; auto-responded by the relay, so never billed. */
-export const LINE_PING_MS = 30_000;
-/** A ping with no pong within this long means the line is half-open: the host treats it as down. */
-export const LINE_PONG_DEADLINE_MS = 10_000;
-/** While the line is up, the host still makes each call once (`waitMs: 0`) this often. */
-export const LINE_SAFETY_POLL_MS = 5 * 60_000;
-
-/** How long the cloud holds a steer call with nothing queued (ADR 0400). */
-export const STEER_WAIT_MAX_MS = 25_000;
 
 /**
  * Device login (ADR 0056): the two calls `sf-runner login` makes before it has a key. Unsigned;
@@ -93,19 +50,7 @@ export const DEVICE_PATHS = {
 export const DEVICE_APPROVE_PATH = "/runners/connect";
 
 /** Job-scoped calls, as the path's last segment. */
-export const JOB_CALLS = [
-  "token",
-  "events",
-  "artifacts",
-  "handback",
-  "release",
-  "attachments",
-  "attachment",
-  "planning",
-  "steer",
-  "terminal",
-  "line",
-] as const;
+export const JOB_CALLS = ["token", "events", "artifacts", "handback", "release"] as const;
 export type JobCall = (typeof JOB_CALLS)[number];
 
 /** Parses `/runner/v1/jobs/<id>/<call>`. */
@@ -118,8 +63,7 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
 }
 
 /**
- * Calls whose responses the cloud never stores: a secret, a file's bytes, a held wait, or a call
- * that is naturally idempotent. The heartbeat is the last: it renews leases and repeats commands
+ * Calls whose responses the cloud never stores: a secret, or a call that is naturally idempotent. The heartbeat is the last: it renews leases and repeats commands
  * until they are settled, so running a retry again is right, and storing it cost about 7 rows
  * written per beat (AGENTS.md, Cloudflare cost, rule 9). The claim is idempotent by its claimId:
  * a retry gets the job the first call claimed, and the unique (runner, claimId) index stops two
@@ -127,16 +71,7 @@ export function parseJobPath(path: string): { jobId: string; call: JobCall } | n
  */
 export function isUnstoredPath(path: string): boolean {
   if (path === PATHS.heartbeat || path === PATHS.claim) return true;
-  const call = parseJobPath(path)?.call;
-  return (
-    call === "token" ||
-    call === "attachments" ||
-    call === "attachment" ||
-    call === "planning" ||
-    call === "steer" ||
-    call === "terminal" ||
-    call === "line"
-  );
+  return parseJobPath(path)?.call === "token";
 }
 
 /** A refused channel call. `code` is the cloud's refusal code (`fenced`, `killed`, …). */
@@ -161,41 +96,6 @@ export interface ControlPlaneClient {
   artifact(jobId: string, fencingToken: number, artifact: StoredArtifact): Promise<void>;
   handback(body: Handback): Promise<void>;
   release(body: ReleaseRequest): Promise<void>;
-  /** The job's work item's attachments (ADR 0310). Optional: a test client may leave it out. */
-  attachments?(jobId: string, fencingToken: number): Promise<AttachmentsResponse>;
-  /** One of them, with its bytes (base64). */
-  attachment?(
-    jobId: string,
-    fencingToken: number,
-    attachmentId: string,
-  ): Promise<AttachmentResponse>;
-  /**
-   * A planning job's operation (ADR 0350), relayed for its harness. Answers the operation's output;
-   * a refusal throws ChannelCallError (409 `fenced` means the session is over).
-   */
-  planning?(jobId: string, body: PlanningCallRequest): Promise<unknown>;
-  /**
-   * Waits for the run's steers (ADR 0400): answers at once with any queued, else when one is sent
-   * or after about `waitMs`. Taking them marks them delivered (at most once). `signal` aborts the
-   * wait when the session ends.
-   */
-  steers?(jobId: string, body: SteersRequest, signal?: AbortSignal): Promise<SteersResponse>;
-  /**
-   * Waits for someone to open the job's web terminal (ADR 0440): answers with a one-use socket URL
-   * for the job's relay when a viewer is waiting and no host is connected, else `connect: null`
-   * after about `waitMs`. `signal` aborts the wait when the session ends.
-   */
-  terminal?(
-    jobId: string,
-    body: TerminalCallRequest,
-    signal?: AbortSignal,
-  ): Promise<TerminalCallResponse>;
-  /**
-   * The job line (spec 44 part B, ADR 0592): a one-use socket URL to the job's relay, which pushes
-   * `{ t: "steer" | "viewer" | "planning" }` when there is something to fetch. Fenced like the
-   * others. Answered at once; 404 or `unavailable` from an engine without it.
-   */
-  line?(jobId: string, body: TerminalCallRequest): Promise<LineCallResponse>;
 }
 
 /** Content-hash id for an artifact, so uploading it twice is a no-op. */
@@ -212,12 +112,7 @@ export function httpControlPlane(config: {
   now?: () => Date;
 }): ControlPlaneClient {
   const doFetch = config.fetch ?? fetch;
-  async function call<T>(
-    path: string,
-    idempotencyKey: string,
-    payload: unknown,
-    signal?: AbortSignal,
-  ): Promise<T> {
+  async function call<T>(path: string, idempotencyKey: string, payload: unknown): Promise<T> {
     const body = JSON.stringify(payload);
     const headers = await signRunnerRequest({
       key: config.key,
@@ -232,7 +127,6 @@ export function httpControlPlane(config: {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body,
-      ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
       const text = await response.text();
@@ -278,24 +172,5 @@ export function httpControlPlane(config: {
     release: async (body) => {
       await call(PATHS.release(body.jobId), `rel:${body.jobId}`, body);
     },
-    // Reads, never stored by the cloud: each call gets a fresh key.
-    attachments: (jobId, fencingToken) =>
-      call(PATHS.attachments(jobId), `att:${jobId}:${crypto.randomUUID()}`, { fencingToken }),
-    attachment: (jobId, fencingToken, attachmentId) =>
-      call(PATHS.attachment(jobId), `att:${jobId}:${crypto.randomUUID()}`, {
-        fencingToken,
-        attachmentId,
-      }),
-    // Not stored: a wait or news read moves the session's cursor, and a write refuses a repeat.
-    planning: (jobId, body) =>
-      call(PATHS.planning(jobId), `plan:${jobId}:${crypto.randomUUID()}`, body),
-    // Not stored: each wait is new, and taking a steer marks it delivered.
-    steers: (jobId, body, signal) =>
-      call(PATHS.steer(jobId), `steer:${jobId}:${crypto.randomUUID()}`, body, signal),
-    // Not stored: each wait is new, and its ticket works once.
-    terminal: (jobId, body, signal) =>
-      call(PATHS.terminal(jobId), `term:${jobId}:${crypto.randomUUID()}`, body, signal),
-    // Not stored: its ticket works once.
-    line: (jobId, body) => call(PATHS.line(jobId), `line:${jobId}:${crypto.randomUUID()}`, body),
   };
 }

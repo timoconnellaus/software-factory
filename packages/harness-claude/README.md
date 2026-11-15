@@ -5,17 +5,14 @@ says how Claude runs there:
 
 - `runSettings` / `projectHarness` write the run's settings, the same bytes twice: `<runDir>/claude-settings.json`
   (passed with `--settings`, the authority) and `.claude/settings.local.json` in the worktree (ADR 0270):
-  - **Permission mode and allowlist per stage.** Build: `bypassPermissions`, inside the sandbox.
-    Triage, spec and verify: `dontAsk`, so an unattended run is refused, never stalled.
-    - Triage and spec may read, and write only `.factory-result.json`.
-    - Verify may also run the toolchain.
-    - A project's `.factory/policy.json` → `harness` (on the job as `harness.profile`) can pick the
-      modes and add allow rules and hosts. It can't touch the floor below.
-  - **The sandbox, in every stage** (the floor):
+  - **Permission mode and allowlist per kind of run** (`runKind`). In a repository (a worktree on
+    the item's branch): `bypassPermissions`, inside the sandbox; edits, the shell, git add and
+    commit and the toolchain. In a plain directory (a job without a repository): `dontAsk`, so an
+    unattended run is refused, never stalled; it may read, and write only inside its directory.
+  - **The sandbox, always** (the floor):
     - `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`;
     - writes only to the worktree, temp and the run's own git objects/refs;
-    - network only to the npm registry, GitHub, the Cloudflare API and the project's hosts
-      (`strictAllowlist`).
+    - network only to the npm registry, GitHub and the Cloudflare API (`strictAllowlist`).
   - **Deny rules** for `git push`, `gh`, `ssh`, `wrangler`, cloud CLIs, `orca` and the keychain; for
     reading or writing `~/.ssh`, `~/.config/gh`, `~/.wrangler` and the keychains; for reading the
     runner's own files and the owner's checkout; and for writing the worktree's `.claude/`.
@@ -24,39 +21,24 @@ says how Claude runs there:
     caches in the run's temp dir.
   - **The per-run git config** (an identity for commits, no helper), in a private run dir outside the worktree.
   - Runner hooks (`hooks`), but never `PreToolUse`, `PermissionRequest` or `Elicitation` ones.
-  - **`isolation: "container"`** (ADR 0430), for a runner that runs each job in its own container.
-    The container is the floor there, so Claude's sandbox is off (`enabled` and `failIfUnavailable`
-    are `false`), and every stage defaults to `bypassPermissions` (`CONTAINER_MODES`; a profile's
-    mode still wins). Everything else above is unchanged, and the launch record says `isolation`.
 - **The launch** (`launch.ts`): `claudeArgv` is the exact command,
-  `claude --permission-mode <mode> --setting-sources project,local --settings <run settings> --strict-mcp-config [--model …]`,
+  `claude --permission-mode <mode> --setting-sources project,local --settings <run settings> --strict-mcp-config [--mcp-config …] [--model …] [--effort …]`,
   with no user settings, so the owner's own Claude config never applies.
   - `projectHarness` writes `launch.sh`, which records its pid and `exec`s that argv. The runner
     runs it as is.
   - It also writes `launch.json`, the launch record.
   - `verifyLaunch` compares the live process (`ps`) and both settings copies with the record. Any
     difference is `harness-config-mismatch`.
-- **A planning session** (spec 20, ADR 0350, `src/planning/`): `projectHarness` with `planning:
-  { relay }` writes `<runDir>/planning.json` (the host's relay and its per-job secret, 0600, denied to
-  the Read tool) and `<runDir>/mcp.json`, and the launch gains `--mcp-config` and `--session-id`
-  (or `--resume` on a resume job). The stage allows reading and the `mcp__planning__*` tools only.
-  - The **planning MCP server** (`node cli.ts mcp`): one tool per planning operation
-    (`question_ask`, `spec_revise`, `chat_reply`, `planning_ready`, …), schemas from runner-contract.
-  - **Hooks**, kim's semantics: `PostToolUse` brings the news since the cursor at most every 15 s;
-    `UserPromptSubmit` brings it every time and cancels a waiting Stop hook; `Stop` (asyncRewake)
-    waits on `planning.wait` and wakes the model when news is due, or yields when the factory asks.
-- **A flow job's MCP servers** (spec 70 milestone 2, `src/flow-mcp.ts`): a `flow` job's
-  `mcpServers` are written as HTTP servers, with their headers, to `<runDir>/mcp.json` (0600, denied
-  to the Read tool, gone with the run dir), and the launch gains `--mcp-config`. Each named server
-  gets `mcp__<name>__*` allowed, nothing broader; a name outside `[A-Za-z0-9_-]` is refused. Every
-  other stage ignores the field. Claude Code connects to them itself, outside the Bash sandbox, so
-  the sandbox's host allowlist is unchanged.
+- **A job's MCP servers** (spec 70 milestone 2, `src/flow-mcp.ts`): the job's `mcpServers` are
+  written as HTTP servers, with their headers, to `<runDir>/mcp.json` (0600, denied to the Read
+  tool, gone with the run dir), and the launch gains `--mcp-config`. Each named server gets
+  `mcp__<name>__*` allowed, nothing broader; a name outside `[A-Za-z0-9_-]` is refused. Claude Code
+  connects to them itself, outside the Bash sandbox, so the sandbox's host allowlist is unchanged.
 - `scrubbedProcessEnv`: the same, for a harness the runner spawns itself.
-- `findTranscript` / `parseTranscript` / `checkOutputLog`: the check output and final message from a
-  session's transcript (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).
+- `findTranscript` / `parseTranscript`: the final message and usage from a session's transcript
+  (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).
 - `streamJsonToEvents` and `headlessArgs` (the same factory flags, then `-p`) for headless `claude -p` runs.
-- A two-way stream-json session (ADR 0450): `projectHarness(…, { session: "stream" })` launches
-  with `STREAM_FLAGS` (and `--session-id`, recorded as `launch.stream.sessionId`), so ADR 0270's
-  check covers it. `stream-json.ts`: `streamLineEvents` (one output line → bounded contract events),
-  `userMessageLine`, `interruptLine`, `denyPermissionLine`; `launch.ts`: `resumeArgv` /
-  `resumeCommand`, the interactive `claude --resume <id>` with the run's settings for a takeover.
+- A stream-json session (ADR 0450): `projectHarness(…, { session: "stream" })` launches with
+  `STREAM_FLAGS` (and `--session-id`, recorded as `launch.stream.sessionId`), so ADR 0270's check
+  covers it. `stream-json.ts`: `streamLineEvents` (one output line → bounded contract events),
+  `userMessageLine`, `denyPermissionLine`.

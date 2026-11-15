@@ -2,14 +2,14 @@
 // socket), job processes (a Claude whose command line names `<runsDir>/<jobId>/claude-settings.json`,
 // ADR 0550), job worktrees (`<worktreesDir>/sf-*`) and marked run branches (ADR 0551) whose job the
 // host no longer runs. Reaping kills those sessions, stops those processes (TERM, then KILL), removes
-// those worktrees from their checkouts (and their local run branches, run dirs and attachments) and
+// those worktrees from their checkouts (and their local branches and run dirs) and
 // deletes those branches. The cloud fails those runs on its own once their leases lapse (ADR 0035).
 // Nothing outside the factory's socket, its runs and worktrees dirs and its marked branches is ever
 // touched.
 import { readdir, readFile, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { RUN_SETTINGS_FILE, removeRunDir } from "@software-factory/harness-claude";
-import { isRunBranch, WORKTREE_JOB_FILE } from "./adapter.ts";
+import { WORKTREE_JOB_FILE } from "./adapter.ts";
 import {
   deleteRunBranch,
   isMarkedRunBranch,
@@ -30,8 +30,6 @@ import { jobIdOfSession, type TmuxOptions, tmuxCli } from "./tmux.ts";
 export interface LocalHostDirs {
   worktreesDir: string;
   runsDir: string;
-  /** Default: `attachments` next to `runsDir`. */
-  attachmentsDir?: string;
   exec?: Exec;
   tmux?: Omit<TmuxOptions, "exec">;
   /** How processes are read and signalled (default `ps` and `kill`). */
@@ -62,8 +60,8 @@ export async function jobWorktrees(dirs: LocalHostDirs): Promise<JobWorktree[]> 
     const named = entry.isDirectory() ? jobIdOfSession(entry.name) : null;
     if (!named) continue;
     const path = join(root, entry.name);
-    // The job a worktree belongs to is in its private git dir (a planning worktree is named after
-    // its session, ADR 0350); worktrees from before the marker are named after their job.
+    // The job a worktree belongs to is in its private git dir; worktrees from before the marker
+    // are named after their job.
     const marker = await readFile(join(path, ".git"), "utf8")
       .then((t) => t.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim())
       .then((gitDir) =>
@@ -101,7 +99,7 @@ export async function jobWorktrees(dirs: LocalHostDirs): Promise<JobWorktree[]> 
   return out;
 }
 
-/** Removes one job worktree, its local run branch, run dir and attachments. */
+/** Removes one job worktree, its local branch and its run dir. */
 async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<void> {
   const exec = dirs.exec ?? nodeExec;
   const root = await realpath(dirs.worktreesDir).catch(() => dirs.worktreesDir);
@@ -112,20 +110,16 @@ async function removeJobWorktree(dirs: LocalHostDirs, w: JobWorktree): Promise<v
   await rm(w.path, { recursive: true, force: true });
   if (w.checkout) {
     await exec("git", ["worktree", "prune"], { cwd: w.checkout });
-    // Only a branch the factory marked as its own (ADR 0551) that loses nothing, or an unmarked
-    // factory run branch from before the marker (as before).
-    const marked = w.branch ? await isMarkedRunBranch(w.checkout, w.branch, exec) : false;
+    // Only a branch the factory marked as its own (ADR 0551) that loses nothing.
     if (
       w.branch &&
-      (marked ? await runBranchDisposable(w.checkout, w.branch, exec) : isRunBranch(w.branch))
+      (await isMarkedRunBranch(w.checkout, w.branch, exec)) &&
+      (await runBranchDisposable(w.checkout, w.branch, exec))
     ) {
       await deleteRunBranch(w.checkout, w.branch, exec);
     }
   }
   await removeRunDir(join(dirs.runsDir, w.jobId));
-  await removeRunDir(
-    join(dirs.attachmentsDir ?? join(dirname(dirs.runsDir), "attachments"), w.jobId),
-  );
 }
 
 export interface JobProcess {
