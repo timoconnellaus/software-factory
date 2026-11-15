@@ -15,18 +15,13 @@ export interface OperationInfo {
   risk: string;
   actors: string[];
   permission: string;
-  gateKind: string | null;
-  /** `true`, or `"some inputs"` when it depends on the input (a kill switch may go on, not off). */
-  browserOnly: boolean | "some inputs";
+  /** Decided in the app only (ADR 0340): refused from the CLI. */
+  browserOnly: boolean;
 }
 
-export type CallOutcome =
-  | { kind: "result"; result: unknown }
-  /** The operation opened a gate: a person decides it in the app. */
-  | { kind: "pending"; pendingActionId: string };
-
 export interface Api {
-  call(op: string, input: unknown): Promise<CallOutcome>;
+  /** The operation's result. */
+  call(op: string, input: unknown): Promise<unknown>;
   ops(): Promise<OperationInfo[]>;
 }
 
@@ -94,19 +89,16 @@ export function httpApi(options: HttpOptions): Api {
   return {
     async call(op, input) {
       if (!options.token) throw notLoggedIn();
-      const { status, json } = await request(doFetch, `${base}${CLI_PATHS.call}`, {
+      const { json } = await request(doFetch, `${base}${CLI_PATHS.call}`, {
         method: "POST",
         token: options.token,
         body: { op, input: input ?? {} },
       });
-      const body = json as Record<string, unknown>;
-      if (status === 202 || body.pending === true) {
-        return { kind: "pending", pendingActionId: String(body.pendingActionId ?? "") };
-      }
+      const body = (json ?? {}) as Record<string, unknown>;
       if (!("result" in body)) {
         throw new CliError("bad_response", `${op}: the engine's answer has no result`);
       }
-      return { kind: "result", result: body.result };
+      return body.result;
     },
     async ops() {
       if (!options.token) throw notLoggedIn();
@@ -121,19 +113,7 @@ export function httpApi(options: HttpOptions): Api {
   };
 }
 
-/**
- * Call an operation and return its result. A friendly command never expects a gate to open; if
- * one does, say where to decide it rather than printing nothing.
- */
+/** Call an operation and return its result, as the engine validated it against its schema. */
 export async function result<T>(api: Api, op: string, input: unknown): Promise<T> {
-  const outcome = await api.call(op, input);
-  if (outcome.kind === "pending") {
-    throw new CliError(
-      "pending",
-      `${op} is waiting on a decision in the app (pending action ${outcome.pendingActionId})`,
-    );
-  }
-  // The engine validated the result against the operation's output schema; the views below read
-  // only the fields they print.
-  return outcome.result as T;
+  return (await api.call(op, input)) as T;
 }

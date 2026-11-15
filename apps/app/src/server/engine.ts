@@ -13,20 +13,6 @@ export interface EngineRpc {
     | { ok: true; result: InvokeResult<unknown>; ms?: number }
     | { ok: false; error: Refusal; ms?: number }
   >;
-  /**
-   * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach`, then a
-   * one-use viewer socket path on the job's relay, opened with `fetch`.
-   */
-  terminalAttach?(
-    workItemId: string,
-    runId: string,
-    options: { actor: Actor; origin: Origin },
-  ): Promise<
-    | { ok: true; jobId: string; mode: "type" | "watch"; attachId: string; path: string }
-    | { ok: false; error: Refusal }
-  >;
-  /** The binding's fetch: only the web terminal's viewer socket answers. */
-  fetch?(request: Request): Promise<Response>;
 }
 
 /** How long one operation took: the whole RPC, and the part spent inside the engine. */
@@ -55,8 +41,5 @@ export async function invokeAs(
   timings?.push({ name, ms: round(performance.now() - start), engineMs: response.ms ?? null });
   if (!response.ok)
     return { ok: false, code: response.error.code, message: response.error.message };
-  const { result } = response;
-  return result.status === "ok"
-    ? { ok: true, status: "ok", output: result.output as Json }
-    : { ok: true, status: "pending", pendingActionId: result.pendingActionId };
+  return { ok: true, output: response.result.output as Json };
 }

@@ -2,7 +2,7 @@
 // for App Links, and the bounce to the app from /mobile/callback and /mobile/pair.
 import { describe, expect, it } from "vitest";
 import { assetLinks, certFingerprint, MOBILE_PACKAGE } from "#/lib/mobile";
-import { APP_OPERATIONS, APP_READ_OPERATIONS } from "#/lib/ops";
+import { APP_OPERATIONS } from "#/lib/ops";
 import { intentUrl } from "#/routes/mobile.callback";
 
 describe("assetlinks.json", () => {
@@ -42,11 +42,10 @@ describe("the App Link bounce", () => {
 });
 
 describe("the website's phone operations", () => {
-  it("forwards the pairing pages' operations, and never the phone's own sign-in calls", () => {
-    for (const op of ["device.list", "device.revoke", "mobile.pairOffer", "mobile.approveDevice"]) {
+  it("forwards the connect page's operations, and never the phone's own sign-in calls", () => {
+    for (const op of ["mobile.authLookup", "mobile.approveDevice", "mobile.denyDevice"]) {
       expect(APP_OPERATIONS).toContain(op);
     }
-    expect(APP_READ_OPERATIONS).toContain("mobile.pairOfferStatus");
     for (const op of ["mobile.authStart", "mobile.authExchange", "mobile.renew", "device.update"]) {
       expect(APP_OPERATIONS as readonly string[]).not.toContain(op);
     }

@@ -2,12 +2,11 @@
 // (`/runners/connect?code=…`). The person checks the code matches their terminal, names the runner
 // and approves; the waiting CLI then receives its key. Nothing to copy.
 
-import { LOGIN_COMMAND } from "@software-factory/client/runner-pairing";
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Input } from "@software-factory/ui/components/input";
 import { Label } from "@software-factory/ui/components/label";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +18,9 @@ export const Route = createFileRoute("/_app/runners/connect")({
     typeof s.code === "string" ? { code: s.code } : {},
   component: ConnectRunnerPage,
 });
+
+/** What a runner's machine runs to log in (ADR 0056): it prints a code and a link here. */
+const LOGIN_COMMAND = "local/runner-host/bin/sf-runner login";
 
 const CODE = /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/;
 
@@ -67,7 +69,6 @@ function EnterCode() {
 }
 
 function Approve({ code }: { code: string }) {
-  const queryClient = useQueryClient();
   const lookup = useQuery({
     queryKey: ["device", code],
     queryFn: () => op("runner.deviceLookup", { userCode: code }),
@@ -93,9 +94,6 @@ function Approve({ code }: { code: string }) {
         await op("runner.denyDevice", { userCode: code }, { idempotencyKey: submitKey() });
       }
       setResult(approve ? "approved" : "denied");
-      await Promise.all(
-        ["runners", "setup", "inbox"].map((k) => queryClient.invalidateQueries({ queryKey: [k] })),
-      );
     } catch (error) {
       toast.error(error instanceof OpError ? error.message : "Something went wrong");
       await lookup.refetch();
@@ -124,10 +122,7 @@ function Approve({ code }: { code: string }) {
         <div className="text-muted-foreground">
           {result === "approved"
             ? "Your terminal finishes on its own: it saves the key and installs the runner service."
-            : "The login in that terminal stops."}{" "}
-          <Link to="/setup" search={{}} className="underline">
-            Back to Setup
-          </Link>
+            : "The login in that terminal stops."}
         </div>
       </Card>
     );

@@ -9,7 +9,7 @@ import { CliError } from "./errors.ts";
 
 /** The engine, which serves `/cli/v1`. */
 export const DEFAULT_URL = "https://sf-engine.zerobsai.com";
-/** The app, for links: work item pages, review packets, approving a login. */
+/** The app, for links: approving a login. */
 export const DEFAULT_APP_URL = "https://software-factory.zerobsai.com";
 
 export const SCOPES = ["read", "write"] as const;

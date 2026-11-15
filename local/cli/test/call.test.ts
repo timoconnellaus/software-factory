@@ -1,52 +1,42 @@
 // `sf call`, `sf ops` and how refusals read: log in again, use the app, or ask for write.
 import { describe, expect, it } from "vitest";
-import { APP, engine, loggedIn, Reply, scratchHome, sf, wi } from "./helpers.ts";
+import { APP, engine, loggedIn, Reply, scratchHome, sf } from "./helpers.ts";
 
 const BROWSER_ONLY = {
-  name: "review.merge",
+  name: "cli.approveDevice",
   risk: "write",
   browserOnly: true,
-  gateKind: "merge",
-  description: "Approve the merge gate. Browser-only.",
+  description: "Approve a CLI login. Browser-only.",
 };
 
 describe("sf call", () => {
   it("sends the op and its JSON input with the token and prints the result", async () => {
     const home = await scratchHome();
     await loggedIn(home);
-    const e = engine({ "workItem.get": (input) => ({ echo: input }) });
-    const r = await sf(["call", "workItem.get", `{"workItemId":"${wi(1)}"}`], {
+    const e = engine({ "flow.item.get": (input) => ({ echo: input }) });
+    const r = await sf(["call", "flow.item.get", `{"itemId":"fit_1"}`], {
       home,
       fetch: e.fetch,
     });
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout)).toEqual({ echo: { workItemId: wi(1) } });
+    expect(JSON.parse(r.stdout)).toEqual({ echo: { itemId: "fit_1" } });
     expect(e.calls).toEqual([
-      { op: "workItem.get", input: { workItemId: wi(1) }, token: "sfc_token" },
+      { op: "flow.item.get", input: { itemId: "fit_1" }, token: "sfc_token" },
     ]);
   });
 
   it("reads the input from stdin, and SF_TOKEN beats the stored token", async () => {
     const home = await scratchHome();
     await loggedIn(home);
-    const e = engine({ "inbox.list": () => ({ ok: true }) });
-    const r = await sf(["call", "inbox.list", "-"], {
+    const e = engine({ "org.list": () => ({ ok: true }) });
+    const r = await sf(["call", "org.list", "-"], {
       home,
       fetch: e.fetch,
       stdin: '{"orgId":"org_1"}',
       env: { SF_TOKEN: "sfc_agent" },
     });
     expect(r.code).toBe(0);
-    expect(e.calls[0]).toEqual({ op: "inbox.list", input: { orgId: "org_1" }, token: "sfc_agent" });
-  });
-
-  it("prints a gate it opened as pending", async () => {
-    const home = await scratchHome();
-    await loggedIn(home);
-    const e = engine({ "x.y": () => new Reply(202, { pending: true, pendingActionId: "pa_1" }) });
-    const r = await sf(["call", "x.y"], { home, fetch: e.fetch });
-    expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout)).toEqual({ pending: true, pendingActionId: "pa_1" });
+    expect(e.calls[0]).toEqual({ op: "org.list", input: { orgId: "org_1" }, token: "sfc_agent" });
   });
 
   it("rejects input that isn't JSON as a usage error", async () => {
@@ -63,22 +53,22 @@ describe("errors", () => {
     const home = await scratchHome();
     await loggedIn(home);
     const e = engine({
-      "inbox.list": () => {
+      "org.list": () => {
         throw new Reply(401, { error: "token revoked", code: "unauthenticated" });
       },
     });
-    const r = await sf(["call", "inbox.list"], { home, fetch: e.fetch });
+    const r = await sf(["call", "org.list"], { home, fetch: e.fetch });
     expect(r.code).toBe(1);
     expect(r.err).toEqual(["unauthenticated: token revoked", "Run `sf login`."]);
 
-    const env = await sf(["call", "inbox.list"], {
+    const env = await sf(["call", "org.list"], {
       home,
       fetch: e.fetch,
       env: { SF_TOKEN: "sfc_old" },
     });
     expect(env.err[1]).toMatch(/SF_TOKEN was refused/);
 
-    const nobody = await sf(["inbox"], { home: await scratchHome(), fetch: e.fetch });
+    const nobody = await sf(["call", "org.list"], { home: await scratchHome(), fetch: e.fetch });
     expect(nobody.code).toBe(1);
     expect(nobody.err).toEqual([
       "unauthenticated: not logged in (no stored token and no SF_TOKEN)",
@@ -91,25 +81,25 @@ describe("errors", () => {
     await loggedIn(home, { scope: "write" });
     const e = engine(
       {
-        "review.merge": () => {
+        "cli.approveDevice": () => {
           throw new Reply(403, {
-            error: "review.merge is a decision you make in the app, not from cli (ADR 0340)",
+            error: "cli.approveDevice is a decision you make in the app, not from cli (ADR 0340)",
             code: "forbidden",
           });
         },
       },
       [BROWSER_ONLY],
     );
-    const r = await sf(["call", "review.merge", `{"workItemId":"${wi(7)}"}`], {
+    const r = await sf(["call", "cli.approveDevice", `{"userCode":"ABCD-EFGH"}`], {
       home,
       fetch: e.fetch,
     });
     expect(r.code).toBe(1);
     expect(r.err[0]).toBe(
-      "forbidden: review.merge is a decision you make in the app, not from cli (ADR 0340)",
+      "forbidden: cli.approveDevice is a decision you make in the app, not from cli (ADR 0340)",
     );
     expect(r.err[1]).toBe(
-      `review.merge is decided in the app, not from the CLI. Do it there: ${APP}/work/${wi(7)}/review (or \`sf open ${wi(7)}\`)`,
+      `cli.approveDevice is decided in the app, not from the CLI. Do it there: ${APP}`,
     );
   });
 
@@ -118,13 +108,13 @@ describe("errors", () => {
     await loggedIn(home, { scope: "read" });
     const e = engine(
       {
-        "workItem.cancel": () => {
+        "flow.item.create": () => {
           throw new Reply(403, { error: "not for this token", code: "forbidden" });
         },
       },
-      [{ name: "workItem.cancel", risk: "write" }],
+      [{ name: "flow.item.create", risk: "write" }],
     );
-    const r = await sf(["call", "workItem.cancel", `{"workItemId":"${wi(1)}"}`], {
+    const r = await sf(["call", "flow.item.create", `{"orgId":"org_1"}`], {
       home,
       fetch: e.fetch,
     });
@@ -136,13 +126,13 @@ describe("errors", () => {
     const home = await scratchHome();
     await loggedIn(home);
     const e = engine({
-      "workItem.get": () => {
-        throw new Reply(404, { error: "no such work item", code: "not_found" });
+      "flow.item.get": () => {
+        throw new Reply(404, { error: "no such item", code: "not_found" });
       },
     });
-    const r = await sf(["show", wi(3)], { home, fetch: e.fetch });
+    const r = await sf(["call", "flow.item.get", `{"itemId":"fit_3"}`], { home, fetch: e.fetch });
     expect(r.code).toBe(1);
-    expect(r.err).toEqual(["not_found: no such work item"]);
+    expect(r.err).toEqual(["not_found: no such item"]);
   });
 });
 
@@ -152,13 +142,13 @@ describe("sf ops", () => {
     await loggedIn(home);
     const e = engine({}, [
       BROWSER_ONLY,
-      { name: "inbox.list", risk: "read", description: "What is waiting. More text." },
+      { name: "org.list", risk: "read", description: "Your orgs. More text." },
     ]);
     const r = await sf(["ops"], { home, fetch: e.fetch });
     expect(r.code).toBe(0);
     expect(r.out).toEqual([
-      "inbox.list    read                 What is waiting.",
-      "review.merge  write  browser-only  Approve the merge gate.",
+      "cli.approveDevice  write  browser-only  Approve a CLI login.",
+      "org.list           read                 Your orgs.",
     ]);
   });
 });

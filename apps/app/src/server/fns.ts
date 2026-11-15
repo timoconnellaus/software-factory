@@ -4,7 +4,7 @@
 import { env } from "cloudflare:workers";
 import { createServerFn } from "@tanstack/react-start";
 import { appendResponseHeader, getRequest } from "@tanstack/react-start/server";
-import { appEnv, runOp, runReads, sessionInfo, Timings } from "./app-api.ts";
+import { appEnv, runOp, sessionInfo, Timings } from "./app-api.ts";
 
 const headers = () => getRequest().headers;
 
@@ -29,8 +29,3 @@ export const getSession = createServerFn({ method: "GET" }).handler(() =>
 export const callOperation = createServerFn({ method: "POST" })
   .validator((data: unknown) => data)
   .handler(({ data }) => timed((t) => runOp(appEnv(env), headers(), data, t)));
-
-/** Several read operations in one request, in parallel. The batching client is `read()`. */
-export const callReads = createServerFn({ method: "POST" })
-  .validator((data: unknown) => data)
-  .handler(({ data }) => timed((t) => runReads(appEnv(env), headers(), data, t)));

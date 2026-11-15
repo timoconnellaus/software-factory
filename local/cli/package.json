@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "`sf`, the factory from a terminal (spec 07, ADR 0340): log in by device code, read the inbox, work items, timelines and the merge queue, file and attach work, and call any operation a token's scope allows. Gate decisions stay in the browser.",
+  "description": "`sf`, the factory from a terminal (spec 07, ADR 0340): log in by device code, list the operations, and call any operation a token's scope allows. Decisions stay in the app.",
   "bin": {
     "sf": "./bin/sf"
   },
@@ -11,9 +11,6 @@
     "sf": "node --experimental-transform-types --no-warnings src/cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@software-factory/timeline": "workspace:*"
   },
   "devDependencies": {
     "@software-factory/config": "workspace:*",

@@ -1,7 +1,8 @@
 // The GitHub App's Setup URL (ADR 0055): GitHub sends the person here after they install the App
 // (or change its repositories), with `installation_id`, `setup_action` and the `state` Setup put on
 // the install link. The engine verifies all of it (github.connectInstallation); this only adds the
-// person, and their GitHub user token for an organization's installation, then goes back to Setup.
+// person, and their GitHub user token for an organization's installation, then goes to the home
+// page, which says how it went.
 import type { AppEnv } from "./app-api.ts";
 import { getAuth, userFromRequest } from "./auth.ts";
 import { invokeAs } from "./engine.ts";
@@ -14,7 +15,7 @@ function back(params: Record<string, string>): Response {
   const query = new URLSearchParams(params).toString();
   return new Response(null, {
     status: 303,
-    headers: { location: `/setup?${query}`, "cache-control": "no-store" },
+    headers: { location: `/?${query}`, "cache-control": "no-store" },
   });
 }
 
@@ -73,7 +74,6 @@ export async function handleGitHubSetup(env: AppEnv, request: Request): Promise<
     ...(token ? { userAccessToken: token } : {}),
   });
   if (!result.ok) return back({ github_error: result.message });
-  if (result.status !== "ok") return back({ github_error: "held for approval" });
   const output = result.output as {
     outcome: "connected" | "updated" | "requested";
     installation: { account: string } | null;

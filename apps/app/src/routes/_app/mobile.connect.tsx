@@ -1,8 +1,7 @@
 // Approve a phone's browser sign-in (ADR 0541, spec 60): the phone opens this page in a Custom Tab
 // as `/mobile/connect?request=…`. The person checks the phone's name, where its key lives and the
 // key's fingerprint against what the phone shows, and approves. The page then hands the one-time
-// code back to the phone through the App Link `/mobile/callback`. The phone approves merges, plans
-// and policy changes only with a fingerprint each time.
+// code back to the phone through the App Link `/mobile/callback`.
 import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { useQuery } from "@tanstack/react-query";
