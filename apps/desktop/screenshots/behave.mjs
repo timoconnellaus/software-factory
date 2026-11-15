@@ -185,6 +185,148 @@ export const TESTS = [
     },
   },
   {
+    name: "flow inbox: the decision comes first; acting on it sends it and moves to the next row",
+    async run(p) {
+      await p.open("/flow/org_personal/inbox");
+      await p.waitFor("document.querySelector('[data-testid=inbox-item] [data-testid=led-here]')");
+      const first = await p.evaluate(
+        "(() => { const d = document.querySelector('[data-testid=inbox-item]'); const c = d.querySelector('[data-testid=decision-card]'); const l = d.querySelector('[data-testid=led-here]'); return !!(c.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING); })()",
+      );
+      expect(first, "the decision card before what led here").toBe(true);
+      expect(await p.text("[data-testid=inbox-row][aria-current=true]"), "the first row").toContain(
+        "Add rate limiting",
+      );
+      await p.click("[data-testid=decision-primary]");
+      await sleep(900);
+      const calls = await p.calls("flow.item.finish");
+      expect(calls.length, "one finish").toBe(1);
+      expect(calls[0].input.itemId, "this item").toBe("fitm_rate");
+      expect(calls[0].input.outcome, "done").toBe("done");
+      expect(await p.path(), "the next row").toContain("item=fitm_audit");
+      await p.waitFor("document.querySelector('[data-testid=decision-card][data-kind=decision]')");
+      await p.click("[data-testid=decision-secondary]");
+      await sleep(900);
+      const decide = await p.calls("flow.item.decide");
+      expect(decide[0]?.input.itemId, "the decision's item").toBe("fitm_audit");
+      expect(decide[0]?.input.decision, "reject").toBe("reject");
+    },
+  },
+  {
+    name: "flow workflow: add, rename, reorder, edit and remove statuses, then Save sends it whole",
+    async run(p) {
+      await p.open("/flow/org_personal/p/fprj_api?view=workflow");
+      await p.waitFor("document.querySelector('[data-testid=status-editor]')");
+      const boxes = () =>
+        p.evaluate(
+          "[...document.querySelectorAll('[data-testid=status-box-name]')].map((e) => e.textContent)",
+        );
+      await p.click("[data-testid=add-status]");
+      await p.waitFor("document.querySelectorAll('[data-testid=status-box]').length === 6");
+      await p.evaluate("document.querySelector('#status-name').select()");
+      await p.type("Deploy");
+      await p.click("[data-testid=move-left]");
+      expect((await boxes()).join(","), "Deploy before Shipped").toBe(
+        "Spec,Build,Review,Approve,Deploy,Shipped",
+      );
+      // Review no longer needs a decision.
+      await p.click("[data-testid=status-row] > div:nth-child(3) [data-testid=status-box]");
+      await p.click("[data-testid=status-needs-decision]");
+      // Spec goes.
+      await p.click("[data-testid=status-row] > div:nth-child(1) [data-testid=status-box]");
+      await p.click("[data-testid=remove-status]");
+      expect((await boxes()).join(","), "Spec removed").toBe("Build,Review,Approve,Deploy,Shipped");
+      await p.click("[data-testid=save-workflow]");
+      await sleep(900);
+      const saved = await p.calls("flow.workflow.update");
+      expect(saved.length, "one save").toBe(1);
+      const { input } = saved[0];
+      expect(input.workflowId, "this workflow").toBe("fwf_ship");
+      expect(input.name, "its name").toBe("Ship a feature");
+      expect(input.statuses.map((s) => s.id).join(","), "ids, the new one from its name").toBe(
+        "build,review,approve,deploy,shipped",
+      );
+      expect(input.statuses[1].needsDecision, "Review's decision off").toBe(false);
+      expect(input.statuses[0].owner.agentId, "owners kept").toBe("fagt_backend");
+    },
+  },
+  {
+    name: "flow workflow: a problem the server finds shows beside the status it names",
+    async run(p) {
+      await p.open("/flow/org_personal/p/fprj_api?view=workflow");
+      await p.waitFor("document.querySelector('[data-testid=status-editor]')");
+      await p.click("[data-testid=status-row] > div:nth-child(2) [data-testid=status-box]");
+      await p.evaluate("document.querySelector('#status-name').select()");
+      await p.type(" ");
+      await p.click("[data-testid=save-workflow]");
+      await sleep(900);
+      expect((await p.calls("flow.workflow.update")).length, "sent").toBe(1);
+      expect(await p.text("[data-testid=status-problem]"), "in the status's editor").toBe(
+        "A status needs a name.",
+      );
+      expect(
+        await p.exists("[data-testid=status-row] > div:nth-child(2) [data-testid=box-problem]"),
+        "under its box",
+      ).toBe(true);
+      expect(await p.exists("[data-testid=workflow-problem]"), "not the workflow's").toBe(false);
+    },
+  },
+  {
+    name: "flow plugins: a switch turns a plugin off, and Delete deletes it",
+    async run(p) {
+      await p.open("/flow/org_personal/plugins");
+      await p.waitFor("document.querySelector('[data-testid=plugin-switch]')");
+      await p.click("[data-testid=plugin-switch]");
+      await sleep(700);
+      const set = await p.calls("flow.plugin.setEnabled");
+      expect(set[0]?.input.pluginId, "the first plugin").toBe("fplg_blog");
+      expect(set[0]?.input.enabled, "off").toBe(false);
+      await p.click("[data-testid=open-plugin]");
+      await p.waitFor("document.querySelector('[data-testid=plugin-code]')");
+      await p.click("[data-testid=delete-plugin]");
+      await p.waitFor("document.querySelector('[data-testid=confirm-delete-plugin]')");
+      await p.click("[data-testid=confirm-delete-plugin]");
+      await sleep(700);
+      const deleted = await p.calls("flow.plugin.delete");
+      expect(deleted[0]?.input.pluginId, "deleted").toBe("fplg_blog");
+      expect(await p.exists("[data-testid=plugin-panel]"), "closed").toBe(false);
+    },
+  },
+  {
+    name: "flow gateways: Connect a system sends the secret once, and it is never shown again",
+    async run(p) {
+      await p.open("/flow/org_personal/plugins?tab=gateways");
+      await p.waitFor("document.querySelector('[data-testid=connect-system]')");
+      await p.click("[data-testid=connect-system]");
+      await p.waitFor("document.querySelector('#gateway-name')");
+      await p.focus("#gateway-name");
+      await p.type("Linear");
+      await p.focus("#gateway-url");
+      await p.type("https://api.linear.app");
+      await p.focus("#gateway-secret");
+      await p.type("lin_s3cret_value");
+      await p.click("[data-testid=save-gateway]");
+      await sleep(900);
+      const saved = await p.calls("flow.gateway.save");
+      expect(saved[0]?.input.name, "name").toBe("Linear");
+      expect(saved[0]?.input.auth.kind, "bearer by default").toBe("bearer");
+      expect(saved[0]?.input.secret, "the secret, sent").toBe("lin_s3cret_value");
+      expect(await p.exists("#gateway-secret"), "the form closed").toBe(false);
+      const seen = await p.evaluate(
+        "document.documentElement.outerHTML.includes('lin_s3cret_value') || [...document.querySelectorAll('input')].some((i) => i.value.includes('lin_s3cret_value'))",
+      );
+      expect(seen, "the secret rendered back").toBe(false);
+      // Changing one leaves its secret alone unless a new one is typed.
+      await p.click("[data-testid=gateway-row]:nth-child(1) [data-testid=edit-gateway]");
+      await p.waitFor("document.querySelector('#gateway-secret')");
+      expect(await p.evaluate("document.querySelector('#gateway-secret').value"), "empty").toBe("");
+      await p.click("[data-testid=save-gateway]");
+      await sleep(900);
+      const again = await p.calls("flow.gateway.save");
+      expect(again[1]?.input.name, "GitHub").toBe("GitHub");
+      expect("secret" in (again[1]?.input ?? {}), "no secret sent").toBe(false);
+    },
+  },
+  {
     name: "loading: the shell fills the window, its toolbar strip drags it, at the toolbar's height",
     async run(p) {
       await p.cdp.send("Page.navigate", { url: `${p.base}?session=slow#/` });
@@ -348,7 +490,7 @@ export const TESTS = [
       await p.waitFor("document.querySelector('[data-testid=settings-page]')");
       await p.open("/flow/org_personal/settings?tab=members");
       await p.waitFor("document.querySelector('[data-testid=member]')");
-      expect(await p.text("[data-testid=members]"), "a real name").toContain("Sam Lee");
+      expect(await p.text("[data-testid=members]"), "a real name").toContain("Mia Chen");
     },
   },
   {

@@ -6,7 +6,7 @@ import { Checkbox } from "@software-factory/ui/components/checkbox";
 import { Label } from "@software-factory/ui/components/label";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import type { RunnerState, UpdateStatus } from "../../../shared/rpc.ts";
 import {
@@ -42,6 +42,17 @@ export function SettingsPage({ orgId, tab }: { orgId: string; tab: SettingsTab }
       />
       <div className="min-h-0 flex-1 overflow-auto bg-board p-5">
         {tab === "members" ? <MembersList orgId={orgId} /> : <ThisMac />}
+        <p className="mt-4 max-w-2xl text-[12.5px] text-ink-muted" data-testid="workflows-link">
+          The org's workflows are in{" "}
+          <Link
+            to="/flow/$orgId/workflows"
+            params={{ orgId }}
+            className="text-ink underline underline-offset-2"
+          >
+            Workflows
+          </Link>
+          .
+        </p>
       </div>
     </main>
   );

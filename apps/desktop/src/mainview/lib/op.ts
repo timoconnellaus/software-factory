@@ -93,6 +93,11 @@ export type ReadOpName =
   | "flow.project.list"
   | "flow.workflow.list"
   | "flow.workflow.get"
+  // The inbox, workflow editor and plugins screens' reads (flow-edit-queries.ts).
+  | "flow.member.list"
+  | "flow.plugin.list"
+  | "flow.plugin.get"
+  | "flow.gateway.list"
   | "flow.agent.list"
   | "flow.board.get"
   | "flow.timeline.get"
@@ -159,7 +164,7 @@ function flush() {
 }
 
 function unwrap<N extends OpName>(r: CallResult): OpOutput<N> {
-  if (!r.ok) throw new OpError(r.code, r.error);
+  if (!r.ok) throw new OpError(r.code, r.error, r.details);
   return r.result as OpOutput<N>;
 }
 

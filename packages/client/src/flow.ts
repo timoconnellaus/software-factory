@@ -2,6 +2,7 @@
 // answers, typed by hand from @software-factory/store and @software-factory/flow (types only; a view
 // imports neither), and the pure logic the board and the item panel need: an item's key, its chips,
 // the decision it waits on, and its timeline told as one line per move.
+import type { FlowEditOpMap, FlowField, FlowMember } from "./flow-edit.ts";
 import { ago } from "./format.ts";
 
 export type FlowOwner =
@@ -44,6 +45,8 @@ export interface FlowItem {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Plugin fields' values, by field id, when the server sends them (flow-edit.ts `fieldChips`). */
+  fields?: Record<string, unknown>;
 }
 
 export interface FlowProject {
@@ -66,13 +69,6 @@ export interface FlowAgent {
   /** The MCP servers it gets beyond the base ones: `["factory"]` is the Plugin editor. */
   mcp?: string[];
   createdAt: string;
-}
-
-/** One of the org's members, as `flow.member.list` names them. */
-export interface FlowMember {
-  userId: string;
-  name: string;
-  login: string | null;
 }
 
 /** An item as `flow.inbox.all` lists it: with its project and status named. */
@@ -117,6 +113,8 @@ export interface FlowWorkflow {
 export interface FlowBoard {
   columns: { status: FlowStatus; items: FlowItem[] }[];
   truncated: boolean;
+  /** The plugin fields its items may carry. */
+  fields?: FlowField[];
 }
 
 /**
@@ -156,7 +154,7 @@ export interface FlowInbox {
 type Org = { orgId: string };
 
 /** The `flow.*` operations the desktop calls, for packages/client's OpMap. */
-export interface FlowOpMap {
+export interface FlowOpMap extends FlowEditOpMap {
   "flow.project.list": { input: Org; output: { projects: FlowProject[] } };
   "flow.project.create": {
     input: Org & { name: string; key: string; workflowId: string };
@@ -173,7 +171,6 @@ export interface FlowOpMap {
     input: Org & { agentId: string; name: string; instructions: string; mcp?: string[] };
     output: FlowAgent;
   };
-  "flow.member.list": { input: Org; output: { members: FlowMember[] } };
   "flow.inbox.all": { input: Record<string, never>; output: FlowInboxAll };
   "flow.run.list": {
     input: Org & { agentId?: string; itemId?: string; limit?: number };

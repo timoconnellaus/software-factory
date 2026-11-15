@@ -15,6 +15,15 @@ import type {
   FlowTimelineEntry,
   FlowWorkflow,
 } from "@software-factory/client/flow";
+import type {
+  FlowField,
+  FlowGateway,
+  FlowMember,
+  FlowPluginDetail,
+} from "@software-factory/client/flow-edit";
+// A refused write carries its problems as the door does (`details`). fixtures.ts imports this file;
+// Refusal is only used when an answer runs, after both have loaded.
+import { Refusal } from "./fixtures.ts";
 
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
@@ -61,16 +70,16 @@ const AGENTS: FlowAgent[] = [
   },
 ];
 
-export const MEMBERS = {
+export const MEMBERS: Record<string, FlowMember[]> = {
   [FLOW_ORG]: [
     { userId: FLOW_ME, name: "owner", login: "owner" },
-    { userId: "usr_sam", name: "Sam Lee", login: "samlee" },
+    { userId: "usr_mia", name: "Mia Chen", login: "mia" },
   ],
   [CLIENT_ORG]: [
     { userId: FLOW_ME, name: "owner", login: "owner" },
     { userId: "usr_ria", name: "Ria Patel", login: "riap" },
   ],
-} as Record<string, { userId: string; name: string; login: string }[]>;
+};
 
 const STATUSES: FlowStatus[] = [
   { id: "spec", name: "Spec", owner: { kind: "agent", agentId: "fagt_lead" } },
@@ -406,6 +415,107 @@ const RUNS: FlowRun[] = [
   run("fitm_enum", "Rename the billing plan enum", "done", 60 * 26, 10),
 ];
 
+// ---- The inbox, workflow editor, plugins and gateways (flow-edit.ts) ----------------------------
+
+/** The fields a plugin added (Customer feedback's "Customer"), and two items that carry them. */
+const FIELDS: FlowField[] = [
+  { id: "customer", label: "Customer", type: "text" },
+  { id: "priority", label: "Priority", type: "text" },
+];
+for (const [id, fields] of [
+  ["fitm_audit", { customer: "Northwind", priority: "High" }],
+  ["fitm_usage", { customer: "Acme" }],
+] as const) {
+  const it = find(id);
+  if (it) it.fields = fields;
+}
+
+const PLUGINS: FlowPluginDetail[] = [
+  {
+    id: "fplg_blog",
+    name: "Publish to the blog",
+    request: "When an item reaches Shipped, post it to our blog and put the link on the item.",
+    enabled: true,
+    lastError: null,
+    updatedAt: ago(2 * 24 * 60),
+    code: `export default definePlugin({\n  name: "Publish to the blog",\n  on: { entered: "shipped" },\n  async run({ item, gateways, card }) {\n    const post = await gateways.blog.post("/posts", { title: item.title, body: item.body });\n    await card({ kind: "link", title: "Published", link: { label: "Read it", url: post.url } });\n  },\n});\n`,
+  },
+  {
+    id: "fplg_customer",
+    name: "Customers on feedback",
+    request:
+      "Items in Customer feedback need a Customer field shown on the board, and a new support email should create an item.",
+    enabled: true,
+    lastError: null,
+    updatedAt: ago(7 * 24 * 60),
+    code: `export default definePlugin({\n  name: "Customers on feedback",\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n});\n`,
+  },
+  {
+    id: "fplg_slack",
+    name: "Slack updates",
+    request: "Tell #launch in Slack whenever a launch item changes status.",
+    enabled: false,
+    lastError:
+      "Failed 20 minutes ago on AL-3: Slack said the channel #launch wasn't found. The item is stopped.",
+    updatedAt: ago(3 * 24 * 60),
+    code: `export default definePlugin({\n  name: "Slack updates",\n  on: { moved: "*" },\n  async run({ item, gateways }) {\n    await gateways.slack.post("/chat.postMessage", { channel: "#launch", text: item.title });\n  },\n});\n`,
+  },
+];
+
+const GATEWAYS: FlowGateway[] = [
+  {
+    id: "fgw_github",
+    name: "GitHub",
+    baseUrl: "https://api.github.com",
+    auth: { kind: "bearer" },
+    hasSecret: true,
+  },
+  {
+    id: "fgw_blog",
+    name: "Blog",
+    baseUrl: "https://acme.example/blog/api",
+    auth: { kind: "header", header: "X-Api-Key" },
+    hasSecret: true,
+  },
+  {
+    id: "fgw_status",
+    name: "Status page",
+    baseUrl: "https://status.acme.example",
+    auth: { kind: "none" },
+    hasSecret: false,
+  },
+  {
+    id: "fgw_stripe",
+    name: "Stripe",
+    baseUrl: "https://api.stripe.com",
+    auth: { kind: "bearer" },
+    hasSecret: false,
+  },
+];
+
+/** The kernel's checks (packages/flow checkWorkflow), and a name every status needs. */
+function checked(statuses: FlowStatus[]): FlowStatus[] {
+  const problems: { statusId: string | null; message: string }[] = [];
+  const ids = new Set(statuses.map((s) => s.id));
+  for (const s of statuses) {
+    if (!s.name.trim()) problems.push({ statusId: s.id, message: "A status needs a name." });
+    for (const [field, label] of [
+      ["onDone", "When done, move to"],
+      ["onReject", "If rejected, send back to"],
+    ] as const) {
+      const target = s[field];
+      if (target !== undefined && !ids.has(target))
+        problems.push({
+          statusId: s.id,
+          message: `"${label}" on ${s.name} names "${target}", which isn't a status in this workflow.`,
+        });
+    }
+  }
+  if (problems.length)
+    throw new Refusal("invalid_input", problems.map((p) => p.message).join(" "), problems);
+  return statuses;
+}
+
 type FlowAnswers = {
   [N in keyof FlowOpMap]?: (input: FlowOpMap[N]["input"]) => FlowOpMap[N]["output"];
 };
@@ -433,6 +543,7 @@ export const FLOW_ANSWERS: FlowAnswers = {
       items: FLOW_ITEMS.filter((i) => i.projectId === input.projectId && i.statusId === status.id),
     })),
     truncated: false,
+    fields: FIELDS,
   }),
   "flow.timeline.get": (input) => ({ entries: TIMELINES[input.itemId] ?? [], truncated: false }),
   "flow.inbox.get": (input) => {
@@ -485,4 +596,40 @@ export const FLOW_ANSWERS: FlowAnswers = {
   "flow.item.decide": (input) => find(input.itemId) ?? (FLOW_ITEMS[0] as FlowItem),
   "flow.item.retry": (input) => find(input.itemId) ?? (FLOW_ITEMS[0] as FlowItem),
   "flow.item.comment": () => ({ ok: true }),
+  "flow.workflow.update": (input) => {
+    const found =
+      WORKFLOWS.find((w) => w.id === input.workflowId) ?? (WORKFLOWS[0] as FlowWorkflow);
+    found.workflow = { id: found.id, name: input.name, statuses: checked(input.statuses) };
+    found.updatedAt = ago(0);
+    return found;
+  },
+  "flow.workflow.create": (input) => {
+    const made: FlowWorkflow = {
+      id: `fwf_${WORKFLOWS.length + 1}`,
+      orgId: input.orgId,
+      workflow: {
+        id: `fwf_${WORKFLOWS.length + 1}`,
+        name: input.name,
+        statuses: checked(input.statuses),
+      },
+      createdAt: ago(0),
+      updatedAt: ago(0),
+    };
+    WORKFLOWS.push(made);
+    return made;
+  },
+  "flow.project.setWorkflow": (input) => {
+    const project = PROJECTS.find((p) => p.id === input.projectId) ?? (PROJECTS[0] as FlowProject);
+    project.workflowId = input.workflowId;
+    return project;
+  },
+  "flow.plugin.list": () => ({ plugins: PLUGINS.map(({ code: _code, ...p }) => p) }),
+  "flow.plugin.get": (input) => ({
+    plugin: PLUGINS.find((p) => p.id === input.pluginId) ?? (PLUGINS[0] as FlowPluginDetail),
+  }),
+  "flow.plugin.setEnabled": () => ({ ok: true }),
+  "flow.plugin.delete": () => ({ ok: true }),
+  "flow.gateway.list": () => ({ gateways: GATEWAYS }),
+  "flow.gateway.save": () => ({ ok: true }),
+  "flow.gateway.delete": () => ({ ok: true }),
 };

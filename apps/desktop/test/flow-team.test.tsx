@@ -83,7 +83,7 @@ describe("Team: Runners and People", () => {
   it("lists the org's members by name", async () => {
     const text = textOf(await renderPage(`/flow/${ORG}/team?tab=people`));
     expect(text).toContain("owner You");
-    expect(text).toContain("Sam Lee @samlee");
+    expect(text).toContain("Mia Chen @mia");
   });
 });
 
@@ -96,11 +96,13 @@ describe("Settings", () => {
     expect(text).toContain("This Mac's key");
     expect(text).toContain("Runner on this Mac");
     expect(html).toContain('data-testid="updates"');
+    expect(text).toContain("The org's workflows are in Workflows");
+    expect(html).toContain('href="/flow/org_personal/workflows"');
   });
 
   it("Members: the org's people; on an older server, you alone and a line saying so", async () => {
     const text = textOf(await renderPage(`/flow/${ORG}/settings?tab=members`));
-    expect(text).toContain("Sam Lee");
+    expect(text).toContain("Mia Chen");
     const older = textOf(
       await renderPage(`/flow/${ORG}/settings?tab=members`, { answers: OLDER_SERVER }),
     );
@@ -116,11 +118,16 @@ describe("All orgs", () => {
     expect(text).toContain("Everything 4 working 4 need you");
     expect(count(html, 'data-testid="need-row"')).toBe(4);
     expect(count(html, 'data-testid="open-item"')).toBe(4);
+    // Each reads as the Inbox's question (flow-edit's inboxQuestion).
     expect(text).toContain(
-      "Approve is yours Personal · API Platform · API-10 Add rate limiting to the public API Open",
+      "Approve: Add rate limiting to the public API Personal · API Platform · API-10 Open",
     );
-    expect(text).toContain("Approve Review? Personal · API Platform · API-9");
-    expect(text).toContain("Approve is yours Client · Website · WEB-31 Invoice footer");
+    expect(text).toContain(
+      "Decide: Paginate the audit log endpoint Personal · API Platform · API-9",
+    );
+    expect(text).toContain(
+      "Approve: Invoice footer shows the old address Client · Website · WEB-31",
+    );
     expect(html).toContain('href="/flow/org_client/p/fprj_site?item=fitm_footer"');
     expect(count(html, 'data-testid="working-row"')).toBe(4);
     expect(text).toContain(
@@ -165,9 +172,9 @@ describe("the app is the new shell", () => {
     const names = {
       me: { id: "usr_owner", name: "owner" },
       agents: [],
-      members: [{ userId: "usr_sam", name: "Sam Lee" }],
+      members: [{ userId: "usr_mia", name: "Mia Chen" }],
     };
-    expect(personName(names, "usr_sam")).toBe("Sam Lee");
+    expect(personName(names, "usr_mia")).toBe("Mia Chen");
     expect(personName(names, "usr_owner")).toBe("owner");
     expect(personName(names, "usr_gone")).toBe("A teammate");
   });

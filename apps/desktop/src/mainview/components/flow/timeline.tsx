@@ -34,13 +34,9 @@ export function Timeline({
 }) {
   return (
     <div className="flex flex-col gap-[9px]" data-testid="timeline">
-      {rows.map((row) =>
-        row.type === "line" ? (
-          <Line key={`l${row.seq}`} row={row} />
-        ) : (
-          <Entry key={`e${row.seq}`} row={row} />
-        ),
-      )}
+      {rows.map((row) => (
+        <Row key={`${row.type}${row.seq}`} row={row} />
+      ))}
       {error && <Stopped error={error} busy={busy} onRetry={onRetry} />}
       {decision && (
         <DecisionCard
@@ -52,6 +48,11 @@ export function Timeline({
       )}
     </div>
   );
+}
+
+/** One row of the timeline: a move's line, or an entry's card. The inbox shows a few on their own. */
+export function Row({ row }: { row: TimelineRow }) {
+  return row.type === "line" ? <Line row={row} /> : <Entry row={row} />;
 }
 
 function Line({ row }: { row: Extract<TimelineRow, { type: "line" }> }) {
@@ -169,7 +170,7 @@ export function RichCard({ card, className }: { card: FlowCard; className?: stri
   );
 }
 
-function DecisionCard({
+export function DecisionCard({
   decision,
   busy,
   onAction,

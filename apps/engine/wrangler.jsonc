@@ -95,6 +95,10 @@
       "simple": { "limit": 10, "period": 60 }
     }
   ],
+  // Plugins (spec 70 milestone 2, ADR 0660): each plugin's code runs as a Dynamic Worker loaded
+  // through this binding (packages/plugins), with no network of its own (`globalOutbound: null`).
+  // Workers Paid plan only. Billed per unique worker a day: one per plugin version in use.
+  "worker_loaders": [{ "binding": "LOADER" }],
   "workflows": [
     {
       "binding": "WORK_ITEM_WORKFLOW",
@@ -141,7 +145,8 @@
     "GITHUB_FAKE": ""
   }
   // Secrets (set by the deploy workflow with `wrangler secret bulk`, never committed):
-  // RUNNER_CHANNEL_SECRET, GH_APP_PRIVATE_KEY and GH_APP_WEBHOOK_SECRET. They are typed in src/secrets.ts rather than with
+  // RUNNER_CHANNEL_SECRET, GH_APP_PRIVATE_KEY, GH_APP_WEBHOOK_SECRET and FLOW_GATEWAY_KEY (the new core's
+  // gateway secrets, spec 70 milestone 2). They are typed in src/secrets.ts rather than with
   // `secrets.required`, which would make `wrangler deploy` fail until they exist. Without them the
   // runner channel answers 503 and GitHub calls are refused as `unavailable`.
 }

@@ -51,6 +51,33 @@ export const SCREENS = [
   { name: "settings-members", path: "/flow/org_personal/settings?tab=members" },
   { name: "all-orgs", path: "/flow/orgs" },
   { name: "search", path: "/flow/org_personal/p/fprj_api", keys: ["meta+k"] },
+  // The inbox (.kim/mockups/inbox.html): `--out flow-inbox`.
+  { name: "flow-inbox", path: "/flow/org_personal/inbox" },
+  { name: "flow-inbox-decision", path: "/flow/org_personal/inbox?item=fitm_audit" },
+  // The workflow editor and the Workflows list (workflow-editor.html): `--out flow-workflow`.
+  {
+    name: "flow-workflow",
+    path: "/flow/org_personal/p/fprj_api?view=workflow",
+    clicks: ['[data-testid="status-row"] > div:nth-child(3) [data-testid="status-box"]'],
+  },
+  {
+    name: "flow-workflow-agent",
+    path: "/flow/org_personal/p/fprj_api?view=workflow",
+    clicks: ['[data-testid="status-row"] > div:nth-child(2) [data-testid="status-box"]'],
+  },
+  { name: "flow-workflows", path: "/flow/org_personal/workflows" },
+  { name: "flow-workflows-edit", path: "/flow/org_personal/workflows?workflow=fwf_ship" },
+  // Plugins, gateways, and plugin fields on cards and the item (plugins.html, gateways.html):
+  // `--out flow-plugins`.
+  { name: "flow-plugins", path: "/flow/org_personal/plugins" },
+  { name: "flow-plugin-code", path: "/flow/org_personal/plugins?plugin=fplg_slack" },
+  { name: "flow-gateways", path: "/flow/org_personal/plugins?tab=gateways" },
+  {
+    name: "flow-gateway-form",
+    path: "/flow/org_personal/plugins?tab=gateways",
+    clicks: ['[data-testid="connect-system"]'],
+  },
+  { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready" },

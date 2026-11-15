@@ -8,6 +8,7 @@ import {
   flowKey,
   when,
 } from "@software-factory/client/flow";
+import { inboxQuestion } from "@software-factory/client/flow-edit";
 import { Button } from "@software-factory/ui/components/button";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { cn } from "@software-factory/ui/lib/utils";
@@ -19,11 +20,6 @@ import { useSession } from "../../lib/session.ts";
 import { PageHeader, Pill } from "./parts.tsx";
 
 type Row = FlowInboxAllItem & { orgName: string };
-
-/** What a waiting item asks of you, as the row's title. */
-export function askOf(item: FlowInboxAllItem, kind: "work" | "decision"): string {
-  return kind === "decision" ? `Approve ${item.statusName}?` : `${item.statusName} is yours`;
-}
 
 /** Everything across the orgs, flattened with each item's org, oldest-waiting last. */
 export function allRows(all: FlowInboxAll | undefined) {
@@ -79,8 +75,9 @@ export function AllOrgsPage() {
                 <ItemRow
                   key={i.id}
                   item={i}
-                  title={askOf(i, i.kind)}
-                  sub={`${i.orgName} · ${i.projectName} · ${flowKey({ key: i.projectKey }, i.number)} ${i.title}`}
+                  // The question as the Inbox asks it: "Approve: Add rate limiting", "Decide: …".
+                  title={inboxQuestion({ item: i, kind: i.kind }, i.statusName)}
+                  sub={`${i.orgName} · ${i.projectName} · ${flowKey({ key: i.projectKey }, i.number)}`}
                   open
                   testId="need-row"
                 />
