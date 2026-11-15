@@ -1,0 +1,68 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Run</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script><style>
+:root{--bg:#f6f6f5;--surface:#fff;--line:#e7e6e3;--soft:#f0efec;--text:#1b1b1a;--muted:#6f6e6a;--faint:#a3a29d;--accent:#2f5fd0;--accent-soft:#eaf0fd;--need:#b45f06;--need-soft:#fdf1df;--need-line:#f0c078;--ok:#2c8a4b;--bad:#c2372d;--font:"Inter",system-ui,-apple-system,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.all{background:none;color:var(--muted)}.orgs b.all.on{background:var(--text);color:#fff}
+.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:224px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.side h2{font-size:11px;font-weight:500;color:var(--faint);margin:14px 8px 3px}
+.side a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text);text-decoration:none}
+.side a.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}.side a.cur{background:#e9e8e4}
+.side a .c{margin-left:auto;color:var(--faint);font-size:11.5px}.side a .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.grow{flex:1}
+.shell{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.top{height:48px;flex:none;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:12px;padding:0 18px}
+.top b{font-size:14px}
+.tabs{display:flex;gap:2px;height:100%}.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.pill{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.pill.need{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}.pill.work{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.body{flex:1;overflow:auto;padding:20px 22px;background:#fbfbfa}
+.av{width:18px;height:18px;border-radius:5px;background:var(--bg);border:1px solid var(--line);display:inline-grid;place-items:center;font-size:9px;font-weight:600;flex:none}.av.p{border-radius:50%}
+.dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--c,#999);flex:none;display:inline-block}.dot.half{background:linear-gradient(90deg,var(--c) 50%,transparent 50%)}.dot.full{background:var(--c)}
+h3{font-size:12px;font-weight:600;margin:0 0 8px;color:var(--muted)}
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:22px;max-width:860px}
+.rows>div{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--soft)}.rows>div:last-child{border:0}
+.rows .t{font-weight:500}.rows .m{color:var(--muted);font-size:12px}.rows .r{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 12px;font-weight:500}.btn.pri{background:var(--text);border-color:var(--text);color:#fff}
+@media(max-width:800px){.side{display:none}}@media(max-width:500px){.orgs{display:none}.shell{margin:0;border:0;border-radius:0}}
+
+.dim{position:absolute;inset:0;background:rgba(30,30,28,.28);display:grid;place-items:center;padding:26px}
+.modal{background:var(--surface);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:100%;max-width:1040px;height:100%;max-height:690px;display:flex;flex-direction:column;overflow:hidden}
+.mh{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--soft)}
+.mh b{font-size:14px}.mh .m{color:var(--muted)}
+.meta{display:flex;gap:18px;padding:9px 16px;border-bottom:1px solid var(--soft);color:var(--muted);font-size:12px;align-items:center}
+.meta b{color:var(--text);font-weight:500}
+.bar{padding:10px 16px 12px;border-bottom:1px solid var(--soft)}
+.bar .ax{display:flex;justify-content:space-between;color:var(--faint);font-size:10.5px;margin-left:92px}
+.bar .ln{display:grid;grid-template-columns:92px 1fr;align-items:center;margin-top:4px;font-size:11.5px;color:var(--muted)}
+.bar .tr{height:12px;background:var(--bg);border-radius:3px;position:relative;overflow:hidden}
+.bar .tr i{position:absolute;top:0;bottom:0;border-radius:2px}
+.cols{flex:1;display:flex;min-height:0}
+.steps{flex:1.25;overflow:auto;border-right:1px solid var(--soft)}
+.s{display:grid;grid-template-columns:54px 20px 1fr 44px;gap:6px;align-items:start;padding:8px 14px;border-bottom:1px solid var(--soft);font-size:12.5px}
+.s time{color:var(--faint);font:11px var(--mono);padding-top:2px}.s svg{width:14px;height:14px;color:var(--muted);margin-top:2px}
+.s code{font:11.5px var(--mono);color:var(--muted)}.s .d{color:var(--faint);font-size:11.5px;text-align:right}
+.s.sel{background:var(--accent-soft)}.s.say{background:#fbfbfa}.s.say b{font-weight:400}
+.det{flex:1;overflow:auto;padding:14px 16px;font-size:12px}
+.det h4{font-size:10.5px;letter-spacing:.04em;color:var(--faint);margin:0 0 6px;font-weight:600}
+.det pre{font:11.5px/1.5 var(--mono);background:#fbfbfa;border:1px solid var(--soft);border-radius:8px;padding:10px;margin:0 0 14px;white-space:pre-wrap}
+</style></head><body>
+<div class="orgs" data-name="org strip"><b class="all " data-name="all orgs"><i data-lucide="layout-grid"></i></b><b class="on">A</b><b>C</b><b class="add">+</b></div>
+<nav class="side" data-name="sidebar"><div class="org">Acme <i data-lucide="chevron-down"></i></div><a href="#" class=""><i data-lucide="inbox"></i>Inbox<span class="c need">2</span></a><a href="#" class="on"><i data-lucide="square-check"></i>Work</a><a href="#" class=""><i data-lucide="users"></i>Team</a><a href="#" class=""><i data-lucide="zap"></i>Auto</a><a href="#" class=""><i data-lucide="puzzle"></i>Plugins</a><h2>Projects</h2><a href="#" class="cur"><i data-lucide="folder"></i>API Platform<span class="c">12</span></a><a href="#" class=""><i data-lucide="folder"></i>Autopilots launch<span class="c">9</span></a><a href="#" class=""><i data-lucide="folder"></i>Customer feedback<span class="c">7</span></a><a href="#" class=""><i data-lucide="folder"></i>Mobile app<span class="c">5</span></a><div class="grow"></div><a href="#"><i data-lucide="settings"></i>Settings</a></nav>
+<div class="shell"><div class="top"><b>API Platform</b><div class="tabs"><span class="on">Board</span><span>List</span></div></div><div class="body"></div><div class="dim"><div class="modal" data-name="run modal">
+<div class="mh"><span class="pill" style="color:var(--ok);border-color:#bfe0c9;background:#eef8f1">Finished</span><span class="av">B</span><b>Backend</b><span class="m">on ACM-142 Add rate limiting to the public API</span><span class="grow"></span><button data-name="close run"><i data-lucide="x"></i></button></div>
+<div class="meta" data-name="run summary"><span>Started by <b>entering Build</b></span><span>Took <b>15m 3s</b></span><span>Cost <b>$1.38</b></span><span>Runner <b>M5</b></span><span class="grow"></span><span>Produced</span><span class="pill">#318 · +184 −12</span><span class="pill">2 commands</span></div>
+<div class="bar" data-name="time bar"><div class="ax"><span>0s</span><span>5m</span><span>10m</span><span>15m 3s</span></div><div class="ln">Model<div class="tr"><i style="left:0%;width:7%;background:#2c8a4b"></i><i style="left:7.5%;width:2%;background:#9db6ee"></i><i style="left:10%;width:4%;background:#9db6ee"></i><i style="left:14.5%;width:18%;background:#9db6ee"></i><i style="left:33%;width:9%;background:#9db6ee"></i><i style="left:42.5%;width:19%;background:#9db6ee"></i><i style="left:66%;width:10%;background:#2c8a4b"></i><i style="left:76.5%;width:3%;background:#9db6ee"></i><i style="left:83%;width:17%;background:#2c8a4b"></i></div></div><div class="ln">Tools<div class="tr"><i style="left:7%;width:0.6%;background:#2f5fd0"></i><i style="left:9.6%;width:0.6%;background:#2f5fd0"></i><i style="left:14%;width:0.6%;background:#2f5fd0"></i><i style="left:32.5%;width:0.6%;background:#2f5fd0"></i><i style="left:42%;width:0.6%;background:#2f5fd0"></i><i style="left:62%;width:3.6%;background:#2f5fd0"></i><i style="left:76%;width:0.6%;background:#2f5fd0"></i><i style="left:79.6%;width:3.2%;background:#2f5fd0"></i></div></div></div>
+<div class="cols"><div class="steps" data-name="step list"><div class="s say" data-name="agent note"><time>+00:33</time><i data-lucide="message-square"></i><span>Plan: a per-key token bucket in front of the /v1 router, limits read from the customer's plan, and a 429 with Retry-After when the bucket is empty.</span><span></span></div><div class="s " data-name="run step"><time>+00:58</time><i data-lucide="search"></i><span><b>Grep</b> <code>api/</code></span><span class="d">1.6s</span></div><div class="s " data-name="run step"><time>+01:20</time><i data-lucide="file-text"></i><span><b>Read</b> <code>api/router.go</code></span><span class="d">1.6s</span></div><div class="s " data-name="run step"><time>+01:56</time><i data-lucide="file-text"></i><span><b>Read</b> <code>billing/plans.go</code></span><span class="d">1.6s</span></div><div class="s " data-name="run step"><time>+04:24</time><i data-lucide="file-pen"></i><span><b>Write</b> <code>api/ratelimit/limiter.go</code></span><span class="d">1.6s</span></div><div class="s " data-name="run step"><time>+05:39</time><i data-lucide="file-pen"></i><span><b>Edit</b> <code>api/router.go</code></span><span class="d">1.6s</span></div><div class="s sel" data-name="run step"><time>+08:15</time><i data-lucide="terminal"></i><span><b>Bash</b> <code>Run the API tests</code></span><span class="d">30s</span></div><div class="s say" data-name="agent note"><time>+09:21</time><i data-lucide="message-square"></i><span>Retry-After rounds sub-second waits down to 0, which tells clients to retry at once. Rounding up instead.</span><span></span></div><div class="s " data-name="run step"><time>+10:03</time><i data-lucide="file-pen"></i><span><b>Edit</b> <code>api/ratelimit/limiter.go</code></span><span class="d">1.6s</span></div><div class="s " data-name="run step"><time>+10:27</time><i data-lucide="terminal"></i><span><b>Bash</b> <code>Run the API tests</code></span><span class="d">26s</span></div><div class="s say" data-name="agent note"><time>+11:33</time><i data-lucide="message-square"></i><span>Tests pass. Opening the pull request.</span><span></span></div></div>
+<div class="det" data-name="step detail"><h4>BASH · +08:15 · 30s</h4><h4 style="margin-top:12px">INPUT</h4><pre>go test ./api/...</pre><h4>RESULT</h4><pre>ok    acme/api    1.84s
+--- FAIL: TestLimiter_RetryAfter (0.00s)
+    limiter_test.go:58: Retry-After = 0, want 1
+FAIL  acme/api/ratelimit  0.41s</pre></div></div>
+</div></div></div>
+<script>lucide.createIcons()</script></body></html>

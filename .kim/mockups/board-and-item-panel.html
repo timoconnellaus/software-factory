@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en" data-kim-example="software" data-kim-decision="both">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board and item panel</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{
+  --bg:#f6f6f5; --surface:#fff; --line:#e7e6e3; --line-soft:#f0efec;
+  --text:#1b1b1a; --muted:#6f6e6a; --faint:#a3a29d;
+  --accent:#2f5fd0; --accent-soft:#eaf0fd;
+  --need:#b45f06; --need-soft:#fdf1df; --need-line:#f0c078;
+  --ok:#2c8a4b; --bad:#c2372d;
+  --radius:10px; --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+svg.lucide{width:16px;height:16px;stroke-width:1.75}
+.muted{color:var(--muted)} .faint{color:var(--faint)}
+
+/* org strip + sidebar */
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.all{background:none;color:var(--muted)}
+.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:224px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px;overflow:auto}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.side h2{font-size:11px;font-weight:500;color:var(--faint);margin:14px 8px 3px;display:flex;justify-content:space-between}
+.side a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text);text-decoration:none}
+.side a:hover{background:#ecebe8}
+.side a.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}
+.side a.cur{background:#e9e8e4}
+.side a .c{margin-left:auto;color:var(--faint);font-size:11.5px}
+.side a .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.side .grow{flex:1}
+.shell{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;overflow:hidden;position:relative}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{height:48px;flex:none;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:12px;padding:0 16px}
+.tabs{display:flex;gap:2px;height:100%}.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.top b{font-size:14px}
+.pill{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.pill.need{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}
+.pill.work{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.seg{display:flex;background:var(--bg);border-radius:7px;padding:2px;font-size:12px}
+.seg span{padding:2px 10px;border-radius:5px;color:var(--muted)} .seg span.on{background:var(--surface);color:var(--text);box-shadow:0 0 0 1px var(--line)}
+.top .grow{flex:1}
+
+.board{flex:1;display:flex;gap:12px;padding:14px 16px;overflow:auto;background:#fbfbfa}
+.col{width:236px;flex:none;display:flex;flex-direction:column;gap:8px}
+.col header{display:flex;align-items:center;gap:7px;padding:0 2px 2px;font-weight:600;font-size:12.5px}
+.col header .cnt{color:var(--faint);font-weight:400}
+.col header .own{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--c,#999);flex:none}
+.dot.half{background:linear-gradient(90deg,var(--c) 50%,transparent 50%)} .dot.full{background:var(--c)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 11px;display:flex;flex-direction:column;gap:6px;text-align:left;width:100%}
+.card:hover{border-color:#cfcec9}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.card .r1{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint)}
+.card .r1 .pill{margin-left:auto;font-size:10.5px;padding:0 7px}
+.card .ttl{font-weight:500;line-height:1.35}
+.card .r3{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)}
+.card .r3 time{margin-left:auto;color:var(--faint)}
+.av{width:17px;height:17px;border-radius:5px;background:var(--bg);border:1px solid var(--line);display:inline-grid;place-items:center;font-size:9px;font-weight:600;flex:none}
+.av.p{border-radius:50%}
+.av svg.lucide{width:11px;height:11px}
+
+/* item panel */
+.panel{position:absolute;top:8px;right:8px;bottom:8px;width:452px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 40px rgba(20,20,20,.12);display:flex;flex-direction:column}
+.panel>header{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line-soft);font-size:12px;color:var(--muted)}
+.panel>header .grow{flex:1}
+.panel .body{flex:1;overflow:auto;padding:16px 18px 8px}
+.panel h3{font-size:17px;margin:0 0 9px;letter-spacing:-.01em}
+.props{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+.props .pill{border-radius:7px;color:var(--text)}
+.desc{color:#3c3c3a;margin:0 0 14px}
+.tl{border-top:1px solid var(--line-soft);padding-top:12px;display:flex;flex-direction:column;gap:9px}
+.ev{display:flex;gap:8px;font-size:12px;color:var(--muted);align-items:baseline}
+.ev time{margin-left:auto;color:var(--faint);white-space:nowrap}
+.ev .hand{display:block;color:var(--faint);padding-left:2px}
+.ev b{font-weight:500;color:var(--text)}
+.entry{border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px}
+.entry .who{display:flex;align-items:center;gap:7px;font-weight:600;margin-bottom:4px}
+.entry .who time{font-weight:400;color:var(--faint);font-size:11.5px}
+.entry p{margin:0 0 8px}
+.rich{background:#fbfbfa;border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;font-size:12px}
+.rich .hd{display:flex;justify-content:space-between;font-weight:600;margin-bottom:6px}
+.rich .hd span{font-weight:400;color:var(--faint)}
+.rich ul{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.rich li{display:flex;align-items:center;gap:7px}
+.rich li i{width:12px;height:12px;border:1px solid #cfcec9;border-radius:3px;flex:none}
+.rich li i.done{background:var(--ok);border-color:var(--ok)}
+.rich .checks{display:flex;gap:12px;color:var(--muted);margin-top:7px;padding-top:7px;border-top:1px solid var(--line-soft)}
+.rich .checks span{display:flex;align-items:center;gap:4px} .rich .checks svg{color:var(--ok);width:13px;height:13px}
+.plus{color:var(--ok)} .minus{color:var(--bad)}
+.bar{display:grid;grid-template-columns:118px 1fr 22px;gap:8px;align-items:center}
+.bar s{display:block;height:5px;border-radius:3px;background:var(--accent)}
+.docprev{height:62px;border-radius:6px;background:linear-gradient(120deg,#eef2fb,#e3f1f4);margin-bottom:7px;padding:12px}
+.docprev u{display:block;height:4px;border-radius:2px;background:#c9d2e6;margin-bottom:6px}
+.run{display:flex;gap:14px;color:var(--muted);font-size:11.5px;margin-top:8px}
+.run a{margin-left:auto;color:var(--accent);text-decoration:none}
+.decide{border:1px solid var(--need-line);background:var(--need-soft);border-radius:var(--radius);padding:11px 12px}
+.decide .q{font-weight:600;margin-bottom:3px}
+.decide p{margin:0 0 9px;color:#5b4a2e}
+.btns{display:flex;gap:7px}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 12px;font-weight:500}
+.btn.pri{background:var(--text);border-color:var(--text);color:#fff}
+.say{margin:10px 14px 14px;border:1px solid var(--line);border-radius:var(--radius);padding:9px 12px;color:var(--faint);display:flex;justify-content:space-between}
+.jump{display:none;align-items:center;gap:8px;margin:0;padding:7px 14px;background:var(--need-soft);border-bottom:1px solid var(--need-line);color:var(--need);font-size:12px;font-weight:500}
+.jump button{margin-left:auto;color:var(--need);font-weight:600;display:flex;align-items:center;gap:4px}
+[data-kim-decision="both"] .jump{display:flex}
+#topdecide{display:none;margin-bottom:14px}
+[data-kim-decision="top"] #topdecide{display:block}
+[data-kim-decision="top"] #tl .decide{display:none}
+.decide.flash{animation:fl 1.2s}
+@keyframes fl{0%,60%{box-shadow:0 0 0 4px var(--need-line)}100%{box-shadow:none}}
+[hidden]{display:none!important}
+@media (max-width:900px){.side{display:none}.panel{width:auto;left:8px}}
+@media (max-width:500px){.orgs{display:none}.shell{margin:0;border-radius:0;border:0}.panel{inset:0;border-radius:0}}
+</style>
+</head>
+<body>
+<div class="orgs" data-name="org strip">
+  <b class="all" title="All orgs" data-name="all orgs"><i data-lucide="layout-grid"></i></b>
+  <b class="on">A</b><b>C</b><b class="add">+</b>
+</div>
+<nav class="side" data-name="sidebar">
+  <div class="org">Acme <i data-lucide="chevron-down"></i></div>
+  <a href="#"><i data-lucide="inbox"></i>Inbox<span class="c need">2</span></a>
+  <a href="#" class="on"><i data-lucide="square-check"></i>Work</a>
+  <a href="#"><i data-lucide="users"></i>Team</a>
+  <a href="#"><i data-lucide="zap"></i>Auto</a>
+  <a href="#"><i data-lucide="puzzle"></i>Plugins</a>
+  <h2>Projects <i data-lucide="plus"></i></h2>
+  <div id="projects"></div>
+  <div class="grow"></div>
+  <a href="#"><i data-lucide="settings"></i>Settings</a>
+</nav>
+<div class="shell">
+  <section class="main">
+    <div class="top" data-name="board header">
+      <b id="pname"></b>
+      <div class="tabs" data-name="project tabs"><span class="on">Board</span><span>List</span></div>
+      <span class="pill" id="wname" data-name="workflow name"></span>
+      <div class="grow"></div>
+      <span class="pill work" id="working"></span>
+      <span class="pill need" data-name="needs you count">2 need you</span>
+    </div>
+    <div class="board" id="board" data-name="board"></div>
+  </section>
+  <aside class="panel" id="panel" data-name="item panel">
+    <header>
+      <span id="crumb"></span><span class="grow"></span>
+      <span class="pill work" id="pworking"></span>
+      <button title="Open as a page" data-name="expand to page"><i data-lucide="maximize-2"></i></button>
+      <button title="Close" onclick="document.getElementById('panel').hidden=true" data-name="close panel"><i data-lucide="x"></i></button>
+    </header>
+    <div class="jump" data-name="waiting on you strip"><i data-lucide="circle-dot"></i><span id="jumptext"></span><button onclick="const d=document.querySelector('#tl .decide');d.scrollIntoView({behavior:'smooth',block:'center'});d.classList.remove('flash');void d.offsetWidth;d.classList.add('flash')" data-name="jump to decision">Jump to it <i data-lucide="arrow-down"></i></button></div>
+    <div class="body">
+      <div id="topdecide"></div>
+      <h3 id="ititle"></h3>
+      <div class="props" id="props" data-name="properties"></div>
+      <p class="desc" id="idesc"></p>
+      <div class="tl" id="tl" data-name="timeline"></div>
+    </div>
+    <div class="say" data-name="comment box"><span>Leave a comment, or @mention an agent…</span><i data-lucide="arrow-up"></i></div>
+  </aside>
+</div>
+<script>
+const A=(n,person)=>`<span class="av ${person?'p':''}">${n}</span>`;
+const DATA={
+ software:{
+  project:"API Platform", workflow:"Ship a feature", working:"3 agents working",
+  projects:[["API Platform",12,["Add rate limiting to the public API","Move auth webhooks onto the job queue","Fix the flaky checkout test"]],["Autopilots launch",9],["Customer feedback",7],["Mobile app",5]],
+  cols:[
+   ["Spec","#8b6fd6","",["Lead","L"],[["ACM-145","Per-key usage page","Lead","L","25m"]]],
+   ["Build","#d9822b","half",["Backend","B"],[["ACM-136","Move auth webhooks onto the job queue","Backend","B","2m","work"],["ACM-138","Upgrade the Postgres driver to v5","Backend","B","40m"]]],
+   ["Review","#2f5fd0","half",["QA","Q"],[["ACM-133","Fix the flaky checkout test on CI","QA","Q","now","work"],["ACM-131","Paginate the audit log endpoint","QA","Q","1h"]]],
+   ["Approve","#b45f06","half",["Mia Chen","MC",1],[["ACM-142","Add rate limiting to the public API","Mia Chen","MC","now","need","sel"],["ACM-127","Rename the billing plan enum","Mia Chen","MC","3h","need"]]],
+   ["Shipped","#2c8a4b","full",null,[["ACM-124","Lazy-load the members table","QA","Q","5h"]]]
+  ],
+  item:{id:"ACM-142",title:"Add rate limiting to the public API",working:"",
+   props:["<span class='dot half' style='--c:#b45f06'></span>Approve","Mia Chen","High","API Platform","Jun 12"],
+   desc:"Public endpoints have no limits, so one noisy key can slow everyone down. Add per-key limits with sane defaults and a clear 429.",
+   tl:[
+    {ev:"<b>Mia Chen</b> created this item",hand:"Handed to <b>Lead</b>, who started a run",t:"2h"},
+    {who:["Lead","L"],t:"2h",say:"Here is the plan.",rich:`<div class="hd">Build plan<span>3 steps</span></div><ul><li><i class="done"></i>Token bucket per API key</li><li><i class="done"></i>Shared counters in Redis</li><li><i class="done"></i>429 with a Retry-After header</li></ul>`,name:"plan card"},
+    {ev:"<b>Lead</b> moved it from Spec to Build",hand:"Handed to <b>Backend</b>, who started a run",t:"1h"},
+    {who:["Backend","B"],t:"40m",say:"Limiter and tests are in.",rich:`<div class="hd">#318 Rate limit the public API<span><span class="plus">+184</span> <span class="minus">−12</span></span></div><div class="checks"><span><i data-lucide="circle-check"></i>Build</span><span><i data-lucide="circle-check"></i>212 tests</span><span><i data-lucide="circle-check"></i>Lint</span></div>`,run:["15m 3s","$1.38","13 steps"],name:"pull request card"},
+    {ev:"<b>Backend</b> moved it from Build to Review",hand:"Handed to <b>QA</b>, who started a run",t:"22m"},
+    {who:["QA","Q"],t:"9m",say:"Reviewed #318. One note, fixed: Retry-After now rounds up, so clients never retry at once.",run:["6m 41s","$0.52","8 steps"]},
+    {ev:"<b>QA</b> moved it from Review to Approve",hand:"Waiting on <b>Mia Chen</b>",t:"8m"},
+    {decide:["Merge #318?","QA approved it and all three checks pass on the latest commit.","Merge","Send back"]}
+   ]}
+ },
+ content:{
+  project:"Autopilots launch", workflow:"Launch content", working:"2 agents working",
+  projects:[["API Platform",12],["Autopilots launch",9,["Launch post for Autopilots","Customer story: Northwind","Changelog for v0.9"]],["Customer feedback",7],["Mobile app",5]],
+  cols:[
+   ["Brief","#8b6fd6","",["Sam Rivera","SR",1],[["ACM-213","Webinar invite email for June","Sam Rivera","SR","2h"],["ACM-211","Comparison page: us vs. spreadsheets","Sam Rivera","SR","5h"]]],
+   ["Research","#2aa3b8","half",["Research","R"],[["ACM-209","Customer story: Northwind Robotics","Research","R","3m","work"]]],
+   ["Draft","#d9822b","half",["Content","C"],[["ACM-205","Changelog for v0.9","Content","C","12m","work"]]],
+   ["Edit","#b45f06","half",["Sam Rivera","SR",1],[["ACM-212","Launch post for Autopilots","Sam Rivera","SR","now","need","sel"],["ACM-198","Newsletter: May product roundup","Sam Rivera","SR","20m","need"]]],
+   ["Published","#2c8a4b","full",null,[["ACM-193","Autopilots one-pager for sales","Sam Rivera","SR","1h"]]]
+  ],
+  item:{id:"ACM-212",title:"Launch post for Autopilots",working:"",
+   props:["<span class='dot half' style='--c:#b45f06'></span>Edit","Sam Rivera","High","Autopilots launch","Jun 18"],
+   desc:"Announce Autopilots: what it is, who it is for, and three real examples. Blog post first, then social and newsletter copy.",
+   tl:[
+    {ev:"<b>Sam Rivera</b> moved it from Brief to Research",hand:"Handed to <b>Research</b>, who started a run",t:"3h"},
+    {who:["Research","R"],t:"2h",say:"What customers ask for most.",rich:`<div class="hd">Use cases mentioned<span>40 calls</span></div><div class="bar">Nightly triage<s style="width:100%"></s>18</div><div class="bar">Weekly digests<s style="width:66%"></s>12</div><div class="bar">Dependency bumps<s style="width:50%"></s>9</div>`,run:["11m 20s","$0.94","21 steps"],name:"chart card"},
+    {ev:"<b>Research</b> moved it from Research to Draft",hand:"Handed to <b>Content</b>, who started a run",t:"2h"},
+    {who:["Content","C"],t:"35m",say:"Draft is ready, with social posts and a newsletter blurb.",rich:`<div class="docprev"><u style="width:70%"></u><u style="width:52%"></u><u style="width:61%"></u></div><div class="hd" style="margin:0">autopilots-launch.md<span>1,180 words</span></div>`,run:["8m 02s","$0.71","9 steps"],name:"document card"},
+    {ev:"<b>Content</b> moved it from Draft to Edit",hand:"Waiting on <b>Sam Rivera</b>",t:"34m"},
+    {decide:["Publish this post?","The draft is 1,180 words. Publishing posts it to the blog and schedules the social copy.","Publish","Send back"]}
+   ]}
+ }
+};
+function render(){
+  const ex=document.documentElement.dataset.kimExample||document.body.dataset.kimExample; const d=DATA[ex]||DATA.software, $=id=>document.getElementById(id);
+  $('pname').textContent=d.project; $('wname').innerHTML='<i data-lucide="workflow"></i>'+d.workflow; $('working').textContent=d.working;
+  $('projects').innerHTML=d.projects.map(([n,c])=>`<a href="#" class="${n===d.project?'cur':''}"><i data-lucide="folder"></i>${n}<span class="c">${c}</span></a>`).join('');
+  $('board').innerHTML=d.cols.map(([n,c,fill,own,cards])=>`<div class="col" data-name="${n} column"><header><span class="dot ${fill}" style="--c:${c}"></span>${n}<span class="cnt">${cards.length}</span>${own?`<span class="own" data-name="status owner">${A(own[1],own[2])}${own[0]}</span>`:''}</header>${cards.map(([id,t,o,oi,tm,chip,sel])=>`<button class="card ${sel||''}" data-name="board card" onclick="document.getElementById('panel').hidden=false"><span class="r1">${id}${chip==='work'?'<span class="pill work">Working</span>':chip==='need'?'<span class="pill need">Needs you</span>':''}</span><span class="ttl">${t}</span><span class="r3">${A(oi,o.includes(' '))}${o}<time>${tm==='now'?'just now':tm+' ago'}</time></span></button>`).join('')}</div>`).join('');
+  const it=d.item;
+  $('crumb').textContent=d.project+'  ›  '+it.id; $('pworking').hidden=!it.working; $('pworking').textContent=it.working;
+  $('ititle').textContent=it.title; $('idesc').textContent=it.desc;
+  $('props').innerHTML=it.props.map(p=>`<span class="pill">${p}</span>`).join('');
+  $('tl').innerHTML=it.tl.map(e=>e.ev?`<div class="ev" data-name="timeline event"><span>${e.ev}<span class="hand">↳ ${e.hand}</span></span><time>${e.t} ago</time></div>`
+    :e.decide?`<div class="decide" data-name="decision card"><div class="q">${e.decide[0]}</div><p>${e.decide[1]}</p><div class="btns"><button class="btn pri" data-name="approve button">${e.decide[2]}</button><button class="btn" data-name="send back button">${e.decide[3]}</button></div></div>`
+    :`<div class="entry" data-name="${e.name||'comment card'}"><div class="who">${A(e.who[1])}${e.who[0]}<time>${e.t} ago</time></div><p>${e.say}</p>${e.rich?`<div class="rich">${e.rich}</div>`:''}${e.run?`<div class="run" data-name="run summary"><span>${e.run[0]}</span><span>${e.run[1]}</span><span>${e.run[2]}</span><a href="#">Open run</a></div>`:''}</div>`).join('');
+  const dec=it.tl.find(e=>e.decide).decide;
+  $('jumptext').textContent='Waiting on you: '+dec[0];
+  $('topdecide').innerHTML=document.querySelector('#tl .decide').outerHTML;
+  lucide.createIcons();
+}
+const mo=new MutationObserver(render); for(const el of [document.documentElement,document.body]) mo.observe(el,{attributes:true,attributeFilter:['data-kim-example','data-kim-decision']});
+render();
+</script>
+</body>
+</html>

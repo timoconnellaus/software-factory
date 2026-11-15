@@ -57,6 +57,26 @@ Each ends with something that runs.
 5. **Cutover.** Move the data that matters, delete the old core, rewrite `AGENTS.md`, `CONTEXT.md`
    and `docs/architecture.md`.
 
+## The design
+Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
+[`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the
+base does and what a plugin adds. The mockups, in `.kim/mockups/`, replace `docs/design/factory-ui/`
+and the older files beside them:
+
+| Screen | File |
+| --- | --- |
+| The board and the item panel (software and content examples) | `board-and-item-panel.html`, `board-dark.html` |
+| The sidebar and a section's tabs | `sidebar-c-sections-projects-and-tabs-on-top.html` |
+| The item as a full page | `item-as-a-full-page.html` |
+| A run | `run.html` |
+| The workflow editor | `workflow-editor.html` |
+| Inbox | `inbox.html` |
+| Chat, where workflows and plugins are built | `chat-build-a-workflow-and-a-plugin.html` |
+| Team: an agent | `team-an-agent.html` |
+| Plugins and gateways | `plugins.html`, `gateways.html` |
+| Auto | `auto-schedules.html` |
+| All orgs | `all-orgs.html` |
+
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge
   cases until the owner asks for one.

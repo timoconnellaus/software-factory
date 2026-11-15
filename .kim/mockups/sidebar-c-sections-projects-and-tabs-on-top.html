@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Navigation</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--bg:#f6f6f5;--surface:#fff;--line:#e7e6e3;--soft:#f0efec;--text:#1b1b1a;--muted:#6f6e6a;--faint:#a3a29d;--need:#b45f06;--need-soft:#fdf1df;--accent:#2f5fd0;--font:"Inter",system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:236px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px;overflow:auto}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;width:100%;color:var(--text)}
+.row:hover{background:#ecebe8}.row.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}
+.row .c{margin-left:auto;font-size:11.5px;color:var(--faint)}.row .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.row .chev{margin-left:auto;color:var(--faint);width:14px;height:14px}
+.kids{display:flex;flex-direction:column;gap:1px;margin:1px 0 6px}
+.kids .row{padding:4px 8px 4px 32px;font-size:12.5px;color:#3d3d3b}.kids .row.sel{background:#e9e8e4;color:var(--text);font-weight:500}
+.kids h4,.side h4{font-size:11px;font-weight:500;color:var(--faint);margin:8px 0 2px 32px}
+.side h4.top{margin-left:8px;margin-top:14px}
+.grow{flex:1}
+.back{display:flex;align-items:center;gap:6px;padding:4px 8px 12px;font-weight:600;font-size:14px}
+.back svg{color:var(--muted)}
+.main{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+.top{height:48px;flex:none;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:14px;padding:0 18px}
+.top b{font-size:14px}
+.tabs{display:flex;gap:2px;height:100%}
+.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.content{flex:1;padding:18px;display:flex;gap:12px;background:#fbfbfa;overflow:hidden}
+.sk{flex:1;display:flex;flex-direction:column;gap:8px;max-width:240px}
+.sk i{display:block;height:11px;width:60%;background:#e4e3df;border-radius:4px;margin-bottom:2px}
+.sk u{display:block;height:74px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.list{flex:1;display:flex;flex-direction:column;gap:0;background:var(--surface);border:1px solid var(--line);border-radius:10px;align-self:flex-start;max-width:720px}
+.list div{height:46px;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:10px;padding:0 14px}
+.list div:last-child{border:0}.list div s{width:22px;height:22px;border-radius:6px;background:#e4e3df}.list div em{height:10px;background:#e4e3df;border-radius:4px}
+.note{position:absolute;right:20px;bottom:16px;background:var(--text);color:#fff;border-radius:8px;padding:8px 12px;font-size:12px;max-width:330px}
+@media(max-width:700px){.orgs{display:none}.side{width:190px}}
+</style></head>
+<body data-kim-nav="tabs">
+<div class="orgs" data-name="org strip"><b class="on">A</b><b>C</b><b class="add">+</b></div>
+<nav class="side" id="side" data-name="sidebar"></nav>
+<section class="main"><div class="top" id="top" data-name="content header"></div><div class="content" id="content"></div></section>
+<div class="note" id="note"></div>
+<script>
+const NAV=document.body.dataset.kimNav; let sec='work', sub='API Platform';
+const S={inbox:{label:'Inbox',icon:'inbox',n:2,kids:[]},
+ work:{label:'Work',icon:'square-check',groups:[['',['Needs me','All items']],['Projects',['API Platform','Autopilots launch','Customer feedback','Mobile app']]],tabs:['Board','List']},
+ team:{label:'Team',icon:'users',groups:[['',['Agents','Skills','Runners']]],tabs:['Agents','Skills','Runners']},
+ auto:{label:'Auto',icon:'zap',groups:[['',['Schedules','Triggers']]],tabs:['Schedules','Triggers']},
+ plugins:{label:'Plugins',icon:'puzzle',groups:[['',['Installed','Drafts']]],tabs:['Installed','Drafts']}};
+const NOTE={tree:'One sidebar. A section opens in place and the others close. Click Team or Auto to try it.',
+ drill:'One sidebar that swaps. Click Team: the sidebar becomes Team\'s own list, with a way back.',
+ tabs:'One sidebar that never changes: sections, then your projects. A section\'s own pages are tabs across the top. Click Team.'};
+const first=k=>S[k].groups?S[k].groups[0][1][0]:'';
+function go(k,s){sec=k;sub=s||(k==='work'?'API Platform':first(k));draw()}
+function row(k,o){const on=sec===k;return `<button class="row ${on?'on':''}" onclick="go('${k}')" data-name="${o.label} section"><i data-lucide="${o.icon}"></i>${o.label}${o.n?`<span class="c need">${o.n}</span>`:''}${NAV==='tree'&&o.groups?`<i class="chev" data-lucide="${on?'chevron-down':'chevron-right'}"></i>`:''}${NAV==='drill'&&o.groups?`<i class="chev" data-lucide="chevron-right"></i>`:''}</button>`}
+function kids(k){return `<div class="kids">${S[k].groups.map(([h,items])=>(h?`<h4>${h}</h4>`:'')+items.map(i=>`<button class="row ${sub===i?'sel':''}" onclick="go('${k}','${i}')">${i}</button>`).join('')).join('')}</div>`}
+function draw(){
+ let h='';
+ if(NAV==='drill'&&sec!=='inbox'&&sec!=='home'){
+  h=`<button class="back" onclick="sec='home';draw()" data-name="back to sections"><i data-lucide="chevron-left"></i>${S[sec].label}</button>`+kids(sec).replaceAll('padding:4px 8px 4px 32px','');
+ }else{
+  h=`<div class="org">Acme <i data-lucide="chevron-down"></i></div>`;
+  for(const k in S){h+=row(k,S[k]); if(NAV==='tree'&&sec===k&&S[k].groups)h+=kids(k)}
+  if(NAV==='tabs'){h+=`<h4 class="top">Projects</h4>`+S.work.groups[1][1].map(i=>`<button class="row ${sec==='work'&&sub===i?'on':''}" onclick="go('work','${i}')"><i data-lucide="folder"></i>${i}</button>`).join('')}
+ }
+ h+=`<div class="grow"></div><button class="row"><i data-lucide="settings"></i>Settings</button>`;
+ document.getElementById('side').innerHTML=h;
+ const s=S[sec]||S.work, isWork=sec==='work'||sec==='home';
+ let t=`<b>${isWork?(S.work.groups[1][1].includes(sub)?sub:sub||'Work'):sec==='inbox'?'Inbox':(NAV==='tabs'?s.label:sub)}</b>`;
+ if(NAV==='tabs'&&s.tabs&&sec!=='inbox')t+=`<div class="tabs" data-name="section tabs">${s.tabs.map((x,i)=>`<span class="${(isWork?i===0:x===sub||(!s.tabs.includes(sub)&&i===0))?'on':''}">${x}</span>`).join('')}</div>`;
+ document.getElementById('top').innerHTML=t;
+ document.getElementById('content').innerHTML=isWork?Array(4).fill(`<div class="sk"><i></i><u></u><u></u></div>`).join(''):`<div class="list">${Array(6).fill('<div><s></s><em style="width:34%"></em><em style="width:18%;margin-left:auto"></em></div>').join('')}</div>`;
+ document.getElementById('note').textContent=NOTE[NAV];
+ lucide.createIcons();
+}
+draw();
+</script></body></html>
