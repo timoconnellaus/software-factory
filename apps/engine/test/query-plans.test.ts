@@ -17,30 +17,38 @@ import { createDb } from "@software-factory/db";
 import { call as callFlow } from "@software-factory/ops";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import {
+  addDid,
   agentRuns,
   board,
+  chatHistory,
   claimRun,
   createAgent,
+  createChat,
   createItem,
   createProject,
   createWorkflow,
   declaredFields,
   enabledPlugins,
+  endChatRun,
   expireRuns,
+  findBuilder,
   finishRun,
   gatewayForHost,
+  getChat,
   getListedRun,
   getPluginById,
   inbox,
   inboxAll,
   itemRuns,
   listAgents,
+  listChats,
   listMembers,
   listProjects,
   loadItem,
   recentComments,
   renewLease,
   runForToken,
+  sendMessage,
   timeline,
 } from "@software-factory/store";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -300,6 +308,54 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         },
         as,
       );
+      return expireRuns(e.DB, now, 10);
+    },
+  },
+  {
+    // Chat (migration 0433): the app polls flow.chat.get while a run is in flight (the chat, its
+    // newest messages and its `did` rows by the (chat_id, seq) key, its open run by
+    // flow_runs_chat_idx) and reads flow.chat.list (flow_chats_org_idx). A runner claims a chat's
+    // run (the queue, then the chat by primary key), its prompt reads the conversation, the MCP
+    // server's token check and `did` rows, the hand-back's reply, and the sweep.
+    name: "the new core's Chat: poll a chat, list chats, claim and end a chat's run",
+    run: async (e) => {
+      const orgId = `org_${crypto.randomUUID()}`;
+      await e.DB.prepare(
+        "INSERT OR IGNORE INTO core_runners (id, owner_user_id, name, created_at) VALUES ('runner_qp', 'u_qp', 'qp', ?)",
+      )
+        .bind(new Date().toISOString())
+        .run();
+      const agent = await findBuilder(e.DB, orgId).then(
+        (found) =>
+          found ??
+          createAgent(e.DB, { orgId, name: "Builder", instructions: "", mcp: ["factory"] }),
+      );
+      const chat = await createChat(e.DB, {
+        orgId,
+        agentId: agent.id,
+        text: "Set up a workflow.",
+        createdBy: "u_qp",
+      });
+      await getChat(e.DB, chat.id);
+      await listChats(e.DB, orgId);
+      const now = Date.now();
+      const run = await claimRun(e.DB, "runner_qp", now, 60_000);
+      if (!run?.chatId) throw new Error("no chat run to claim");
+      await chatHistory(e.DB, chat.id, run.stay, 100);
+      await runForToken(e.DB, run.id);
+      await addDid(e.DB, {
+        chatId: chat.id,
+        orgId,
+        runId: run.id,
+        text: "Created the workflow W",
+        data: { kind: "workflow", id: "fwf_qp", name: "W" },
+      });
+      await getChat(e.DB, chat.id);
+      await endChatRun(e.DB, run.id, run.fencingToken, {
+        status: "done",
+        result: { outcome: "done", summary: "Done." },
+      });
+      await sendMessage(e.DB, chat.id, "And another.");
       return expireRuns(e.DB, now, 10);
     },
   },

@@ -44,7 +44,7 @@ export async function authenticateMcp(
       kind: "agent",
       id: found.run.agentId,
       orgId: found.run.orgId,
-      onBehalfOf: found.itemCreatedBy,
+      onBehalfOf: found.createdBy,
     },
   };
 }

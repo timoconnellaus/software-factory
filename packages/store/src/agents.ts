@@ -72,6 +72,26 @@ export async function updateAgent(
   return toAgent(row);
 }
 
+/** The most agents `findBuilder` looks through. */
+const BUILDER_SCAN_LIMIT = 200;
+
+/**
+ * The org's agent with the engine's "factory" MCP server that Chat should talk to: one named
+ * "Builder" if there is one, else the first by name. Null when none has it. Reads
+ * flow_agents_org_idx (an org has a handful of agents).
+ */
+export async function findBuilder(d1: D1Database, orgId: string): Promise<Agent | null> {
+  const rows = await flowDb(d1)
+    .selectFrom("flow_agents")
+    .selectAll()
+    .where("org_id", "=", orgId)
+    .orderBy("name")
+    .limit(BUILDER_SCAN_LIMIT)
+    .execute();
+  const builders = rows.map(toAgent).filter((a) => a.mcp.includes("factory"));
+  return builders.find((a) => a.name === "Builder") ?? builders[0] ?? null;
+}
+
 export async function getAgent(d1: D1Database, id: string): Promise<Agent | null> {
   const row = await flowDb(d1)
     .selectFrom("flow_agents")

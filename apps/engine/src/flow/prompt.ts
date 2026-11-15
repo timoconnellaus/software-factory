@@ -16,6 +16,8 @@ function who(actor: TimelineEntry["actor"]): string {
 
 export function flowPrompt(run: ClaimedRun, comments: TimelineEntry[]): string {
   const agent = run.agent;
+  // An item's run always has its item; a chat's run gets chatPrompt (chat-prompt.ts) instead.
+  const item = run.item ?? { number: 0, title: "", body: "" };
   const lines = [
     agent ? `You are ${agent.name}.` : "You are an agent working on an item.",
     ...(agent?.instructions.trim() ? ["", agent.instructions.trim()] : []),
@@ -23,8 +25,8 @@ export function flowPrompt(run: ClaimedRun, comments: TimelineEntry[]): string {
     "## What this step asks of you",
     run.brief.trim() || "Do the work this item asks for.",
     "",
-    `## The item: #${run.item.number} ${run.item.title}`,
-    run.item.body.trim() || "(no description)",
+    `## The item: #${item.number} ${item.title}`,
+    item.body.trim() || "(no description)",
   ];
   const said = comments
     .map((c) => ({ by: who(c.actor), text: (c.data as { text?: unknown }).text }))

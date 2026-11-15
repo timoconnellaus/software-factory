@@ -226,6 +226,8 @@ export async function endRunWithHooks(
   if (end.status === "done") {
     const run = await getRun(env.DB, runId);
     if (!run) throw new StoreError("not_found", `No run ${runId}.`);
+    // A chat's run has no item and no plugins around it: it ends through the store's endChatRun.
+    if (run.itemId === null) throw new StoreError("invalid", `Run ${runId} is a chat's run.`);
     const loaded = await loadItem(env.DB, run.itemId);
     const { item, workflow } = loaded;
     if ((await session.plugins(item.orgId)).length > 0) {
