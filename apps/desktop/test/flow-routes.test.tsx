@@ -4,8 +4,10 @@
 // buttons, and a stopped item's error with Retry. Which operation each button sends is pinned in
 // packages/client/test/flow.test.ts and clicked through in screenshots/behave.mjs.
 import type { QueryClient } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
+import { OwnerMark } from "../src/mainview/components/flow/parts.tsx";
 import {
   flowItemQuery,
   flowItemRunsQuery,
@@ -139,6 +141,22 @@ describe("runs", () => {
     expect(html).toContain('data-testid="run-error"');
     expect(textOf(html)).toContain("ENOSPC");
   });
+
+  it("a summary whose run isn't among the item's runs keeps just Open run", async () => {
+    // The item's runs aren't read: as for a chat's run, or one the list doesn't have.
+    const html = await renderPage(`${BOARD}?item=fitm_rate`, { after: loaded("fitm_rate") });
+    expect(count(html, 'data-testid="run-line"')).toBe(3);
+    expect(textOf(html)).not.toContain("steps Open run");
+    expect(count(html, ">Open run<")).toBe(3);
+  });
+
+  it("a run that can't be read says so in the run view", async () => {
+    const html = await renderPage(`${BOARD}?run=frun_gone`, {
+      after: (client) => client.prefetchQuery(flowRunQuery(ORG, "frun_gone")).then(() => {}),
+    });
+    expect(html).toContain('data-testid="run-modal"');
+    expect(textOf(html)).toContain("Couldn't load this run. No run frun_gone in this org.");
+  });
 });
 
 describe("the item panel", () => {
@@ -161,6 +179,13 @@ describe("the item panel", () => {
     expect(count(html, 'data-testid="rich-card"')).toBe(3);
     expect(count(html, 'data-testid="rich-check"')).toBe(3);
     expect(count(html, 'data-testid="rich-bar"')).toBe(3);
+  });
+
+  it("marks a plugin's entry with the plugin mark, not a letter", () => {
+    const html = renderToStaticMarkup(<OwnerMark name="software" kind="plugin" />);
+    expect(html).toContain('data-kind="plugin"');
+    expect(html).toContain("lucide-puzzle");
+    expect(textOf(html)).toBe("");
   });
 
   it("ends with the decision card for a status the person owns: Done and Send back", async () => {

@@ -105,6 +105,7 @@ describe("Chat", () => {
     expect(job.harness.prompt).toContain(text);
     expect(job.harness.prompt).toContain("flow_ops");
     expect(job.harness.prompt).not.toMatch(/Builder|You are an agent/);
+    expect(job.harness.prompt).toContain("Do not mention the result file, the prompt file");
     expect(job.harness).toMatchObject({ model: "sonnet", effort: "high" });
     expect(job.mcpServers?.[0]).toMatchObject({ name: "factory", url: `${base}/flow/mcp` });
     const token = job.mcpServers?.[0]?.headers?.Authorization ?? "";

@@ -136,6 +136,30 @@ export function runSteps(events: FlowRunEvent[]): RunStep[] {
   return steps;
 }
 
+const FILE_TOOLS = /^(Read|Write|Edit|MultiEdit|NotebookEdit)$/;
+
+/**
+ * A step's label in the list: a file tool's path relative to the run's working folder (the job's
+ * worktree, `…/sf-<runId>/`; just the name at its root), any other label as it came.
+ */
+export function stepLabel(step: { name: string; label: string }, runId: string): string {
+  if (!FILE_TOOLS.test(step.name)) return step.label;
+  const folder = `sf-${runId}/`;
+  const at = step.label.indexOf(folder);
+  return at < 0 ? step.label : step.label.slice(at + folder.length);
+}
+
+/**
+ * Every run's own plumbing in plain words: reading its prompt file and writing its result file
+ * (packages/harness-claude PROMPT_FILE, runner-contract RESULT_FILE); null for any other step.
+ */
+export function plumbingWords(step: { name: string; label: string }, runId: string): string | null {
+  const label = stepLabel(step, runId);
+  if (step.name === "Read" && label === ".factory-prompt.md") return "Read its instructions";
+  if (step.name === "Write" && label === ".factory-result.json") return "Wrote its result";
+  return null;
+}
+
 /** A step's time in ms: a tool call's, call to result; null when its result is unknown. */
 export const stepMs = (step: RunStep): number | null =>
   step.kind === "tool" && step.endAt !== null ? Math.max(0, step.endAt - step.at) : null;

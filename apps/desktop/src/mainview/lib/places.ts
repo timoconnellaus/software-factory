@@ -1,17 +1,33 @@
 // The places in the app (spec 41, spec 70): what a tab is called, and the search palette's places.
 // Pure, so the tests pin them.
 
-/** A tab's title: the section a path is in, a project's board, an item, or All orgs. */
-export function tabTitle(path: string, findProject: (id: string) => string | null = () => null) {
-  const pathname = path.split("?")[0] ?? "/";
-  const flow = /^\/flow(?:\/[^/]+\/([^/]+)(?:\/([^/]+))?(\/i\/)?)?/.exec(pathname);
+/** What a tab can name, from what the app has already read; null when it hasn't. */
+export interface TabNames {
+  project?: (id: string) => string | null;
+  /** "SF-2 Record the milestone": the item's key and title. */
+  item?: (id: string) => string | null;
+  chat?: (id: string) => string | null;
+  /** "Builder · SF-2 Record the milestone": the run's agent and its item. */
+  run?: (id: string) => string | null;
+}
+
+/**
+ * A tab's title: what it shows. A run, an item, a chat or a project by its name once read (else
+ * Run, Item, Chat, Board), a section by its name, or All orgs.
+ */
+export function tabTitle(path: string, names: TabNames = {}) {
+  const [pathname = "/", query = ""] = path.split("?");
+  const search = new URLSearchParams(query);
+  const flow = /^\/flow(?:\/[^/]+\/([^/]+)(?:\/([^/]+))?(?:\/i\/([^/]+))?)?/.exec(pathname);
   if (!flow) return "Software Factory";
   if (pathname === "/flow/orgs") return "All orgs";
-  if (flow[3]) return "Item";
-  if (flow[1] === "p") {
-    if (path.includes("item=")) return "Item";
-    return (flow[2] && findProject(flow[2])) || "Board";
-  }
+  const run = search.get("run");
+  if (run) return names.run?.(run) || "Run";
+  const item = flow[3] ?? search.get("item");
+  if (item) return names.item?.(item) || "Item";
+  const chat = search.get("chat");
+  if (flow[1] === "chat" && chat) return names.chat?.(chat) || "Chat";
+  if (flow[1] === "p") return (flow[2] && names.project?.(flow[2])) || "Board";
   const part = flow[1] ?? "work";
   return part.charAt(0).toUpperCase() + part.slice(1);
 }

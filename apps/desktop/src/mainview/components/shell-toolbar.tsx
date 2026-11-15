@@ -1,14 +1,16 @@
 // The toolbar (spec 41): under the traffic lights, the window's drag region. Back and forward, the
 // tabs and search (⌘K). Its controls opt out of dragging. Every control in it is 28px high with the
 // same 7px radius (spec 41, criterion 14).
-import type { FlowProject } from "@software-factory/client/flow";
+import { type FlowItem, type FlowProject, flowKey } from "@software-factory/client/flow";
+import type { FlowChatView } from "@software-factory/client/flow-chat";
+import type { FlowRunView } from "@software-factory/client/flow-run";
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
-import { useEffect } from "react";
-import { tabTitle } from "../lib/places.ts";
+import { useEffect, useMemo, useReducer } from "react";
+import { type TabNames, tabTitle } from "../lib/places.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 import {
@@ -64,16 +66,16 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
   const client = useQueryClient();
   const tabs = useViewState((s) => s.tabs);
   const activeTab = useViewState((s) => s.activeTab);
-  // A project's tab is its name once a sidebar has loaded it (any org's `flow.project.list`).
-  const projectName = (id: string) => {
-    for (const [, data] of client.getQueriesData<{ projects: FlowProject[] }>({
-      predicate: (q) => q.queryKey[0] === "flow" && q.queryKey[2] === "projects",
-    })) {
-      const found = data?.projects.find((p) => p.id === id);
-      if (found) return found.name;
-    }
-    return null;
-  };
+  // A tab names what it shows once the app has read it (any org's reads), so it follows the cache.
+  const [, cacheChanged] = useReducer((n: number) => n + 1, 0);
+  useEffect(
+    () =>
+      client.getQueryCache().subscribe((e) => {
+        if (e.type === "updated" && e.action.type === "success") cacheChanged();
+      }),
+    [client],
+  );
+  const names = useMemo(() => tabNames(client), [client]);
   const { newTab, close, activate } = useTabs();
   const canBack = useRouterState({ select: (s) => (s.location.state.__TSR_index ?? 0) > 0 });
 
@@ -117,7 +119,7 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
               )}
               data-testid="tab"
             >
-              <span className="truncate">{tabTitle(t.path, projectName)}</span>
+              <span className="truncate">{tabTitle(t.path, names)}</span>
               {(active || tabs.length > 1) && (
                 <button
                   type="button"
@@ -157,6 +159,40 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
       </button>
     </div>
   );
+}
+
+/** The tabs' names from what any org's reads hold: `["flow", orgId, kind, id]` (flow-queries.ts). */
+function tabNames(client: QueryClient): TabNames {
+  const all = <T,>(kind: string) =>
+    client
+      .getQueriesData<T>({ predicate: (q) => q.queryKey[0] === "flow" && q.queryKey[2] === kind })
+      .flatMap(([key, data]) => (data ? [{ key, data }] : []));
+  const one = <T,>(kind: string, id: string) =>
+    all<T>(kind).find((q) => q.key.length === 4 && q.key[3] === id)?.data;
+  const projects = () =>
+    all<{ projects: FlowProject[] }>("projects").flatMap((q) => q.data.projects);
+  const item = (id: string) => {
+    const found = one<FlowItem>("item", id);
+    if (!found) return null;
+    const project = projects().find((p) => p.id === found.projectId);
+    return `${flowKey(project, found.number)} ${found.title}`;
+  };
+  return {
+    project: (id) => projects().find((p) => p.id === id)?.name ?? null,
+    item,
+    chat: (id) => one<FlowChatView>("chat", id)?.chat.title ?? null,
+    run: (id) => {
+      const run = one<{ run: FlowRunView }>("run", id)?.run;
+      if (!run) return null;
+      // As the run view's header names it: the agent, then its item (or its chat).
+      const agent = run.agentName ?? (run.agentId === "" ? "Chat" : "An agent");
+      const on =
+        run.itemNumber !== null
+          ? `${flowKey(run.projectKey ? { key: run.projectKey } : undefined, run.itemNumber)} ${run.itemTitle ?? ""}`
+          : run.chatTitle;
+      return on ? `${agent} · ${on.trim()}` : agent;
+    },
+  };
 }
 
 function ToolButton({

@@ -100,6 +100,10 @@ describe("the new core through the engine", () => {
     expect(job.harness.prompt).toContain("You write short, plain posts.");
     expect(job.harness.prompt).toContain("Mention the board.");
     expect(job.harness.prompt).toContain('"outcome": "done" | "rejected"');
+    // The summary is for people on the timeline: it leaves the run's plumbing out.
+    expect(job.harness.prompt).toContain(
+      "The summary is read by people on the item's timeline: do not mention the result file",
+    );
     // Nothing more for it: the run is claimed.
     expect(await claim(p)).toBeNull();
 

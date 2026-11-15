@@ -7,6 +7,10 @@ import type { ClaimedRun, TimelineEntry } from "@software-factory/store";
 /** How many of the item's newest comments a prompt quotes. */
 export const PROMPT_COMMENTS = 10;
 
+/** People read the summary on the item's timeline, so it leaves the run's plumbing out. */
+export const SUMMARY_FOR_PEOPLE =
+  'The summary is read by people on the item\'s timeline: do not mention the result file, the prompt file, the working folder or the word "outcome" in it.';
+
 function who(actor: TimelineEntry["actor"]): string {
   if (actor.kind === "person") return `person ${actor.id}`;
   if (actor.kind === "agent") return `agent ${actor.id}`;
@@ -51,6 +55,7 @@ export function flowPrompt(run: ClaimedRun, comments: TimelineEntry[]): string {
     '{ "outcome": "done" | "rejected", "summary": "what you did, or why you did not, for a person to read" }',
     "```",
     'If the work cannot or should not be done, answer "rejected" and give the reason in the summary.',
+    SUMMARY_FOR_PEOPLE,
   );
   return lines.join("\n");
 }

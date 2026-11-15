@@ -5,6 +5,7 @@ import {
   axisLabels,
   type FlowRunEvent,
   type FlowRunEvents,
+  plumbingWords,
   RUN_EVENTS_PAGE,
   readNewEvents,
   runCost,
@@ -16,6 +17,7 @@ import {
   sinceStart,
   stepDuration,
   stepInput,
+  stepLabel,
   stepMs,
   timeBar,
 } from "../src/flow-run.ts";
@@ -142,5 +144,27 @@ describe("readNewEvents", () => {
     const again = await readNewEvents(read, first.events);
     expect(asked.at(-1)).toBe(RUN_EVENTS_PAGE + 3);
     expect(again.events).toHaveLength(RUN_EVENTS_PAGE + 3);
+  });
+});
+
+describe("step labels", () => {
+  const dir = "worktrees/sf-frun_1";
+  it("shows a file tool's path from the run's working folder", () => {
+    expect(stepLabel({ name: "Read", label: `${dir}/src/a.ts` }, "frun_1")).toBe("src/a.ts");
+    expect(stepLabel({ name: "Edit", label: `/Users/x/${dir}/README.md` }, "frun_1")).toBe(
+      "README.md",
+    );
+    expect(stepLabel({ name: "Read", label: "/etc/hosts" }, "frun_1")).toBe("/etc/hosts");
+    expect(stepLabel({ name: "Bash", label: `ls ${dir}/` }, "frun_1")).toBe(`ls ${dir}/`);
+  });
+
+  it("names every run's plumbing in plain words", () => {
+    const read = (label: string) => plumbingWords({ name: "Read", label }, "frun_1");
+    expect(read(`${dir}/.factory-prompt.md`)).toBe("Read its instructions");
+    expect(plumbingWords({ name: "Write", label: `${dir}/.factory-result.json` }, "frun_1")).toBe(
+      "Wrote its result",
+    );
+    expect(read(`${dir}/docs/.factory-prompt.md`)).toBe(null);
+    expect(read(`${dir}/src/a.ts`)).toBe(null);
   });
 });

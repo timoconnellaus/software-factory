@@ -115,15 +115,36 @@ describe("places", () => {
     expect(orgInitial("  ")).toBe("?");
   });
 
-  it("titles tabs by section, project, item and All orgs", () => {
-    const project = (id: string) => (id === "fprj_api" ? "API Platform" : null);
+  it("titles tabs by what they show: section, project, item, chat, run and All orgs", () => {
+    const names = {
+      project: (id: string) => (id === "fprj_api" ? "API Platform" : null),
+      item: (id: string) => (id === "fitm_1" ? "API-1 Write the launch post" : null),
+      chat: (id: string) => (id === "fcht_1" ? "What's on the board?" : null),
+      run: (id: string) => (id === "frun_1" ? "Builder · API-1 Write the launch post" : null),
+    };
     expect(tabTitle("/flow/org_personal/team?tab=runners")).toBe("Team");
     expect(tabTitle("/flow/org_personal/settings")).toBe("Settings");
+    expect(tabTitle("/flow/org_personal/workflows?workflow=fwf_1")).toBe("Workflows");
     expect(tabTitle("/flow/orgs")).toBe("All orgs");
-    expect(tabTitle("/flow/org_personal/p/fprj_api", project)).toBe("API Platform");
-    expect(tabTitle("/flow/org_personal/p/fprj_x", project)).toBe("Board");
-    expect(tabTitle("/flow/org_personal/p/fprj_api?item=fitm_1", project)).toBe("Item");
-    expect(tabTitle("/flow/org_personal/p/fprj_api/i/fitm_1", project)).toBe("Item");
+    expect(tabTitle("/flow/org_personal/p/fprj_api", names)).toBe("API Platform");
+    expect(tabTitle("/flow/org_personal/p/fprj_x", names)).toBe("Board");
+    expect(tabTitle("/flow/org_personal/p/fprj_api?item=fitm_1", names)).toBe(
+      "API-1 Write the launch post",
+    );
+    expect(tabTitle("/flow/org_personal/p/fprj_api/i/fitm_1", names)).toBe(
+      "API-1 Write the launch post",
+    );
+    expect(tabTitle("/flow/org_personal/inbox?item=fitm_1", names)).toBe(
+      "API-1 Write the launch post",
+    );
+    expect(tabTitle("/flow/org_personal/p/fprj_api/i/fitm_2", names)).toBe("Item");
+    expect(tabTitle("/flow/org_personal/chat?chat=fcht_1", names)).toBe("What's on the board?");
+    expect(tabTitle("/flow/org_personal/chat?chat=fcht_2", names)).toBe("Chat");
+    expect(tabTitle("/flow/org_personal/chat")).toBe("Chat");
+    expect(tabTitle("/flow/org_personal/p/fprj_api/i/fitm_1?run=frun_1", names)).toBe(
+      "Builder · API-1 Write the launch post",
+    );
+    expect(tabTitle("/flow/org_personal/team?run=frun_2", names)).toBe("Run");
     expect(tabTitle("/")).toBe("Software Factory");
   });
 
