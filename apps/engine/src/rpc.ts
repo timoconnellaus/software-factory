@@ -1,6 +1,6 @@
-// The operations RPC (ADR 0051): sf-app (and later the MCP surface) call operations here through a
-// service binding to the `EngineApi` entrypoint. The caller authenticates the person and passes the
-// actor; this entrypoint is not reachable from the internet.
+// The operations RPC (ADR 0051): sf-app calls the platform's operations here through a service
+// binding to the `EngineApi` entrypoint. The caller authenticates the person and passes the actor;
+// this entrypoint is not reachable from the internet.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   type Actor,
@@ -12,10 +12,7 @@ import {
   type Refusal,
   toRefusal,
 } from "@software-factory/core";
-import { parseTerminalPath } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
-import { attachTerminal, type TerminalAttachResult } from "./terminal-attach.ts";
-import { terminalRelay } from "./terminal-relay.ts";
 
 /** `ms` is the time spent inside the engine, so the caller can tell it apart from the hop. */
 export type EngineInvokeResult<O = unknown> =
@@ -49,30 +46,7 @@ export class EngineApi extends WorkerEntrypoint<Env> {
     }
   }
 
-  /**
-   * Opens a run's web terminal for a person (spec 35, ADR 0440): `run.terminal.attach` as them
-   * (which decides `type` or `watch` and records the attach), then a one-use viewer ticket from the
-   * job's relay. The caller opens the socket at `path` through this binding's `fetch`.
-   */
-  async terminalAttach(
-    workItemId: string,
-    runId: string,
-    options: EngineInvokeOptions,
-  ): Promise<TerminalAttachResult> {
-    return attachTerminal(this.env, workItemId, runId, options);
-  }
-
-  /**
-   * Only through the service binding: a viewer's web terminal socket (`/terminal/v1/jobs/<id>/view`,
-   * with the ticket `terminalAttach` gave), handed to the job's relay. Nothing else.
-   */
-  override async fetch(request: Request): Promise<Response> {
-    const path = parseTerminalPath(new URL(request.url).pathname);
-    if (path?.role !== "view") return new Response("Not found", { status: 404 });
-    return terminalRelay(this.env, path.jobId).fetch(request);
-  }
-
-  /** Every operation with its description, risk, actors and permission (for help and MCP). */
+  /** Every operation with its description, risk, actors and permission (for help). */
   describeOperations() {
     return describeOperations();
   }

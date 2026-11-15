@@ -14,7 +14,6 @@ export default defineWorkersTestConfig({
         GH_APP_WEBHOOK_SECRET: "test-webhook-secret",
         // Seals the new core's gateway secrets (spec 70 milestone 2).
         FLOW_GATEWAY_KEY: "test-gateway-key",
-        FACTORY_FLOOR: "",
         // Production's floor (wrangler.jsonc) is not the tests': each test that needs one sets it.
         DESKTOP_MIN_PROTOCOL: "",
         // The test app's signing certificate (test/attestation.ts), trusted only here.

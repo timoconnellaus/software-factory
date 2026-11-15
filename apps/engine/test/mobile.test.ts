@@ -13,7 +13,6 @@ import {
   GOOGLE_ATTESTATION_ROOTS,
   inputDigest,
   KEY_DESCRIPTION_OID,
-  OPERATIONS,
   PAIR_CODE_REFUSED,
   parseCertificate,
   parseKeyDescription,
@@ -54,9 +53,7 @@ import rkpCert1 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert1.pem?r
 import rkpCert2 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert2.pem?raw";
 import rkpCert3 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert3.pem?raw";
 import rkpCert4 from "./fixtures/android-attestation/ec-tee-rkp-2026/cert4.pem?raw";
-import { all, call, first, ok, uid, type World, world } from "./helpers.ts";
-
-const CONFIG_OPS = ["config.save", "config.rollback"];
+import { all, first, ok, uid, type World, world } from "./helpers.ts";
 
 const PROTOCOL = { "x-sf-client": "mobile", "x-sf-client-protocol": "1" };
 
@@ -217,68 +214,6 @@ async function prove(token: string, p: Pick<Phone, "sign">, op: string, input: u
     summary: result.summary,
     signature: await p.sign(presenceMessage(result.nonce, op, result.inputDigest, result.summary)),
   };
-}
-
-async function newItem(w: World, token: string, title = "From the phone") {
-  const created = await callOp(token, "workItem.create", {
-    state: "queued",
-    projectId: w.projectId,
-    title,
-    source: "app",
-    eventId: crypto.randomUUID(),
-  });
-  expect(created.status).toBe(200);
-  return (await json<{ result: { workItemId: string } }>(created)).result.workItemId;
-}
-
-/** A pending gate on a work item, as the Workflow opens one. */
-async function gate(
-  w: World,
-  workItemId: string,
-  kind: "spec" | "merge" | "approval",
-  input: Record<string, unknown> = {},
-  pending: { operation?: string; risk?: string } = {},
-) {
-  const id = `pa_${crypto.randomUUID().replaceAll("-", "")}`;
-  await env.DB.prepare(
-    `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, assignee_user_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'agent', 'foreman', ?, ?, ?)`,
-  )
-    .bind(
-      id,
-      w.orgId,
-      w.projectId,
-      workItemId,
-      kind,
-      pending.operation ??
-        (kind === "merge" ? "pr.merge" : kind === "spec" ? "spec.accept" : "pr.open"),
-      pending.risk ?? "merge",
-      JSON.stringify(input),
-      w.userId,
-      new Date().toISOString(),
-    )
-    .run();
-  return id;
-}
-
-async function question(w: World, workItemId: string, domain: string, irreversible = false) {
-  const id = `q_${crypto.randomUUID().replaceAll("-", "")}`;
-  await env.DB.prepare(
-    `INSERT INTO core_questions (id, work_item_id, project_id, org_id, domain, prompt, options, default_answer, irreversible, assignee_user_id, planning_round, asked_by, created_at)
-     VALUES (?, ?, ?, ?, ?, 'Which?', '["a","b"]', 'a', ?, ?, 1, 'agent', ?)`,
-  )
-    .bind(
-      id,
-      workItemId,
-      w.projectId,
-      w.orgId,
-      domain,
-      irreversible ? 1 : 0,
-      w.userId,
-      new Date().toISOString(),
-    )
-    .run();
-  return id;
 }
 
 describe("Android key attestation (criterion 1)", () => {
@@ -492,12 +427,11 @@ describe("Android key attestation (criterion 1)", () => {
       const got = await browserSignIn(w, await phone(options));
       expect(got.keyStorage).toBe("software");
       // One tap still works.
-      expect((await callOp(got.token, "inbox.list", {})).status).toBe(200);
-      const workItemId = await newItem(w, got.token);
-      await gate(w, workItemId, "spec");
-      const input = { workItemId };
-      const proof = await prove(got.token, got.phone, "spec.approve", input);
-      const res = await callOp(got.token, "spec.approve", input, proof);
+      expect((await callOp(got.token, "org.list", {})).status).toBe(200);
+      // A proof for anything but its own renewal is refused.
+      const input = { deviceId: got.deviceId, decides: true };
+      const proof = await prove(got.token, got.phone, "device.update", input);
+      const res = await callOp(got.token, "device.update", input, proof);
       expect(res.status).toBe(403);
       expect((await json<{ error: string }>(res)).error).toMatch(/can't approve/);
     }
@@ -1069,396 +1003,14 @@ async function desktopSignIn(w: World) {
   return { ...got, sign };
 }
 
-describe("deciding on the phone (criteria 4 and 5)", () => {
-  it("merges, plan approvals and approving take a fingerprint; holding back is one tap", async () => {
-    const w = await world();
-    const { token, phone: p } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
-
-    // spec.approve: refused bare, decided with a proof.
-    await gate(w, workItemId, "spec");
-    const specInput = { workItemId };
-    expect((await callOp(token, "spec.approve", specInput)).status).toBe(403);
-    const specProof = await prove(token, p, "spec.approve", specInput);
-    expect(specProof.summary).toMatch(/^Approve the spec for #\d+ "From the phone"$/);
-    const approved = await callOp(token, "spec.approve", specInput, specProof);
-    expect(approved.status).toBe(200);
-    const audit = await first<{ origin: string }>(
-      "SELECT origin FROM core_audit WHERE operation = 'spec.approve' AND work_item_id = ? AND outcome = 'ok'",
-      workItemId,
-    );
-    expect(JSON.parse(String(audit?.origin))).toMatchObject({
-      surface: "mobile",
-      presence: { op: "spec.approve" },
-    });
-
-    // spec.requestChanges and review.sendBack: one tap.
-    const second = await newItem(w, token, "Second");
-    await gate(w, second, "spec");
-    expect(
-      (await callOp(token, "spec.requestChanges", { workItemId: second, note: "smaller" })).status,
-    ).toBe(200);
-    await gate(w, second, "merge", { headSha: "a".repeat(40) });
-    expect(
-      (
-        await callOp(token, "review.sendBack", {
-          workItemId: second,
-          note: "tests",
-          openedFullDiff: false,
-        })
-      ).status,
-    ).toBe(200);
-
-    // approval.decide: rejecting is one tap, approving takes a proof.
-    const third = await newItem(w, token, "Third");
-    const reject = await gate(w, third, "approval");
-    expect(
-      (await callOp(token, "approval.decide", { pendingActionId: reject, decision: "rejected" }))
-        .status,
-    ).toBe(200);
-    const approve = await gate(w, third, "approval");
-    const approveInput = { pendingActionId: approve, decision: "approved" };
-    expect((await callOp(token, "approval.decide", approveInput)).status).toBe(403);
-    const approvalProof = await prove(token, p, "approval.decide", approveInput);
-    expect((await callOp(token, "approval.decide", approveInput, approvalProof)).status).toBe(200);
-  });
-
-  it("security, privacy and irreversible answers take a fingerprint; others are one tap", async () => {
-    const w = await world();
-    const { token, phone: p } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
-    const ordinary = await question(w, workItemId, "product");
-    expect(
-      (await callOp(token, "question.answer", { questionId: ordinary, answer: "b" })).status,
-    ).toBe(200);
-    for (const [domain, irreversible] of [
-      ["security", false],
-      ["privacy", false],
-      ["product", true],
-    ] as const) {
-      const q = await question(w, workItemId, domain, irreversible);
-      const input = { questionId: q, answer: "b" };
-      const bare = await callOp(token, "question.answer", input);
-      expect([domain, irreversible, bare.status]).toEqual([domain, irreversible, 403]);
-      expect(await json(bare)).toMatchObject({ details: { presenceRequired: true } });
-      // planning.answer refuses it the same way before anything else.
-      const planning = await callOp(token, "planning.answer", input);
-      expect(planning.status).toBe(403);
-      const proof = await prove(token, p, "question.answer", input);
-      expect((await callOp(token, "question.answer", input, proof)).status).toBe(200);
-    }
-    // An ordinary planning answer gets past the device check (this question isn't a planning one).
-    const plain = await question(w, workItemId, "product");
-    const res = await callOp(token, "planning.answer", { questionId: plain, answer: "a" });
-    expect(await json(res)).toMatchObject({ code: "invalid_input" });
-    // Bulk accept is one tap, and never covers the sensitive ones.
-    expect((await callOp(token, "question.acceptDefaults", { workItemId })).status).toBe(200);
-  });
-
-  it("refuses replayed, wrong-op, wrong-digest, expired, other-device, revoked and approvals-off proofs", async () => {
-    const w = await world();
-    const { token, phone: p, deviceId } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
-    await gate(w, workItemId, "spec");
-    const input = { workItemId };
-    const used = await prove(token, p, "spec.approve", input);
-    expect((await callOp(token, "spec.approve", input, used)).status).toBe(200);
-    // Replayed.
-    const item2 = await newItem(w, token, "Two");
-    await gate(w, item2, "spec");
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, used)).status).toBe(403);
-    // Made for another op.
-    const forOther = await prove(token, p, "review.merge", {
-      workItemId: item2,
-      openedFullDiff: true,
-      headSha: "b".repeat(40),
-    });
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, forOther)).status).toBe(403);
-    // Made for another input (digest).
-    const forInput = await prove(token, p, "spec.approve", { workItemId });
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, forInput)).status).toBe(403);
-    // Expired.
-    const late = await prove(token, p, "spec.approve", { workItemId: item2 });
-    await env.DB.prepare("UPDATE core_presence_challenges SET expires_at = ? WHERE id = ?")
-      .bind(new Date(Date.now() - 1000).toISOString(), late.challengeId)
-      .run();
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, late)).status).toBe(403);
-    // Signed by another phone's key.
-    const stranger = await phone();
-    const forged = await prove(token, stranger, "spec.approve", { workItemId: item2 });
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, forged)).status).toBe(403);
-    // A challenge of another device, presented by this one.
-    const other = await browserSignIn(w);
-    const theirs = await prove(other.token, other.phone, "spec.approve", { workItemId: item2 });
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, theirs)).status).toBe(403);
-
-    // Approvals off: no challenge, and an earlier one is refused at redemption.
-    const early = await prove(token, p, "spec.approve", { workItemId: item2 });
-    expect((await callOp(token, "device.update", { decides: false })).status).toBe(200);
-    expect(
-      (
-        await callOp(token, "presence.challenge", {
-          op: "spec.approve",
-          input: { workItemId: item2 },
-        })
-      ).status,
-    ).toBe(403);
-    expect((await callOp(token, "spec.approve", { workItemId: item2 }, early)).status).toBe(403);
-    // Turning them on takes this phone's fingerprint, for exactly that call.
-    expect((await callOp(token, "device.update", { decides: true })).status).toBe(403);
-    expect(
-      (
-        await ok<{ devices: { id: string; decides: boolean }[] }>("device.list", {}, w.human)
-      ).devices.find((d) => d.id === deviceId)?.decides,
-    ).toBe(false);
-    const on = await prove(token, p, "device.update", { decides: true });
-    expect(on.summary).toBe("Turn on fingerprint approvals on this device");
-    expect((await callOp(token, "device.update", { decides: true }, on)).status).toBe(200);
-    // The website can't turn them on.
-    await expect(ok("device.update", { deviceId, decides: false }, w.human)).resolves.toBeTruthy();
-    await expect(ok("device.update", { deviceId, decides: true }, w.human)).rejects.toThrow(
-      /only from that device/,
-    );
-
-    // Revoked: the token fails, so does the proof.
-    const pending = await prove(other.token, other.phone, "spec.approve", { workItemId: item2 });
-    await ok("device.revoke", { deviceId: other.deviceId }, w.human);
-    expect((await callOp(other.token, "spec.approve", { workItemId: item2 }, pending)).status).toBe(
-      401,
-    );
-  });
-
-  it("DESKTOP_ALLOW_SOFTWARE_KEYS lets a dev Mac decide, never a software-level phone", async () => {
-    const w = await world();
-    const soft = await browserSignIn(w, await phone({ deviceLocked: false }));
-    expect(soft.keyStorage).toBe("software");
-    engineEnv = { ...env, DESKTOP_ALLOW_SOFTWARE_KEYS: "1" };
-    const workItemId = await newItem(w, soft.token);
-    await gate(w, workItemId, "spec");
-    const input = { workItemId };
-    const proof = await prove(soft.token, soft.phone, "spec.approve", input);
-    const res = await callOp(soft.token, "spec.approve", input, proof);
-    expect(res.status).toBe(403);
-    expect((await json<{ error: string }>(res)).error).toMatch(/can't approve/);
-  });
-
-  it("config changes and self-modify aren't decided on the phone, by any deciding operation", async () => {
-    // Every operation that decides a pending action declares it in the registry (decidesPending):
-    // decidePending refuses one that doesn't, and invoke() refuses any other write of a pending
-    // action's status (core's invoke tests). A new one fails here until it has an input below,
-    // and each is run from the phone against every kind it may not decide (third review of PR 1a).
-    const human = OPERATIONS.filter((o) => o.decidesPending && o.actors.includes("human"))
-      .map((o) => o.name)
-      .sort();
-    expect(human).toEqual([
-      "approval.decide",
-      "review.merge",
-      "review.sendBack",
-      "spec.approve",
-      "spec.requestChanges",
-    ]);
-
-    const w = await world();
-    const { token, phone: p } = await browserSignIn(w);
-    const head = "c".repeat(40);
-    type Case = {
-      kind: "spec" | "merge" | "approval";
-      input: (id: string, item: string) => object;
-    };
-    const cases: Record<string, Case[]> = {
-      "approval.decide": [
-        { kind: "approval", input: (id) => ({ pendingActionId: id, decision: "approved" }) },
-        { kind: "approval", input: (id) => ({ pendingActionId: id, decision: "rejected" }) },
-        { kind: "merge", input: (id) => ({ pendingActionId: id, decision: "rejected" }) },
-      ],
-      "review.merge": [
-        {
-          kind: "merge",
-          input: (_, workItemId) => ({ workItemId, openedFullDiff: true, headSha: head }),
-        },
-      ],
-      "review.sendBack": [
-        {
-          kind: "merge",
-          input: (_, workItemId) => ({ workItemId, note: "no", openedFullDiff: true }),
-        },
-      ],
-      "spec.approve": [{ kind: "spec", input: (_, workItemId) => ({ workItemId }) }],
-      "spec.requestChanges": [
-        { kind: "spec", input: (_, workItemId) => ({ workItemId, note: "smaller" }) },
-      ],
-    };
-    const pending: { operation: string; risk: string }[] = [
-      { operation: "config.save", risk: "self-modify" },
-      { operation: "config.save", risk: "write" },
-      { operation: "config.rollback", risk: "write" },
-      { operation: "pr.merge", risk: "self-modify" },
-      { operation: "pr.open", risk: "self-modify" },
-    ];
-    for (const op of human) {
-      for (const c of cases[op] ?? []) {
-        for (const pa of pending) {
-          if (c.kind !== "approval" && CONFIG_OPS.includes(pa.operation)) continue;
-          const workItemId = await newItem(w, token, "Touches .factory/");
-          const id = await gate(w, workItemId, c.kind, { workItemId, headSha: head }, pa);
-          const input = c.input(id, workItemId);
-          const proof = await prove(token, p, op, input);
-          const res = await callOp(token, op, input, proof);
-          const label = [op, c.kind, pa, input];
-          expect([...label, res.status]).toEqual([...label, 403]);
-          expect((await json<{ error: string }>(res)).error).toMatch(
-            /approve this on the desktop app or the website/,
-          );
-          const row = await first<{ status: string }>(
-            "SELECT status FROM core_pending_actions WHERE id = ?",
-            id,
-          );
-          expect([...label, row?.status]).toEqual([...label, "pending"]);
-        }
-      }
-    }
-    // The website still decides one.
-    const item = await newItem(w, token);
-    const id = await gate(w, item, "approval", {}, { operation: "config.save", risk: "write" });
-    expect(
-      (await call("approval.decide", { pendingActionId: id, decision: "rejected" }, w.human))
-        .status,
-    ).toBe("ok");
-  });
-
-  it("the phone can't cancel an item while a config change or a self-modify action waits on it", async () => {
-    // Cancelling rejects the item's open gates, so from the phone it would decide what the phone
-    // may not (third review of PR 1a): refused, and the gate stays open.
-    const w = await world();
-    const { token } = await browserSignIn(w);
-    const waiting = async (pa: { operation: string; risk: string }) => {
-      const workItemId = await newItem(w, token, "Touches .factory/");
-      await env.DB.prepare("UPDATE core_work_items SET status = 'waiting' WHERE id = ?")
-        .bind(workItemId)
-        .run();
-      return { workItemId, id: await gate(w, workItemId, "approval", {}, pa) };
-    };
-    for (const pa of [
-      { operation: "config.save", risk: "write" },
-      { operation: "config.rollback", risk: "write" },
-      { operation: "pr.open", risk: "self-modify" },
-    ]) {
-      const { workItemId, id } = await waiting(pa);
-      const res = await callOp(token, "workItem.cancel", { workItemId, reason: "from the phone" });
-      expect([pa, res.status]).toEqual([pa, 403]);
-      expect(await json(res)).toMatchObject({
-        error: expect.stringMatching(/cancel it on the desktop app or the website/),
-        details: { decideElsewhere: true },
-      });
-      const row = await first<{ status: string }>(
-        "SELECT status FROM core_pending_actions WHERE id = ?",
-        id,
-      );
-      expect([pa, row?.status]).toEqual([pa, "pending"]);
-    }
-    // An ordinary gate: the phone cancels the item and the gate closes with it.
-    const plain = await waiting({ operation: "pr.open", risk: "write" });
-    const res = await callOp(token, "workItem.cancel", { workItemId: plain.workItemId });
-    expect(res.status).toBe(200);
-    const row = await first<{ status: string }>(
-      "SELECT status FROM core_pending_actions WHERE id = ?",
-      plain.id,
-    );
-    expect(row?.status).toBe("rejected");
-    // The website still cancels one.
-    const web = await waiting({ operation: "config.save", risk: "self-modify" });
-    expect((await call("workItem.cancel", { workItemId: web.workItemId }, w.human)).status).toBe(
-      "ok",
-    );
-  });
-
-  it("a phone registered with approvals off can't ask for a challenge", async () => {
-    const w = await world();
-    const off = await browserSignIn(w, undefined, false);
-    const workItemId = await newItem(w, off.token);
-    const res = await callOp(off.token, "presence.challenge", {
-      op: "spec.approve",
-      input: { workItemId },
-    });
-    expect(res.status).toBe(403);
-    expect(await json(res)).toMatchObject({ details: { approvalsOff: true } });
-  });
-
-  it("review.merge is for one commit: a stale headSha is refused and nothing merges (criterion 5)", async () => {
-    const w = await world();
-    const { token, phone: p } = await browserSignIn(w);
-    const workItemId = await newItem(w, token, "Guard the tests in verify");
-    const head = "3f2a91c".padEnd(40, "0");
-    const pa = await gate(w, workItemId, "merge", {
-      workItemId,
-      headSha: head,
-      touchesFactoryConfig: false,
-    });
-    // The head's review packet: with none, the merge gate refuses (ADR 0501, fifth review).
-    await env.DB.prepare(
-      "INSERT INTO core_review_packets (id, work_item_id, head_sha, verdict, created_at) VALUES (?, ?, ?, 'pass', ?)",
-    )
-      .bind(uid("rp_"), workItemId, head, new Date().toISOString())
-      .run();
-    // The phone always names the commit.
-    const noSha = { workItemId, openedFullDiff: true };
-    const missing = await callOp(
-      token,
-      "review.merge",
-      noSha,
-      await prove(token, p, "review.merge", noSha),
-    );
-    expect(missing.status).toBe(400);
-    // A stale one.
-    const stale = { workItemId, openedFullDiff: true, headSha: "1".repeat(40) };
-    const staleProof = await prove(token, p, "review.merge", stale);
-    const refused = await callOp(token, "review.merge", stale, staleProof);
-    expect(refused.status).toBe(409);
-    expect((await json<{ error: string }>(refused)).error).toMatch(
-      /A new push withdrew this approval/,
-    );
-    expect(
-      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
-    ).toEqual({
-      status: "pending",
-    });
-    // The right one, with the commit in the prompt.
-    const fresh = { workItemId, openedFullDiff: true, headSha: head };
-    const proof = await prove(token, p, "review.merge", fresh);
-    expect(proof.summary).toMatch(
-      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Guard the tests in verify"$/,
-    );
-    // Merging without checks the runner couldn't run is refused on the phone, in the engine: no
-    // challenge is issued for it, and a proof for the plain merge doesn't carry it (fifth review).
-    const without = { ...fresh, mergeWithoutChecks: true };
-    const challenge = await callOp(token, "presence.challenge", {
-      op: "review.merge",
-      input: without,
-    });
-    expect(challenge.status).toBe(403);
-    const forced = await callOp(token, "review.merge", without, proof);
-    expect(forced.status).toBe(403);
-    expect(
-      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
-    ).toEqual({ status: "pending" });
-    const merged = await callOp(token, "review.merge", fresh, proof);
-    expect(merged.status).toBe(200);
-    expect(
-      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
-    ).toEqual({
-      status: "approved",
-    });
-  });
-});
-
 describe("tokens, revocation and the door (criterion 6)", () => {
   it("a phone token is on the mobile surface; revoking the phone fails its next call", async () => {
     const w = await world();
     const { token, deviceId } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
+    expect((await callOp(token, "github.connectStart", { orgId: w.orgId })).status).toBe(200);
     const audited = await first<{ origin: string }>(
-      "SELECT origin FROM core_audit WHERE operation = 'workItem.create' AND work_item_id = ?",
-      workItemId,
+      "SELECT origin FROM core_audit WHERE operation = 'github.connectStart' AND org_id = ? ORDER BY rowid DESC LIMIT 1",
+      w.orgId,
     );
     expect(JSON.parse(String(audited?.origin))).toMatchObject({ surface: "mobile", deviceId });
     const listed = await json<{
@@ -1473,32 +1025,29 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     expect(old.devices.map((d) => d.id)).toContain(deviceId);
     // Sign out: the phone revokes itself.
     expect((await callOp(token, "device.revoke", { deviceId })).status).toBe(200);
-    const after = await callOp(token, "inbox.list", {});
+    const after = await callOp(token, "org.list", {});
     expect(after.status).toBe(401);
     expect(await json(after)).toMatchObject({ code: "unauthenticated" });
   });
 
-  it("removing a phone while its approval is on its way refuses the approval (review, second round)", async () => {
+  it("removing a phone while its call is on its way refuses the call (review, second round)", async () => {
     const w = await world();
-    const { token, phone: p, deviceId } = await browserSignIn(w);
-    const workItemId = await newItem(w, token);
-    const pa = await gate(w, workItemId, "spec");
-    const input = { workItemId };
-    const proof = await prove(token, p, "spec.approve", input);
-    // The phone is removed after the token was checked, before the decision commits.
+    const { token, deviceId } = await browserSignIn(w);
+    // The phone is removed after the token was checked, before the call commits.
     mobileTestSeams.beforeCommit = async (op) => {
-      if (op !== "spec.approve") return;
+      if (op !== "github.connectStart") return;
       await env.DB.prepare("UPDATE core_desktop_devices SET revoked_at = ? WHERE id = ?")
         .bind(new Date().toISOString(), deviceId)
         .run();
     };
-    const res = await callOp(token, "spec.approve", input, proof);
+    const states = async () =>
+      (await all("SELECT 1 FROM core_github_connect_states WHERE org_id = ?", w.orgId)).length;
+    const before = await states();
+    const res = await callOp(token, "github.connectStart", { orgId: w.orgId });
     mobileTestSeams.beforeCommit = null;
     expect(res.status).toBe(403);
     expect((await json<{ error: string }>(res)).error).toMatch(/device was removed/);
-    expect(
-      await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", pa),
-    ).toEqual({ status: "pending" });
+    expect(await states()).toBe(before);
   });
 
   it("renews with a fingerprint: a new token, the old one revoked", async () => {
@@ -1510,8 +1059,8 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     expect(res.status).toBe(200);
     const { result } = await json<{ result: { token: string } }>(res);
     expect(result.token).toMatch(/^sfm_/);
-    expect((await callOp(token, "inbox.list", {})).status).toBe(401);
-    expect((await callOp(result.token, "inbox.list", {})).status).toBe(200);
+    expect((await callOp(token, "org.list", {})).status).toBe(401);
+    expect((await callOp(result.token, "org.list", {})).status).toBe(200);
   });
 
   it("a phone that can't decide still renews with a fingerprint (approvals off, or software)", async () => {
@@ -1520,19 +1069,15 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     const soft = await browserSignIn(w, await phone({ verifiedBootState: 2 }));
     expect(soft.keyStorage).toBe("software");
     for (const got of [off, soft]) {
-      // It can't decide...
-      const workItemId = await newItem(w, got.token);
-      await gate(w, workItemId, "spec");
-      expect((await callOp(got.token, "spec.approve", { workItemId })).status).toBe(403);
-      // ...but its own key renews its token.
+      // Its own key renews its token.
       const proof = await prove(got.token, got.phone, "mobile.renew", {});
       const res = await callOp(got.token, "mobile.renew", {}, proof);
       expect(res.status).toBe(200);
       const { result } = await json<{ result: { token: string } }>(res);
-      expect((await callOp(result.token, "inbox.list", {})).status).toBe(200);
-      expect((await callOp(got.token, "inbox.list", {})).status).toBe(401);
+      expect((await callOp(result.token, "org.list", {})).status).toBe(200);
+      expect((await callOp(got.token, "org.list", {})).status).toBe(401);
       // A renewal proof is for the renewal only.
-      const reused = await callOp(result.token, "spec.approve", { workItemId }, proof);
+      const reused = await callOp(result.token, "github.connectStart", { orgId: w.orgId }, proof);
       expect(reused.status).toBe(403);
     }
   });
@@ -1566,13 +1111,11 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     const { token } = await browserSignIn(w);
     const old: Record<string, string>[] = [{}, { "x-sf-client-protocol": "0" }];
     for (const headers of old) {
-      expect((await post("call", { op: "inbox.list", input: {} }, token, headers)).status).toBe(
-        426,
-      );
+      expect((await post("call", { op: "org.list", input: {} }, token, headers)).status).toBe(426);
       expect((await post("mobile/nonce", {}, undefined, headers)).status).toBe(426);
     }
     const mac = await desktopSignIn(w);
-    expect((await post("call", { op: "inbox.list", input: {} }, mac.token, {})).status).toBe(200);
+    expect((await post("call", { op: "org.list", input: {} }, mac.token, {})).status).toBe(200);
     // The live socket takes a phone token.
     const live = await worker.fetch(
       new Request("https://sf-engine.example/client/v1/live", {
@@ -1583,15 +1126,6 @@ describe("tokens, revocation and the door (criterion 6)", () => {
     expect(live.status).toBe(101);
     live.webSocket?.accept();
     live.webSocket?.close();
-    // The web terminal stays on the desktop (typing into a terminal is out of the phone's scope).
-    const terminal = await worker.fetch(
-      new Request(
-        `https://sf-engine.example/client/v1/terminal/wi_${"0".repeat(32)}/run_${"0".repeat(32)}`,
-        { headers: { upgrade: "websocket", authorization: `Bearer ${token}`, ...PROTOCOL } },
-      ),
-      env,
-    );
-    expect(terminal.status).toBe(403);
   });
 
   it("prunes old nonces, offers and typed-code tries", async () => {

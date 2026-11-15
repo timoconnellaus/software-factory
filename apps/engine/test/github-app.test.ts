@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appFor } from "../src/deps.ts";
-import {
-  CONTROL_PLANE_PERMISSIONS,
-  githubApp,
-  importPrivateKey,
-  JOB_TOKEN_PERMISSIONS,
-} from "../src/github/app.ts";
+import { githubApp, importPrivateKey, JOB_TOKEN_PERMISSIONS } from "../src/github/app.ts";
 
 async function keyPair() {
   const pair = (await crypto.subtle.generateKey(
@@ -93,7 +88,7 @@ describe("GitHub App token minting", () => {
     expect(claims.exp - claims.iat).toBeLessThanOrEqual(600);
   });
 
-  it("uses a cached control-plane token for repo calls, and reports a non-fast-forward", async () => {
+  it("reads a branch's head with a cached read-only token for that one repository", async () => {
     const { pkcs8Pem } = await keyPair();
     let minted = 0;
     const app = githubApp({
@@ -104,152 +99,26 @@ describe("GitHub App token minting", () => {
         const request = new Request(input, init);
         if (request.url.endsWith("/access_tokens")) {
           minted++;
-          expect(await request.json()).toMatchObject({ permissions: CONTROL_PLANE_PERMISSIONS });
+          expect(await request.json()).toEqual({
+            repositories: ["r"],
+            permissions: { contents: "read" },
+          });
           return Response.json(
-            { token: "ghs_cp", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+            { token: "ghs_read", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
             { status: 201 },
           );
         }
-        expect(request.headers.get("authorization")).toBe("token ghs_cp");
-        if (request.method === "GET") return Response.json({ object: { sha: "a".repeat(40) } });
-        return Response.json({ message: "Update is not a fast forward" }, { status: 422 });
+        expect(request.headers.get("authorization")).toBe("token ghs_read");
+        if (request.url.endsWith("/git/ref/heads/factory/flow-app-1")) {
+          return Response.json({ object: { sha: "a".repeat(40) } });
+        }
+        return Response.json({ message: "Not Found" }, { status: 404 });
       },
     });
     const repo = { installationId: "1", owner: "o", repo: "r" };
-    expect(await app.getBranchSha(repo, "factory/1-x")).toBe("a".repeat(40));
-    expect(await app.fastForward(repo, "factory/1-x", "b".repeat(40))).toMatchObject({ ok: false });
+    expect(await app.getBranchSha(repo, "factory/flow-app-1")).toBe("a".repeat(40));
+    expect(await app.getBranchSha(repo, "factory/flow-app-2")).toBeNull();
     expect(minted).toBe(1);
-  });
-});
-
-// Second review of #105: a change is read by its changed paths (the compare, then those paths'
-// directories over GraphQL), never by whole trees.
-describe("reading a change by its paths", () => {
-  async function appWith(respond: (request: Request) => Promise<Response>) {
-    const { pkcs8Pem } = await keyPair();
-    const seen: string[] = [];
-    const app = githubApp({
-      appId: "1",
-      appSlug: "test-app",
-      privateKey: pkcs8Pem,
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        if (request.url.endsWith("/access_tokens")) {
-          return Response.json(
-            { token: "ghs_cp", expires_at: new Date(Date.now() + 3_600_000).toISOString() },
-            { status: 201 },
-          );
-        }
-        seen.push(`${request.method} ${new URL(request.url).pathname}`);
-        return respond(request);
-      },
-    });
-    return { app, seen };
-  }
-  const repo = { installationId: "1", owner: "o", repo: "r" };
-
-  it("lists the compare's paths (renames' old paths too) and says when it may be incomplete", async () => {
-    const files = (n: number) =>
-      Array.from({ length: n }, (_, i) => ({ filename: `f${i}.ts`, status: "modified" }));
-    let count = 2;
-    const { app } = await appWith(async () =>
-      Response.json({
-        merge_base_commit: { sha: "m".repeat(40) },
-        files:
-          count === 2
-            ? [
-                { filename: "src/new.ts", status: "renamed", previous_filename: "src/old.ts" },
-                { filename: "a.ts", status: "modified" },
-              ]
-            : files(count),
-      }),
-    );
-    expect(await app.changedPaths(repo, "main", "h".repeat(40))).toEqual({
-      mergeBase: "m".repeat(40),
-      paths: ["a.ts", "src/new.ts", "src/old.ts"],
-      complete: true,
-    });
-    count = 300; // GitHub's cap: some may be missing
-    expect((await app.changedPaths(repo, "main", "h".repeat(40))).complete).toBe(false);
-  });
-
-  it("reads only the changed paths' directories, one GraphQL query, modes in octal", async () => {
-    const sent: { body: { query: string; variables: Record<string, string> } | null } = {
-      body: null,
-    };
-    const { app, seen } = await appWith(async (request) => {
-      sent.body = (await request.json()) as typeof sent.body;
-      return Response.json({
-        data: {
-          repository: {
-            d0: {
-              entries: [
-                { name: "a.ts", mode: 33188, oid: "1".repeat(40) },
-                { name: "big.bin", mode: 33188, oid: "9".repeat(40) },
-              ],
-            },
-            d1: { entries: [{ name: "run.sh", mode: 33261, oid: "2".repeat(40) }] },
-          },
-        },
-      });
-    });
-    const sha = "c".repeat(40);
-    const got = await app.pathEntries(repo, sha, ["a.ts", "bin/run.sh", "bin/gone.ts"]);
-    expect(got).toEqual({
-      "a.ts": { mode: "100644", sha: "1".repeat(40) },
-      "bin/run.sh": { mode: "100755", sha: "2".repeat(40) },
-    });
-    expect(seen).toEqual(["POST /graphql"]);
-    expect(sent.body?.variables).toMatchObject({ e0: `${sha}:`, e1: `${sha}:bin` });
-  });
-});
-
-describe("finding the App's installation on a repo (incident 2026-11-11-bootstrap)", () => {
-  const repo = ["timoconnellaus", "software-factory"] as const;
-  async function appWith(respond: (url: string) => Response) {
-    const { pkcs1Pem } = await keyPair();
-    const seen: { url: string; auth: string }[] = [];
-    const app = githubApp({
-      appId: "5705909",
-      appSlug: "software-factory-zerobsai",
-      privateKey: pkcs1Pem,
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        seen.push({ url: request.url, auth: request.headers.get("authorization") ?? "" });
-        return respond(request.url);
-      },
-    });
-    return { app, seen };
-  }
-
-  it("asks as the App (its JWT), not as a user", async () => {
-    const { app, seen } = await appWith(() => Response.json({ id: 12345 }));
-    expect(await app.findRepoInstallation(...repo)).toEqual({
-      installationId: "12345",
-      reason: null,
-    });
-    expect(seen[0]?.url).toBe(
-      "https://api.github.com/repos/timoconnellaus/software-factory/installation",
-    );
-    // A JWT (three base64url parts), never a user's ghu_ token.
-    expect(seen[0]?.auth).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
-  });
-
-  it("says why when there is none, with GitHub's own words", async () => {
-    const missing = await appWith(() => Response.json({ message: "Not Found" }, { status: 404 }));
-    expect((await missing.app.findRepoInstallation(...repo)).reason).toMatch(
-      /software-factory-zerobsai isn't installed on timoconnellaus\/software-factory.*installations\/new/,
-    );
-    const badKey = await appWith(() =>
-      Response.json({ message: "A JSON web token could not be decoded" }, { status: 401 }),
-    );
-    expect((await badKey.app.findRepoInstallation(...repo)).reason).toMatch(
-      /401 A JSON web token could not be decoded.*GH_APP_PRIVATE_KEY/,
-    );
-    const other = await appWith(() => Response.json({ message: "boom" }, { status: 502 }));
-    expect((await other.app.findRepoInstallation(...repo)).reason).toMatch(
-      /GitHub answered 502.*boom/,
-    );
   });
 });
 
@@ -317,34 +186,6 @@ describe("installations and their repositories (ADR 0055)", () => {
     expect((await app.listInstallationRepos("7")).map((r) => r.name)).toEqual(["a", "b"]);
   });
 
-  it("reaches a repo only through a token GitHub limits to it (422: not reachable)", async () => {
-    const { app } = await appWith(async (r) => {
-      if (r.url.endsWith("/access_tokens")) {
-        const body = (await r.json()) as { repository_ids: number[] };
-        if (body.repository_ids[0] === 99) {
-          return Response.json(
-            {
-              message:
-                "There is at least one repository that does not exist or is not accessible to the parent installation.",
-            },
-            { status: 422 },
-          );
-        }
-        return Response.json({
-          token: "ghs_one",
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        });
-      }
-      return Response.json(repoJson(5, "software-factory"));
-    });
-    expect(await app.getInstallationRepo("7", 5)).toMatchObject({
-      id: 5,
-      name: "software-factory",
-      defaultBranch: "main",
-    });
-    expect(await app.getInstallationRepo("7", 99)).toBeNull();
-  });
-
   it("lists a person's installations with their own token, only to check access", async () => {
     const { app, seen } = await appWith(() =>
       Response.json({ total_count: 2, installations: [{ id: 7 }, { id: 9 }] }),
@@ -352,81 +193,6 @@ describe("installations and their repositories (ADR 0055)", () => {
     expect(await app.userInstallationIds("ghu_person")).toEqual(["7", "9"]);
     expect(seen[0]?.url).toBe("https://api.github.com/user/installations?per_page=100&page=1");
     expect(seen[0]?.headers.get("authorization")).toBe("Bearer ghu_person");
-  });
-});
-
-describe("reading protection (ADR 0280): read-only, always", () => {
-  it("reads rulesets, bypass lists and the rules in force with read tokens and GETs only", async () => {
-    const { pkcs1Pem } = await keyPair();
-    const tokenPermissions: Record<string, string>[] = [];
-    const methods: string[] = [];
-    const app = githubApp({
-      appId: "5705909",
-      appSlug: "software-factory-zerobsai",
-      privateKey: pkcs1Pem,
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const url = new URL(request.url);
-        if (url.pathname.endsWith("/access_tokens")) {
-          const body = (await request.json()) as { permissions: Record<string, string> };
-          tokenPermissions.push(body.permissions);
-          return Response.json({ token: "ghs_x", expires_at: "2099-01-01T00:00:00Z" });
-        }
-        methods.push(request.method);
-        const path = url.pathname.replace("/repos/timoconnellaus/software-factory", "");
-        if (path === "/branches/main/protection") return new Response("{}", { status: 404 });
-        if (path === "/rulesets") {
-          expect(url.searchParams.get("includes_parents")).toBe("true");
-          return Response.json([{ id: 11 }, { id: 12 }]);
-        }
-        if (path === "/rulesets/11") {
-          return Response.json({
-            id: 11,
-            name: "factory: protect the default branch",
-            target: "branch",
-            enforcement: "active",
-            conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-            rules: [{ type: "deletion" }],
-            bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" }],
-          });
-        }
-        if (path === "/rulesets/12") {
-          // GitHub leaves bypass_actors out for callers it won't show them to.
-          return Response.json({
-            id: 12,
-            name: "org rules",
-            target: "branch",
-            enforcement: "active",
-            conditions: { ref_name: { include: ["~ALL"], exclude: [] } },
-            rules: [{ type: "non_fast_forward" }],
-          });
-        }
-        if (path === "/rules/branches/main") {
-          return Response.json([
-            { type: "deletion", ruleset_id: 11, ruleset_source_type: "Repository" },
-            { type: "non_fast_forward", ruleset_id: 12, ruleset_source_type: "Organization" },
-          ]);
-        }
-        return new Response("not found", { status: 404 });
-      },
-    });
-    const guards = await app.repoGuards(
-      { installationId: "1", owner: "timoconnellaus", repo: "software-factory" },
-      "main",
-    );
-    expect(guards.protection).toBeNull();
-    expect(guards.rulesets.map((r) => [r.id, r.bypassActors])).toEqual([
-      [11, [{ actorType: "RepositoryRole", actorId: 5, bypassMode: "always" }]],
-      [12, null],
-    ]);
-    expect(guards.branchRules).toEqual([
-      { type: "deletion", rulesetId: 11 },
-      { type: "non_fast_forward", rulesetId: 12 },
-    ]);
-    expect(new Set(methods)).toEqual(new Set(["GET"]));
-    for (const p of tokenPermissions) {
-      expect(Object.values(p).every((v) => v === "read")).toBe(true);
-    }
   });
 });
 

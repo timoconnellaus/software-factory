@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The cloud engine Worker: one Workflow per work item, the signed runner channel, outbox delivery, cron, and the operations RPC for sf-app.",
+  "description": "The cloud engine Worker: the signed runner channel, the client door, the GitHub installation webhook, the new core (flow runs, MCP server, plugin triggers), outbox delivery, the cron, and the operations RPC for sf-app.",
   "scripts": {
     "dev": "wrangler d1 migrations apply software-factory --local && wrangler dev",
     "build": "wrangler deploy --dry-run --outdir dist",
@@ -12,8 +12,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@software-factory/connector-github": "workspace:*",
-    "@software-factory/connector-webhook": "workspace:*",
     "@software-factory/core": "workspace:*",
     "@software-factory/db": "workspace:*",
     "@software-factory/flow": "workspace:*",
