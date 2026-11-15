@@ -143,4 +143,50 @@ describe("what the model is doing", () => {
     ]);
     expect(didThings(lines)).toBe("Did 1 thing");
   });
+
+  it("leaves out the run's own plumbing, and the reply said again after it was written", () => {
+    const at = "2026-11-15T00:00:00.000Z";
+    const tool = (seq: number, name: string, input: string) => ({
+      seq,
+      at,
+      kind: "tool" as const,
+      name,
+      label: "",
+      input,
+      toolId: `t${seq}`,
+    });
+    // "hi": the model reads its prompt file, writes its reply file, then says the reply.
+    const hi = chatStepLines(
+      runSteps([
+        tool(1, "Read", '{"file_path":"/w/sf-frun_1/.factory-prompt.md"}'),
+        tool(2, "Write", '{"file_path":"/w/sf-frun_1/.factory-result.json"}'),
+        { seq: 3, at, kind: "note", text: "Hi! What can I help with today?" },
+      ]),
+      notes,
+    );
+    expect(hi).toEqual([]);
+
+    const worked = chatStepLines(
+      runSteps([
+        tool(1, "Read", '{"file_path":"/w/sf-frun_1/.factory-prompt.md"}'),
+        tool(2, "ToolSearch", '{"query":"select:mcp__factory__flow_call"}'),
+        { seq: 3, at, kind: "note", text: "Creating the item." },
+        tool(
+          4,
+          "mcp__factory__flow_call",
+          '{"op":"flow.item.create","input":{"projectId":"fprj_notes"}}',
+        ),
+        tool(5, "Read", '{"file_path":"/w/sf-frun_1/notes.md"}'),
+        tool(6, "Write", '{"file_path":"/w/sf-frun_1/.factory-result.json"}'),
+        { seq: 7, at, kind: "note", text: "Created the item." },
+      ]),
+      notes,
+    );
+    expect(worked.map((l) => l.text)).toEqual([
+      "Creating the item.",
+      "Creating an item in Notes",
+      "Reading a file",
+    ]);
+    expect(didThings(worked)).toBe("Did 2 things");
+  });
 });

@@ -346,7 +346,8 @@ export async function flowJobReply(
     if (handback.outcome !== "completed") {
       await endFlowRun(env, run, token, {
         status: "failed",
-        error: handback.summary?.trim() || `The run ${handback.outcome}.`,
+        // The reason alone when the host sent one; an older host sends only the long summary.
+        error: handback.error?.trim() || handback.summary?.trim() || `The run ${handback.outcome}.`,
         ...also,
       });
       return { body: { accepted: true } };
