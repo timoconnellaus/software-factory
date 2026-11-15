@@ -1,81 +1,89 @@
 // Chat on the new core (migrations 0433, 0437): a conversation with a model, where the person picks
-// the model and the effort. The `flow.chat.*` operations' answers as the desktop app reads them,
-// typed by hand from @software-factory/store, and the pure logic its screen needs: the conversation
-// told as turns, and what the model is doing told in plain words (flow-chat-steps.ts).
+// the model and the effort. The `flow.chat.*` operations' answers as the desktop app reads them
+// (zod schemas with their types inferred, as in flow.ts, checked by flow-contract.ts), and the pure
+// logic its screen needs: the conversation told as turns, and what the model is doing told in plain
+// words (flow-chat-steps.ts).
+import { z } from "zod";
 
 type Org = { orgId: string };
 
-export interface FlowChat {
-  id: string;
-  orgId: string;
+export const flowChatSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
   /** Only on chats from before migration 0437, which talked to an agent; unused. */
-  agentId: string | null;
+  agentId: z.string().nullable(),
   /** The first message, cut to 80 characters. */
-  title: string;
+  title: z.string(),
   /** The Claude Code model alias its runs use; null = the runner's default. */
-  model: string | null;
+  model: z.string().nullable(),
   /** The Claude Code effort level its runs use; null = the runner's default. */
-  effort: string | null;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
+  effort: z.string().nullable(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type FlowChat = z.infer<typeof flowChatSchema>;
 
-export interface FlowChatMessage {
-  id: string;
-  seq: number;
+export const flowChatMessageSchema = z.object({
+  id: z.string(),
+  seq: z.number(),
   /** `assistant`: the model's reply. `did`: something it changed during a run, in one sentence. */
-  role: "person" | "assistant" | "did";
-  text: string;
+  role: z.enum(["person", "assistant", "did"]),
+  text: z.string(),
   /**
    * A `did` row's { kind, id, name?, created?, projectId?, number? }; a reply's { model } (the alias
    * that wrote it), with { failed: true, error } when its run failed.
    */
-  data: unknown;
-  runId: string | null;
-  createdAt: string;
-}
+  data: z.unknown(),
+  runId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type FlowChatMessage = z.infer<typeof flowChatMessageSchema>;
 
-/** Something the chat's model created or changed. An item carries its project and number. */
-export interface FlowMade {
-  id: string;
-  name: string;
-  projectId?: string;
-  number?: number;
-}
+/** Something the chat's model created or changed. */
+export const flowMadeSchema = z.object({ id: z.string(), name: z.string() });
+export type FlowMade = z.infer<typeof flowMadeSchema>;
 
-export interface FlowChatMade {
-  items: FlowMade[];
-  projects: FlowMade[];
-  workflows: FlowMade[];
-  plugins: FlowMade[];
-  agents: FlowMade[];
-  gateways: FlowMade[];
-}
+/** An item the chat's model created, with its project and number (the app shows `KEY-12`). */
+export const flowMadeItemSchema = flowMadeSchema.extend({
+  projectId: z.string(),
+  number: z.number(),
+});
+export type FlowMadeItem = z.infer<typeof flowMadeItemSchema>;
 
-export interface FlowChatView {
-  chat: FlowChat;
-  messages: FlowChatMessage[];
-  truncated: boolean;
+export const flowChatMadeSchema = z.object({
+  items: z.array(flowMadeItemSchema),
+  projects: z.array(flowMadeSchema),
+  workflows: z.array(flowMadeSchema),
+  plugins: z.array(flowMadeSchema),
+  agents: z.array(flowMadeSchema),
+  gateways: z.array(flowMadeSchema),
+});
+export type FlowChatMade = z.infer<typeof flowChatMadeSchema>;
+
+export const flowChatViewSchema = z.object({
+  chat: flowChatSchema,
+  messages: z.array(flowChatMessageSchema),
+  truncated: z.boolean(),
   /** A run is queued or claimed: the reply hasn't come yet. */
-  working: boolean;
+  working: z.boolean(),
   /** That run's id (its events show what the model is doing), or null. */
-  workingRunId: string | null;
-  made: FlowChatMade;
-}
+  workingRunId: z.string().nullable(),
+  made: flowChatMadeSchema,
+});
+export type FlowChatView = z.infer<typeof flowChatViewSchema>;
 
 /** A choice in a picker: the CLI's id and the name the app shows. */
-export interface FlowChoice {
-  id: string;
-  label: string;
-}
+export const flowChoiceSchema = z.object({ id: z.string(), label: z.string() });
+export type FlowChoice = z.infer<typeof flowChoiceSchema>;
 
-export interface FlowChatOptions {
-  models: FlowChoice[];
-  efforts: FlowChoice[];
-  defaultModel: string;
-  defaultEffort: string;
-}
+export const flowChatOptionsSchema = z.object({
+  models: z.array(flowChoiceSchema),
+  efforts: z.array(flowChoiceSchema),
+  defaultModel: z.string(),
+  defaultEffort: z.string(),
+});
+export type FlowChatOptions = z.infer<typeof flowChatOptionsSchema>;
 
 /** A model and effort sent with a message: left out, the chat's stays. */
 type Choice = { model?: string | null; effort?: string | null };

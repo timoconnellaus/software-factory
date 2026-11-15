@@ -1,5 +1,6 @@
 // The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0433_flow_chat.sql,
-// 0434_flow_run_events.sql, 0435_flow_schedules.sql, 0437_flow_chat_model.sql; 0432 adds only
+// 0434_flow_run_events.sql, 0435_flow_schedules.sql, 0436_flow_repositories.sql,
+// 0437_flow_chat_model.sql; 0432 adds only
 // indexes), as Kysely sees them.
 
 import type { Generated, Selectable } from "kysely";
@@ -22,6 +23,12 @@ export interface FlowProjectsTable {
   workflow_id: string;
   next_number: number;
   created_at: string;
+  /** The project's GitHub repository (migration 0436): all four set, or all null. */
+  repo_owner: string | null;
+  repo_name: string | null;
+  repo_default_branch: string | null;
+  /** GitHub's id of the org's App installation that reaches the repository. */
+  repo_installation_id: string | null;
 }
 
 export interface FlowAgentsTable {
@@ -57,6 +64,10 @@ export interface FlowItemsTable {
   updated_at: string;
   /** JSON: the item's plugin fields, field id to value. */
   fields: string;
+  /** `factory/flow/<key>-<number>`, set when its first run with a repository is claimed (0436). */
+  branch: string | null;
+  /** The branch's head as the last run that ended `done` pushed it. */
+  head_sha: string | null;
 }
 
 export type EntryKind = "event" | "effect" | "comment" | "card";
@@ -98,6 +109,9 @@ export interface FlowRunsTable {
   finished_at: string | null;
   /** SHA-256 hex of the run's MCP bearer token, or null. */
   mcp_token_hash: string | null;
+  /** The branch the run worked on, and the head it handed back (0436); null without a repository. */
+  branch: string | null;
+  head_sha: string | null;
   /** Events stored in flow_run_events (0 once pruned). */
   event_count: Generated<number>;
   /** The runner's seq of the last event stored: a replayed batch adds nothing. */

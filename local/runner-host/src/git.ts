@@ -12,7 +12,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
-import type { Artifact, RepoJob } from "@software-factory/runner-contract";
+import { type Artifact, isFlowBranch, type RepoJob } from "@software-factory/runner-contract";
 import type { Exec } from "@software-factory/runner-local";
 
 /**
@@ -65,11 +65,24 @@ export class GitError extends Error {
   override name = "GitError";
 }
 
-/** The run branch a job may push: its own `factory/<n>-<slug>-run-<k>`, nothing else (ADR 0035). */
+/**
+ * The run branch a job may push: its own `factory/<n>-<slug>-run-<k>`, nothing else (ADR 0035). A
+ * `flow` job (spec 70) pushes its item's branch `factory/flow/<key>-<n>`, the job's `branch`, and
+ * nothing else.
+ */
 export function assertPushable(
-  job: Pick<RepoJob, "branch" | "repo" | "runNo">,
+  job: Pick<RepoJob, "branch" | "repo" | "runNo"> & { stage?: RepoJob["stage"] },
   pushBranch?: string,
 ) {
+  if (job.stage === "flow") {
+    if (!isFlowBranch(job.branch)) {
+      throw new GitError(`refusing to push ${job.branch}: not a flow item branch`);
+    }
+    if (pushBranch !== undefined && pushBranch !== job.branch) {
+      throw new GitError(`the job token is for ${pushBranch}, not ${job.branch}`);
+    }
+    return;
+  }
   const expected = `${job.repo.baseRef}-run-${job.runNo}`;
   if (job.branch !== expected) {
     throw new GitError(`job branch ${job.branch} is not the run branch ${expected}`);

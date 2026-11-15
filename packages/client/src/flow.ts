@@ -2,171 +2,235 @@
 // answers, typed by hand from @software-factory/store and @software-factory/flow (types only; a view
 // imports neither), and the pure logic the board and the item panel need: an item's key, its chips,
 // the decision it waits on, and its timeline told as one line per move.
+import { z } from "zod";
 import type { FlowAutoOpMap } from "./flow-auto.ts";
 import type { FlowChatOpMap } from "./flow-chat.ts";
-import type { FlowEditOpMap, FlowField, FlowMember } from "./flow-edit.ts";
+import { type FlowEditOpMap, type FlowMember, flowFieldSchema } from "./flow-edit.ts";
 import type { FlowRunEvents, FlowRunView } from "./flow-run.ts";
 import { ago } from "./format.ts";
 
-export type FlowOwner =
-  | { kind: "agent"; agentId: string }
-  | { kind: "person"; userId: string }
-  | { kind: "none" };
+// Each answer's shape is a zod schema and its type is inferred from it, so the type the screens
+// read and the check that the server (and the fixtures) really answer it can't drift apart
+// (flow-contract.ts). The schemas only describe: nothing parses a server's answer at run time.
 
-export interface FlowStatus {
-  id: string;
-  name: string;
-  owner: FlowOwner;
-  brief?: string;
-  onDone?: string;
-  onReject?: string;
-  needsDecision?: boolean;
-}
+export const flowOwnerSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("agent"), agentId: z.string() }),
+  z.object({ kind: z.literal("person"), userId: z.string() }),
+  z.object({ kind: z.literal("none") }),
+]);
+export type FlowOwner = z.infer<typeof flowOwnerSchema>;
 
-export type FlowActor =
-  | { kind: "person"; id: string }
-  | { kind: "agent"; id: string }
-  | { kind: "system" };
+export const flowStatusSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  owner: flowOwnerSchema,
+  brief: z.string().optional(),
+  onDone: z.string().optional(),
+  onReject: z.string().optional(),
+  needsDecision: z.boolean().optional(),
+});
+export type FlowStatus = z.infer<typeof flowStatusSchema>;
 
-export type FlowWaiting =
-  | { on: "run"; agentId: string }
-  | { on: "person"; userId: string }
-  | { on: "decision" }
-  | { on: "nothing" };
+export const flowActorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("person"), id: z.string() }),
+  z.object({ kind: z.literal("agent"), id: z.string() }),
+  /** A plugin acting through its hooks (a card, a field); `id` is the plugin's name. */
+  z.object({ kind: z.literal("plugin"), id: z.string() }),
+  z.object({ kind: z.literal("system") }),
+]);
+export type FlowActor = z.infer<typeof flowActorSchema>;
 
-export interface FlowItem {
-  id: string;
-  orgId: string;
-  projectId: string;
-  number: number;
-  title: string;
-  body: string;
-  statusId: string;
-  waiting: FlowWaiting;
-  error: string | null;
-  stay: number;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-  /** Plugin fields' values, by field id, when the server sends them (flow-edit.ts `fieldChips`). */
-  fields?: Record<string, unknown>;
-}
+export const flowWaitingSchema = z.discriminatedUnion("on", [
+  z.object({ on: z.literal("run"), agentId: z.string() }),
+  z.object({ on: z.literal("person"), userId: z.string() }),
+  z.object({ on: z.literal("decision") }),
+  z.object({ on: z.literal("nothing") }),
+]);
+export type FlowWaiting = z.infer<typeof flowWaitingSchema>;
 
-export interface FlowProject {
-  id: string;
-  orgId: string;
-  name: string;
-  key: string;
-  workflowId: string;
-  nextNumber: number;
-  /** Its items not yet in the workflow's last status (the server is adding it). */
-  openCount?: number;
-  createdAt: string;
-}
+export const flowItemSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  number: z.number(),
+  title: z.string(),
+  body: z.string(),
+  statusId: z.string(),
+  waiting: flowWaitingSchema,
+  error: z.string().nullable(),
+  stay: z.number(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  /** Plugin fields' values, by field id (flow-edit.ts `fieldChips`). */
+  fields: z.record(z.string(), z.unknown()).optional(),
+  /** Its branch on the project's repository, once a run there was claimed (else null). */
+  branch: z.string().nullable().optional(),
+  /** The head the last run that ended done pushed to that branch (else null). */
+  headSha: z.string().nullable().optional(),
+});
+export type FlowItem = z.infer<typeof flowItemSchema>;
 
-export interface FlowAgent {
-  id: string;
-  orgId: string;
-  name: string;
-  instructions: string;
+/** A project's repository: where its runs check out and push the item's branch. */
+export const flowRepoSchema = z.object({
+  owner: z.string(),
+  name: z.string(),
+  defaultBranch: z.string(),
+});
+export type FlowRepo = z.infer<typeof flowRepoSchema>;
+
+/** A repository the org's GitHub connection reaches (`flow.github.repos`). */
+export const flowGithubRepoSchema = flowRepoSchema.extend({ installationId: z.string() });
+export type FlowGithubRepo = z.infer<typeof flowGithubRepoSchema>;
+
+/** `flow.github.repos`: whether the org has a GitHub connection, and what it reaches. */
+export const flowGithubReposSchema = z.object({
+  connected: z.boolean(),
+  /** The GitHub account it is connected as, when connected. */
+  account: z.string().nullable(),
+  repos: z.array(flowGithubRepoSchema),
+});
+export type FlowGithubRepos = z.infer<typeof flowGithubReposSchema>;
+
+/** "acme/api". */
+export const repoName = (repo: Pick<FlowRepo, "owner" | "name">) => `${repo.owner}/${repo.name}`;
+
+export const flowProjectSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string(),
+  key: z.string(),
+  workflowId: z.string(),
+  nextNumber: z.number(),
+  /** The GitHub repository its runs work in, or null. Optional: an engine before it sends none. */
+  repo: flowRepoSchema.nullable().optional(),
+  /** Its items not yet in the workflow's last status (`flow.project.list` only). */
+  openCount: z.number().optional(),
+  createdAt: z.string(),
+});
+export type FlowProject = z.infer<typeof flowProjectSchema>;
+
+export const flowAgentSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string(),
+  instructions: z.string(),
   /** The MCP servers it gets beyond the base ones: `["factory"]` is the Plugin editor. */
-  mcp?: string[];
+  mcp: z.array(z.string()).optional(),
   /** The Claude Code model alias and effort its runs use (null or missing: the runner's default). */
-  model?: string | null;
-  effort?: string | null;
-  createdAt: string;
-}
+  model: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
+  createdAt: z.string(),
+});
+export type FlowAgent = z.infer<typeof flowAgentSchema>;
 
 /** An item as `flow.inbox.all` lists it: with its project and status named. */
-export interface FlowInboxAllItem extends FlowItem {
-  projectName: string;
-  projectKey: string;
-  statusName: string;
-}
+export const flowInboxAllItemSchema = flowItemSchema.extend({
+  projectName: z.string(),
+  projectKey: z.string(),
+  statusName: z.string(),
+});
+export type FlowInboxAllItem = z.infer<typeof flowInboxAllItemSchema>;
 
 /** Across every org you are in: what waits on you and what agents are working on. */
-export interface FlowInboxAll {
-  orgs: {
-    orgId: string;
-    name: string;
-    work: FlowInboxAllItem[];
-    decisions: FlowInboxAllItem[];
-    working: FlowInboxAllItem[];
-  }[];
-}
+export const flowInboxAllSchema = z.object({
+  orgs: z.array(
+    z.object({
+      orgId: z.string(),
+      name: z.string(),
+      work: z.array(flowInboxAllItemSchema),
+      decisions: z.array(flowInboxAllItemSchema),
+      working: z.array(flowInboxAllItemSchema),
+    }),
+  ),
+});
+export type FlowInboxAll = z.infer<typeof flowInboxAllSchema>;
 
 /** One run of an agent (`flow.run.list` by agent or by item): on an item, or answering a chat. */
-export interface FlowRun {
-  id?: string;
-  itemId: string | null;
-  itemTitle?: string | null;
+export const flowRunSchema = z.object({
+  id: z.string().optional(),
+  itemId: z.string().nullable(),
+  itemTitle: z.string().nullable().optional(),
   /** A chat's run: its chat and the chat's title (the item fields null). */
-  chatId?: string | null;
-  chatTitle?: string | null;
-  agentId?: string;
-  status: string;
-  createdAt?: string;
-  claimedAt: string | null;
-  finishedAt: string | null;
-  result?: unknown;
-  error: string | null;
+  chatId: z.string().nullable().optional(),
+  chatTitle: z.string().nullable().optional(),
+  agentId: z.string().optional(),
+  status: z.string(),
+  createdAt: z.string().optional(),
+  claimedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  result: z.unknown().optional(),
+  error: z.string().nullable(),
   /** Tool calls stored (an older server leaves it out). */
-  steps?: number;
+  steps: z.number().optional(),
   /** Null when unknown: no runner reports cost today. */
-  costUsd?: number | null;
-  tokens?: number | null;
-}
+  costUsd: z.number().nullable().optional(),
+  tokens: z.number().nullable().optional(),
+});
+export type FlowRun = z.infer<typeof flowRunSchema>;
 
-export interface FlowWorkflow {
-  id: string;
-  orgId: string;
-  workflow: { id: string; name: string; statuses: FlowStatus[] };
-  createdAt: string;
-  updatedAt: string;
-}
+export const flowWorkflowSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  workflow: z.object({ id: z.string(), name: z.string(), statuses: z.array(flowStatusSchema) }),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type FlowWorkflow = z.infer<typeof flowWorkflowSchema>;
 
-export interface FlowBoard {
-  columns: { status: FlowStatus; items: FlowItem[] }[];
-  truncated: boolean;
+export const flowBoardSchema = z.object({
+  columns: z.array(z.object({ status: flowStatusSchema, items: z.array(flowItemSchema) })),
+  truncated: z.boolean(),
   /** The plugin fields its items may carry. */
-  declaredFields?: FlowField[];
-}
+  declaredFields: z.array(flowFieldSchema).optional(),
+});
+export type FlowBoard = z.infer<typeof flowBoardSchema>;
 
 /**
  * A rich card an agent or a plugin adds to the timeline (an entry of kind `card`): one shape for a
  * pull request, a plan, a chart or a document.
  */
-export interface FlowCard {
-  kind: string;
-  title: string;
-  subtitle?: string;
-  rows?: { label: string; value: string }[];
-  checks?: { label: string; ok: boolean }[];
-  bars?: { label: string; value: number; max: number }[];
-  link?: { label: string; url: string };
-}
+export const flowCardSchema = z.object({
+  kind: z.string(),
+  title: z.string(),
+  subtitle: z.string().optional(),
+  rows: z.array(z.object({ label: z.string(), value: z.string() })).optional(),
+  checks: z.array(z.object({ label: z.string(), ok: z.boolean() })).optional(),
+  bars: z.array(z.object({ label: z.string(), value: z.number(), max: z.number() })).optional(),
+  link: z.object({ label: z.string(), url: z.string() }).optional(),
+});
+export type FlowCard = z.infer<typeof flowCardSchema>;
 
-export interface FlowTimelineEntry {
-  seq: number;
-  /** `card` is sent by plugins and agents (another change); the kernel writes the other three. */
-  kind: "event" | "effect" | "comment" | "card";
-  actor: FlowActor;
-  data: unknown;
-  createdAt: string;
-}
+export const flowTimelineEntrySchema = z.object({
+  seq: z.number(),
+  /** `card` is sent by plugins and agents; the kernel writes the other three. */
+  kind: z.enum(["event", "effect", "comment", "card"]),
+  actor: flowActorSchema,
+  data: z.unknown(),
+  createdAt: z.string(),
+});
+export type FlowTimelineEntry = z.infer<typeof flowTimelineEntrySchema>;
 
-export interface FlowTimeline {
-  entries: FlowTimelineEntry[];
-  truncated: boolean;
-}
+export const flowTimelineSchema = z.object({
+  entries: z.array(flowTimelineEntrySchema),
+  truncated: z.boolean(),
+});
+export type FlowTimeline = z.infer<typeof flowTimelineSchema>;
 
-export interface FlowInbox {
-  work: FlowItem[];
-  decisions: FlowItem[];
+export const flowInboxSchema = z.object({
+  work: z.array(flowItemSchema),
+  decisions: z.array(flowItemSchema),
   /** The last 30 items you finished or decided, newest first (an older server leaves it out). */
-  done?: (FlowInboxAllItem & { doneAt: string })[];
-  truncated: boolean;
-}
+  done: z.array(flowInboxAllItemSchema.extend({ doneAt: z.string() })).optional(),
+  truncated: z.boolean(),
+});
+export type FlowInbox = z.infer<typeof flowInboxSchema>;
+
+/** `flow.item.get`: the item, and the fields the org's plugins declare. */
+export const flowItemDetailSchema = flowItemSchema.extend({
+  declaredFields: z.array(flowFieldSchema).optional(),
+});
+export type FlowItemDetail = z.infer<typeof flowItemDetailSchema>;
 
 type Org = { orgId: string };
 
@@ -177,6 +241,14 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
     input: Org & { name: string; key: string; workflowId: string };
     output: FlowProject;
   };
+  "flow.project.get": { input: Org & { projectId: string }; output: FlowProject };
+  "flow.project.setRepository": {
+    input:
+      | (Org & { projectId: string; owner: string; name: string })
+      | (Org & { projectId: string; clear: true });
+    output: FlowProject;
+  };
+  "flow.github.repos": { input: Org; output: FlowGithubRepos };
   "flow.workflow.list": { input: Org; output: { workflows: FlowWorkflow[] } };
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };
@@ -208,7 +280,7 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
   "flow.inbox.get": { input: Org; output: FlowInbox };
   "flow.item.get": {
     input: Org & { itemId: string };
-    output: FlowItem & { declaredFields?: FlowField[] };
+    output: FlowItemDetail;
   };
   "flow.item.create": {
     input: Org & { projectId: string; title: string; body?: string };
@@ -254,6 +326,33 @@ export const hasPluginEditor = (agent: Pick<FlowAgent, "mcp">) =>
 /** A model and effort: left out, unchanged; null, the runner's default. */
 type ModelChoice = { model?: string | null; effort?: string | null };
 
+/**
+ * What `flow.agent.update` is sent for one change: it takes the whole agent, so its name and saved
+ * instructions go with it, and its `mcp` (missing reads as none). The Plugin editor is `factory`.
+ * A model or effort is sent only when it changes (null: the runner's default).
+ */
+export function agentUpdate(
+  orgId: string,
+  agent: Pick<FlowAgent, "id" | "name" | "instructions" | "mcp">,
+  change: { instructions?: string; pluginEditor?: boolean } & ModelChoice,
+): FlowOpMap["flow.agent.update"]["input"] {
+  const mcp =
+    change.pluginEditor === undefined
+      ? (agent.mcp ?? [])
+      : change.pluginEditor
+        ? ["factory"]
+        : (agent.mcp ?? []).filter((m) => m !== "factory");
+  return {
+    orgId,
+    agentId: agent.id,
+    name: agent.name,
+    instructions: change.instructions ?? agent.instructions,
+    mcp,
+    ...(change.model !== undefined ? { model: change.model } : {}),
+    ...(change.effort !== undefined ? { effort: change.effort } : {}),
+  };
+}
+
 export function agentName(names: Names, agentId: string): string {
   // A chat's run has no agent (agent_id ''): what it does is the chat's.
   if (agentId === "") return "Chat";
@@ -263,6 +362,8 @@ export function agentName(names: Names, agentId: string): string {
 export function actorName(names: Names, actor: FlowActor): string {
   if (actor.kind === "agent") return agentName(names, actor.id);
   if (actor.kind === "person") return personName(names, actor.id);
+  // A plugin's card or field: the plugin by its name.
+  if (actor.kind === "plugin") return actor.id;
   return "The workflow";
 }
 
@@ -369,7 +470,7 @@ export type TimelineRow =
       type: "entry";
       seq: number;
       who: string;
-      by: "person" | "agent" | "system";
+      by: FlowActor["kind"];
       text: string | null;
       cards: FlowCard[];
       at: string;

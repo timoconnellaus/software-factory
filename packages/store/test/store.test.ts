@@ -11,6 +11,7 @@ import {
   createItem,
   createProject,
   createWorkflow,
+  endRun,
   expireRun,
   expireRuns,
   failRun,
@@ -19,6 +20,7 @@ import {
   getListedRun,
   getWorkflow,
   inbox,
+  itemBranch,
   itemRuns,
   listAgents,
   listProjects,
@@ -26,6 +28,7 @@ import {
   recentComments,
   renewLease,
   StoreError,
+  setProjectRepo,
   stopItem,
   timeline,
   updateWorkflow,
@@ -132,11 +135,71 @@ describe("items and runs", () => {
     expect(runs[0]).toMatchObject({ status: "queued", brief: "Draft it.", stay: 1 });
   });
 
+  it("gives a run on a project with a repository the item's branch, and keeps the head it pushed", async () => {
+    const { item, project } = await setup();
+    expect(itemBranch("A_c m!", 3)).toBe("factory/flow/a-c-m-3");
+    await setProjectRepo(d1, project.id, {
+      owner: "acme",
+      name: "app",
+      defaultBranch: "main",
+      installationId: "42",
+    });
+    const run = await claim();
+    expect(run.project).toEqual({
+      key: "ACM",
+      repo: { owner: "acme", name: "app", defaultBranch: "main", installationId: "42" },
+    });
+    expect(run.item).toMatchObject({
+      branch: "factory/flow/acm-1",
+      firstOnBranch: true,
+      headSha: null,
+    });
+    expect((await getItem(d1, item.id))?.branch).toBe("factory/flow/acm-1");
+    // The run's own branch's head is kept, on the run and the item.
+    const head = "a".repeat(40);
+    const ended = await endRun(d1, run.id, run.fencingToken, {
+      status: "done",
+      result: { outcome: "done", summary: "Built." },
+      pushed: { branch: "factory/flow/acm-1", headSha: head },
+    });
+    expect(ended.run).toMatchObject({ branch: "factory/flow/acm-1", headSha: head });
+    expect(ended.item).toMatchObject({
+      statusId: "review",
+      branch: "factory/flow/acm-1",
+      headSha: head,
+    });
+    expect((await getItem(d1, item.id))?.headSha).toBe(head);
+    // The next run on the item reuses the branch; a head for another branch is not kept.
+    await applyEvent(d1, item.id, { type: "moved", by: sam, to: "draft" }, sam);
+    const next = await claim();
+    expect(next.item).toMatchObject({
+      branch: "factory/flow/acm-1",
+      firstOnBranch: false,
+      headSha: head,
+    });
+    const other = await endRun(d1, next.id, next.fencingToken, {
+      status: "done",
+      result: { outcome: "done", summary: "Again." },
+      pushed: { branch: "factory/flow/other-1", headSha: "b".repeat(40) },
+    });
+    expect(other.run.headSha).toBeNull();
+    expect(other.item.headSha).toBe(head);
+  });
+
   it("moves the item on when the run finishes, into the person's inbox, then on when they finish", async () => {
     const { orgId, item, writer, project } = await setup();
     const run = await claim();
     expect(run).toMatchObject({ itemId: item.id, brief: "Draft it.", fencingToken: 1 });
-    expect(run.item).toEqual({ number: 1, title: "Launch post", body: "Announce it." });
+    // A project without a repository: no branch for the item.
+    expect(run.item).toEqual({
+      number: 1,
+      title: "Launch post",
+      body: "Announce it.",
+      branch: null,
+      firstOnBranch: false,
+      headSha: null,
+    });
+    expect(run.project).toMatchObject({ repo: null });
     expect(run.agent).toEqual({
       id: writer.id,
       name: "Writer",

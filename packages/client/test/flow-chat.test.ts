@@ -93,7 +93,9 @@ describe("chatTurns", () => {
     expect(choiceLabel(models, "opus")).toBe("Opus");
     expect(choiceLabel(models, null)).toBe("Claude");
     expect(madeAnything(EMPTY_MADE)).toBe(false);
-    expect(madeAnything({ ...EMPTY_MADE, items: [{ id: "i", name: "x" }] })).toBe(true);
+    expect(
+      madeAnything({ ...EMPTY_MADE, items: [{ id: "i", name: "x", projectId: "p", number: 1 }] }),
+    ).toBe(true);
   });
 });
 

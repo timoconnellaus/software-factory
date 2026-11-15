@@ -29,12 +29,18 @@ export function PageHeader({
       <h1 className="truncate font-semibold text-[14px]">{title}</h1>
       {tabs && tabs.length > 0 && (
         <Tabs value={tab} onValueChange={onTab} className="h-full">
-          <TabsList variant="line" className="h-full gap-0.5 p-0" data-testid="section-tabs">
+          {/* The shared list is 36px tall for a horizontal Tabs; here it fills the 48px header so the
+              tab names sit on the title's line and the active tab's rule meets the header's edge. */}
+          <TabsList
+            variant="line"
+            className="h-full gap-0.5 p-0 group-data-[orientation=horizontal]/tabs:h-full"
+            data-testid="section-tabs"
+          >
             {tabs.map((t) => (
               <TabsTrigger
                 key={t}
                 value={t}
-                className="-mb-px h-full flex-none rounded-none border-0 border-transparent border-b-2 px-2.5 font-normal text-[13px] text-ink-muted after:hidden data-[state=active]:border-ink dark:data-[state=active]:border-ink data-[state=active]:font-medium data-[state=active]:text-ink"
+                className="-mb-px h-full flex-none rounded-none border-0 border-transparent border-b-2 px-2.5 font-normal text-[13px] text-ink-muted after:hidden data-[state=active]:border-ink dark:data-[state=active]:border-ink dark:group-data-[variant=line]/tabs-list:data-[state=active]:border-b-ink data-[state=active]:font-medium data-[state=active]:text-ink"
               >
                 {t}
               </TabsTrigger>

@@ -112,6 +112,41 @@ describe("run settings", () => {
     expect(build).not.toContain("--effort");
   });
 
+  it("gives a flow job with a repository the build's rules and mode, never a push", () => {
+    const repo = {
+      url: "https://github.com/acme/app.git",
+      owner: "acme",
+      name: "app",
+      baseRef: "main",
+      defaultBranch: "main",
+    };
+    const flow = { stage: "flow" as const, repo, branch: "factory/flow/acm-7" };
+    const options = { worktree: "/w/job", runDir: "/r/job", platform: "darwin" as const };
+    const s = runSettings(flow, options);
+    const build = runSettings({ stage: "build" }, options);
+    expect(s.permissions.defaultMode).toBe("bypassPermissions");
+    expect(s.permissions.allow).toEqual(build.permissions.allow);
+    expect(s.permissions.deny).toEqual(build.permissions.deny);
+    expect(s.permissions.allow).toEqual(
+      expect.arrayContaining(["Edit", "Write", "Bash(git commit:*)", "Bash(pnpm:*)"]),
+    );
+    expect(s.permissions.deny).toContain("Bash(git push:*)");
+    expect(s.permissions.allow.some((r) => r.includes("git push"))).toBe(false);
+    expect(s.sandbox.autoAllowBashIfSandboxed).toBe(true);
+    // The launch's --permission-mode follows.
+    const argv = claudeArgv(
+      { ...job("flow"), repo, branch: "factory/flow/acm-7" },
+      {
+        settingsPath: "/r/job/settings.json",
+      },
+    );
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    // Without a repository: today's rules, unchanged.
+    const plain = claudeArgv(job("flow"), { settingsPath: "/r/job/settings.json" });
+    expect(plain[plain.indexOf("--permission-mode") + 1]).toBe("dontAsk");
+    expect(runSettings({ stage: "flow" }, options).permissions.allow).not.toContain("Edit");
+  });
+
   it("lets verify run the toolchain but not edit", () => {
     const s = runSettings({ stage: "verify" }, { worktree: "/w/job", runDir: "/r/job" });
     expect(s.permissions.defaultMode).toBe("dontAsk");

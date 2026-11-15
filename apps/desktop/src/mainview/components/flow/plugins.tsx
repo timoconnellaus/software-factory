@@ -372,7 +372,9 @@ function Gateways({
   const refresh = useFlowRefresh(orgId);
   const [editing, setEditing] = useState<FlowGateway | null>(null);
   const [removing, setRemoving] = useState<FlowGateway | null>(null);
-  const list = gateways.data?.gateways ?? [];
+  // Built-in gateways (the org's GitHub connection) are listed after the org's own, read-only.
+  const all = gateways.data?.gateways ?? [];
+  const list = [...all.filter((g) => !g.builtIn), ...all.filter((g) => g.builtIn)];
 
   async function remove(g: FlowGateway) {
     try {
@@ -399,46 +401,67 @@ function Gateways({
           className="overflow-hidden rounded-xl border border-line bg-panel"
           data-testid="gateway-list"
         >
-          {list.map((g) => (
-            <li
-              key={g.id}
-              className="flex items-center gap-3 border-line-soft border-b px-3.5 py-2.5 last:border-b-0"
-              data-testid="gateway-row"
-            >
-              <CableIcon className="size-4 flex-none text-ink-muted" />
-              <span className="min-w-0 flex-1">
-                <span className="block font-medium">{g.name}</span>
-                <span className="block truncate text-[12px] text-ink-muted">{g.baseUrl}</span>
-              </span>
-              <span className="text-[12px] text-ink-muted">{authText(g.auth)}</span>
-              {connected(g) ? (
-                <Pill className="border-ok/40 text-ok" data-testid="gateway-connected">
-                  Connected
-                </Pill>
-              ) : (
-                <Pill className="border-need-line text-need" data-testid="gateway-needs-secret">
-                  Needs a secret
-                </Pill>
-              )}
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => setEditing(g)}
-                data-testid="edit-gateway"
+          {list.map((g) =>
+            g.builtIn ? (
+              <li
+                key={g.id}
+                className="flex items-center gap-3 border-line-soft border-b px-3.5 py-2.5 last:border-b-0"
+                data-testid="gateway-builtin"
               >
-                Edit
-              </Button>
-              <Button
-                size="xs"
-                variant="ghost"
-                className="text-bad hover:text-bad"
-                onClick={() => setRemoving(g)}
-                data-testid="remove-gateway"
+                <CableIcon className="size-4 flex-none text-ink-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{g.name}</span>
+                  <span className="block truncate text-[12px] text-ink-muted">
+                    {g.description ?? g.baseUrl}
+                  </span>
+                </span>
+                <span className="text-[12px] text-ink-muted">The item's repository</span>
+                <Pill className="border-ok/40 text-ok">Connected</Pill>
+                <Pill title="Built in: it comes from the org's GitHub connection and can't be changed here">
+                  Built in
+                </Pill>
+              </li>
+            ) : (
+              <li
+                key={g.id}
+                className="flex items-center gap-3 border-line-soft border-b px-3.5 py-2.5 last:border-b-0"
+                data-testid="gateway-row"
               >
-                Remove
-              </Button>
-            </li>
-          ))}
+                <CableIcon className="size-4 flex-none text-ink-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{g.name}</span>
+                  <span className="block truncate text-[12px] text-ink-muted">{g.baseUrl}</span>
+                </span>
+                <span className="text-[12px] text-ink-muted">{authText(g.auth)}</span>
+                {connected(g) ? (
+                  <Pill className="border-ok/40 text-ok" data-testid="gateway-connected">
+                    Connected
+                  </Pill>
+                ) : (
+                  <Pill className="border-need-line text-need" data-testid="gateway-needs-secret">
+                    Needs a secret
+                  </Pill>
+                )}
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => setEditing(g)}
+                  data-testid="edit-gateway"
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  className="text-bad hover:text-bad"
+                  onClick={() => setRemoving(g)}
+                  data-testid="remove-gateway"
+                >
+                  Remove
+                </Button>
+              </li>
+            ),
+          )}
         </ul>
       )}
       <p className="mt-4 text-[12.5px] text-ink-muted">

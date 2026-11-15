@@ -60,7 +60,7 @@ export async function systemTempDirs(
 
 export async function projectHarness(
   job: Pick<Job, "stage" | "jobId" | "harness"> &
-    Partial<Pick<Job, "planning" | "workItem" | "mcpServers">>,
+    Partial<Pick<Job, "planning" | "workItem" | "mcpServers" | "repo" | "branch">>,
   options: Omit<SettingsOptions, "statusHook"> & {
     identity?: { name: string; email: string };
     claudeBin?: string;

@@ -2,7 +2,14 @@
 // imports the old core (packages/core).
 export { PluginCtx } from "./ctx.ts";
 export { type DispatchOptions, type DispatchOutcome, dispatch, Session } from "./dispatch.ts";
-export { type GatewayRequest, type GatewayResponse, gatewayFetch, joinUrl } from "./gateway.ts";
+export {
+  type GatewayRequest,
+  type GatewayResponse,
+  GITHUB_API,
+  gatewayFetch,
+  githubGatewayFetch,
+  joinUrl,
+} from "./gateway.ts";
 export { PLUGIN_GUIDE, savePluginChecked } from "./guide.ts";
 export {
   afterCreated,
@@ -16,6 +23,10 @@ export {
   type Card,
   cardSchema,
   type Declaration,
+  type FlowGitHub,
+  GITHUB_GATEWAY,
+  GITHUB_GATEWAY_PERMISSIONS,
+  type GitHubRepoRef,
   HOOK_DEADLINE_MS,
   HOOKS,
   type HookName,

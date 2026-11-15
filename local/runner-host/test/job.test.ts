@@ -2,7 +2,12 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { flowResultSchema, type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import {
+  flowResultSchema,
+  type Job,
+  RESULT_FILE,
+  type RepoJob,
+} from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import { assertPushable, type HostGit } from "../src/git.ts";
 import { RunnerHost } from "../src/host.ts";
@@ -425,6 +430,121 @@ describe("runJob", () => {
     expect(() => assertPushable(job({ branch: "factory/7-add-a-line-run-2" }))).toThrow();
     expect(() => assertPushable(job(), "factory/8-other-run-1")).toThrow();
     expect(() => assertPushable(job(), "factory/7-add-a-line-run-1")).not.toThrow();
+  });
+
+  it("lets a flow job push only its own item branch factory/flow/<key>-<n>", () => {
+    const flow = (branch: string) => ({ ...flowJob(), branch });
+    expect(() => assertPushable(flow("factory/flow/acm-7"))).not.toThrow();
+    expect(() => assertPushable(flow("factory/flow/acm-7"), "factory/flow/acm-7")).not.toThrow();
+    // The token is for another branch.
+    expect(() => assertPushable(flow("factory/flow/acm-7"), "factory/flow/acm-8")).toThrow();
+    // Not a flow item branch: no number, upper case, outside factory/flow, or the old pattern.
+    expect(() => assertPushable(flow("factory/flow/acm"))).toThrow();
+    expect(() => assertPushable(flow("factory/flow/ACM-7"))).toThrow();
+    expect(() => assertPushable(flow("main"))).toThrow();
+    expect(() => assertPushable(flow("factory/flow/acm-7/x"))).toThrow();
+    // A build may not push a flow branch.
+    expect(() => assertPushable(job({ branch: "factory/flow/acm-7" }))).toThrow();
+  });
+});
+
+/** A flow job on a project with a repository (spec 70): its item's branch, from `baseRef`. */
+function flowJob(baseRef = "main"): RepoJob {
+  return job({
+    stage: "flow",
+    branch: "factory/flow/acm-7",
+    repo: { ...job().repo, baseRef, defaultBranch: "main" },
+    harness: { id: "claude-code", role: "implement", prompt: "change the code" },
+    // Checks on a flow job are never run (the old project checks step is for the old stages).
+    checks: { commands: [{ name: "tests", run: "echo ran", timeoutMs: 30_000 }], fixRounds: 1 },
+  });
+}
+
+describe("runJob: a flow job with a repository (spec 70)", () => {
+  /** A session that commits one change, leaves another uncommitted, and writes its result. */
+  const work = (line: string) => async (wt: string) => {
+    await writeFile(join(wt, "README.md"), `# scratch\n${line}\n`);
+    git(wt, "-c", "user.name=a", "-c", "user.email=a@x.invalid", "commit", "-qam", line);
+    await writeFile(join(wt, `${line}.txt`), "left over\n");
+    await writeFile(join(wt, RESULT_FILE), JSON.stringify({ outcome: "done", summary: line }));
+    return [{ type: "session.ended" as const, outcome: "completed" as const, summary: line }];
+  };
+
+  it("works on the item's branch, commits leftovers, pushes only that branch, and a later run continues it", async () => {
+    const { repo, cloud, cp } = await world();
+    const first = flowJob("main");
+    cloud.claims.set("c1", first);
+    const adapter = fakeAdapter((x) => repo.host.clonePath(x), work("one"));
+    const report = await runJob({ adapter, cp, git: repo.host, job: first, flushMs: 5 });
+
+    expect(report.error).toBeUndefined();
+    expect(report.outcome).toBe("completed");
+    const pushed = git(repo.bare, "rev-parse", "factory/flow/acm-7");
+    expect(report.headSha).toBe(pushed);
+    expect(cloud.handbacks.get(first.jobId)).toMatchObject({
+      branch: "factory/flow/acm-7",
+      headSha: pushed,
+      outcome: "completed",
+      result: { outcome: "done", summary: "one" },
+    });
+    // No checks ran, though the job named some.
+    expect(cloud.handbacks.get(first.jobId)?.checks).toBeUndefined();
+    // The agent's commit and the leftover, committed by the host; never the result file.
+    expect(git(repo.bare, "show", "factory/flow/acm-7:one.txt")).toBe("left over");
+    expect(git(repo.bare, "ls-tree", "-r", "--name-only", "factory/flow/acm-7")).not.toContain(
+      RESULT_FILE,
+    );
+    // Only the item's branch moved on "GitHub".
+    expect(git(repo.bare, "for-each-ref", "--format=%(refname)").split("\n").sort()).toEqual([
+      "refs/heads/factory/7-add-a-line",
+      "refs/heads/factory/flow/acm-7",
+      "refs/heads/main",
+    ]);
+
+    // Something lands on main; the next run starts from the item's branch and never merges main.
+    await land(repo, "main", "other.txt", "landed meanwhile\n");
+    const second = { ...flowJob("factory/flow/acm-7"), jobId: "job_second", runNo: 2 };
+    cloud.claims.set("c2", second);
+    const again = await runJob({
+      adapter: fakeAdapter((x) => repo.host.clonePath(x), work("two")),
+      cp,
+      git: repo.host,
+      job: second,
+      flushMs: 5,
+    });
+    expect(again.error).toBeUndefined();
+    expect(again.outcome).toBe("completed");
+    const head = git(repo.bare, "rev-parse", "factory/flow/acm-7");
+    expect(again.headSha).toBe(head);
+    // A fast-forward of the first run's work, without main's new commit.
+    git(repo.bare, "merge-base", "--is-ancestor", pushed, head);
+    expect(git(repo.bare, "show", "factory/flow/acm-7:one.txt")).toBe("left over");
+    expect(git(repo.bare, "show", "factory/flow/acm-7:two.txt")).toBe("left over");
+    expect(git(repo.bare, "ls-tree", "-r", "--name-only", "factory/flow/acm-7")).not.toContain(
+      "other.txt",
+    );
+    expect(git(repo.bare, "log", "--format=%s", "factory/flow/acm-7")).not.toContain("Merge");
+  });
+
+  it("hands back without a push when the run made no commits", async () => {
+    const { repo, cloud, cp } = await world();
+    const j = flowJob("main");
+    cloud.claims.set("c", j);
+    const adapter = fakeAdapter(
+      (x) => repo.host.clonePath(x),
+      async (wt) => {
+        await writeFile(join(wt, RESULT_FILE), JSON.stringify({ outcome: "done", summary: "ok" }));
+        return [{ type: "session.ended" as const, outcome: "completed" as const }];
+      },
+    );
+    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
+    expect(report.outcome).toBe("completed");
+    expect(report.headSha).toBeUndefined();
+    expect(cloud.handbacks.get(j.jobId)).toMatchObject({
+      branch: "factory/flow/acm-7",
+      outcome: "completed",
+    });
+    expect(git(repo.bare, "for-each-ref", "--format=%(refname)")).not.toContain("flow");
   });
 });
 

@@ -64,7 +64,9 @@ describe("the board", () => {
     const html = await renderPage(BOARD);
     const text = textOf(html);
     expect(count(html, 'data-testid="board-column"')).toBe(5);
-    expect(text).toContain("API Platform Board List Workflow Ship a feature");
+    expect(text).toContain(
+      "API Platform Board List Workflow Settings Ship a feature · used by 2 projects acme/api",
+    );
     expect(text).toContain("Spec 1 L Lead");
     expect(text).toContain("Build 2 B Backend");
     expect(text).toContain("Approve 2 O owner");

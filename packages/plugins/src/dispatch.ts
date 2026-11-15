@@ -4,13 +4,15 @@
 // it runs. `leaving` ends at the first refusal.
 import {
   enabledPlugins,
+  getProject,
   type Item,
   type Plugin,
+  type ProjectRepo,
   setPluginLastError,
   stopItem,
 } from "@software-factory/store";
 import { PluginCtx } from "./ctx.ts";
-import type { HookName, HookPayload, PluginHostEnv } from "./types.ts";
+import { type HookName, type HookPayload, type PluginHostEnv, pluginItem } from "./types.ts";
 import { loadPlugin, messageOf, withDeadline } from "./worker.ts";
 
 /**
@@ -19,6 +21,7 @@ import { loadPlugin, messageOf, withDeadline } from "./worker.ts";
  */
 export class Session {
   private readonly byOrg = new Map<string, Promise<Plugin[]>>();
+  private readonly repos = new Map<string, Promise<ProjectRepo | null>>();
   /** Plugin moves applied in this session. */
   moves = 0;
 
@@ -31,6 +34,21 @@ export class Session {
       this.byOrg.set(orgId, found);
     }
     return found;
+  }
+
+  /** The project's repository (one read by primary key per project), or null. */
+  repo(projectId: string): Promise<ProjectRepo | null> {
+    let found = this.repos.get(projectId);
+    if (!found) {
+      found = getProject(this.env.DB, projectId).then((p) => p?.repo ?? null);
+      this.repos.set(projectId, found);
+    }
+    return found;
+  }
+
+  /** The item as a plugin sees it, with its project's repository. */
+  async item(item: Item) {
+    return pluginItem(item, await this.repo(item.projectId));
   }
 }
 
@@ -77,7 +95,7 @@ export async function dispatch(
   const outcome: DispatchOutcome = { moves: [], created: [] };
   const item = options.item ?? null;
   for (const plugin of plugins) {
-    const ctx = new PluginCtx(env, plugin, item, options.statusIds ?? null);
+    const ctx = new PluginCtx(env, plugin, item, options.statusIds ?? null, session);
     try {
       const entry = await loadPlugin(env, plugin);
       const out = await withDeadline(() => entry.run(hook, { hook, ...payload }, ctx));

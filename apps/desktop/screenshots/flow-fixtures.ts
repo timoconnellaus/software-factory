@@ -6,6 +6,7 @@
 import type {
   FlowActor,
   FlowAgent,
+  FlowGithubRepo,
   FlowInboxAllItem,
   FlowItem,
   FlowOpMap,
@@ -48,6 +49,8 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "Lead",
     instructions: "Turn each item into a short plan the builders can follow.",
+    // The server always sends `mcp`: none beyond the base servers.
+    mcp: [],
     createdAt: ago(9000),
   },
   {
@@ -66,6 +69,7 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "QA",
     instructions: "Check the change does what the item asks. Say what you tried.",
+    mcp: [],
     createdAt: ago(9000),
   },
   {
@@ -82,6 +86,7 @@ const AGENTS: FlowAgent[] = [
     orgId: CLIENT_ORG,
     name: "Builder",
     instructions: "Build the site's pages.",
+    mcp: [],
     createdAt: ago(9000),
   },
 ];
@@ -93,7 +98,8 @@ export const MEMBERS: Record<string, FlowMember[]> = {
   ],
   [CLIENT_ORG]: [
     { userId: FLOW_ME, name: "owner", login: "owner" },
-    { userId: "usr_ria", name: "Ria Patel", login: "riap" },
+    // Signed in without GitHub: the server sends a null login.
+    { userId: "usr_ria", name: "Ria Patel", login: null },
   ],
 };
 
@@ -128,6 +134,7 @@ const PROJECTS: FlowProject[] = [
     key: "API",
     workflowId: "fwf_ship",
     nextNumber: 13,
+    repo: { owner: "acme", name: "api", defaultBranch: "main" },
     createdAt: ago(9000),
   },
   {
@@ -172,6 +179,8 @@ const item = (
   createdBy: FLOW_ME,
   createdAt: ago(updated + 120),
   updatedAt: ago(updated),
+  // The server always sends the item's plugin fields, empty when it has none.
+  fields: {},
   ...over,
 });
 
@@ -435,7 +444,7 @@ const RUNS: FlowRun[] = [
   }),
   // 15m 3s, as the mockup's.
   run("fitm_rate", "Add rate limiting to the public API", "done", 55.05, 15.05, {
-    result: { outcome: "done" },
+    result: { outcome: "done", summary: "Limiter and tests are in." },
     steps: 13,
     costUsd: null,
   }),
@@ -883,7 +892,10 @@ const PLUGINS: FlowPluginDetail[] = [
     enabled: true,
     lastError: null,
     updatedAt: ago(2 * 24 * 60),
-    code: `export default definePlugin({\n  name: "Publish to the blog",\n  on: { entered: "shipped" },\n  async run({ item, gateways, card }) {\n    const post = await gateways.blog.post("/posts", { title: item.title, body: item.body });\n    await card({ kind: "link", title: "Published", link: { label: "Read it", url: post.url } });\n  },\n});\n`,
+    // As the server lists a plugin: the hooks its module defines, read when it was saved. The code
+    // is a module the server takes (packages/plugins' guide).
+    hooks: ["entered"],
+    code: `export default {\n  on: {\n    async entered(ctx, { to, item }) {\n      if (to !== "shipped") return;\n      const res = await ctx.gateway("Blog").fetch("/posts", {\n        method: "POST",\n        body: { title: item.title, body: item.body },\n      });\n      const post = await res.json();\n      await ctx.card({ kind: "link", title: "Published", link: { label: "Read it", url: post.url } });\n    },\n  },\n};\n`,
   },
   {
     id: "fplg_customer",
@@ -895,7 +907,7 @@ const PLUGINS: FlowPluginDetail[] = [
     updatedAt: ago(7 * 24 * 60),
     hooks: ["trigger"],
     triggerPath: "/flow/triggers/fplg_customer/<name>?key=5f1c9a0e7b2d4c68a3e1f09b7d6c2a4e8b3f5d1c",
-    code: `export default definePlugin({\n  name: "Customers on feedback",\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n});\n`,
+    code: `export default {\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n  on: {\n    async trigger(ctx, { payload }) {\n      await ctx.createItem({\n        projectId: "fprj_api",\n        title: payload.subject,\n        body: payload.text,\n        fields: { customer: payload.from },\n      });\n    },\n  },\n};\n`,
   },
   {
     id: "fplg_slack",
@@ -905,9 +917,28 @@ const PLUGINS: FlowPluginDetail[] = [
     lastError:
       "Failed 20 minutes ago on AL-3: Slack said the channel #launch wasn't found. The item is stopped.",
     updatedAt: ago(3 * 24 * 60),
-    code: `export default definePlugin({\n  name: "Slack updates",\n  on: { moved: "*" },\n  async run({ item, gateways }) {\n    await gateways.slack.post("/chat.postMessage", { channel: "#launch", text: item.title });\n  },\n});\n`,
+    hooks: ["entered"],
+    code: `export default {\n  on: {\n    async entered(ctx, { item }) {\n      await ctx.gateway("Slack").fetch("/chat.postMessage", {\n        method: "POST",\n        body: { channel: "#launch", text: item.title },\n      });\n    },\n  },\n};\n`,
   },
 ];
+
+/** What the personal org's GitHub connection reaches; the client org has none. */
+const GITHUB_REPOS: FlowGithubRepo[] = [
+  { owner: "acme", name: "api", defaultBranch: "main", installationId: "4100" },
+  { owner: "acme", name: "launch-site", defaultBranch: "main", installationId: "4100" },
+  { owner: "acme", name: "mobile", defaultBranch: "develop", installationId: "4100" },
+];
+
+/** The built-in `github` gateway an org with a GitHub connection has: listed, never edited. */
+const BUILTIN_GITHUB: FlowGateway = {
+  id: "builtin:github",
+  name: "github",
+  baseUrl: "https://api.github.com/repos/{owner}/{name}",
+  auth: { kind: "bearer" },
+  hasSecret: true,
+  builtIn: true,
+  description: "GitHub, connected as acme",
+};
 
 const GATEWAYS: FlowGateway[] = [
   {
@@ -1112,7 +1143,30 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return { ...found, enabled: input.enabled };
   },
   "flow.plugin.delete": () => ({ ok: true }),
-  "flow.gateway.list": () => ({ gateways: GATEWAYS }),
+  "flow.gateway.list": (input) => ({
+    gateways: input.orgId === FLOW_ORG ? [...GATEWAYS, BUILTIN_GITHUB] : GATEWAYS,
+  }),
+  "flow.github.repos": (input) =>
+    input.orgId === FLOW_ORG
+      ? { connected: true, account: "acme", repos: GITHUB_REPOS }
+      : { connected: false, account: null, repos: [] },
+  "flow.project.get": (input) =>
+    PROJECTS.find((p) => p.id === input.projectId) ?? (PROJECTS[0] as FlowProject),
+  // Not kept: the screens re-read the fixture's projects as they were.
+  "flow.project.setRepository": (input) => {
+    const project = PROJECTS.find((p) => p.id === input.projectId) ?? (PROJECTS[0] as FlowProject);
+    if ("clear" in input) return { ...project, repo: null };
+    const found = GITHUB_REPOS.find((r) => r.owner === input.owner && r.name === input.name);
+    if (!found)
+      throw new Refusal(
+        "not_found",
+        `The org's GitHub connection doesn't reach ${input.owner}/${input.name}.`,
+      );
+    return {
+      ...project,
+      repo: { owner: found.owner, name: found.name, defaultBranch: found.defaultBranch },
+    };
+  },
   "flow.gateway.save": (input) => ({
     id: GATEWAYS.find((g) => g.name === input.name)?.id ?? "fgw_new",
     name: input.name,
