@@ -26,7 +26,7 @@ export default {
 ## ctx: how a plugin acts (await every call)
 - \`ctx.item\`: the item as plain data: { id, number, title, body, statusId, fields, branch, headSha,
   repo }. Null in a trigger. \`repo\` is its project's GitHub repository, { owner, name,
-  defaultBranch }, or null. \`branch\` is the item's branch there (factory/flow/<key>-<number>), set
+  defaultBranch }, or null. \`branch\` is the item's branch there (factory/flow-<key>-<number>), set
   once an agent's run on it starts; \`headSha\` is the head the last run that ended done pushed.
 - \`from\` and \`to\` are status ids; \`fromName\` and \`toName\` are the statuses' names.
 - \`await ctx.comment(text)\`: a comment on the item's timeline, from the plugin.

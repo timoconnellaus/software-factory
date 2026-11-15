@@ -7,7 +7,7 @@
 // A job without a repo (a `flow` job, spec 70) skips every git step: no token, clone, branch,
 // merge, checks, push or diff. The adapter gives it a plain directory; the rest is the same. A
 // `flow` job WITH a repo works like a build without the default-branch merge or the checks: a
-// worktree on its item's branch `factory/flow/<key>-<n>` (from that branch when it exists, else
+// worktree on its item's branch `factory/flow-<key>-<n>` (from that branch when it exists, else
 // the default branch), leftovers committed, and the branch pushed when the run made commits.
 //
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,

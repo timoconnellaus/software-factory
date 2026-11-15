@@ -67,7 +67,7 @@ export class GitError extends Error {
 
 /**
  * The run branch a job may push: its own `factory/<n>-<slug>-run-<k>`, nothing else (ADR 0035). A
- * `flow` job (spec 70) pushes its item's branch `factory/flow/<key>-<n>`, the job's `branch`, and
+ * `flow` job (spec 70) pushes its item's branch `factory/flow-<key>-<n>`, the job's `branch`, and
  * nothing else.
  */
 export function assertPushable(

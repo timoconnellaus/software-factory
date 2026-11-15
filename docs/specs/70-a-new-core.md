@@ -213,7 +213,7 @@ example 3). None of the old core's software flow (merge queue, babysitter, revie
   `flow.project.setRepository` stores one (owner, name, default branch, installation) after
   checking it is reachable. The desktop app's project Settings tab picks it.
 - **A run on such a project works in a checkout.** The item's branch is
-  `factory/flow/<key>-<number>` (key lower-cased), set by the item's first such claim and reused by
+  `factory/flow-<key>-<number>` (key lower-cased), set by the item's first such claim and reused by
   every later run. The job carries `repo` and `branch`; `baseRef` is the item's branch when its
   `head_sha` is set (a run that ended `done` pushed it), the default branch for the item's first
   run, and otherwise the item's branch only if GitHub says it exists (asked once, at that claim).
