@@ -56,6 +56,10 @@ export const flowGatewaySchema = z.object({
   auth: flowGatewayAuthSchema,
   /** A secret is saved. It is never sent back. */
   hasSecret: z.boolean(),
+  /** Built in (the org's GitHub connection): not a row, so it can't be changed or removed. */
+  builtIn: z.boolean().optional(),
+  /** What a built-in gateway is, in words ("GitHub, connected as acme"). */
+  description: z.string().optional(),
 });
 export type FlowGateway = z.infer<typeof flowGatewaySchema>;
 

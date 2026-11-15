@@ -35,6 +35,8 @@ const IDS: ContractIds = {
   gatewayName: "Blog",
   gatewayId: "fgw_blog",
   scheduleId: "fsch_deps",
+  repoOwner: "acme",
+  repoName: "api",
 };
 
 /** Each fixture's ids in turn: both orgs, every item, every run view, every chat. */

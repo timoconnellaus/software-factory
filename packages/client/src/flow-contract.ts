@@ -14,6 +14,7 @@ import {
   type FlowStatus,
   flowAgentSchema,
   flowBoardSchema,
+  flowGithubReposSchema,
   flowInboxAllSchema,
   flowInboxSchema,
   flowItemDetailSchema,
@@ -44,6 +45,9 @@ export const FLOW_RESPONSES = {
   "flow.project.list": z.object({ projects: z.array(flowProjectSchema) }),
   "flow.project.create": flowProjectSchema,
   "flow.project.setWorkflow": flowProjectSchema,
+  "flow.project.get": flowProjectSchema,
+  "flow.project.setRepository": flowProjectSchema,
+  "flow.github.repos": flowGithubReposSchema,
   "flow.workflow.list": z.object({ workflows: z.array(flowWorkflowSchema) }),
   "flow.workflow.get": flowWorkflowSchema,
   "flow.workflow.create": flowWorkflowSchema,
@@ -105,6 +109,9 @@ export interface ContractIds {
   gatewayName: string;
   gatewayId: string;
   scheduleId: string;
+  /** A repository the org's GitHub connection reaches (the project Settings picker). */
+  repoOwner: string;
+  repoName: string;
 }
 
 /** An item as decisionFor reads it: waiting on `waiting`. */
@@ -169,6 +176,13 @@ export const FLOW_REQUESTS: {
   "flow.project.setWorkflow": ({ orgId, projectId, workflowId }) => [
     { orgId, projectId, workflowId },
   ],
+  "flow.project.get": ({ orgId, projectId }) => [{ orgId, projectId }],
+  // The project's Settings (project-settings.tsx): Clear, then a repository picked from the list.
+  "flow.project.setRepository": ({ orgId, projectId, repoOwner, repoName }) => [
+    { orgId, projectId, clear: true },
+    { orgId, projectId, owner: repoOwner, name: repoName },
+  ],
+  "flow.github.repos": ({ orgId }) => [{ orgId }],
   "flow.workflow.list": ({ orgId }) => [{ orgId }],
   "flow.workflow.get": ({ orgId, workflowId }) => [{ orgId, workflowId }],
   "flow.workflow.create": (ids) => {

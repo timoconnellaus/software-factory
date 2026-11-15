@@ -503,11 +503,28 @@ export function stageAllow(
 /** `//abs/path`: an absolute path in a permission rule (a single `/` is relative to the settings). */
 const abs = (path: string) => `//${path.replace(/^\/+/, "")}`;
 
+/**
+ * The stage whose permissions a job runs with: its own, except that a `flow` job with a repository
+ * (spec 70) works like a build in its checkout (editing, the shell, git add and commit, the
+ * toolchain, the build's mode). The host pushes; the agent never can.
+ */
+export function permissionStage(
+  job: Pick<Job, "stage"> & Partial<Pick<Job, "repo" | "branch">>,
+): JobStage {
+  return job.stage === "flow" && job.repo !== undefined && job.branch !== undefined
+    ? "build"
+    : job.stage;
+}
+
 /** The settings for one run. Pure: `projectHarness` writes it. */
-export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): ClaudeSettings {
+export function runSettings(
+  job: Pick<Job, "stage"> & Partial<Pick<Job, "repo" | "branch">>,
+  options: SettingsOptions,
+): ClaudeSettings {
   const profile = options.profile;
   const isolation = options.isolation ?? "sandbox";
-  const mode = stageMode(job.stage, profile, isolation);
+  const stage = permissionStage(job);
+  const mode = stageMode(stage, profile, isolation);
   // Inside a container the container is the floor: Claude's own sandbox can't run nested there
   // (bubblewrap needs user namespaces Docker's seccomp profile blocks), ADR 0430.
   const osSandbox = isolation === "sandbox";
@@ -530,8 +547,8 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
   // Edit denies into the sandbox's denyWrite, which would also block the run's git from writing
   // objects into the checkout's git dir.
   const writeDeny = [...homeRules, `${abs(configDir)}`, `${abs(configDir)}/**`];
-  const allow = [...stageAllow(job.stage, options.worktree, domains)];
-  for (const rule of profile?.allow?.[job.stage] ?? []) if (!allow.includes(rule)) allow.push(rule);
+  const allow = [...stageAllow(stage, options.worktree, domains)];
+  for (const rule of profile?.allow?.[stage] ?? []) if (!allow.includes(rule)) allow.push(rule);
   if (options.attachmentsDir) allow.push(`Read(${abs(options.attachmentsDir)}/**)`);
   if (job.stage === "flow") {
     for (const name of options.mcpServers ?? []) allow.push(`mcp__${name}__*`);

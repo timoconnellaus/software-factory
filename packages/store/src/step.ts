@@ -29,6 +29,10 @@ export interface Item {
   updatedAt: string;
   /** The item's plugin fields, field id to value. */
   fields: Record<string, unknown>;
+  /** Its branch on the project's repository, once a run with one was claimed; else null. */
+  branch: string | null;
+  /** The head the last run that ended `done` pushed to that branch; else null. */
+  headSha: string | null;
 }
 
 function parseFields(text: string | null | undefined): Record<string, unknown> {
@@ -58,6 +62,8 @@ export function toItem(row: FlowItemsTable): Item {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     fields: parseFields(row.fields),
+    branch: row.branch ?? null,
+    headSha: row.head_sha ?? null,
   };
 }
 
@@ -153,6 +159,8 @@ export interface StepExtras {
   before?: D1PreparedStatement[];
   /** A comment appended after the event and its effects (an agent's summary carries its run). */
   comment?: { actor: Actor; text: string; runId?: string };
+  /** The item's head on its branch, set in the same update (a run that pushed it ended). */
+  headSha?: string;
 }
 
 /** An item as a step reads it: its row, its workflow, and its timeline's last seq. */
@@ -215,7 +223,13 @@ export async function advance(
   const step = apply(workflow, { statusId, waiting, error, stay }, event);
 
   const now = iso();
-  const next: FlowItemsTable = { ...current, ...stateColumns(step.state), updated_at: now };
+  const head = extras.headSha !== undefined ? { head_sha: extras.headSha } : {};
+  const next: FlowItemsTable = {
+    ...current,
+    ...stateColumns(step.state),
+    ...head,
+    updated_at: now,
+  };
   const seq = lastSeq + 1;
   const statements = [
     ...(extras.before ?? []),
@@ -223,7 +237,7 @@ export async function advance(
       d1,
       db
         .updateTable("flow_items")
-        .set({ ...stateColumns(step.state), updated_at: now })
+        .set({ ...stateColumns(step.state), ...head, updated_at: now })
         .where("id", "=", itemId)
         .where("stay", "=", current.stay)
         .where("updated_at", "=", current.updated_at),

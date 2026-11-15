@@ -38,7 +38,7 @@ export const HARNESS_MANIFEST = {
  * factory flags as an interactive launch (`claudeArgv`, without `argv[0]`), then the prompt.
  */
 export function headlessArgs(
-  job: Pick<Job, "stage" | "harness">,
+  job: Pick<Job, "stage" | "harness"> & Partial<Pick<Job, "repo" | "branch">>,
   options: { settingsPath: string },
 ): string[] {
   return [

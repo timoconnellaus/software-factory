@@ -71,7 +71,9 @@ describe("the workflow editor", () => {
   it("is the project's third tab: the statuses as boxes in order, with + at the end", async () => {
     const html = await renderPage(TAB);
     const text = textOf(html);
-    expect(text).toContain("API Platform Board List Workflow Ship a feature · used by 2 projects");
+    expect(text).toContain(
+      "API Platform Board List Workflow Settings Ship a feature · used by 2 projects",
+    );
     expect(text).toContain("All workflows");
     expect(count(html, 'data-testid="status-box"')).toBe(5);
     expect(text).toContain("Review Q QA Needs a decision");

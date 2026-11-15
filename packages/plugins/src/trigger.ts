@@ -5,7 +5,7 @@
 import { getPluginById } from "@software-factory/store";
 import { dispatch, Session } from "./dispatch.ts";
 import { afterCreated } from "./steps.ts";
-import { type PluginHostEnv, type PluginItem, pluginItem } from "./types.ts";
+import type { PluginHostEnv, PluginItem } from "./types.ts";
 
 /** The most a trigger's body may be. */
 export const TRIGGER_BODY_LIMIT = 256 * 1024;
@@ -46,7 +46,8 @@ export async function fireTrigger(
     { pluginId, session },
   );
   const created: PluginItem[] = [];
-  for (const item of out.created) created.push(pluginItem(await afterCreated(session, item)));
+  for (const item of out.created)
+    created.push(await session.item(await afterCreated(session, item)));
   if (out.failure) return { ok: false, status: 500, error: out.failure.message };
   return { ok: true, created };
 }

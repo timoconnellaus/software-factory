@@ -484,24 +484,42 @@ export function canRun(
 }
 
 /**
- * The run branch for run `runNo` of a work item whose branch is `itemBranch` (ADR 0035):
- * `factory/<n>-<slug>` → `factory/<n>-<slug>-run-<k>`.
- */
-/**
- * Whether the runner host commits, checks for an unresolved merge of the default branch and pushes
- * the run branch at the end of the job: a build, and a `babysit` job sent to resolve a conflict
- * (spec 53 §4: it merges the default branch in on its run branch, never a rebase or force push).
+ * Whether the runner host commits and pushes the job's branch at the end of the job: a build, a
+ * `babysit` job sent to resolve a conflict (spec 53 §4: it merges the default branch in on its run
+ * branch, never a rebase or force push), and a `flow` job with a repository (spec 70: it pushes its
+ * item's branch, `factory/flow/<key>-<n>`; no default-branch merge and no checks).
  */
 export function pushesRunBranch(job: {
   stage: JobStage;
   context?: Record<string, unknown> | undefined;
+  repo?: unknown;
+  branch?: string | undefined;
 }): boolean {
   if (job.stage === "build") return true;
+  if (job.stage === "flow") return job.repo !== undefined && job.branch !== undefined;
   if (job.stage !== "babysit") return false;
   const reason = job.context?.reason as { kind?: unknown } | undefined;
   return reason?.kind === "conflict";
 }
 
+/**
+ * A `flow` job with a repository (spec 70) works on, and pushes, its item's branch:
+ * `factory/flow/<lower-cased project key>-<item number>`, one branch for every run on the item. Not
+ * `factory/<digits>-…`, which the old core's webhook reads as its own work items.
+ */
+export function isFlowBranch(branch: string): boolean {
+  return /^factory\/flow\/[a-z0-9][a-z0-9-]*-[0-9]+$/.test(branch);
+}
+
+/** Whether the job is a `flow` job with a repository: it pushes its item's branch. */
+export function isFlowRepoJob(job: { stage: JobStage; repo?: unknown; branch?: string }): boolean {
+  return job.stage === "flow" && job.repo !== undefined && job.branch !== undefined;
+}
+
+/**
+ * The run branch for run `runNo` of a work item whose branch is `itemBranch` (ADR 0035):
+ * `factory/<n>-<slug>` → `factory/<n>-<slug>-run-<k>`.
+ */
 export function runBranch(itemBranch: string, runNo: number): string {
   return `${itemBranch}-run-${runNo}`;
 }

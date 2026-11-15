@@ -82,6 +82,15 @@ export const SCREENS = [
     clicks: ['[data-testid="connect-system"]'],
   },
   { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  // A project's Settings and its repository: `--out flow-project-settings`.
+  { name: "flow-project-settings", path: "/flow/org_personal/p/fprj_api?view=settings" },
+  {
+    name: "flow-project-settings-picker",
+    path: "/flow/org_personal/p/fprj_launch?view=settings",
+    pointerdowns: ['[data-testid="repo-picker"]'],
+  },
+  { name: "flow-project-settings-connect", path: "/flow/org_client/p/fprj_site?view=settings" },
+  { name: "flow-gateways-github", path: "/flow/org_personal/plugins?tab=gateways" },
   // The run view (run.html) and the run line under an agent's summary (board-and-item-panel.html):
   // `--out flow-run`. The finished run with its first Bash step (the failing tests) chosen.
   {
@@ -155,7 +164,16 @@ const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
-async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrolls = []) {
+async function shoot(
+  cdp,
+  url,
+  file,
+  theme,
+  keys = [],
+  clicks = [],
+  pointerdowns = [],
+  scrolls = [],
+) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -173,6 +191,13 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrolls = []
   for (const selector of clicks) {
     await cdp.send("Runtime.evaluate", {
       expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
+    });
+    await sleep(500);
+  }
+  // Radix opens a select or a menu on pointerdown, not click.
+  for (const selector of pointerdowns) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(selector)})?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }))`,
     });
     await sleep(500);
   }
@@ -242,6 +267,7 @@ try {
         theme,
         s.keys,
         s.clicks,
+        s.pointerdowns,
         s.scrolls,
       );
     }

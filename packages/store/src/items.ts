@@ -61,6 +61,8 @@ export async function createItem(
     created_at: now,
     updated_at: now,
     fields: JSON.stringify(input.fields ?? {}),
+    branch: null,
+    head_sha: null,
   };
   const actor: Actor = input.actor ?? { kind: "person", id: input.createdBy };
   await writeBatch(d1, [

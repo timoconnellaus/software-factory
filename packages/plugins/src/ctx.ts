@@ -14,8 +14,20 @@ import {
   setField,
 } from "@software-factory/store";
 import { z } from "zod";
-import { type GatewayRequest, type GatewayResponse, gatewayFetch } from "./gateway.ts";
-import { cardSchema, type PluginHostEnv, type PluginItem, pluginItem } from "./types.ts";
+import type { Session } from "./dispatch.ts";
+import {
+  type GatewayRequest,
+  type GatewayResponse,
+  gatewayFetch,
+  githubGatewayFetch,
+} from "./gateway.ts";
+import {
+  cardSchema,
+  GITHUB_GATEWAY,
+  type PluginHostEnv,
+  type PluginItem,
+  pluginItem,
+} from "./types.ts";
 
 const newItemSchema = z.object({
   projectId: z.string().min(1),
@@ -41,6 +53,7 @@ export class PluginCtx extends RpcTarget {
     private readonly item: Item | null,
     /** The statuses `ctx.move` may name: the item's workflow's. */
     private readonly statusIds: string[] | null,
+    private readonly session: Session,
   ) {
     super();
   }
@@ -112,11 +125,21 @@ export class PluginCtx extends RpcTarget {
       actor: this.actor,
     });
     this.created.push(item);
-    return pluginItem(item);
+    return pluginItem(item, project.repo);
   }
 
   gatewayFetch(name: string, path: string, init: GatewayRequest): Promise<GatewayResponse> {
     this.open();
+    if (name === GITHUB_GATEWAY) {
+      return githubGatewayFetch(
+        this.env,
+        this.session,
+        this.plugin.orgId,
+        this.item,
+        path,
+        init ?? {},
+      );
+    }
     return gatewayFetch(this.env, this.plugin.orgId, name, path, init ?? {});
   }
 }

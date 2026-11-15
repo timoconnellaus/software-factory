@@ -25,6 +25,8 @@ const IDS: ContractIds = {
   gatewayName: "blog",
   gatewayId: "fgw_1",
   scheduleId: "fsch_1",
+  repoOwner: "acme",
+  repoName: "api",
 };
 
 describe("the app's flow operations against the server's registry", () => {

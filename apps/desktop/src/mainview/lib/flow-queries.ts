@@ -17,6 +17,17 @@ export const flowProjectsQuery = (orgId: string) =>
     staleTime: 30_000,
   });
 
+/**
+ * The repositories the org's GitHub connection reaches (a project's Settings). Slow on the server
+ * (it asks GitHub), so read only while Settings shows, never polled.
+ */
+export const flowGithubReposQuery = (orgId: string) =>
+  queryOptions({
+    queryKey: ["flow", orgId, "github", "repos"],
+    queryFn: () => read("flow.github.repos", { orgId }),
+    staleTime: 5 * 60_000,
+  });
+
 export const flowAgentsQuery = (orgId: string) =>
   queryOptions({
     queryKey: ["flow", orgId, "agents"],

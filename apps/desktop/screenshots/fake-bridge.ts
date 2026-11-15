@@ -254,7 +254,11 @@ export const bun = {
   runnerState: async () => runner,
   runnerAction: async () => runner,
   loginItem: async () => ({ enabled: true }),
-  openExternal: async () => ({ ok: true }),
+  // Recorded as a write would be, so a behaviour test sees which page it opened.
+  openExternal: async (p: { url: string }) => {
+    calls.push({ op: "openExternal", input: p });
+    return { ok: true };
+  },
   saveDownload: async () => ({ ok: true, path: null }),
   updateStatus: async () => updateStatus(),
   updateAction: async () => updateStatus(),

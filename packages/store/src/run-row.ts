@@ -28,6 +28,9 @@ export interface Run {
   createdAt: string;
   claimedAt: string | null;
   finishedAt: string | null;
+  /** The branch the run worked on and the head it handed back; null without a repository. */
+  branch: string | null;
+  headSha: string | null;
   /** Tool calls the runner reported (run-events.ts). */
   steps: number;
   /** Tokens the runner reported, or null when it reports none. */
@@ -55,6 +58,8 @@ export function toRun(row: FlowRunRow): Run {
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     finishedAt: row.finished_at,
+    branch: row.branch ?? null,
+    headSha: row.head_sha ?? null,
     steps: row.steps,
     tokens: row.tokens,
     costUsd: row.cost_usd,

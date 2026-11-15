@@ -18,7 +18,7 @@ import {
 import { describe, expect, it } from "vitest";
 import worker from "../src/index.ts";
 import { base, claim, type Person, person, post } from "./flow-helpers.ts";
-import { uid } from "./helpers.ts";
+import { github, uid } from "./helpers.ts";
 
 /**
  * Keys the app's types describe that this org's answers leave out, and why. Anything else unseen
@@ -28,6 +28,10 @@ const EXPECTED_UNSEEN: Partial<Record<FlowOpName, string[]>> = {
   // Only flow.project.list counts open items; create and setWorkflow answer the project alone.
   "flow.project.create": ["openCount"],
   "flow.project.setWorkflow": ["openCount"],
+  "flow.project.get": ["openCount"],
+  "flow.project.setRepository": ["openCount"],
+  // A saved gateway is the org's own: only flow.gateway.list adds the built-in github one.
+  "flow.gateway.save": ["builtIn", "description"],
 };
 
 /** One call through the door, as the app sends it: the result, or the refusal thrown. */
@@ -98,6 +102,8 @@ describe("the desktop app's flow contract against the engine", () => {
       gatewayName: "blog",
       gatewayId: "",
       scheduleId: "",
+      repoOwner: "acme",
+      repoName: uid("site-").toLowerCase(),
     };
 
     /**
@@ -135,6 +141,29 @@ describe("the desktop app's flow contract against the engine", () => {
         "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
       ).bind(uid("mem_"), p.orgId, other, now),
     ]);
+
+    // The org's GitHub connection (the engine's fake App): one repository it reaches.
+    const installationId = `8${Date.now()}`;
+    await github.putInstallation({
+      installationId,
+      account: { login: ids.repoOwner, type: "Organization" },
+      repos: [
+        {
+          id: Date.now(),
+          owner: ids.repoOwner,
+          name: ids.repoName,
+          private: true,
+          defaultBranch: "main",
+        },
+      ],
+    });
+    await env.DB.prepare(
+      `INSERT INTO core_github_installations (id, org_id, installation_id, account_login, account_type,
+        repository_selection, status, connected_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'Organization', 'selected', 'active', ?, ?, ?)`,
+    )
+      .bind(uid("ghi_"), p.orgId, installationId, ids.repoOwner, p.userId, now, now)
+      .run();
 
     // The org's agents: Chat's Builder, and a writer (made, then changed as Team changes it).
     ids.builderId = String((await check("flow.agent.ensureBuilder")).id);
@@ -183,6 +212,10 @@ describe("the desktop app's flow contract against the engine", () => {
       code: PLUGIN,
     });
     ids.projectId = project.id;
+    // The project's Settings: the repositories, then Clear and a pick; its runs work in it.
+    await check("flow.github.repos");
+    expect((await check("flow.project.setRepository")).repo).toMatchObject({ name: ids.repoName });
+    await check("flow.project.get");
     const item = String((await check("flow.item.create")).id);
     ids.itemId = item;
     await check("flow.item.comment");
@@ -190,6 +223,7 @@ describe("the desktop app's flow contract against the engine", () => {
     // Its run: claimed, a note, a tool call and its result, then handed back done.
     const job = await claim(p);
     if (!job || job.workItem.id !== item) throw new Error("no job for the item");
+    if (!job.branch) throw new Error("the item's run has no branch");
     ids.runId = job.jobId;
     let seq = 0;
     const ev = (e: Record<string, unknown>) => ({
@@ -216,7 +250,8 @@ describe("the desktop app's flow contract against the engine", () => {
       fencingToken: job.lease.fencingToken,
       outcome: "completed",
       artifactIds: [],
-      branch: "",
+      branch: job.branch,
+      headSha: "c".repeat(40),
       result: { outcome: "done", summary: "Drafted the post: 150 words." },
     });
     await p.channel.release({

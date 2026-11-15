@@ -64,8 +64,36 @@ export const flowItemSchema = z.object({
   updatedAt: z.string(),
   /** Plugin fields' values, by field id (flow-edit.ts `fieldChips`). */
   fields: z.record(z.string(), z.unknown()).optional(),
+  /** Its branch on the project's repository, once a run there was claimed (else null). */
+  branch: z.string().nullable().optional(),
+  /** The head the last run that ended done pushed to that branch (else null). */
+  headSha: z.string().nullable().optional(),
 });
 export type FlowItem = z.infer<typeof flowItemSchema>;
+
+/** A project's repository: where its runs check out and push the item's branch. */
+export const flowRepoSchema = z.object({
+  owner: z.string(),
+  name: z.string(),
+  defaultBranch: z.string(),
+});
+export type FlowRepo = z.infer<typeof flowRepoSchema>;
+
+/** A repository the org's GitHub connection reaches (`flow.github.repos`). */
+export const flowGithubRepoSchema = flowRepoSchema.extend({ installationId: z.string() });
+export type FlowGithubRepo = z.infer<typeof flowGithubRepoSchema>;
+
+/** `flow.github.repos`: whether the org has a GitHub connection, and what it reaches. */
+export const flowGithubReposSchema = z.object({
+  connected: z.boolean(),
+  /** The GitHub account it is connected as, when connected. */
+  account: z.string().nullable(),
+  repos: z.array(flowGithubRepoSchema),
+});
+export type FlowGithubRepos = z.infer<typeof flowGithubReposSchema>;
+
+/** "acme/api". */
+export const repoName = (repo: Pick<FlowRepo, "owner" | "name">) => `${repo.owner}/${repo.name}`;
 
 export const flowProjectSchema = z.object({
   id: z.string(),
@@ -74,6 +102,8 @@ export const flowProjectSchema = z.object({
   key: z.string(),
   workflowId: z.string(),
   nextNumber: z.number(),
+  /** The GitHub repository its runs work in, or null. Optional: an engine before it sends none. */
+  repo: flowRepoSchema.nullable().optional(),
   /** Its items not yet in the workflow's last status (`flow.project.list` only). */
   openCount: z.number().optional(),
   createdAt: z.string(),
@@ -208,6 +238,14 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
     input: Org & { name: string; key: string; workflowId: string };
     output: FlowProject;
   };
+  "flow.project.get": { input: Org & { projectId: string }; output: FlowProject };
+  "flow.project.setRepository": {
+    input:
+      | (Org & { projectId: string; owner: string; name: string })
+      | (Org & { projectId: string; clear: true });
+    output: FlowProject;
+  };
+  "flow.github.repos": { input: Org; output: FlowGithubRepos };
   "flow.workflow.list": { input: Org; output: { workflows: FlowWorkflow[] } };
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };

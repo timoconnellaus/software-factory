@@ -72,7 +72,11 @@ export {
   createProject,
   getProject,
   listProjects,
+  type OrgInstallation,
+  orgInstallations,
   type Project,
+  type ProjectRepo,
+  setProjectRepo,
   setProjectWorkflow,
 } from "./projects.ts";
 export {
@@ -103,6 +107,8 @@ export {
   failRun,
   finishRun,
   getRun,
+  itemBranch,
+  type Pushed,
   type Run,
   type RunEnding,
   type RunResult,

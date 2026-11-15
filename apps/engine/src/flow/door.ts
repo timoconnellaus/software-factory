@@ -12,16 +12,26 @@ import {
 import type { PluginHostEnv } from "@software-factory/plugins";
 import { STATUS } from "../channel.ts";
 import { secrets } from "../secrets.ts";
+import { flowGitHub } from "./github.ts";
 
 export const isFlowOp = (op: unknown): op is string =>
   typeof op === "string" && op.startsWith(PREFIX);
 
 export const getFlowOperation = getOperation;
 
-/** What the plugin host gets from the engine: D1, the Worker Loader, and the gateway key. */
+/**
+ * What the plugin host gets from the engine: D1, the Worker Loader, the gateway key, and the
+ * engine's GitHub App (the built-in `github` gateway and the repository picker).
+ */
 export function flowHost(env: Env): PluginHostEnv {
   const key = secrets(env).FLOW_GATEWAY_KEY;
-  return { DB: env.DB, LOADER: env.LOADER, ...(key ? { FLOW_GATEWAY_KEY: key } : {}) };
+  const github = flowGitHub(env);
+  return {
+    DB: env.DB,
+    LOADER: env.LOADER,
+    ...(key ? { FLOW_GATEWAY_KEY: key } : {}),
+    ...(github ? { github } : {}),
+  };
 }
 
 /** The flow operations as the door's `ops` lists the old core's (registry.describeOperations). */

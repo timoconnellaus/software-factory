@@ -671,6 +671,58 @@ export const TESTS = [
       expect(await p.exists("#schedule-name"), "the form closed").toBe(false);
     },
   },
+  // A project's Settings (flow-fixtures.ts: API Platform on acme/api; the client org has no GitHub).
+  {
+    name: "flow project settings: the picker sets the repository, and Clear removes it",
+    async run(p) {
+      await p.open("/flow/org_personal/p/fprj_api?view=settings&end=1");
+      await p.waitFor("document.querySelector('[data-testid=repo-picker]')");
+      expect(await p.exists("[data-testid=project-repo]"), "the header's pill").toBe(true);
+      // Radix opens a select on pointerdown, not click.
+      await p.evaluate(
+        "document.querySelector('[data-testid=repo-picker]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }))",
+      );
+      await p.waitFor("document.querySelectorAll('[role=option]').length === 3");
+      await p.evaluate(
+        "[...document.querySelectorAll('[role=option]')].find((o) => o.textContent === 'acme/mobile').click()",
+      );
+      await sleep(700);
+      const set = await p.calls("flow.project.setRepository");
+      expect(JSON.stringify(set[0]?.input), "owner and name").toBe(
+        JSON.stringify({
+          orgId: "org_personal",
+          projectId: "fprj_api",
+          owner: "acme",
+          name: "mobile",
+        }),
+      );
+      await p.click("[data-testid=clear-repo]");
+      await sleep(700);
+      const cleared = await p.calls("flow.project.setRepository");
+      expect(JSON.stringify(cleared[1]?.input), "cleared").toBe(
+        JSON.stringify({ orgId: "org_personal", projectId: "fprj_api", clear: true }),
+      );
+      expect(await p.evaluate(ROUTER_ERROR), "no router error").toBeFalsy();
+    },
+  },
+  {
+    name: "flow project settings: with no GitHub connection, Connect GitHub opens the connect flow",
+    async run(p) {
+      await p.open("/flow/org_client/p/fprj_site?view=settings&end=1");
+      await p.waitFor("document.querySelector('[data-testid=connect-github]')");
+      expect(await p.exists("[data-testid=repo-picker]"), "no picker").toBe(false);
+      await p.click("[data-testid=connect-github]");
+      await sleep(700);
+      const started = await p.calls("github.connectStart");
+      expect(JSON.stringify(started[0]?.input), "for the org").toBe(
+        JSON.stringify({ orgId: "org_client" }),
+      );
+      const opened = await p.calls("openExternal");
+      expect(opened[0]?.input.url, "the install page").toBe(
+        "https://github.com/apps/software-factory/installations/new?state=fixture",
+      );
+    },
+  },
   {
     name: "flow auto: a row's switch turns it off, and its menu runs it now and removes it",
     async run(p) {

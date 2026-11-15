@@ -17,7 +17,8 @@ function who(actor: TimelineEntry["actor"]): string {
 export function flowPrompt(run: ClaimedRun, comments: TimelineEntry[]): string {
   const agent = run.agent;
   // An item's run always has its item; a chat's run gets chatPrompt (chat-prompt.ts) instead.
-  const item = run.item ?? { number: 0, title: "", body: "" };
+  const item = run.item ?? { number: 0, title: "", body: "", branch: null };
+  const repo = run.project?.repo ?? null;
   const lines = [
     agent ? `You are ${agent.name}.` : "You are an agent working on an item.",
     ...(agent?.instructions.trim() ? ["", agent.instructions.trim()] : []),
@@ -28,6 +29,14 @@ export function flowPrompt(run: ClaimedRun, comments: TimelineEntry[]): string {
     `## The item: #${item.number} ${item.title}`,
     item.body.trim() || "(no description)",
   ];
+  if (repo && item.branch) {
+    lines.push(
+      "",
+      "## Where you work",
+      `You are in a checkout of ${repo.owner}/${repo.name} on branch \`${item.branch}\`; commit your work there as you go.`,
+      "Do not push: the runner pushes the branch when you finish.",
+    );
+  }
   const said = comments
     .map((c) => ({ by: who(c.actor), text: (c.data as { text?: unknown }).text }))
     .filter((c): c is { by: string; text: string } => typeof c.text === "string");
