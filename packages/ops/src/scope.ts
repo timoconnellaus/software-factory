@@ -1,6 +1,6 @@
 // The whole permission model: the caller is a member of the org the call names, and every project,
 // item, workflow and agent the call names belongs to that org. One query answers both.
-import { OpError } from "./operation.ts";
+import { type Caller, OpError } from "./operation.ts";
 
 /** The ids an input names, by kind. */
 interface Named {
@@ -48,14 +48,20 @@ const TABLES = {
 export async function checkScope(
   d1: D1Database,
   orgId: string,
-  userId: string,
+  caller: Caller,
   input: Record<string, unknown>,
 ): Promise<void> {
+  // An agent (through the MCP server) acts only in its run's org; a person in any org they're in.
+  if (caller.kind === "agent" && caller.orgId !== orgId) {
+    throw new OpError("forbidden", `This run's agent acts only in org ${caller.orgId}.`);
+  }
   const ids = named(input);
   const columns = [
-    "EXISTS (SELECT 1 FROM core_member WHERE organization_id = ?1 AND user_id = ?2) AS member",
+    caller.kind === "agent"
+      ? "(?1 IS NOT NULL AND ?2 IS NOT NULL) AS member"
+      : "EXISTS (SELECT 1 FROM core_member WHERE organization_id = ?1 AND user_id = ?2) AS member",
   ];
-  const params: unknown[] = [orgId, userId];
+  const params: unknown[] = [orgId, caller.kind === "agent" ? caller.onBehalfOf : caller.id];
   for (const key of ["projectId", "itemId", "workflowId"] as const) {
     const value = ids[key];
     if (value === undefined) continue;

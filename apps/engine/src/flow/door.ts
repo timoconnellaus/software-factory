@@ -1,13 +1,28 @@
 // The new core's operations through the client door (/client/v1, /cli/v1; spec 70): a `flow.` call
 // runs in @software-factory/ops as the person behind the bearer token, answered in the door's own
 // envelope ({ result } or { error, code, details? }) so the desktop app and `sf call` need no change.
-import { type CallResult, call, describe, getOperation, PREFIX } from "@software-factory/ops";
+import {
+  type Caller,
+  type CallResult,
+  call,
+  describe,
+  getOperation,
+  PREFIX,
+} from "@software-factory/ops";
+import type { PluginHostEnv } from "@software-factory/plugins";
 import { STATUS } from "../channel.ts";
+import { secrets } from "../secrets.ts";
 
 export const isFlowOp = (op: unknown): op is string =>
   typeof op === "string" && op.startsWith(PREFIX);
 
 export const getFlowOperation = getOperation;
+
+/** What the plugin host gets from the engine: D1, the Worker Loader, and the gateway key. */
+export function flowHost(env: Env): PluginHostEnv {
+  const key = secrets(env).FLOW_GATEWAY_KEY;
+  return { DB: env.DB, LOADER: env.LOADER, ...(key ? { FLOW_GATEWAY_KEY: key } : {}) };
+}
 
 /** The flow operations as the door's `ops` lists the old core's (registry.describeOperations). */
 export function describeFlowOperations() {
@@ -19,6 +34,16 @@ export function describeFlowOperations() {
     gateKind: null,
     browserOnly: false,
   }));
+}
+
+/** One flow operation as `actor`: a person through the door, or an agent through the MCP server. */
+export function callFlowAs(
+  env: Env,
+  actor: Caller,
+  op: string,
+  input: unknown,
+): Promise<CallResult> {
+  return call(op, input, { d1: env.DB, host: flowHost(env), actor });
 }
 
 /**
@@ -40,7 +65,7 @@ export function callFlow(
       },
     });
   }
-  return call(op, input, { d1: env.DB, actor: { kind: "person", id: who.userId } });
+  return callFlowAs(env, { kind: "person", id: who.userId }, op, input);
 }
 
 /** A refusal in the door's envelope; `internal` (logged by ops, never detailed) is a 500. */

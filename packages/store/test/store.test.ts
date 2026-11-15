@@ -132,7 +132,12 @@ describe("items and runs", () => {
     const run = await claim();
     expect(run).toMatchObject({ itemId: item.id, brief: "Draft it.", fencingToken: 1 });
     expect(run.item).toEqual({ number: 1, title: "Launch post", body: "Announce it." });
-    expect(run.agent).toEqual({ id: writer.id, name: "Writer", instructions: "Write well." });
+    expect(run.agent).toEqual({
+      id: writer.id,
+      name: "Writer",
+      instructions: "Write well.",
+      mcp: [],
+    });
     expect(await claimRun(d1, "runner_2", Date.now(), MINUTE)).toBeNull();
 
     const moved = await finishRun(d1, run.id, run.fencingToken, {
@@ -271,10 +276,10 @@ describe("items and runs", () => {
     const run = await claim(now);
     // The sweep at now + 2 minutes read the lease as lapsed; the runner renews before it writes.
     expect(await renewLease(d1, run.id, "runner_1", now + 2 * MINUTE, MINUTE)).toBe(true);
-    expect(await expireRun(d1, run.id, run.fencingToken, now + 2 * MINUTE)).toBe(false);
+    expect(await expireRun(d1, run.id, run.fencingToken, now + 2 * MINUTE)).toBeNull();
     expect((await itemRuns(d1, item.id))[0]?.status).toBe("claimed");
     expect(await getItem(d1, item.id)).toMatchObject({ error: null, waiting: { on: "run" } });
-    expect(await expireRun(d1, run.id, run.fencingToken, now + 4 * MINUTE)).toBe(true);
+    expect(await expireRun(d1, run.id, run.fencingToken, now + 4 * MINUTE)).toBeTruthy();
   });
 
   it("lets only one of two concurrent events advance an item", async () => {

@@ -1,15 +1,28 @@
-// An org's agents: a name and instructions. A status's owner names one by id.
+// An org's agents: a name, instructions, and the MCP servers its runs get. A status's owner names
+// one by id.
 import { flowDb, iso, newId, StoreError } from "./db.ts";
+import type { FlowAgentsTable } from "./schema.ts";
 
 export interface Agent {
   id: string;
   orgId: string;
   name: string;
   instructions: string;
+  /** MCP server names its runs get. "factory" is the engine's own (flow ops and the plugin editor). */
+  mcp: string[];
   createdAt: string;
 }
 
-type Row = { id: string; org_id: string; name: string; instructions: string; created_at: string };
+type Row = FlowAgentsTable;
+
+export function parseMcp(text: string | null | undefined): string[] {
+  try {
+    const value = JSON.parse(text ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function toAgent(row: Row): Agent {
   return {
@@ -17,33 +30,40 @@ function toAgent(row: Row): Agent {
     orgId: row.org_id,
     name: row.name,
     instructions: row.instructions,
+    mcp: parseMcp(row.mcp),
     createdAt: row.created_at,
   };
 }
 
 export async function createAgent(
   d1: D1Database,
-  input: { orgId: string; name: string; instructions: string },
+  input: { orgId: string; name: string; instructions: string; mcp?: string[] },
 ): Promise<Agent> {
   const row: Row = {
     id: newId("fagt_"),
     org_id: input.orgId,
     name: input.name,
     instructions: input.instructions,
+    mcp: JSON.stringify(input.mcp ?? []),
     created_at: iso(),
   };
   await flowDb(d1).insertInto("flow_agents").values(row).execute();
   return toAgent(row);
 }
 
+/** Changes an agent's name and instructions, and its MCP servers when `mcp` is given. */
 export async function updateAgent(
   d1: D1Database,
   id: string,
-  input: { name: string; instructions: string },
+  input: { name: string; instructions: string; mcp?: string[] },
 ): Promise<Agent> {
   const row = await flowDb(d1)
     .updateTable("flow_agents")
-    .set({ name: input.name, instructions: input.instructions })
+    .set({
+      name: input.name,
+      instructions: input.instructions,
+      ...(input.mcp ? { mcp: JSON.stringify(input.mcp) } : {}),
+    })
     .where("id", "=", id)
     .returningAll()
     .executeTakeFirst();

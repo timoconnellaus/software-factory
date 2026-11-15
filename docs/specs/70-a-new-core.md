@@ -90,6 +90,57 @@ sf call flow.timeline.get '{"orgId":"<org>","itemId":"<item>"}'
 
 `sf ops` lists every operation; `sf call` also takes the input as `@file` or `-` (stdin).
 
+### Milestone 2: as built (2026-11-15, the cloud half)
+- **Plugins as Dynamic Workers** ([`packages/plugins`](../../packages/plugins)). A plugin is one
+  ES module in `flow_plugins` (migration 0431). The engine loads it through its Worker Loader
+  binding (`LOADER`), keyed by its org and its code's hash, with `globalOutbound: null`; its `ctx`
+  is an RpcTarget the host passes with each hook call. Hooks: `entered`, `leaving` (may refuse),
+  `runEnded`, `trigger`. `ctx`: `comment`, `card`, `setField`, `move`, `createItem`,
+  `gateway(name).fetch`, `item`. One function in front of every item event (the `flow.item.*`
+  operations, a run's hand-back and failure, the lease sweep, plugins' own moves): `leaving` (from
+  the pure kernel, before writing), the event, then `runEnded` and `entered`. A failure (throw,
+  10-second timeout, bad return) records the plugin's `last_error` and stops the item with
+  `Plugin "<name>" failed: <message>`; `flow.item.retry` runs the status, and its `entered` hooks,
+  again.
+- **Fields and cards.** `flow_items.fields`; what a plugin declares is read when it is saved, so
+  `flow.board.get` and `flow.item.get` add `declaredFields` without loading a worker. `card` is a
+  new timeline entry kind.
+- **Gateways** (`flow_gateways`): a base URL, auth (`none`, `bearer`, or a named header) and a
+  secret sealed with AES-GCM under the engine's `FLOW_GATEWAY_KEY`, never returned by a read.
+- **Triggers.** `POST /flow/triggers/<pluginId>/<name>?key=<key>` runs that plugin's `on.trigger`
+  with the JSON body (at most 256 KiB). The key is made when the plugin is first saved.
+- **The engine's MCP server**, "factory", at `POST /flow/mcp` (streamable HTTP, JSON responses).
+  A flow run whose agent has `"factory"` in `flow_agents.mcp` gets a bearer token when it is
+  claimed (only its hash is stored, on the run), carried in the job's new optional `mcpServers`;
+  it works while the run is claimed. Tools: `flow_ops`, `flow_call` (any `flow.*` operation as the
+  run's agent, in its org), `plugin_guide`, `plugin_list`, `plugin_read`, `plugin_save` (refused
+  with the load error unless the module loads), `plugin_delete`, `gateway_list`. The runner side
+  (passing `mcpServers` to the Claude session) is another agent's change.
+- **Operations**: `flow.plugin.list | get | save | delete | setEnabled`,
+  `flow.gateway.list | save | delete`, `flow.item.setField`; `flow.agent.create | update` take
+  `mcp`. Deploying needs the Workers Paid plan (Dynamic Workers) and the `FLOW_GATEWAY_KEY` secret
+  ([deploying.md](../deploying.md)).
+- **Not built in this milestone**: a plugin's screens, tools it gives agents, and changes to an
+  agent's brief; approval of edits, limits, versions, trying a change on one item first.
+
+To try it with `sf call` (after milestone 1's setup above):
+
+```sh
+# A gateway to the blog (its secret is stored encrypted and never shown again).
+sf call flow.gateway.save '{"orgId":"<org>","name":"blog","baseUrl":"https://blog.example/api",
+  "auth":{"kind":"bearer"},"secret":"<token>"}'
+# A plugin: when an item reaches Done, post it and put the link on the item.
+sf call flow.plugin.save @plugin.json   # {"orgId":"<org>","name":"publish","request":"…","code":"export default { … }"}
+sf call flow.plugin.list '{"orgId":"<org>"}'
+sf call flow.item.move '{"orgId":"<org>","itemId":"<item>","to":"done"}'
+sf call flow.timeline.get '{"orgId":"<org>","itemId":"<item>"}'   # the plugin's card
+# Give an agent the engine's MCP server, so its runs can build workflows and plugins.
+sf call flow.agent.update '{"orgId":"<org>","agentId":"<agent>","name":"Builder",
+  "instructions":"Set up what the person asks for.","mcp":["factory"]}'
+# A trigger: flow.plugin.get shows its triggerPath.
+curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=<key>" -d '{"subject":"Help"}'
+```
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the

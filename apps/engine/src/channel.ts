@@ -102,7 +102,7 @@ async function route(
   } else if (path === PATHS.claim) {
     // The new core's runs first (spec 70), then the old core's jobs.
     // A failure here must never stop the old core's claim, which is live.
-    const flowJob = await claimFlowJob(env, runner, record, signedAt).catch((error) => {
+    const flowJob = await claimFlowJob(env, runner, record, signedAt, origin).catch((error) => {
       console.error("flow claim failed", error);
       return null;
     });

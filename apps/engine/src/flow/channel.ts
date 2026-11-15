@@ -2,6 +2,8 @@
 // old core's jobs. A flow job's id is its flow run's id (`frun_…`), so a job-scoped call, a held job
 // in a heartbeat and a claim are told apart by that prefix alone. The old core is never asked about
 // a flow job, and a flow job never touches core_jobs, core_runs or core_leases.
+
+import { endRunWithHooks } from "@software-factory/plugins";
 import {
   type ChannelReply,
   claimRequestSchema,
@@ -14,13 +16,14 @@ import {
 } from "@software-factory/runner-contract";
 import {
   claimRun,
-  failRun,
-  finishRun,
   getRun,
+  type RunResult,
   recentComments,
   renewLease,
   StoreError,
 } from "@software-factory/store";
+import { flowHost } from "./door.ts";
+import { FACTORY_MCP, issueMcpToken, MCP_PATH } from "./mcp-auth.ts";
 import { flowPrompt, PROMPT_COMMENTS } from "./prompt.ts";
 
 /** A flow job's id prefix: the flow run's id (packages/store). */
@@ -37,18 +40,30 @@ const refuse = (status: number, code: string, error: string): ChannelReply => ({
   body: { error, code },
 });
 
+/** The run failed: through the plugin host, so the org's `runEnded` hooks run. */
+const failRun = (env: Env, runId: string, token: number, error: string) =>
+  endRunWithHooks(flowHost(env), runId, token, { status: "failed", error });
+
+/** The agent finished: `leaving`, the step, `runEnded` and `entered`, through the plugin host. */
+const finishRun = (env: Env, runId: string, token: number, result: RunResult) =>
+  endRunWithHooks(flowHost(env), runId, token, { status: "done", result });
+
 /**
  * The claim, before the old core's job.claim: the oldest queued flow run this runner serves, built
  * as a `flow` job, or null to fall through. Placed as a light job: only with a free light slot (or,
  * for a runner with one pool, a free slot) as the runner reports it, while it accepts work, isn't
  * rate-limited or paused for that pool, and runs code at the engine's compatibility level. A claim
  * signed before the runner's last accepted heartbeat or claim (a replay) gets nothing here.
+ *
+ * When the run's agent has the engine's own MCP server ("factory" in its `mcp`), the job carries
+ * it in `mcpServers`, at `origin`, with a bearer token valid while the run is claimed.
  */
 export async function claimFlowJob(
   env: Env,
   runnerId: string,
   body: unknown,
   signedAt: number | undefined,
+  origin: string,
   now = Date.now(),
 ): Promise<Job | null> {
   const parsed = claimRequestSchema.safeParse(body);
@@ -80,6 +95,15 @@ export async function claimFlowJob(
   const run = await claimRun(env.DB, runnerId, now, FLOW_LEASE_MS);
   if (!run) return null;
   const comments = await recentComments(env.DB, run.itemId, PROMPT_COMMENTS);
+  const mcpServers = run.agent?.mcp.includes(FACTORY_MCP)
+    ? [
+        {
+          name: FACTORY_MCP,
+          url: `${origin}${MCP_PATH}`,
+          headers: { Authorization: `Bearer ${await issueMcpToken(env.DB, run.id)}` },
+        },
+      ]
+    : undefined;
   return {
     jobId: run.id,
     runId: run.id,
@@ -92,6 +116,7 @@ export async function claimFlowJob(
     requires: [],
     limits: { sessionTimeoutMs: FLOW_SESSION_TIMEOUT_MS },
     lease: { fencingToken: run.fencingToken, expiresAt: run.leaseExpiresAt },
+    ...(mcpServers ? { mcpServers } : {}),
   };
 }
 
@@ -160,7 +185,7 @@ export async function flowJobReply(
       // A run that already ended (handed back, failed or cancelled) is released as it is.
       if (open) {
         await failRun(
-          env.DB,
+          env,
           jobId,
           token,
           parsed.data.reason?.trim() || "The runner released the job without handing it back.",
@@ -173,25 +198,20 @@ export async function flowJobReply(
     if (!open) return refuse(409, "fenced", `the flow run is ${run.status}`);
     const handback = parsed.data;
     if (handback.outcome !== "completed") {
-      await failRun(
-        env.DB,
-        jobId,
-        token,
-        handback.summary?.trim() || `The run ${handback.outcome}.`,
-      );
+      await failRun(env, jobId, token, handback.summary?.trim() || `The run ${handback.outcome}.`);
       return { body: { accepted: true } };
     }
     const result = flowResultSchema.safeParse(handback.result);
     if (!result.success) {
       await failRun(
-        env.DB,
+        env,
         jobId,
         token,
         "The agent didn't leave a valid result: it must write { outcome: done | rejected, summary }.",
       );
       return { body: { accepted: true } };
     }
-    await finishRun(env.DB, jobId, token, result.data);
+    await finishRun(env, jobId, token, result.data);
     return { body: { accepted: true } };
   } catch (error) {
     if (error instanceof StoreError) {

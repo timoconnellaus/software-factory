@@ -10,6 +10,7 @@ export const PROMPT_COMMENTS = 10;
 function who(actor: TimelineEntry["actor"]): string {
   if (actor.kind === "person") return `person ${actor.id}`;
   if (actor.kind === "agent") return `agent ${actor.id}`;
+  if (actor.kind === "plugin") return `plugin "${actor.id}"`;
   return "the system";
 }
 
