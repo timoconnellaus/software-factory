@@ -13,7 +13,7 @@ export function flowDb(d1: D1Database): FlowDb {
 /** Why the store refused a call. Nothing was written. */
 export class StoreError extends Error {
   constructor(
-    readonly code: "not_found" | "conflict" | "stale_run",
+    readonly code: "not_found" | "conflict" | "stale_run" | "invalid" | "unavailable",
     message: string,
   ) {
     super(message);

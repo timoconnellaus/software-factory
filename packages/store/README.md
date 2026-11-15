@@ -23,9 +23,27 @@ kernel's effects. It never imports `@software-factory/core`.
   `run.ended` / `run.failed`), `expireRuns` (fails claimed runs whose lease lapsed, at most 10 a
   call, each through `expireRun`, whose write applies only if the lease is still lapsed then).
 
+## Milestone 2 (migration 0431)
+- `plugins.ts`: `savePlugin` (create or replace by name; a replace keeps the id, trigger key,
+  enabled flag and creator, and clears `last_error`), `getPlugin`, `getPluginById`, `listPlugins`,
+  `enabledPlugins`, `deletePlugin`, `setPluginEnabled`, `setPluginLastError`, and
+  `declaredFields` (the union of the enabled plugins' fields, from what each declared when saved).
+- `gateways.ts`: `saveGateway`, `getGateway`, `listGateways`, `deleteGateway`. The secret is
+  sealed with AES-GCM (key: SHA-256 of the engine's `FLOW_GATEWAY_KEY`; additional data: the org
+  and name) and no read returns it, except `gatewayForHost`, the plugin host's own. Storing a
+  secret without the key is `StoreError("unavailable")`.
+- `entries.ts`: `setField` (one JSON field on `flow_items.fields`; null removes it), `addCard` (a
+  `card` entry on the timeline), and `stopItem` (as a failed run: error set, waiting on nothing,
+  the stay's open run cancelled, a `stopped` entry; `retried` then runs the status again).
+- `step.ts` / `runs.ts`: `loadItem` (the item, its workflow, its last seq), `applyEventStep`
+  and `endRun` return the step's effects too, so the plugin host can run hooks after it; a run
+  ended with `stopWith` is recorded done but stops the item. `claimRun` carries the agent's
+  `mcp`; `setMcpTokenHash` and `runForToken` back the MCP server's per-run token.
+
 ## Retention
 Items, their timeline (`flow_events`) and their runs are kept as the item's record. Nothing prunes
-them yet; workflows, projects and agents are a handful per org.
+them yet; workflows, projects and agents are a handful per org. Plugins and gateways are a handful
+per org too, kept until deleted through their operations.
 
 ## Tests
 `pnpm --filter @software-factory/store test` runs in workerd against a D1 with every migration
