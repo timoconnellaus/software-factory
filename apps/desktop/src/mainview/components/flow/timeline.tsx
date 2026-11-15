@@ -85,7 +85,7 @@ function Line({ row }: { row: Extract<TimelineRow, { type: "line" }> }) {
 }
 
 function Entry({ row, runs }: { row: Extract<TimelineRow, { type: "entry" }>; runs: FlowRun[] }) {
-  const kind = row.by === "system" ? "agent" : row.by;
+  const kind = row.by === "system" || row.by === "plugin" ? "agent" : row.by;
   const run = row.runId ? runs.find((r) => r.id === row.runId) : undefined;
   return (
     <div

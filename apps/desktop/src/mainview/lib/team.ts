@@ -1,11 +1,6 @@
 // Team's wording (spec 70, .kim/mockups/team-an-agent.html): each runner told simply, and what an
 // agent is doing now. Pure, so the tests pin it.
-import type {
-  FlowAgent,
-  FlowInboxAll,
-  FlowInboxAllItem,
-  FlowRun,
-} from "@software-factory/client/flow";
+import type { FlowInboxAll, FlowInboxAllItem, FlowRun } from "@software-factory/client/flow";
 import { ago } from "@software-factory/client/format";
 import type { OpOutput } from "@software-factory/client/ops";
 
@@ -88,28 +83,10 @@ export function agentWorking(
 }
 
 /**
- * What `flow.agent.update` is sent for one change: it takes the whole agent, so its name and saved
- * instructions go with it, and its `mcp` (missing reads as none). The Plugin editor is `factory`.
+ * What `flow.agent.update` is sent for one change: in packages/client, so the contract check
+ * (packages/client/test/flow-contract.test.ts) builds its input the way this screen does.
  */
-export function agentUpdate(
-  orgId: string,
-  agent: Pick<FlowAgent, "id" | "name" | "instructions" | "mcp">,
-  change: { instructions?: string; pluginEditor?: boolean },
-) {
-  const mcp =
-    change.pluginEditor === undefined
-      ? (agent.mcp ?? [])
-      : change.pluginEditor
-        ? ["factory"]
-        : (agent.mcp ?? []).filter((m) => m !== "factory");
-  return {
-    orgId,
-    agentId: agent.id,
-    name: agent.name,
-    instructions: change.instructions ?? agent.instructions,
-    mcp,
-  };
-}
+export { agentUpdate } from "@software-factory/client/flow";
 
 /** How a run ended, in a word or the error. */
 export function runOutcome(run: FlowRun): { ok: boolean | null; text: string } {

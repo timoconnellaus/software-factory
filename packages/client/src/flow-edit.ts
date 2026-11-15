@@ -3,61 +3,65 @@
 // shapes, typed by hand (a view imports neither @software-factory/ops nor the store), and the pure
 // logic the screens need: the inbox's rows, a status's id from its name, a workflow edited and sent
 // whole, a server problem placed beside its status, and an item's plugin fields as chips.
+import { z } from "zod";
 import type { FlowInbox, FlowItem, FlowProject, FlowStatus, FlowWorkflow } from "./flow.ts";
 
+// The answers' shapes are zod schemas with their types inferred (see flow.ts).
+
 /** A field a plugin adds to items: `item.fields[id]` holds its value. */
-export interface FlowField {
-  id: string;
-  label: string;
-  type: string;
-}
+export const flowFieldSchema = z.object({ id: z.string(), label: z.string(), type: z.string() });
+export type FlowField = z.infer<typeof flowFieldSchema>;
 
-export interface FlowMember {
-  userId: string;
-  name: string;
-  login: string;
-}
+export const flowMemberSchema = z.object({
+  userId: z.string(),
+  name: z.string(),
+  /** The GitHub login; null for someone who didn't sign in with GitHub. */
+  login: z.string().nullable(),
+});
+export type FlowMember = z.infer<typeof flowMemberSchema>;
 
-export interface FlowPlugin {
-  id: string;
-  name: string;
+export const flowPluginSchema = z.object({
+  id: z.string(),
+  name: z.string(),
   /** What the person asked for, in their own words. */
-  request: string;
-  enabled: boolean;
+  request: z.string(),
+  enabled: z.boolean(),
   /** When it last failed, the error in plain words. */
-  lastError: string | null;
-  updatedAt: string;
+  lastError: z.string().nullable(),
+  updatedAt: z.string(),
   /** The hooks its module defines: entered, leaving, runEnded, trigger. */
-  hooks?: string[];
+  hooks: z.array(z.string()).optional(),
   /**
    * For a plugin that defines `trigger`: the path its trigger is posted to, relative to the
    * engine, with its key (`/flow/triggers/<id>/<name>?key=…`; `<name>` is the caller's choice).
    */
-  triggerPath?: string;
-}
+  triggerPath: z.string().optional(),
+});
+export type FlowPlugin = z.infer<typeof flowPluginSchema>;
 
-export interface FlowPluginDetail extends FlowPlugin {
-  code: string;
-}
+export const flowPluginDetailSchema = flowPluginSchema.extend({ code: z.string() });
+export type FlowPluginDetail = z.infer<typeof flowPluginDetailSchema>;
 
-export interface FlowGatewayAuth {
-  kind: "none" | "bearer" | "header";
+export const flowGatewayAuthSchema = z.object({
+  kind: z.enum(["none", "bearer", "header"]),
   /** The header's name, for `header`. */
-  header?: string;
-}
+  header: z.string().optional(),
+});
+export type FlowGatewayAuth = z.infer<typeof flowGatewayAuthSchema>;
 
-export interface FlowGateway {
-  id: string;
-  name: string;
-  baseUrl: string;
-  auth: FlowGatewayAuth;
+export const flowGatewaySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  baseUrl: z.string(),
+  auth: flowGatewayAuthSchema,
   /** A secret is saved. It is never sent back. */
-  hasSecret: boolean;
+  hasSecret: z.boolean(),
   /** Built in (the org's GitHub connection): not a row, so it can't be changed or removed. */
-  builtIn?: boolean;
+  builtIn: z.boolean().optional(),
   /** What a built-in gateway is, in words ("GitHub, connected as acme"). */
-  description?: string;
-}
+  description: z.string().optional(),
+});
+export type FlowGateway = z.infer<typeof flowGatewaySchema>;
 
 /** A workflow refused: each problem names the status it is about, or none. */
 export interface WorkflowProblem {

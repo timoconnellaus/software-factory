@@ -129,7 +129,7 @@ describe("plugins and gateways", () => {
       },
     });
     expect(html).toContain('data-testid="plugin-code"');
-    expect(textOf(html)).toContain("export default definePlugin");
+    expect(textOf(html)).toContain('await ctx.gateway("Slack").fetch("/chat.postMessage"');
     expect(html).toContain('data-testid="delete-plugin"');
     expect(html).not.toContain("<textarea");
   });
