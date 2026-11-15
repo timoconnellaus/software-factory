@@ -10,11 +10,14 @@ import {
   hasRepo,
   httpControlPlane,
   isFactoryBranch,
+  isFlowBranch,
+  isFlowRepoJob,
   isUnstoredPath,
   jobSchema,
   memoryIdempotencyStore,
   PATHS,
   parseJobPath,
+  pushesRunBranch,
   type RepoJob,
   runBranch,
   runnerChannelKey,
@@ -176,6 +179,30 @@ describe("contract helpers", () => {
       summary: "posted",
     });
     expect(flowResultSchema.safeParse({ outcome: "maybe", summary: "x" }).success).toBe(false);
+  });
+
+  it("pushes a flow job's item branch only when it has a repository", () => {
+    const repo = {
+      url: "https://github.com/o/r.git",
+      owner: "o",
+      name: "r",
+      baseRef: "main",
+      defaultBranch: "main",
+    };
+    expect(pushesRunBranch({ stage: "flow" })).toBe(false);
+    expect(pushesRunBranch({ stage: "flow", repo, branch: "factory/flow/acm-7" })).toBe(true);
+    expect(isFlowRepoJob({ stage: "flow", repo, branch: "factory/flow/acm-7" })).toBe(true);
+    expect(isFlowRepoJob({ stage: "build", repo, branch: "factory/flow/acm-7" })).toBe(false);
+    // The other stages as before.
+    expect(pushesRunBranch({ stage: "build" })).toBe(true);
+    expect(pushesRunBranch({ stage: "verify", repo, branch: "factory/1-x-run-1" })).toBe(false);
+    expect(isFlowBranch("factory/flow/acm-7")).toBe(true);
+    expect(isFlowBranch("factory/flow/my-proj-12")).toBe(true);
+    expect(isFlowBranch("factory/flow/acm")).toBe(false);
+    expect(isFlowBranch("factory/flow/ACM-7")).toBe(false);
+    expect(isFlowBranch("factory/7-acm")).toBe(false);
+    // Not the old core's item-branch pattern, which its webhook claims.
+    expect(isFactoryBranch("factory/flow/acm-7")).toBe(false);
   });
 
   it("gives an artifact a content-hash id", async () => {

@@ -5,7 +5,10 @@
 //   → artifacts → hand back { branch, headSha, result } → adapter release → revoke tokens → release
 //
 // A job without a repo (a `flow` job, spec 70) skips every git step: no token, clone, branch,
-// merge, checks, push or diff. The adapter gives it a plain directory; the rest is the same.
+// merge, checks, push or diff. The adapter gives it a plain directory; the rest is the same. A
+// `flow` job WITH a repo works like a build without the default-branch merge or the checks: a
+// worktree on its item's branch `factory/flow/<key>-<n>` (from that branch when it exists, else
+// the default branch), leftovers committed, and the branch pushed when the run made commits.
 //
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
@@ -22,6 +25,7 @@ import {
   canRun,
   type ExecutedCheck,
   hasRepo,
+  isFlowRepoJob,
   isReleaseIncomplete,
   type Job,
   type JobState,
@@ -621,6 +625,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
 
   /** The job with its repository, or null for one without (a `flow` job): every git step skips. */
   const repoJob = hasRepo(job) ? job : null;
+  /** A `flow` job with a repo (spec 70): it pushes its item's branch, with no merge or checks. */
+  const flowRepo = repoJob !== null && isFlowRepoJob(repoJob);
 
   /** Fetches the base for a job with a repo: its token, then the checkout or the host's clone. */
   const fetchBase = async (j: RepoJob): Promise<string> => {
@@ -697,7 +703,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       // A build starts from the default branch's latest too (ADR 0320): the host merges it in, so
       // the PR stays mergeable while other work lands. A conflict is left for the agent. A babysit
       // job sent to resolve a conflict (spec 53 §4) starts the same way.
-      if (repoJob && pushesRunBranch(repoJob)) {
+      // A flow job never merges the default branch: it continues its item's branch as it is.
+      if (repoJob && pushesRunBranch(repoJob) && !flowRepo) {
         const merge = await git.mergeDefault(repoJob, workspace.path);
         ahead = merge.ahead;
         const from = repoJob.repo.defaultBranch;
@@ -720,7 +727,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
 
       // An attached PR's verify job runs the checks on the PR's head before its reviewer session,
       // so they test what the PR's author pushed, not what the reviewer leaves (spec 51).
-      if (repoJob && hasChecks(job) && job.stage !== "build") {
+      if (repoJob && hasChecks(job) && job.stage !== "build" && !flowRepo) {
         const ran = await runHostChecks(workspace, undefined);
         executed = ran.results;
         notes.push(...ran.notes);
@@ -887,7 +894,10 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
             notes.push("the session left uncommitted changes; the runner committed them");
           }
           const head = checkedHead ?? (await git.headSha(workspace.path));
-          if (head === workspace.baseSha || (head === startSha && !ahead)) {
+          if (flowRepo && head === workspace.baseSha) {
+            // A flow run need not change the code (a review, a question): nothing to push.
+            notes.push("the run made no commits; nothing was pushed");
+          } else if (head === workspace.baseSha || (head === startSha && !ahead)) {
             outcome = "failed";
             notes.push("the build made no commits");
           } else {

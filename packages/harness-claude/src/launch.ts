@@ -23,6 +23,7 @@ import type { PlanningLaunch } from "./planning/project.ts";
 import {
   type Isolation,
   type PermissionMode,
+  permissionStage,
   RUN_SETTINGS_FILE,
   SETTINGS_FILE,
   stageMode,
@@ -87,7 +88,7 @@ export const STREAM_FLAGS = [
 
 /** The exact argv for a run's Claude. */
 export function claudeArgv(
-  job: Pick<Job, "stage" | "harness">,
+  job: Pick<Job, "stage" | "harness"> & Partial<Pick<Job, "repo" | "branch">>,
   options: {
     settingsPath: string;
     claudeBin?: string;
@@ -110,7 +111,7 @@ export function claudeArgv(
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
-    stageMode(job.stage, options.profile ?? job.harness.profile, options.isolation),
+    stageMode(permissionStage(job), options.profile ?? job.harness.profile, options.isolation),
     "--setting-sources",
     SETTING_SOURCES,
     "--settings",
