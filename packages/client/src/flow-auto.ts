@@ -3,37 +3,51 @@
 // when a schedule runs ("Every day at 02:00"), when it next runs ("Tonight 02:00", "In 3 hours"),
 // and what it last did.
 
-export type FlowEvery = "hour" | "day" | "weekday" | "week";
+import { z } from "zod";
 
-export interface FlowSchedule {
-  id: string;
-  orgId: string;
-  projectId: string;
-  name: string;
+// The answers' shapes are zod schemas with their types inferred (see flow.ts).
+
+export const flowEverySchema = z.enum(["hour", "day", "weekday", "week"]);
+export type FlowEvery = z.infer<typeof flowEverySchema>;
+
+export const flowScheduleSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  name: z.string(),
   /** The item's title. */
-  title: string;
-  body: string;
-  every: FlowEvery;
-  atMinute: number;
+  title: z.string(),
+  body: z.string(),
+  every: flowEverySchema,
+  atMinute: z.number(),
   /** Null for `hour`. */
-  atHour: number | null;
+  atHour: z.number().nullable(),
   /** 0 (Sunday) to 6, for `week`. */
-  onDay: number | null;
+  onDay: z.number().nullable(),
   /** An IANA name. */
-  timeZone: string;
-  enabled: boolean;
+  timeZone: z.string(),
+  enabled: z.boolean(),
   /** When it next runs (ISO, UTC); null while it is off. */
-  nextAt: string | null;
-  lastAt: string | null;
-  lastItemId: string | null;
-  lastError: string | null;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-  projectName: string | null;
-  projectKey: string | null;
-  lastItemNumber: number | null;
-}
+  nextAt: z.string().nullable(),
+  lastAt: z.string().nullable(),
+  lastItemId: z.string().nullable(),
+  lastError: z.string().nullable(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  projectName: z.string().nullable(),
+  projectKey: z.string().nullable(),
+  lastItemNumber: z.number().nullable(),
+});
+export type FlowSchedule = z.infer<typeof flowScheduleSchema>;
+
+/** What `flow.schedule.save` answers: the schedule, without the names the list joins in. */
+export const flowSavedScheduleSchema = flowScheduleSchema.omit({
+  projectName: true,
+  projectKey: true,
+  lastItemNumber: true,
+});
+export type FlowSavedSchedule = z.infer<typeof flowSavedScheduleSchema>;
 
 /** What the form sends: a new schedule (no scheduleId) or a replacement. */
 export interface FlowScheduleInput {
@@ -57,7 +71,7 @@ type One = Org & { scheduleId: string };
 /** The operations the Auto screen calls, for packages/client's OpMap (through FlowOpMap). */
 export interface FlowAutoOpMap {
   "flow.schedule.list": { input: Org; output: { schedules: FlowSchedule[] } };
-  "flow.schedule.save": { input: FlowScheduleInput; output: FlowSchedule };
+  "flow.schedule.save": { input: FlowScheduleInput; output: FlowSavedSchedule };
   "flow.schedule.delete": { input: One; output: { ok: boolean } };
   "flow.schedule.runNow": { input: One; output: { id: string; number: number } };
 }

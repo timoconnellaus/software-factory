@@ -48,6 +48,8 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "Lead",
     instructions: "Turn each item into a short plan the builders can follow.",
+    // The server always sends `mcp`: none beyond the base servers.
+    mcp: [],
     createdAt: ago(9000),
   },
   {
@@ -64,6 +66,7 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "QA",
     instructions: "Check the change does what the item asks. Say what you tried.",
+    mcp: [],
     createdAt: ago(9000),
   },
   {
@@ -80,6 +83,7 @@ const AGENTS: FlowAgent[] = [
     orgId: CLIENT_ORG,
     name: "Builder",
     instructions: "Build the site's pages.",
+    mcp: [],
     createdAt: ago(9000),
   },
 ];
@@ -91,7 +95,8 @@ export const MEMBERS: Record<string, FlowMember[]> = {
   ],
   [CLIENT_ORG]: [
     { userId: FLOW_ME, name: "owner", login: "owner" },
-    { userId: "usr_ria", name: "Ria Patel", login: "riap" },
+    // Signed in without GitHub: the server sends a null login.
+    { userId: "usr_ria", name: "Ria Patel", login: null },
   ],
 };
 
@@ -170,6 +175,8 @@ const item = (
   createdBy: FLOW_ME,
   createdAt: ago(updated + 120),
   updatedAt: ago(updated),
+  // The server always sends the item's plugin fields, empty when it has none.
+  fields: {},
   ...over,
 });
 
@@ -433,7 +440,7 @@ const RUNS: FlowRun[] = [
   }),
   // 15m 3s, as the mockup's.
   run("fitm_rate", "Add rate limiting to the public API", "done", 55.05, 15.05, {
-    result: { outcome: "done" },
+    result: { outcome: "done", summary: "Limiter and tests are in." },
     steps: 13,
     costUsd: null,
   }),
@@ -881,7 +888,10 @@ const PLUGINS: FlowPluginDetail[] = [
     enabled: true,
     lastError: null,
     updatedAt: ago(2 * 24 * 60),
-    code: `export default definePlugin({\n  name: "Publish to the blog",\n  on: { entered: "shipped" },\n  async run({ item, gateways, card }) {\n    const post = await gateways.blog.post("/posts", { title: item.title, body: item.body });\n    await card({ kind: "link", title: "Published", link: { label: "Read it", url: post.url } });\n  },\n});\n`,
+    // As the server lists a plugin: the hooks its module defines, read when it was saved. The code
+    // is a module the server takes (packages/plugins' guide).
+    hooks: ["entered"],
+    code: `export default {\n  on: {\n    async entered(ctx, { to, item }) {\n      if (to !== "shipped") return;\n      const res = await ctx.gateway("Blog").fetch("/posts", {\n        method: "POST",\n        body: { title: item.title, body: item.body },\n      });\n      const post = await res.json();\n      await ctx.card({ kind: "link", title: "Published", link: { label: "Read it", url: post.url } });\n    },\n  },\n};\n`,
   },
   {
     id: "fplg_customer",
@@ -893,7 +903,7 @@ const PLUGINS: FlowPluginDetail[] = [
     updatedAt: ago(7 * 24 * 60),
     hooks: ["trigger"],
     triggerPath: "/flow/triggers/fplg_customer/<name>?key=5f1c9a0e7b2d4c68a3e1f09b7d6c2a4e8b3f5d1c",
-    code: `export default definePlugin({\n  name: "Customers on feedback",\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n});\n`,
+    code: `export default {\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n  on: {\n    async trigger(ctx, { payload }) {\n      await ctx.createItem({\n        projectId: "fprj_api",\n        title: payload.subject,\n        body: payload.text,\n        fields: { customer: payload.from },\n      });\n    },\n  },\n};\n`,
   },
   {
     id: "fplg_slack",
@@ -903,7 +913,8 @@ const PLUGINS: FlowPluginDetail[] = [
     lastError:
       "Failed 20 minutes ago on AL-3: Slack said the channel #launch wasn't found. The item is stopped.",
     updatedAt: ago(3 * 24 * 60),
-    code: `export default definePlugin({\n  name: "Slack updates",\n  on: { moved: "*" },\n  async run({ item, gateways }) {\n    await gateways.slack.post("/chat.postMessage", { channel: "#launch", text: item.title });\n  },\n});\n`,
+    hooks: ["entered"],
+    code: `export default {\n  on: {\n    async entered(ctx, { item }) {\n      await ctx.gateway("Slack").fetch("/chat.postMessage", {\n        method: "POST",\n        body: { channel: "#launch", text: item.title },\n      });\n    },\n  },\n};\n`,
   },
 ];
 

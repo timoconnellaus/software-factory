@@ -1,47 +1,51 @@
 // Chat on the new core (migration 0433, .kim/mockups/chat-build-a-workflow-and-a-plugin.html): the
 // `flow.chat.*` operations' answers as the desktop app reads them, typed by hand from
 // @software-factory/store, and the pure logic its screen needs: the conversation told as turns.
+import { z } from "zod";
 import type { FlowAgent } from "./flow.ts";
 
 type Org = { orgId: string };
 
-export interface FlowChat {
-  id: string;
-  orgId: string;
-  agentId: string;
-  /** The first message, cut to 80 characters. */
-  title: string;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
+// The answers' shapes are zod schemas with their types inferred (see flow.ts).
 
-export interface FlowChatMessage {
-  id: string;
-  seq: number;
+export const flowChatSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  agentId: z.string(),
+  /** The first message, cut to 80 characters. */
+  title: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type FlowChat = z.infer<typeof flowChatSchema>;
+
+export const flowChatMessageSchema = z.object({
+  id: z.string(),
+  seq: z.number(),
   /** `did`: something the agent changed during a run, in one plain sentence. */
-  role: "person" | "agent" | "did";
-  text: string;
+  role: z.enum(["person", "agent", "did"]),
+  text: z.string(),
   /** A `did` row's { kind, id, name? }; a failed run's agent message's { failed: true, error }. */
-  data: unknown;
-  runId: string | null;
-  createdAt: string;
-}
+  data: z.unknown(),
+  runId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type FlowChatMessage = z.infer<typeof flowChatMessageSchema>;
 
 /** A workflow or plugin the chat's agent created or changed. */
-export interface FlowMade {
-  id: string;
-  name: string;
-}
+export const flowMadeSchema = z.object({ id: z.string(), name: z.string() });
+export type FlowMade = z.infer<typeof flowMadeSchema>;
 
-export interface FlowChatView {
-  chat: FlowChat;
-  messages: FlowChatMessage[];
-  truncated: boolean;
+export const flowChatViewSchema = z.object({
+  chat: flowChatSchema,
+  messages: z.array(flowChatMessageSchema),
+  truncated: z.boolean(),
   /** A run of the chat's agent is queued or claimed: its reply hasn't come yet. */
-  working: boolean;
-  made: { workflows: FlowMade[]; plugins: FlowMade[] };
-}
+  working: z.boolean(),
+  made: z.object({ workflows: z.array(flowMadeSchema), plugins: z.array(flowMadeSchema) }),
+});
+export type FlowChatView = z.infer<typeof flowChatViewSchema>;
 
 /** The `flow.chat.*` operations, for packages/client's OpMap (through FlowOpMap). */
 export interface FlowChatOpMap {

@@ -24,6 +24,7 @@
     "@cloudflare/vitest-plugin": "1.5.1",
     "@cloudflare/workers-types": "5.20261104.1",
     "@software-factory/config": "workspace:*",
+    "@software-factory/ops": "workspace:*",
     "@types/react": "19.3.0",
     "react": "19.3.1",
     "typescript": "6.0.3",
