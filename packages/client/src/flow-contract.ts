@@ -25,7 +25,7 @@ import {
   flowWorkflowSchema,
 } from "./flow.ts";
 import { draftOf, flowSavedScheduleSchema, flowScheduleSchema, toInput } from "./flow-auto.ts";
-import { flowChatSchema, flowChatViewSchema } from "./flow-chat.ts";
+import { flowChatOptionsSchema, flowChatSchema, flowChatViewSchema } from "./flow-chat.ts";
 import {
   flowGatewaySchema,
   flowMemberSchema,
@@ -55,7 +55,6 @@ export const FLOW_RESPONSES = {
   "flow.agent.list": z.object({ agents: z.array(flowAgentSchema) }),
   "flow.agent.create": flowAgentSchema,
   "flow.agent.update": flowAgentSchema,
-  "flow.agent.ensureBuilder": flowAgentSchema,
   "flow.inbox.all": flowInboxAllSchema,
   "flow.inbox.get": flowInboxSchema,
   "flow.member.list": z.object({ members: z.array(flowMemberSchema) }),
@@ -77,6 +76,7 @@ export const FLOW_RESPONSES = {
   "flow.gateway.list": z.object({ gateways: z.array(flowGatewaySchema) }),
   "flow.gateway.save": flowGatewaySchema,
   "flow.gateway.delete": ok,
+  "flow.chat.options": flowChatOptionsSchema,
   "flow.chat.list": z.object({ chats: z.array(flowChatSchema) }),
   "flow.chat.get": flowChatViewSchema,
   "flow.chat.create": flowChatViewSchema,
@@ -99,9 +99,8 @@ export interface ContractIds {
   userId: string;
   projectId: string;
   workflowId: string;
-  /** An agent without the Plugin editor; `builderId` has it. */
+  /** An agent (without the Plugin editor). */
   agentId: string;
-  builderId: string;
   itemId: string;
   runId: string;
   chatId: string;
@@ -219,9 +218,10 @@ export const FLOW_REQUESTS: {
     return [
       agentUpdate(orgId, agent, { instructions: "Write it plainly." }),
       agentUpdate(orgId, agent, { pluginEditor: true }),
+      agentUpdate(orgId, agent, { model: "sonnet", effort: "high" }),
+      agentUpdate(orgId, agent, { model: null }),
     ];
   },
-  "flow.agent.ensureBuilder": ({ orgId }) => [{ orgId }],
   "flow.inbox.all": () => [{}],
   "flow.inbox.get": ({ orgId }) => [{ orgId }],
   "flow.member.list": ({ orgId }) => [{ orgId }],
@@ -279,10 +279,13 @@ export const FLOW_REQUESTS: {
   "flow.gateway.delete": ({ orgId, gatewayName }) => [{ orgId, name: gatewayName }],
   "flow.chat.list": ({ orgId }) => [{ orgId }],
   "flow.chat.get": ({ orgId, chatId }) => [{ orgId, chatId }],
-  "flow.chat.create": ({ orgId, builderId }) => [
-    { orgId, agentId: builderId, text: "Set up a workflow for launch posts." },
+  "flow.chat.options": ({ orgId }) => [{ orgId }],
+  "flow.chat.create": ({ orgId }) => [
+    { orgId, text: "Set up a workflow for launch posts.", model: "sonnet", effort: "high" },
   ],
-  "flow.chat.send": ({ orgId, chatId }) => [{ orgId, chatId, text: "And a plugin for it." }],
+  "flow.chat.send": ({ orgId, chatId }) => [
+    { orgId, chatId, text: "And a plugin for it.", model: "opus" },
+  ],
   "flow.chat.delete": ({ orgId, chatId }) => [{ orgId, chatId }],
   "flow.schedule.list": ({ orgId }) => [{ orgId }],
   // The Auto form: a daily one, an hourly one, a weekly one; then the table's on/off switch,

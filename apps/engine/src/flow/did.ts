@@ -1,7 +1,8 @@
-// What a chat's agent did (migration 0433): when it changes something through the engine's MCP
+// What a chat's model did (migration 0433): when it changes something through the engine's MCP
 // server during a chat's run, and the call succeeded, a `did` message is added to that chat: a short
-// plain sentence built from the operation, and `data` naming the kind and id of what changed. Reads
-// write nothing, nor do the chat operations themselves.
+// plain sentence built from the operation, and `data` naming the kind and id of what changed (and,
+// for an item or project it created, `created`, so the chat's `made` lists it). Reads write
+// nothing, nor do the chat operations themselves.
 import type { CallResult } from "@software-factory/ops";
 import { addDid, type DidData, getPlugin, type Run } from "@software-factory/store";
 
@@ -33,7 +34,10 @@ export function didFor(op: string, input: Rec, result: unknown): Did | null {
       return say(`${verb} the workflow ${data.name} (${statuses} statuses)`, data);
     }
     case "flow.project.create":
-      return say(`Created the project ${str(r.name)}`, named("project", r.id, r.name));
+      return say(`Created the project ${str(r.name)}`, {
+        ...named("project", r.id, r.name),
+        created: true,
+      });
     case "flow.project.setWorkflow":
       return say(
         `Put the project ${str(r.name)} on another workflow`,
@@ -44,7 +48,12 @@ export function didFor(op: string, input: Rec, result: unknown): Did | null {
     case "flow.agent.update":
       return say(`Changed the agent ${str(r.name)}`, named("agent", r.id, r.name));
     case "flow.item.create":
-      return say(`Created the item ${str(r.title)}`, named("item", r.id, r.title));
+      return say(`Created the item ${str(r.title)}`, {
+        ...named("item", r.id, r.title),
+        created: true,
+        projectId: str(r.projectId),
+        ...(typeof r.number === "number" ? { number: r.number } : {}),
+      });
     case "flow.item.move":
     case "flow.item.finish":
     case "flow.item.decide":
@@ -105,7 +114,7 @@ export async function beforeDelete(
 }
 
 /**
- * Adds the `did` row for a call the agent of a chat's run made, if it succeeded and changed
+ * Adds the `did` row for a call the model of a chat's run made, if it succeeded and changed
  * something. A failure to write it is logged, never the tool call's failure.
  */
 export async function recordDid(

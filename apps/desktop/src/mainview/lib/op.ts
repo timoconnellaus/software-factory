@@ -110,6 +110,7 @@ export type ReadOpName =
   | "flow.run.get"
   | "flow.run.events"
   // Chat's reads (flow-chat-queries.ts).
+  | "flow.chat.options"
   | "flow.chat.list"
   | "flow.chat.get"
   // Auto's schedules (flow-auto.ts).

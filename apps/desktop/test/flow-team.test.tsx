@@ -4,8 +4,10 @@
 // with the old screens gone. What the agent buttons send is clicked through in screenshots/behave.mjs.
 import type { FlowAgent } from "@software-factory/client/flow";
 import { personName } from "@software-factory/client/flow";
+import type { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
+import { flowChatOptionsQuery } from "../src/mainview/lib/flow-chat-queries.ts";
 import { agentUpdate, runnerRows, runOutcome } from "../src/mainview/lib/team.ts";
 import { routeTree } from "../src/mainview/router.tsx";
 import { renderPage, textOf } from "./route-harness.tsx";
@@ -55,6 +57,22 @@ describe("Team: Agents", () => {
     expect(state(on)).toBe("checked");
     const off = await renderPage(`/flow/${ORG}/team?agent=fagt_qa`);
     expect(state(off)).toBe("unchecked");
+  });
+
+  it("has Model and Effort pickers, from Chat's choices", async () => {
+    const options = async (client: QueryClient) => {
+      await client.prefetchQuery(flowChatOptionsQuery(ORG));
+    };
+    // The chosen value is drawn by the picker in the browser (screenshots/flow-team), not here.
+    const html = await renderPage(`/flow/${ORG}/team?agent=fagt_backend`, { after: options });
+    expect(textOf(html)).toContain("Runs with Model Effort Tools");
+    expect(html).toContain('data-testid="agent-model"');
+    expect(html).toContain('data-testid="agent-effort"');
+    // Sent only when changed: null is the runner's default.
+    const agent = { id: "a", name: "A", instructions: "i", mcp: [] };
+    expect(agentUpdate("o", agent, { model: "haiku" })).toMatchObject({ model: "haiku" });
+    expect(agentUpdate("o", agent, { effort: null })).toMatchObject({ effort: null });
+    expect(agentUpdate("o", agent, {})).not.toHaveProperty("model");
   });
 
   it("on an older server: no 'doing now', no Recent work, and no error", async () => {

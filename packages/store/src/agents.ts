@@ -1,5 +1,5 @@
-// An org's agents: a name, instructions, and the MCP servers its runs get. A status's owner names
-// one by id.
+// An org's agents: a name, instructions, the MCP servers its runs get, and the model and effort they
+// start Claude Code with (migration 0437). A status's owner names one by id.
 import { readBatch } from "@software-factory/db";
 import { flowDb, iso, newId, StoreError } from "./db.ts";
 import type { FlowAgentsTable } from "./schema.ts";
@@ -11,8 +11,23 @@ export interface Agent {
   instructions: string;
   /** MCP server names its runs get. "factory" is the engine's own (flow ops and the plugin editor). */
   mcp: string[];
+  /** The Claude Code model alias its runs use; null = the runner's default. */
+  model: string | null;
+  /** The Claude Code effort level its runs use; null = the runner's default. */
+  effort: string | null;
   createdAt: string;
 }
+
+/** A model and effort: left out, unchanged (on update); null, the runner's default. */
+export interface ModelChoice {
+  model?: string | null;
+  effort?: string | null;
+}
+
+const choice = (input: ModelChoice) => ({
+  ...(input.model !== undefined ? { model: input.model } : {}),
+  ...(input.effort !== undefined ? { effort: input.effort } : {}),
+});
 
 type Row = FlowAgentsTable;
 
@@ -32,13 +47,15 @@ function toAgent(row: Row): Agent {
     name: row.name,
     instructions: row.instructions,
     mcp: parseMcp(row.mcp),
+    model: row.model ?? null,
+    effort: row.effort ?? null,
     createdAt: row.created_at,
   };
 }
 
 export async function createAgent(
   d1: D1Database,
-  input: { orgId: string; name: string; instructions: string; mcp?: string[] },
+  input: { orgId: string; name: string; instructions: string; mcp?: string[] } & ModelChoice,
 ): Promise<Agent> {
   const row: Row = {
     id: newId("fagt_"),
@@ -47,16 +64,21 @@ export async function createAgent(
     instructions: input.instructions,
     mcp: JSON.stringify(input.mcp ?? []),
     created_at: iso(),
+    model: input.model ?? null,
+    effort: input.effort ?? null,
   };
   await flowDb(d1).insertInto("flow_agents").values(row).execute();
   return toAgent(row);
 }
 
-/** Changes an agent's name and instructions, and its MCP servers when `mcp` is given. */
+/**
+ * Changes an agent's name and instructions, its MCP servers when `mcp` is given, and its model and
+ * effort when given (null: the runner's default).
+ */
 export async function updateAgent(
   d1: D1Database,
   id: string,
-  input: { name: string; instructions: string; mcp?: string[] },
+  input: { name: string; instructions: string; mcp?: string[] } & ModelChoice,
 ): Promise<Agent> {
   const row = await flowDb(d1)
     .updateTable("flow_agents")
@@ -64,32 +86,13 @@ export async function updateAgent(
       name: input.name,
       instructions: input.instructions,
       ...(input.mcp ? { mcp: JSON.stringify(input.mcp) } : {}),
+      ...choice(input),
     })
     .where("id", "=", id)
     .returningAll()
     .executeTakeFirst();
   if (!row) throw new StoreError("not_found", `No agent ${id}.`);
   return toAgent(row);
-}
-
-/** The most agents `findBuilder` looks through. */
-const BUILDER_SCAN_LIMIT = 200;
-
-/**
- * The org's agent with the engine's "factory" MCP server that Chat should talk to: one named
- * "Builder" if there is one, else the first by name. Null when none has it. Reads
- * flow_agents_org_idx (an org has a handful of agents).
- */
-export async function findBuilder(d1: D1Database, orgId: string): Promise<Agent | null> {
-  const rows = await flowDb(d1)
-    .selectFrom("flow_agents")
-    .selectAll()
-    .where("org_id", "=", orgId)
-    .orderBy("name")
-    .limit(BUILDER_SCAN_LIMIT)
-    .execute();
-  const builders = rows.map(toAgent).filter((a) => a.mcp.includes("factory"));
-  return builders.find((a) => a.name === "Builder") ?? builders[0] ?? null;
 }
 
 export async function getAgent(d1: D1Database, id: string): Promise<Agent | null> {

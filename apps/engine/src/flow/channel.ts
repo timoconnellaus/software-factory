@@ -57,7 +57,7 @@ type Ended =
 /**
  * Ends a run. An item's run goes through the plugin host (`leaving`, the step, `runEnded` and
  * `entered`). A chat's run has no item and no plugins around it: the store marks it and adds the
- * agent's reply (its summary, or a plain note that it failed) to the chat.
+ * model's reply (its summary, or a plain note that it failed) to the chat.
  */
 async function endFlowRun(
   env: Env,
@@ -113,8 +113,10 @@ async function baseRefOf(
  * rate-limited or paused for that pool, and runs code at the engine's compatibility level. A claim
  * signed before the runner's last accepted heartbeat or claim (a replay) gets nothing here.
  *
- * When the run's agent has the engine's own MCP server ("factory" in its `mcp`), the job carries
- * it in `mcpServers`, at `origin`, with a bearer token valid while the run is claimed.
+ * A chat's run always gets the engine's own MCP server ("factory"); an item's run gets it when its
+ * agent has it in its `mcp`. The job carries it in `mcpServers`, at `origin`, with a bearer token
+ * valid while the run is claimed. The model and effort are the chat's (or the agent's): Claude Code
+ * aliases and levels, or nothing for the runner's default.
  */
 export async function claimFlowJob(
   env: Env,
@@ -157,7 +159,8 @@ export async function claimFlowJob(
     run.chatId !== null
       ? chatPrompt(run, await chatHistory(env.DB, run.chatId, run.stay, PROMPT_CHAT_MESSAGES))
       : flowPrompt(run, await recentComments(env.DB, run.itemId ?? "", PROMPT_COMMENTS));
-  const mcpServers = run.agent?.mcp.includes(FACTORY_MCP)
+  const factory = run.chatId !== null || Boolean(run.agent?.mcp.includes(FACTORY_MCP));
+  const mcpServers = factory
     ? [
         {
           name: FACTORY_MCP,
@@ -191,8 +194,14 @@ export async function claimFlowJob(
     workItem: run.item
       ? { id: run.itemId ?? "", number: run.item.number, title: run.item.title }
       : { id: run.chatId ?? "", number: run.stay, title: run.chat?.title ?? "Chat" },
-    // As the old core's light stages: Claude Code, a role, no model named (the harness's default).
-    harness: { id: "claude-code", role: "implement", prompt },
+    // Claude Code with the chat's (or agent's) model alias and effort; none: the runner's default.
+    harness: {
+      id: "claude-code",
+      role: "implement",
+      prompt,
+      ...(run.model ? { model: run.model } : {}),
+      ...(run.effort ? { effort: run.effort } : {}),
+    },
     context:
       run.chatId !== null
         ? { orgId: run.orgId, chatId: run.chatId }

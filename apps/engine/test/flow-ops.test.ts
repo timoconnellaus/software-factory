@@ -46,6 +46,42 @@ async function draftReviewDone(p: Person) {
 }
 
 describe("the new core through the engine", () => {
+  it("starts an item's run with its agent's model and effort, and none when it has none", async () => {
+    const p = await person();
+    const { agent } = await draftReviewDone(p);
+    const plain = await claim(p);
+    expect(plain?.harness.model).toBeUndefined();
+    expect(plain?.harness.effort).toBeUndefined();
+    const changed = await p.call<{ model: string; effort: string }>("flow.agent.update", {
+      agentId: agent.id,
+      name: "Writer",
+      instructions: "You write short, plain posts.",
+      model: "haiku",
+      effort: "low",
+    });
+    expect(changed).toMatchObject({ model: "haiku", effort: "low" });
+    const second = await p.call<{ id: string }>("flow.item.create", {
+      projectId: (await p.call<{ projects: { id: string }[] }>("flow.project.list", {})).projects[0]
+        ?.id,
+      title: "Second post",
+    });
+    expect(second.id).toBeTruthy();
+    const job = await claim(p);
+    expect(job?.harness).toMatchObject({ model: "haiku", effort: "low" });
+    // Left out on update: unchanged. Null: back to the runner's default.
+    const kept = await p.call<{ model: string | null }>("flow.agent.update", {
+      agentId: agent.id,
+      name: "Writer",
+      instructions: "Shorter.",
+    });
+    expect(kept.model).toBe("haiku");
+    const cleared = await p.call<{ model: string | null; effort: string | null }>(
+      "flow.agent.update",
+      { agentId: agent.id, name: "Writer", instructions: "Shorter.", model: null, effort: null },
+    );
+    expect(cleared).toMatchObject({ model: null, effort: null });
+  });
+
   it("runs an item from an agent's status to a person's to the last, through the real routes", async () => {
     const p = await person();
     const { item } = await draftReviewDone(p);

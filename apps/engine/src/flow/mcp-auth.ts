@@ -1,5 +1,5 @@
-// The engine's MCP server's bearer tokens (spec 70 milestone 2). A token is issued when a flow run
-// whose agent has the "factory" server is claimed, and names that run: `<runId>.<secret>`. Only its
+// The engine's MCP server's bearer tokens (spec 70 milestone 2). A token is issued when a chat's run,
+// or an item's run whose agent has the "factory" server, is claimed, and names that run: `<runId>.<secret>`. Only its
 // SHA-256 is stored, on the run's row; it is good while the run is claimed and for nothing else.
 import type { AgentCaller } from "@software-factory/ops";
 import { type Run, runForToken, setMcpTokenHash } from "@software-factory/store";

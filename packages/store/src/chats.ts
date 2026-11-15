@@ -1,10 +1,13 @@
-// Chats (migration 0433): a person talks to an agent that has the engine's "factory" MCP server, and
-// it sets up workflows and builds plugins. Each message the person sends queues one run of the
-// chat's agent (a flow_runs row with `chat_id`); its summary comes back as the agent's message
-// (chat-runs.ts). What the agent changed during a run is written as `did` messages by the MCP server.
+// Chats (migrations 0433, 0437): a person talks to a model, choosing the model and the effort as in an
+// ordinary Claude chat. Each message the person sends queues one run (a flow_runs row with `chat_id`
+// and no agent: `agent_id` ''), which starts Claude Code on their runner with the engine's "factory"
+// MCP server; its summary comes back as the model's reply (chat-runs.ts). What the model changed
+// during a run is written as `did` messages by the MCP server.
 import { clearGuards, failedGuard, guardChanged, readBatch } from "@software-factory/db";
+import type { ModelChoice } from "./agents.ts";
+import { type DidData, type Made, madeOf } from "./chat-made.ts";
 import { flowDb, iso, newId, StoreError } from "./db.ts";
-import type { ChatRole, FlowChatMessagesTable, FlowChatsTable } from "./schema.ts";
+import type { FlowChatMessagesTable, FlowChatsTable } from "./schema.ts";
 
 /** The most chats `listChats` returns, newest first. */
 export const CHAT_LIST_LIMIT = 50;
@@ -18,28 +21,30 @@ const MADE_LIMIT = 500;
 export interface Chat {
   id: string;
   orgId: string;
-  agentId: string;
+  /** Only on chats from before migration 0437, which talked to an agent; unused now. */
+  agentId: string | null;
   title: string;
+  /** The Claude Code model alias its runs use; null = the runner's default. */
+  model: string | null;
+  /** The Claude Code effort level its runs use; null = the runner's default. */
+  effort: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
 }
 
+/** A message's role in the API: the person's, the model's reply, or something the model did. */
+export type ChatMessageRole = "person" | "assistant" | "did";
+
 export interface ChatMessage {
   id: string;
   seq: number;
-  role: ChatRole;
+  role: ChatMessageRole;
   text: string;
-  /** A `did` row's { kind, id, name? }; a failed run's agent message's { failed: true, error }. */
+  /** A `did` row's DidData; a failed run's reply's { failed: true, error }. */
   data: unknown;
   runId: string | null;
   createdAt: string;
-}
-
-/** Something a chat's agent created or changed: a workflow or a plugin, by id and its name. */
-export interface MadeThing {
-  id: string;
-  name: string;
 }
 
 export interface ChatView {
@@ -47,29 +52,24 @@ export interface ChatView {
   /** In order, oldest first: the newest CHAT_MESSAGE_LIMIT. */
   messages: ChatMessage[];
   truncated: boolean;
-  /** Whether a run of the chat's agent is queued or claimed: its reply hasn't come yet. */
+  /** Whether a run of the chat is queued or claimed: its reply hasn't come yet. */
   working: boolean;
-  /** The workflows and plugins this chat's agent created or changed (from its `did` rows). */
-  made: { workflows: MadeThing[]; plugins: MadeThing[] };
+  /** The id of that run (for its live events), or null. */
+  workingRunId: string | null;
+  /** What this chat's model made (from its `did` rows). */
+  made: Made;
 }
 
-/** What a `did` row's data names. `deleted` marks one the agent removed. */
-export interface DidData {
-  kind: string;
-  id: string;
-  name?: string;
-  deleted?: boolean;
-}
-
-const BUSY =
-  "The agent is still answering your last message. Send this once its reply has come back.";
+const BUSY = "Still answering your last message. Send this once the reply has come back.";
 
 function toChat(row: FlowChatsTable): Chat {
   return {
     id: row.id,
     orgId: row.org_id,
-    agentId: row.agent_id,
+    agentId: row.agent_id ?? null,
     title: row.title,
+    model: row.model ?? null,
+    effort: row.effort ?? null,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -80,7 +80,8 @@ export function toChatMessage(row: FlowChatMessagesTable): ChatMessage {
   return {
     id: row.id,
     seq: row.seq,
-    role: row.role,
+    // Stored as `agent` (migration 0433); it is the model's reply.
+    role: row.role === "agent" ? "assistant" : row.role,
     text: row.text,
     data: row.data === null ? null : (JSON.parse(row.data) as unknown),
     runId: row.run_id,
@@ -100,7 +101,7 @@ export function appendMessage(
   m: {
     chatId: string;
     orgId: string;
-    role: ChatRole;
+    role: FlowChatMessagesTable["role"];
     text: string;
     data?: unknown;
     runId?: string | null;
@@ -154,11 +155,12 @@ export async function chatBatch(
 
 /**
  * The person's message and the run that answers it, refused (as one batch) while the chat has a run
- * queued or claimed. The run's `stay` is the message's seq; its `brief` is the message.
+ * queued or claimed. The run's `stay` is the message's seq; its `brief` is the message. A chat's run
+ * has no agent (`agent_id` ''); it uses the chat's model and effort when it is claimed.
  */
 function messageAndRun(
   d1: D1Database,
-  chat: { id: string; orgId: string; agentId: string },
+  chat: { id: string; orgId: string },
   text: string,
   at: string,
 ): D1PreparedStatement[] {
@@ -168,30 +170,32 @@ function messageAndRun(
       .prepare(
         `INSERT INTO flow_runs (id, org_id, item_id, chat_id, agent_id, status_id, stay, brief,
             status, fencing_token, created_at)
-          SELECT ?1, ?2, NULL, ?3, ?4, '',
+          SELECT ?1, ?2, NULL, ?3, '', '',
             (SELECT COALESCE(MAX(seq), 0) + 1 FROM flow_chat_messages WHERE chat_id = ?3),
-            ?5, 'queued', 0, ?6
+            ?4, 'queued', 0, ?5
           WHERE NOT EXISTS (SELECT 1 FROM flow_runs
             WHERE chat_id = ?3 AND status IN ('queued', 'claimed'))`,
       )
-      .bind(runId, chat.orgId, chat.id, chat.agentId, text, at),
+      .bind(runId, chat.orgId, chat.id, text, at),
     guardChanged(d1, "flow_chats.idle"),
     appendMessage(d1, { chatId: chat.id, orgId: chat.orgId, role: "person", text, runId, at }),
     d1.prepare("UPDATE flow_chats SET updated_at = ? WHERE id = ?").bind(at, chat.id),
   ];
 }
 
-/** Starts a chat with its first message, and queues the run of `agentId` that answers it. */
+/** Starts a chat with its first message, and queues the run that answers it. */
 export async function createChat(
   d1: D1Database,
-  input: { orgId: string; agentId: string; text: string; createdBy: string },
+  input: { orgId: string; text: string; createdBy: string } & ModelChoice,
 ): Promise<Chat> {
   const at = iso();
   const chat: Chat = {
     id: newId("fchat_"),
     orgId: input.orgId,
-    agentId: input.agentId,
+    agentId: null,
     title: chatTitle(input.text),
+    model: input.model ?? null,
+    effort: input.effort ?? null,
     createdBy: input.createdBy,
     createdAt: at,
     updatedAt: at,
@@ -201,10 +205,11 @@ export async function createChat(
     () => [
       d1
         .prepare(
-          `INSERT INTO flow_chats (id, org_id, agent_id, title, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO flow_chats (id, org_id, agent_id, title, model, effort, created_by,
+              created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
         )
-        .bind(chat.id, chat.orgId, chat.agentId, chat.title, chat.createdBy, at, at),
+        .bind(chat.id, chat.orgId, chat.title, chat.model, chat.effort, chat.createdBy, at, at),
       ...messageAndRun(d1, chat, input.text, at),
     ],
     new StoreError("conflict", BUSY),
@@ -221,11 +226,36 @@ export async function getChatRow(d1: D1Database, chatId: string): Promise<Chat |
   return row ? toChat(row) : null;
 }
 
-/** Adds the person's next message and queues the run that answers it; refused while one is open. */
-export async function sendMessage(d1: D1Database, chatId: string, text: string): Promise<void> {
+/**
+ * Adds the person's next message and queues the run that answers it; refused while one is open. A
+ * model or effort given changes the chat's, from this message on (null: the runner's default).
+ */
+export async function sendMessage(
+  d1: D1Database,
+  chatId: string,
+  text: string,
+  choice: ModelChoice = {},
+): Promise<void> {
   const chat = await getChatRow(d1, chatId);
   if (!chat) throw new StoreError("not_found", `No chat ${chatId}.`);
-  await chatBatch(d1, () => messageAndRun(d1, chat, text, iso()), new StoreError("conflict", BUSY));
+  const model = choice.model !== undefined ? choice.model : chat.model;
+  const effort = choice.effort !== undefined ? choice.effort : chat.effort;
+  await chatBatch(
+    d1,
+    () => {
+      const at = iso();
+      // After the run's insert, whose NOT EXISTS guard refuses the whole batch while one is open.
+      const [run, ...rest] = messageAndRun(d1, chat, text, at);
+      return [
+        run as D1PreparedStatement,
+        ...rest,
+        d1
+          .prepare("UPDATE flow_chats SET model = ?, effort = ? WHERE id = ?")
+          .bind(model, effort, chat.id),
+      ];
+    },
+    new StoreError("conflict", BUSY),
+  );
 }
 
 /** The org's newest CHAT_LIST_LIMIT chats, by when they last changed (flow_chats_org_idx). */
@@ -239,18 +269,6 @@ export async function listChats(d1: D1Database, orgId: string): Promise<Chat[]> 
     .limit(CHAT_LIST_LIMIT)
     .execute();
   return rows.map(toChat);
-}
-
-/** What the `did` rows say was made: each workflow and plugin once, by its latest name. */
-export function madeOf(dids: DidData[]): ChatView["made"] {
-  const kinds = { workflow: new Map<string, MadeThing>(), plugin: new Map<string, MadeThing>() };
-  for (const did of dids) {
-    if (did.kind !== "workflow" && did.kind !== "plugin") continue;
-    const seen = kinds[did.kind];
-    if (did.deleted) seen.delete(did.id);
-    else seen.set(did.id, { id: did.id, name: did.name ?? seen.get(did.id)?.name ?? did.id });
-  }
-  return { workflows: [...kinds.workflow.values()], plugins: [...kinds.plugin.values()] };
 }
 
 /**
@@ -291,6 +309,7 @@ export async function getChat(d1: D1Database, chatId: string): Promise<ChatView 
     messages: rows.slice(0, CHAT_MESSAGE_LIMIT).reverse().map(toChatMessage),
     truncated: rows.length > CHAT_MESSAGE_LIMIT,
     working: open.length > 0,
+    workingRunId: open[0]?.id ?? null,
     made: madeOf(data),
   };
 }
@@ -309,7 +328,7 @@ export async function deleteChat(d1: D1Database, chatId: string): Promise<void> 
   ]);
 }
 
-/** Adds a `did` row: something the agent of `runId` changed, in plain words. */
+/** Adds a `did` row: something the model of chat run `runId` changed, in plain words. */
 export async function addDid(
   d1: D1Database,
   did: { chatId: string; orgId: string; runId: string; text: string; data: DidData },
@@ -323,7 +342,7 @@ export async function addDid(
 
 /**
  * The conversation before the message a run answers (`beforeSeq`): its newest `limit` messages
- * (what the person said, the agent's replies, what it did), oldest first. A run's prompt quotes them.
+ * (what the person said, the model's replies, what it did), oldest first. A run's prompt quotes them.
  */
 export async function chatHistory(
   d1: D1Database,

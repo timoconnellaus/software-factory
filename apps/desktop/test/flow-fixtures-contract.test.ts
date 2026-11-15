@@ -27,7 +27,6 @@ const IDS: ContractIds = {
   projectId: API,
   workflowId: "fwf_ship",
   agentId: "fagt_backend",
-  builderId: "fagt_chat",
   itemId: "fitm_rate",
   runId: "frun_fitm_rate",
   chatId: "fchat_launch",

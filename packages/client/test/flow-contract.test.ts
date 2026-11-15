@@ -17,7 +17,6 @@ const IDS: ContractIds = {
   projectId: "fprj_1",
   workflowId: "fwf_1",
   agentId: "fagt_1",
-  builderId: "fagt_2",
   itemId: "fitm_1",
   runId: "frun_1",
   chatId: "fchat_1",

@@ -1,6 +1,6 @@
 // Runs: queued by the kernel's run.start (or by a chat message, chats.ts), claimed by a runner under
 // a lease with a fencing token, and ended by the runner (or by the lease sweep), which applies
-// run.ended or run.failed to the item, or, for a chat run, adds the agent's reply (chat-runs.ts).
+// run.ended or run.failed to the item, or, for a chat run, adds the model's reply (chat-runs.ts).
 import { guardChanged, toStatement } from "@software-factory/db";
 import type { Actor } from "@software-factory/flow";
 import { sql } from "kysely";

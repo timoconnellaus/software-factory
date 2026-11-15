@@ -115,7 +115,7 @@ function Plugins({
   const start = useStartChat(orgId);
   const [ask, setAsk] = useState("");
   const [asking, setAsking] = useState(false);
-  // Asking starts a chat with the org's builder and goes to it, where the plugin is built.
+  // Asking starts a chat and goes to it, where the model builds the plugin.
   async function submit() {
     const text = ask.trim();
     if (!text || asking) return;

@@ -94,7 +94,6 @@ describe("the desktop app's flow contract against the engine", () => {
       projectId: "",
       workflowId: "",
       agentId: "",
-      builderId: "",
       itemId: "",
       runId: "",
       chatId: "",
@@ -165,8 +164,7 @@ describe("the desktop app's flow contract against the engine", () => {
       .bind(uid("ghi_"), p.orgId, installationId, ids.repoOwner, p.userId, now, now)
       .run();
 
-    // The org's agents: Chat's Builder, and a writer (made, then changed as Team changes it).
-    ids.builderId = String((await check("flow.agent.ensureBuilder")).id);
+    // The org's agents: a writer (made, then changed as Team changes it).
     ids.agentId = String((await check("flow.agent.create")).id);
     await check("flow.agent.update");
 
@@ -316,7 +314,7 @@ describe("the desktop app's flow contract against the engine", () => {
     // Its new run is claimed and left running.
     if ((await claim(p))?.workItem.id !== stopped) throw new Error("no retried run");
 
-    // Chat: the Builder's run creates a workflow (a did row) and answers.
+    // Chat: the model's run creates a workflow and an item (did rows, and `made`) and answers.
     ids.chatId = String(((await check("flow.chat.create")).chat as { id: string }).id);
     const chatJob = await claim(p);
     if (!chatJob) throw new Error("no job for the chat");
@@ -331,6 +329,10 @@ describe("the desktop app's flow contract against the engine", () => {
         ],
       },
     });
+    await tool(token, "flow_call", {
+      op: "flow.item.create",
+      input: { projectId: ids.projectId, title: "Write the launch post" },
+    });
     await p.channel.handback({
       jobId: chatJob.jobId,
       fencingToken: chatJob.lease.fencingToken,
@@ -343,14 +345,17 @@ describe("the desktop app's flow contract against the engine", () => {
     expect(chatTurns(chat.messages, chat.working)).toMatchObject([
       { kind: "person", text: "Set up a workflow for launch posts." },
       {
-        kind: "agent",
+        kind: "assistant",
         text: "Done: Launch content has Brief and Edit.",
-        dids: [{ text: "Created the workflow Launch content (2 statuses)" }],
+        dids: [
+          { text: "Created the workflow Launch content (2 statuses)" },
+          { text: "Created the item Write the launch post" },
+        ],
         working: false,
       },
     ]);
     await check("flow.chat.list");
-    await check("flow.run.list", { agentId: ids.builderId });
+    await check("flow.chat.options");
     await check("flow.run.get", { runId: chatJob.jobId });
     await check("flow.chat.send");
 

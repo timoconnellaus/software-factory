@@ -117,6 +117,9 @@ export const flowAgentSchema = z.object({
   instructions: z.string(),
   /** The MCP servers it gets beyond the base ones: `["factory"]` is the Plugin editor. */
   mcp: z.array(z.string()).optional(),
+  /** The Claude Code model alias and effort its runs use (null or missing: the runner's default). */
+  model: z.string().nullable().optional(),
+  effort: z.string().nullable().optional(),
   createdAt: z.string(),
 });
 export type FlowAgent = z.infer<typeof flowAgentSchema>;
@@ -250,11 +253,16 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };
   "flow.agent.create": {
-    input: Org & { name: string; instructions: string; mcp?: string[] };
+    input: Org & { name: string; instructions: string; mcp?: string[] } & ModelChoice;
     output: FlowAgent;
   };
   "flow.agent.update": {
-    input: Org & { agentId: string; name: string; instructions: string; mcp?: string[] };
+    input: Org & {
+      agentId: string;
+      name: string;
+      instructions: string;
+      mcp?: string[];
+    } & ModelChoice;
     output: FlowAgent;
   };
   "flow.inbox.all": { input: Record<string, never>; output: FlowInboxAll };
@@ -315,14 +323,18 @@ export function personName(names: Names, userId: string): string {
 export const hasPluginEditor = (agent: Pick<FlowAgent, "mcp">) =>
   agent.mcp?.includes("factory") ?? false;
 
+/** A model and effort: left out, unchanged; null, the runner's default. */
+type ModelChoice = { model?: string | null; effort?: string | null };
+
 /**
  * What `flow.agent.update` is sent for one change: it takes the whole agent, so its name and saved
  * instructions go with it, and its `mcp` (missing reads as none). The Plugin editor is `factory`.
+ * A model or effort is sent only when it changes (null: the runner's default).
  */
 export function agentUpdate(
   orgId: string,
   agent: Pick<FlowAgent, "id" | "name" | "instructions" | "mcp">,
-  change: { instructions?: string; pluginEditor?: boolean },
+  change: { instructions?: string; pluginEditor?: boolean } & ModelChoice,
 ): FlowOpMap["flow.agent.update"]["input"] {
   const mcp =
     change.pluginEditor === undefined
@@ -336,10 +348,14 @@ export function agentUpdate(
     name: agent.name,
     instructions: change.instructions ?? agent.instructions,
     mcp,
+    ...(change.model !== undefined ? { model: change.model } : {}),
+    ...(change.effort !== undefined ? { effort: change.effort } : {}),
   };
 }
 
 export function agentName(names: Names, agentId: string): string {
+  // A chat's run has no agent (agent_id ''): what it does is the chat's.
+  if (agentId === "") return "Chat";
   return names.agents.find((a) => a.id === agentId)?.name ?? "An agent";
 }
 

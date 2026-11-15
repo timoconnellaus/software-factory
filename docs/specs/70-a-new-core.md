@@ -163,6 +163,37 @@ curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=
   the left and what it made on the right; it polls `flow.chat.get` every 3 seconds only while a run
   is in flight. The Plugins screen's "Say what you want the app to do…" starts a chat.
 
+### Chat with a model: as built (2026-11-15, amends the above)
+The owner: "chat should just be directly with a model … where I choose the model and effort". A
+chat no longer talks to an agent.
+- **Tables** (migration 0437): `flow_chats` gains `model` and `effort` (null: the runner's
+  default) and its `agent_id` is nullable (rebuilt; chats from before keep theirs, unused).
+  `flow_agents` gains `model` and `effort`. A chat run stores `agent_id` '' in `flow_runs`. Replies
+  are still stored with role `agent`; the API calls them `assistant`, and a reply's `data` names
+  the model that wrote it (`{ model }`).
+- **Choices** (`packages/ops/src/models.ts`, the one place): Claude Code's own `--model` aliases
+  (`opus`, `sonnet`, `haiku`, `fable`) and `--effort` levels (`low`, `medium`, `high`, `xhigh`,
+  `max`), answered by `flow.chat.options` with labels and the defaults for a new chat. Aliases,
+  never model ids.
+- **Operations**: `flow.chat.create { text, model?, effort? }`, `flow.chat.send { chatId, text,
+  model?, effort? }` (a model or effort sent is the chat's from that message on), `get` and `list`
+  with both; `get` adds `workingRunId`, and `made` lists items and projects created in the chat
+  besides the workflows, plugins, agents and gateways it changed. `flow.agent.ensureBuilder` and
+  the Plugin-editor check are gone. `flow.agent.create | update` take `model` and `effort`.
+- **The job**: a chat run always gets the `factory` MCP server; `harness.model` carries the alias
+  and `harness.effort` (new, optional, flow jobs only) the level, the chat's or, for an item's run,
+  its agent's. The harness passes `--model` and, for a flow job with a known level, `--effort`.
+  Nothing chosen: neither flag, so the CLI's default.
+- **The prompt** has no agent instructions: a short fixed text (a chat in the owner's workflow
+  app; what the app is; act with the `factory` tools when asked or clearly wanted, say what it did,
+  ask before anything large or destructive), the conversation, the message, and a footer whose
+  summary is the reply in Markdown.
+- **The app**: an ordinary assistant chat. Model and effort pickers beside the send button (the
+  last choice is a new chat's default, kept per Mac); replies as Markdown under the model's name;
+  the run's events read every 2 seconds while it works, shown as plain steps ("Creating an item in
+  Notes", "Thinking…") that fold into "Did N things"; the side pane only once the chat made
+  something. Team → an agent has Model and Effort pickers.
+
 ### Auto (schedules): as built (2026-11-15)
 - A schedule (`flow_schedules`, migration 0435) makes an item in a project on a clock: every hour
   at a minute, every day, weekdays, or one day a week at a time, in one IANA time zone (the

@@ -1,7 +1,8 @@
 // Team (.kim/mockups/team-an-agent.html): Agents, Runners and People as tabs across the top.
 // Agents: the org's agents on the left with what each is doing now; the chosen one's page with its
-// instructions (edited in place), what it is working on and its recent runs; and its properties
-// with Tools, where one switch gives it the Plugin editor (its `mcp` is `["factory"]`).
+// instructions (edited in place), what it is working on and its recent runs; and its properties:
+// the model and effort its runs start Claude Code with, and Tools, where one switch gives it the
+// Plugin editor (its `mcp` is `["factory"]`).
 import { type FlowAgent, flowKey, hasPluginEditor, when } from "@software-factory/client/flow";
 import { Button } from "@software-factory/ui/components/button";
 import {
@@ -13,6 +14,13 @@ import {
 } from "@software-factory/ui/components/dialog";
 import { Input } from "@software-factory/ui/components/input";
 import { Label } from "@software-factory/ui/components/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@software-factory/ui/components/select";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { Switch } from "@software-factory/ui/components/switch";
 import {
@@ -30,6 +38,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { CircleCheckIcon, CircleXIcon, LoaderIcon, PlusIcon, PuzzleIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { flowChatOptionsQuery } from "../../lib/flow-chat-queries.ts";
 import {
   flowAgentRunsQuery,
   flowAgentsQuery,
@@ -331,7 +340,14 @@ function AgentPage({ orgId, agent }: { orgId: string; agent: FlowAgent }) {
         className="grid w-[270px] flex-none gap-2 rounded-[10px] border border-line bg-panel px-4 py-4"
         data-testid="agent-properties"
       >
-        <SectionTitle first>Tools</SectionTitle>
+        <SectionTitle first>Runs with</SectionTitle>
+        <ModelPickers
+          orgId={orgId}
+          agent={agent}
+          disabled={saving}
+          onChange={(change) => void save(change, "Couldn't change the model")}
+        />
+        <SectionTitle>Tools</SectionTitle>
         <div className="flex items-start gap-3">
           <Label htmlFor="plugin-editor" className="grid flex-1 gap-0.5 font-normal">
             <span className="flex items-center gap-1.5 font-medium">
@@ -359,6 +375,62 @@ function AgentPage({ orgId, agent }: { orgId: string; agent: FlowAgent }) {
         </div>
       </aside>
     </>
+  );
+}
+
+/** "Default" in a picker: the runner's own (null on the server). */
+const DEFAULT = "default";
+
+/** The agent's model and effort, from the same choices as Chat's (flow.chat.options). */
+function ModelPickers({
+  orgId,
+  agent,
+  disabled,
+  onChange,
+}: {
+  orgId: string;
+  agent: FlowAgent;
+  disabled: boolean;
+  onChange: (change: { model?: string | null; effort?: string | null }) => void;
+}) {
+  const options = useQuery(flowChatOptionsQuery(orgId));
+  if (!options.data) return null;
+  const pickers = [
+    { key: "model", label: "Model", value: agent.model, list: options.data.models },
+    { key: "effort", label: "Effort", value: agent.effort, list: options.data.efforts },
+  ] as const;
+  return (
+    <div className="grid gap-2">
+      {pickers.map((p) => (
+        <div key={p.key} className="flex items-center gap-3">
+          <Label htmlFor={`agent-${p.key}`} className="flex-1 font-normal text-ink-muted">
+            {p.label}
+          </Label>
+          <Select
+            value={p.value ?? DEFAULT}
+            disabled={disabled}
+            onValueChange={(v) => onChange({ [p.key]: v === DEFAULT ? null : v })}
+          >
+            <SelectTrigger
+              id={`agent-${p.key}`}
+              size="sm"
+              className="h-7 w-[130px] text-[12.5px]"
+              data-testid={`agent-${p.key}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value={DEFAULT}>Default</SelectItem>
+              {p.list.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ))}
+    </div>
   );
 }
 

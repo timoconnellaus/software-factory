@@ -35,8 +35,14 @@ export interface ClaimedRun {
   project: { key: string; repo: ProjectRepo | null } | null;
   /** A chat's run: the chat. Null for an item's run. */
   chat: { title: string } | null;
-  /** Null when the workflow names an agent the org doesn't have. */
+  /** Null for a chat's run, and when the workflow names an agent the org doesn't have. */
   agent: { id: string; name: string; instructions: string; mcp: string[] } | null;
+  /**
+   * The Claude Code model alias and effort level to start with: a chat's run, the chat's; an item's,
+   * its agent's (migration 0437). Null: the runner's default.
+   */
+  model: string | null;
+  effort: string | null;
 }
 
 /**
@@ -73,8 +79,11 @@ export async function claimRun(
       "i.title",
       "i.body",
       "c.title as chat_title",
+      "c.model as chat_model",
+      "c.effort as chat_effort",
     ])
     .select(["a.name as agent_name", "a.instructions as agent_instructions", "a.mcp as agent_mcp"])
+    .select(["a.model as agent_model", "a.effort as agent_effort"])
     .where("r.status", "=", sql.lit("queued"))
     .where(
       sql<boolean>`(COALESCE(i.created_by, c.created_by) =
@@ -143,8 +152,10 @@ export async function claimRun(
         : null,
     project: run.item_id !== null ? { key: run.project_key ?? "", repo } : null,
     chat: run.chat_id !== null ? { title: run.chat_title ?? "" } : null,
+    model: (run.chat_id !== null ? run.chat_model : run.agent_model) ?? null,
+    effort: (run.chat_id !== null ? run.chat_effort : run.agent_effort) ?? null,
     agent:
-      run.agent_name === null
+      run.agent_name === null || run.chat_id !== null
         ? null
         : {
             id: run.agent_id,

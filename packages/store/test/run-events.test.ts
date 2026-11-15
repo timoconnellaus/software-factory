@@ -218,15 +218,8 @@ describe("a run's events", () => {
 describe("a chat's run", () => {
   it("is shown with its chat's title and no item, and stores its events like any other", async () => {
     const orgId = `org_${crypto.randomUUID()}`;
-    const agent = await createAgent(d1, {
-      orgId,
-      name: "Builder",
-      instructions: "",
-      mcp: ["factory"],
-    });
     const chat = await createChat(d1, {
       orgId,
-      agentId: agent.id,
       text: "Make a workflow",
       createdBy: "sam",
     });
@@ -243,7 +236,7 @@ describe("a chat's run", () => {
       statusName: null,
       chatTitle: "Make a workflow",
       startedBy: "a message in the chat",
-      agentName: "Builder",
+      agentName: null,
       steps: 1,
     });
     expect(await runEvents(d1, run.id)).toHaveLength(1);
