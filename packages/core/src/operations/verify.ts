@@ -739,7 +739,7 @@ async function readMergeability(
 export const verifyRefresh = defineOperation({
   name: "verify.refresh",
   description:
-    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open fails until it is attached to a work item (spec 04, criterion 3), and its check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again. A PR closed on GitHub ends its open item, attached or the factory's own: cancelled when closed without merging, Done when merged outside the factory (a merge the factory carried out is finished by its Workflow); its runs stop, its gates close and its Workflow ends. Wakes a Workflow waiting on CI.",
+    "Re-evaluate `factory/verify` for one commit of a project's repo, from the newest review packet for it and CI as it stands on GitHub (ADR 0037). Called by the GitHub connector when a PR opens or gets a new push, when a check suite completes, or when someone re-runs the check. A new head with no packet yet is left without a passing check; a PR the factory didn't open gets no check until it is attached to a work item, so where the check is required it can't merge (spec 04, criterion 3); a head that already had a check and is no longer attached fails, and that check links to the app's `/attach` page (spec 05). For an attached PR, a new push records the new head, withdraws a pending merge gate and wakes the Workflow to verify again. A PR closed on GitHub ends its open item, attached or the factory's own: cancelled when closed without merging, Done when merged outside the factory (a merge the factory carried out is finished by its Workflow); its runs stop, its gates close and its Workflow ends. Wakes a Workflow waiting on CI.",
   risk: "write",
   actors: ["intake", "agent"],
   permission: "signed-in",
@@ -888,6 +888,11 @@ export const verifyRefresh = defineOperation({
     }
     if (!item) {
       if (!input.prNumber && !existing) return { outcome: "ignored" as const, ...none };
+      // A PR nobody attached gets no check at all (2026-11-15): a red `factory/verify` on every
+      // outside PR read as broken CI. Where the check is required, a missing one still blocks the
+      // merge, as a failed one did. A head that already carries a check (an attached item that
+      // was cancelled) is still overwritten below, so a stale pass never stands.
+      if (!existing) return { outcome: "unattached" as const, ...none };
       const output = {
         status: "completed" as const,
         conclusion: "failure" as const,

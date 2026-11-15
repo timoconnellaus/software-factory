@@ -358,7 +358,7 @@ describe("factory/verify check runs", () => {
     expect((await verifyCheck(w.repo, head))[0]).toMatchObject({ conclusion: "success" });
   });
 
-  it("fails factory/verify on a PR the factory didn't open (criterion 3)", async () => {
+  it("posts no factory/verify on a PR the factory didn't open (criterion 3)", async () => {
     const w = await world();
     const sha = await github.push(w.repo, "tim/local-change");
     const out = await ok<{ outcome: string; conclusion: string }>(
@@ -371,8 +371,8 @@ describe("factory/verify check runs", () => {
       },
       INTAKE,
     );
-    expect(out).toMatchObject({ outcome: "unattached", conclusion: "failure" });
-    expect((await verifyCheck(w.repo, sha))[0]).toMatchObject({ conclusion: "failure" });
+    expect(out).toMatchObject({ outcome: "unattached", conclusion: null });
+    expect(await verifyCheck(w.repo, sha)).toHaveLength(0);
     // CI on an unknown commit with no PR is ignored.
     const other = await github.push(w.repo, "tim/other");
     const ignored = await ok<{ outcome: string }>(

@@ -78,7 +78,8 @@ describe("the GitHub App webhook", () => {
       expect.objectContaining({ op: "verify.refresh", outcome: "ok" }),
     ]);
     // A PR the factory didn't open fails factory/verify (spec 04, criterion 3).
-    expect((await verifyChecks(w, sha))[0]).toMatchObject({ conclusion: "failure" });
+    // An unattached PR gets no check (the delivery was still handled: the audit row below).
+    expect(await verifyChecks(w, sha)).toEqual([]);
 
     const again = await deliver("pull_request", payload, { id });
     expect(await again.json()).toEqual({ ok: true, duplicate: true });

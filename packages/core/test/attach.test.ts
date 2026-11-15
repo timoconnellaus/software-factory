@@ -229,7 +229,7 @@ describe("workItem.attachPr (spec 05, criterion 1)", () => {
 });
 
 describe("verify.refresh for outside PRs (spec 05)", () => {
-  it("links the unattached check to /attach (criterion 6)", async () => {
+  it("posts no check on an unattached PR (criterion 6, changed 2026-11-15)", async () => {
     const w = await world();
     const pr = await github.openOutsidePull(w.repo, { branch: "tim/link", title: "Link" });
     const withBase = {
@@ -248,11 +248,8 @@ describe("verify.refresh for outside PRs (spec 05)", () => {
       { actor: INTAKE, origin: { surface: "test" } },
     );
     expect(r.status === "ok" && r.output.outcome).toBe("unattached");
-    const [check] = await verifyChecks(w, pr.headSha);
-    expect(check).toMatchObject({ conclusion: "failure" });
-    expect(check?.url).toBe(
-      `https://sf.example/attach?repo=${encodeURIComponent(`${w.repo.owner}/${w.repo.repo}`)}&pr=${pr.number}`,
-    );
+    // No check at all on a PR nobody attached: nothing red, and a required check still blocks.
+    expect(await verifyChecks(w, pr.headSha)).toHaveLength(0);
   });
 
   it("records a push to an attached PR, withdraws its merge gate and wakes the Workflow (criteria 4, 5)", async () => {
