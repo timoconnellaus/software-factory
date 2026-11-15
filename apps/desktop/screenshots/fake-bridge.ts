@@ -250,7 +250,8 @@ export const bun = {
     reads.push(...p.calls);
     return p.calls.map((c) => answer(c.op, c.input));
   },
-  decide: async (p: { op: string; input: unknown }) => answer(p.op, p.input),
+  // A decision is a write once Touch ID is given (here at once): recorded with the others.
+  decide: (p: { op: string; input: unknown }) => write(p),
   runnerState: async () => runner,
   runnerAction: async () => runner,
   loginItem: async () => ({ enabled: true }),

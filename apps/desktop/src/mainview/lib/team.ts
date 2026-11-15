@@ -50,8 +50,8 @@ function takesWork(r: Listed, online: boolean, now: number): RunnerRow["takesWor
   if (!online) return { yes: false, why: "offline" };
   if (!r.accepting) return { yes: false, why: "paused" };
   if (r.rateLimitedUntil && Date.parse(r.rateLimitedUntil) > now)
-    return { yes: false, why: "rate-limited" };
-  if (r.light && r.light.inUse >= r.light.max) return { yes: false, why: "full" };
+    return { yes: false, why: "at its Claude usage limit" };
+  if (r.light && r.light.inUse >= r.light.max) return { yes: false, why: "as busy as it gets" };
   return { yes: true, why: null };
 }
 
@@ -68,6 +68,48 @@ function codeOf(r: Listed): RunnerRow["code"] {
   if (r.version && r.desiredVersion && r.version !== r.desiredVersion)
     return { current: false, text: "Out of date" };
   return { current: true, text: "Up to date" };
+}
+
+/** One of a runner's Claude accounts, as its detail shows it. */
+export interface RunnerAccount {
+  name: string;
+  /** The one new work uses now. */
+  active: boolean;
+  /** Picked here, until the runner says it switched (on its next check-in). */
+  switching: boolean;
+  /** The last usage limit it hit, in Claude's words. */
+  limit: string | null;
+}
+
+/**
+ * A runner's Claude accounts (`runner.list`'s `accounts`), or null when it hasn't said (an older
+ * runner). `default` is whatever `claude` is signed in as on that machine.
+ */
+export function runnerAccounts(r: Listed): RunnerAccount[] | null {
+  const a = r.accounts;
+  if (!a) return null;
+  const names = a.names.includes(a.active) ? a.names : [a.active, ...a.names];
+  return names.map((name) => ({
+    name,
+    active: name === a.active,
+    switching: a.requested === name && name !== a.active,
+    limit: a.limits.find((l) => l.name === name)?.message ?? null,
+  }));
+}
+
+/**
+ * What a person runs on the other Mac to connect it (`sf-runner login`, ADR 0056): a checkout of
+ * this repository, then the login, which prints a code to type here, waits, and once approved
+ * saves its key and starts the runner in the background. `--no-open`: the code is approved in this
+ * app, not on the website.
+ */
+export const RUNNER_LOGIN_COMMAND =
+  "git clone https://github.com/timoconnellaus/software-factory ~/software-factory-runner && cd ~/software-factory-runner && pnpm install --frozen-lockfile && local/runner-host/bin/sf-runner login --no-open";
+
+/** `bcdf ghjk`, `BCDFGHJK`, `bcdf-ghjk` → `BCDF-GHJK`; null unless it is eight letters and digits. */
+export function loginCode(text: string): string | null {
+  const raw = text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : null;
 }
 
 /** What an agent is working on now: the org's items waiting on its run (`flow.inbox.all`). */

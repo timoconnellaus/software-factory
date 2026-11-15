@@ -3,7 +3,7 @@
 // tables; the Personal org it creates on first sign-in is Better Auth data too (core_organization,
 // core_member). Everything else is written through operations on sf-engine.
 //
-// V1 has one user (docs/v1-scope.md): only GitHub logins in ALLOWED_GITHUB_LOGINS may sign in. An
+// Sign-in is invite-only for now: only GitHub logins in ALLOWED_GITHUB_LOGINS may sign in. An
 // empty list lets nobody in.
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";

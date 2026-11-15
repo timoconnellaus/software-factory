@@ -36,3 +36,12 @@ device flow (`gh auth login`, `wrangler login`) is the familiar shape.
 - The start endpoint is unauthenticated and writes a row per call. No rate limit yet: open question
   (Cloudflare's rate limiting binding is the likely answer).
 - Each poll writes an audit row (at most ~120 per login).
+
+## Amended 2026-11-15: approve from the desktop app
+Setup is gone, so the code is now also approved in the desktop app (Team › Runners › Connect a
+runner). `runner.approveDevice` stays browser-only, but takes a desktop presence proof, as
+`mobile.pairOffer` does: the app asks for a challenge, Touch ID shows "Connect a runner to your
+account", and the door redeems the proof before the call. The CLI and the phone still can't approve
+one. The website's `/runners/connect` page works as before. The key fallback has no screen any
+more: nothing calls `runner.register`, and `sf-runner pair` only takes an id and key a runner
+already has.

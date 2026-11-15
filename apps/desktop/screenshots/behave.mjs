@@ -98,6 +98,7 @@ function expect(actual, label) {
   };
   return {
     toBe: (v) => actual === v || fail(JSON.stringify(v)),
+    toEqual: (v) => JSON.stringify(actual) === JSON.stringify(v) || fail(JSON.stringify(v)),
     toContain: (v) => (actual ?? "").includes(v) || fail(`to contain ${JSON.stringify(v)}`),
     toBeTruthy: () => !!actual || fail("truthy"),
     toBeFalsy: () => !actual || fail("falsy"),
@@ -711,6 +712,78 @@ export const TESTS = [
       await p.open("/flow/org_personal/settings?tab=members");
       await p.waitFor("document.querySelector('[data-testid=member]')");
       expect(await p.text("[data-testid=members]"), "a real name").toContain("Mia Chen");
+    },
+  },
+  {
+    name: "runners: Connect a runner looks up the code, connects with Touch ID, and lists it",
+    async run(p) {
+      await p.open("/flow/org_personal/team?tab=runners&end=1");
+      await p.waitFor("document.querySelector('[data-testid=runner-row]')");
+      await p.click("[data-testid=connect-runner]");
+      await p.waitFor("document.querySelector('[data-testid=connect-code-step]')");
+      expect(await p.text("[data-testid=login-command]"), "the command").toContain(
+        "local/runner-host/bin/sf-runner login",
+      );
+      // An unknown code says so, and stays on the code step.
+      await p.focus("[data-testid=runner-code]");
+      await p.type("zzzz-zzzz");
+      await p.click("[data-testid=look-up-code]");
+      await p.waitFor("document.querySelector('[data-testid=connect-error]')");
+      expect(await p.text("[data-testid=connect-error]"), "unknown code").toContain("no such code");
+      // The real one, typed loosely: lower case, no dash.
+      await p.evaluate(
+        "(() => { const i = document.querySelector('[data-testid=runner-code]'); i.select(); })()",
+      );
+      await p.type("bcdfghjk");
+      await p.click("[data-testid=look-up-code]");
+      await p.waitFor("document.querySelector('[data-testid=connect-confirm-step]')");
+      expect(await p.text("[data-testid=asking-name]"), "who is asking").toBe("Office-iMac");
+      expect(await p.exists("[data-testid=dont-connect]"), "Don't connect").toBe(true);
+      await p.click("[data-testid=connect]");
+      await p.waitFor("document.querySelector('[data-testid=connected]')");
+      const made = await p.calls("runner.approveDevice");
+      expect(made.length, "one approval, through decide").toBe(1);
+      expect(made[0]?.input, "the code and the name").toEqual({
+        userCode: "BCDF-GHJK",
+        name: "Office-iMac",
+      });
+      await p.click("[data-testid=connect-close]");
+      await p.waitFor("document.querySelector('[data-testid=runner-detail]')");
+      expect(await p.path(), "shows the new runner").toContain("runner=rnr_office");
+      expect(await p.text("[data-testid=runners]"), "in the list").toContain("Office-iMac");
+      expect(await p.text("[data-testid=runner-detail]"), "not seen yet").toContain("Never seen");
+    },
+  },
+  {
+    name: "runners: Don't connect turns the code down; a runner's detail switches its Claude account",
+    async run(p) {
+      await p.open("/flow/org_personal/team?tab=runners&end=1");
+      await p.waitFor("document.querySelector('[data-testid=runner-row]')");
+      await p.click("[data-testid=connect-runner]");
+      await p.waitFor("document.querySelector('[data-testid=runner-code]')");
+      await p.focus("[data-testid=runner-code]");
+      await p.type("BCDF-GHJK");
+      await p.click("[data-testid=look-up-code]");
+      await p.waitFor("document.querySelector('[data-testid=dont-connect]')");
+      await p.click("[data-testid=dont-connect]");
+      await p.waitFor("document.querySelector('[data-testid=turned-down]')");
+      expect((await p.calls("runner.denyDevice"))[0]?.input, "the code").toEqual({
+        userCode: "BCDF-GHJK",
+      });
+      expect(await p.calls("runner.approveDevice"), "nothing approved").toEqual([]);
+      await p.click("[data-testid=connect-close]");
+      await p.click("[data-testid=runner-open]");
+      await p.waitFor("document.querySelector('[data-testid=runner-detail]')");
+      expect(await p.text("[data-testid=runner-name]"), "the M5").toBe("M5");
+      expect(await p.text("[data-testid=account-in-use]"), "work in use").toBe("In use");
+      await p.click("[data-testid=use-account]");
+      await p.waitFor(
+        "document.querySelector('[data-testid=runner-accounts]')?.textContent.includes('Switching')",
+      );
+      expect((await p.calls("runner.account.use"))[0]?.input, "the pick").toEqual({
+        runnerId: "rnr_m5",
+        name: "default",
+      });
     },
   },
   {

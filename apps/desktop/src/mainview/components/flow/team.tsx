@@ -2,7 +2,7 @@
 // Agents: the org's agents on the left with what each is doing now; the chosen one's page with its
 // instructions (edited in place), what it is working on and its recent runs; and its properties:
 // the model and effort its runs start Claude Code with, and Tools, where one switch gives it the
-// Plugin editor (its `mcp` is `["factory"]`).
+// Plugin editor (its `mcp` is `["factory"]`). Runners and Connect a runner are in runners.tsx.
 import { type FlowAgent, flowKey, hasPluginEditor, when } from "@software-factory/client/flow";
 import { Button } from "@software-factory/ui/components/button";
 import {
@@ -23,14 +23,6 @@ import {
 } from "@software-factory/ui/components/select";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { Switch } from "@software-factory/ui/components/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@software-factory/ui/components/table";
 import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
@@ -46,10 +38,10 @@ import {
   useFlowRefresh,
 } from "../../lib/flow-queries.ts";
 import { OpError, op, submitKey } from "../../lib/op.ts";
-import { runnersQuery } from "../../lib/queries.ts";
-import { agentUpdate, agentWorking, duration, runnerRows, runOutcome } from "../../lib/team.ts";
+import { agentUpdate, agentWorking, duration, runOutcome } from "../../lib/team.ts";
 import { MembersList } from "./members.tsx";
 import { PageHeader, Pill } from "./parts.tsx";
+import { ConnectRunnerDialog, Runners } from "./runners.tsx";
 
 export type TeamTab = "agents" | "runners" | "people";
 const TABS: { id: TeamTab; label: string }[] = [
@@ -62,14 +54,17 @@ export function TeamPage({
   orgId,
   tab,
   agentId,
+  runnerId,
 }: {
   orgId: string;
   tab: TeamTab;
   agentId: string | undefined;
+  runnerId?: string | undefined;
 }) {
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
-  const go = (search: { tab?: Exclude<TeamTab, "agents">; agent?: string }) =>
+  const [connecting, setConnecting] = useState(false);
+  const go = (search: { tab?: Exclude<TeamTab, "agents">; agent?: string; runner?: string }) =>
     void navigate({ to: "/flow/$orgId/team", params: { orgId }, search });
   return (
     <main className="flex min-w-0 flex-1 flex-col" data-testid="team-page">
@@ -89,10 +84,18 @@ export function TeamPage({
             New agent
           </Button>
         )}
+        {tab === "runners" && (
+          <Button size="md" onClick={() => setConnecting(true)} data-testid="connect-runner">
+            <PlusIcon />
+            Connect a runner
+          </Button>
+        )}
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-auto bg-board">
         {tab === "agents" && <Agents orgId={orgId} agentId={agentId} />}
-        {tab === "runners" && <Runners orgId={orgId} />}
+        {tab === "runners" && (
+          <Runners orgId={orgId} runnerId={runnerId} onConnect={() => setConnecting(true)} />
+        )}
         {tab === "people" && (
           <div className="p-5">
             <MembersList orgId={orgId} />
@@ -104,6 +107,11 @@ export function TeamPage({
         open={creating}
         onOpenChange={setCreating}
         onCreated={(id) => go({ agent: id })}
+      />
+      <ConnectRunnerDialog
+        open={connecting}
+        onOpenChange={setConnecting}
+        onConnected={(id) => go({ tab: "runners", runner: id })}
       />
     </main>
   );
@@ -530,72 +538,5 @@ function NewAgentDialog({
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ---- Runners ------------------------------------------------------------------------------------
-
-function Runners({ orgId }: { orgId: string }) {
-  const listed = useQuery(runnersQuery());
-  if (listed.error)
-    return <p className="p-6 text-bad">Couldn't load the runners. {listed.error.message}</p>;
-  if (!listed.data) return <Skeleton className="m-4 h-40" />;
-  const rows = runnerRows(listed.data.runners);
-  return (
-    <div className="grid gap-3 p-4" data-testid="runners">
-      {rows.length === 0 ? (
-        <p className="text-ink-muted">No runners yet.</p>
-      ) : (
-        <div className="overflow-hidden rounded-[10px] border border-line bg-panel">
-          <Table className="text-[13px]">
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="text-[11.5px] text-ink-faint">Runner</TableHead>
-                <TableHead className="text-[11.5px] text-ink-faint">Seen</TableHead>
-                <TableHead className="text-[11.5px] text-ink-faint">Working on</TableHead>
-                <TableHead className="text-[11.5px] text-ink-faint">New work</TableHead>
-                <TableHead className="text-[11.5px] text-ink-faint">Code</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.id} className="cursor-default" data-testid="runner-row">
-                  <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell>
-                    <span className="flex items-center gap-1.5">
-                      <span
-                        aria-hidden
-                        className={cn("size-2 rounded-full", r.online ? "bg-ok" : "bg-line-strong")}
-                      />
-                      {r.seen}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    {r.working === 0 ? "Nothing" : `${r.working} job${r.working === 1 ? "" : "s"}`}
-                  </TableCell>
-                  <TableCell className={cn(!r.takesWork.yes && "text-ink-muted")}>
-                    {r.takesWork.yes ? "Takes new work" : `Not now: ${r.takesWork.why}`}
-                  </TableCell>
-                  <TableCell className={cn(!r.code.current && "text-need")}>
-                    {r.code.text}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-      <p className="text-[12.5px] text-ink-muted" data-testid="connect-runner">
-        This Mac's runner is set up and controlled in{" "}
-        <Link
-          to="/flow/$orgId/settings"
-          params={{ orgId }}
-          className="text-ink underline underline-offset-2"
-        >
-          Settings › This Mac
-        </Link>
-        . To add another machine, run <code className="font-mono">sf-runner login</code> on it.
-      </p>
-    </div>
   );
 }

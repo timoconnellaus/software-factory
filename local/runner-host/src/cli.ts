@@ -4,7 +4,7 @@
 //
 //   sf-runner login [--name m5] [--url https://sf-engine.zerobsai.com] [--app https://…] [--no-install]
 //                                  print a code, wait for approval in the app, save the key, install
-//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a key registered in Setup)
+//   sf-runner pair --runner-id r_… --key-stdin   (fallback: a runner id and key you already have)
 //   sf-runner run                  run in the foreground (what the service runs)
 //   sf-runner status               config (key redacted), service state, the jobs it is running,
 //                                  and its version against the desired one (self-update, ADR 0360)
@@ -161,7 +161,7 @@ async function adopt(config: RunnerConfig) {
     const message = err instanceof Error ? err.message : String(err);
     if (/401|signature/i.test(message)) {
       throw new Error(
-        `${message}\nThe factory didn't accept this key for ${config.runnerId}. Check the runner id matches the key (Setup shows both), or rotate the key in the app and pair again.`,
+        `${message}\nThe factory didn't accept this key for ${config.runnerId}. Check the runner id matches the key, or connect it again with sf-runner login.`,
       );
     }
     throw err;

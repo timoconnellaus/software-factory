@@ -50,7 +50,23 @@ const listed = (over: Partial<Listed> & Pick<Listed, "id" | "name">): Listed => 
 
 /** This person's runners: the M5 busy, the M1 behind on its code, an old Mac offline. */
 const RUNNERS: Listed[] = [
-  listed({ id: "rnr_m5", name: "M5", light: { max: 6, inUse: 2 } }),
+  listed({
+    id: "rnr_m5",
+    name: "M5",
+    light: { max: 6, inUse: 2 },
+    accounts: {
+      names: ["default", "work"],
+      active: "work",
+      requested: null,
+      limits: [
+        {
+          name: "default",
+          at: ago(90),
+          message: "Claude usage limit reached; resets at 5pm",
+        },
+      ],
+    },
+  }),
   listed({
     id: "rnr_m1",
     name: "M1",
@@ -59,6 +75,19 @@ const RUNNERS: Listed[] = [
   }),
   listed({ id: "rnr_mini", name: "Mac mini", lastSeenAt: ago(60 * 26), accepting: false }),
 ];
+
+/**
+ * Connect a runner: `BCDF-GHJK` is a Mac waiting to be connected, `MTRX-7Q2P` a code already used;
+ * any other code is unknown, as the engine says it. Connecting one adds it to the list, as a runner
+ * that hasn't checked in yet.
+ */
+const WAITING = "BCDF-GHJK";
+const USED = "MTRX-7Q2P";
+const normalize = (code: string) => {
+  const raw = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+};
+const connected = new Set<string>();
 
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
@@ -75,6 +104,46 @@ export const ANSWERS: Answers = {
     ],
   }),
   "runner.list": () => ({ runners: RUNNERS }),
+  "runner.deviceLookup": ({ userCode }) => {
+    const code = normalize(userCode);
+    if (code !== WAITING && code !== USED)
+      throw new Refusal("not_found", "no such code: check it against your terminal");
+    const done = code === USED || connected.has(code);
+    return {
+      userCode: code,
+      suggestedName: code === WAITING ? "Office-iMac" : "studio",
+      status: done ? "consumed" : "pending",
+      expiresAt: new Date(now + 8 * 60_000).toISOString(),
+      decidedByYou: connected.has(code),
+      runnerId: null,
+    };
+  },
+  "runner.approveDevice": ({ userCode, name }) => {
+    const code = normalize(userCode);
+    if (code !== WAITING || connected.has(code))
+      throw new Refusal("conflict", "this code was already used: run `sf-runner login` again");
+    connected.add(code);
+    const runnerId = "rnr_office";
+    RUNNERS.push(
+      listed({
+        id: runnerId,
+        name,
+        lastSeenAt: null,
+        light: null,
+        version: null,
+        autoUpdate: null,
+        accounts: null,
+      }),
+    );
+    return { runnerId, name };
+  },
+  "runner.denyDevice": () => ({ denied: true }),
+  "runner.account.use": ({ runnerId, name }) => {
+    const r = RUNNERS.find((x) => x.id === runnerId);
+    if (!r?.accounts) throw new Refusal("conflict", "this runner hasn't reported its accounts");
+    r.accounts = { ...r.accounts, requested: name === r.accounts.active ? null : name };
+    return { runnerId, requested: name, active: r.accounts.active };
+  },
   // A project's Settings, for an org with no GitHub connection: the website's connect flow.
   "github.connectStart": () => ({
     url: "https://github.com/apps/software-factory/installations/new?state=fixture",

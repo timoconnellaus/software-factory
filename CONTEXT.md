@@ -91,4 +91,4 @@ They appear in ADRs before 0660 and specs before 70, which describe the old fact
 | policy, autonomy policy, floor, dark factory mode | gone |
 | autopilot | schedule |
 | connector | gateway |
-| Setup screen | gone; the desktop app's Settings and a project's Settings tab |
+| Setup screen | gone; the desktop app's Settings, Team › Runners (connect a runner, its Claude account) and a project's Settings tab |

@@ -33,12 +33,14 @@ function bun(): OpTransport {
 export { OpError };
 
 /** The operations that always need a presence proof, typed: these go through `decide`. */
-export type DecisionOp = "mobile.pairOffer";
+export type DecisionOp = "mobile.pairOffer" | "runner.approveDevice";
 
 /** Reads: operations the door's `batch` runs (risk `read`). */
 export type ReadOpName =
   | "org.list"
   | "runner.list"
+  // Team › Runners › Connect a runner: what a login code is waiting for.
+  | "runner.deviceLookup"
   // The new core's reads (spec 70).
   | "flow.project.list"
   | "flow.workflow.list"

@@ -117,51 +117,64 @@ local/runner-host/bin/sf-runner account remove ci           # not the active one
   `ANTHROPIC_API_KEY` in the host's environment always was, so prefer login accounts.
 - The registry is `~/.config/software-factory/accounts.json`: the active name and each account's
   kind, no secret. The service reads it for every job, so `account use` needs no restart.
-- You can also switch from the dashboard: Setup → Your runners → Claude account. That sends only the
-  name; the host switches on its next heartbeat. The heartbeat reports account names and the active
-  one, never a credential. Adding and removing accounts is only ever done here.
-- A run that hits a usage limit fails with "usage limit on Claude account …", and Setup shows it next
-  to that account until a run on it ends cleanly. Switch by hand; nothing rotates accounts for you.
+- You can also switch in the desktop app: Team › Runners, open the runner, and press **Use** on an
+  account. That sends only the name; the host switches on its next heartbeat. The heartbeat reports
+  account names and the active one, never a credential. Adding and removing accounts is only ever
+  done here.
+- A run that hits a usage limit fails with "usage limit on Claude account …", and the runner's
+  detail in Team › Runners shows it under that account until a run on it ends cleanly. Switch by
+  hand; nothing rotates accounts for you.
 
 ## Connecting: `sf-runner login` (ADR 0056)
-From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
+In the desktop app, **Team › Runners › Connect a runner** shows the command to run on the other
+machine and asks for the code it prints. The command clones this repository into a checkout the
+runner keeps (self-update moves it, below), installs it and logs in:
+```sh
+git clone https://github.com/timoconnellaus/software-factory ~/software-factory-runner && cd ~/software-factory-runner && pnpm install --frozen-lockfile && local/runner-host/bin/sf-runner login --no-open
+```
+That machine needs git, Node ≥ 24 with pnpm, tmux and Claude Code signed in. From a checkout you
+already have, just:
 ```sh
 local/runner-host/bin/sf-runner login            # --name m5, --no-install, --no-open, --url <engine>
 ```
-It prints a code and a link (and opens it on macOS, or with `xdg-open` on a Linux desktop). Open the link, check the code matches, name the
-runner and approve. The CLI then receives its key (once), proves it with a signed heartbeat, saves
+It prints a code (`BCDF-GHJK`) and a link to the website's `/runners/connect` page, which it opens
+on macOS, or with `xdg-open` on a Linux desktop, unless you pass `--no-open`. Approve the code in
+either place: type it into the app's Connect a runner, check the machine's name, and press
+**Connect** (Touch ID), or open the link, name the runner and approve. Only approve a code you just
+started. The CLI then receives its key (once), proves it with a signed heartbeat, saves
 `~/.config/software-factory/runner.json` (0600) and installs the service (launchd on macOS, systemd
-on Linux). Nothing is copied.
+on Linux). Nothing is copied. The new runner shows in Team › Runners, online once the service
+starts.
 If `checkouts` isn't set yet, `login` sets it once: the parent directories of the repos the Orca
 desktop app knows, when it is installed, else `[]` (edit it to list where you keep your clones).
 
-## Pairing with a key (fallback)
-1. In the app (Setup → "Can't use a login code? Pair with a key instead"), register a runner. This calls `runner.register` and shows the runner id and key **once**.
-2. On this machine, from a checkout of software-factory with `pnpm install` done: press **1. Copy
-   command** in Setup and paste it here (don't run it yet), press **2. Copy key**, then press Enter:
-   ```sh
-   pbpaste | local/runner-host/bin/sf-runner pair --runner-id r_… --key-stdin
-   ```
-   stdin takes the bare key or the two-line `runner id: …` / `key: …` block. If the block's runner id
-   isn't `--runner-id`, `pair` says so instead of failing with `401 bad signature`.
-   `pair` sends one signed heartbeat to prove the id and key. It then writes
-   `~/.config/software-factory/runner.json` (mode 0600; `--url` for another engine, `--max` for
-   the heavy pool, default 2; `--max-light` for the light pool, where flow jobs run, default 6:
-   ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
-   argument, so it stays out of your shell history.
-3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, tmux ≥ 3.2, claude (on Linux
-   also bubblewrap, socat, the user systemd and linger: below), the channel,
-   and the checkouts: `checkouts` set and present, one checkout per remote under them, and no
-   `sf-*` job worktree or tmux session without a live job. `sf-runner doctor --fix` sets `checkouts`
-   once if it is unset (as `login` does) and kills and removes the orphans. It never touches your
-   own checkouts: two of yours for one remote are reported, not fixed. While a service is running that
-   doesn't report its jobs (one from before this change), it treats every job as live.
-   It also checks each running job's Claude against its launch record (permission mode, setting
-   sources, settings hash) and reports `harness-config-mismatch` (ADR 0270).
-   Job worktrees an older runner made in Orca (`sf-job:` comments) aren't this runner's to reap:
-   remove them in Orca.
+This Mac's own runner is set up from the desktop app instead: Settings › This Mac › **Set up this
+Mac** runs the same login with the app's bundled runner and supervises it.
 
-The e2e driver below calls `runner.register` through `EngineApi` against a local engine.
+## Pairing with a key (fallback)
+Nothing in the app issues a runner key any more, so this is only for a runner id and key you
+already have (a `runner.json` from another machine, say):
+```sh
+pbpaste | local/runner-host/bin/sf-runner pair --runner-id r_… --key-stdin
+```
+stdin takes the bare key or the two-line `runner id: …` / `key: …` block. If the block's runner id
+isn't `--runner-id`, `pair` says so instead of failing with `401 bad signature`. `pair` sends one
+signed heartbeat to prove the id and key. It then writes `~/.config/software-factory/runner.json`
+(mode 0600; `--url` for another engine, `--max` for the heavy pool, default 2; `--max-light` for
+the light pool, where flow jobs run, default 6: ADR 0301) and restarts the service if one is
+installed. Pass the key on stdin, not as an argument, so it stays out of your shell history.
+
+## Checking it: `sf-runner doctor`
+`sf-runner doctor` looks at node ≥ 24, git, tmux ≥ 3.2, claude (on Linux also bubblewrap, socat,
+the user systemd and linger: below), the channel, and the checkouts: `checkouts` set and present,
+one checkout per remote under them, and no `sf-*` job worktree or tmux session without a live job.
+`sf-runner doctor --fix` sets `checkouts` once if it is unset (as `login` does) and kills and
+removes the orphans. It never touches your own checkouts: two of yours for one remote are reported,
+not fixed. While a service is running that doesn't report its jobs (one from before this change), it
+treats every job as live. It also checks each running job's Claude against its launch record
+(permission mode, setting sources, settings hash) and reports `harness-config-mismatch` (ADR 0270).
+Job worktrees an older runner made in Orca (`sf-job:` comments) aren't this runner's to reap:
+remove them in Orca.
 
 ## Running as a launchd service (macOS)
 It's a per-user LaunchAgent, because Claude Code runs as you, with your Claude login. On Linux it's a
@@ -187,7 +200,7 @@ local/runner-host/bin/sf-runner uninstall
   shows none and no job sessions in tmux. You only need it once per machine: after that the runner
   updates itself.
 - It restarts after a crash, and after a self-update (exit 75). An unpaired runner exits cleanly,
-  and launchd leaves it stopped until `pair`.
+  and launchd leaves it stopped until `login`.
 - On start it reaps orphans (`sf-*` tmux sessions on its socket and `sf-*` worktrees it isn't
   running) before claiming work. It records the jobs it is running in
   `~/.local/state/software-factory/runner/live-jobs.json`.
@@ -228,10 +241,10 @@ local/runner-host/scripts/linux-prereqs.sh
 ```sh
 local/runner-host/bin/sf-runner login --name hetzner-1
 ```
-It prints a link and a code. Over SSH nothing opens: open the link in your browser where you're
-signed in to the factory, check the code matches, name the runner and approve. Only the
-runner's owner can approve. `login` then saves `~/.config/software-factory/runner.json` and runs
-`install`.
+It prints a link and a code. Over SSH nothing opens: type the code into the desktop app (Team ›
+Runners › Connect a runner), or open the link in your browser where you're signed in to the
+factory, check the code matches, name the runner and approve. Whoever approves owns the runner.
+`login` then saves `~/.config/software-factory/runner.json` and runs `install`.
 
 **5. Linger**, once, so the service runs without you logged in and starts at boot:
 ```sh
@@ -350,7 +363,7 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | Key | Default | |
 |---|---|---|
 | `baseUrl` | `https://sf-engine.zerobsai.com` | The engine |
-| `runnerId`, `key` | from `pair` | |
+| `runnerId`, `key` | from `login` (or `pair`) | |
 | `maxConcurrent` | 2 | The heavy pool's size, as reported; no job uses it now |
 | `maxLight` | 6 | Jobs at once: every flow job runs in the light pool (ADR 0301) |
 | `heartbeatMs` | 20000 | |

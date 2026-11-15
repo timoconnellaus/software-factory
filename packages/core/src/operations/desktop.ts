@@ -163,6 +163,8 @@ function describeDecision(op: string, input: Record<string, unknown>): string {
   switch (op) {
     case "mobile.pairOffer":
       return "Add a phone to your account";
+    case "runner.approveDevice":
+      return "Connect a runner to your account";
     case "mobile.renew":
       return "Renew this phone's sign-in for 30 days";
     case "device.update":

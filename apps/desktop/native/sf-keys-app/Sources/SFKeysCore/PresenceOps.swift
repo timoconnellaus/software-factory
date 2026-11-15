@@ -3,4 +3,5 @@
 public let presenceOps: Set<String> = [
   "device.update",
   "mobile.pairOffer",
+  "runner.approveDevice",
 ]

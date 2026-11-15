@@ -604,13 +604,9 @@ describe("pairing: the browser and the pair offer (criteria 2 and 3)", () => {
         offer.offerId,
       ),
     ).toEqual({ surface: "desktop" });
-    // Runner, CLI and desktop approvals stay browser-only, proof or not.
-    for (const op of [
-      "runner.approveDevice",
-      "cli.approveDevice",
-      "desktop.approveDevice",
-      "mobile.approveDevice",
-    ]) {
+    // CLI, desktop and phone approvals stay browser-only, proof or not. (A runner's login code
+    // takes a desktop proof: desktop.test.ts.)
+    for (const op of ["cli.approveDevice", "desktop.approveDevice", "mobile.approveDevice"]) {
       const res = await post(
         "call",
         { op: "presence.challenge", input: { op, input: {} } },

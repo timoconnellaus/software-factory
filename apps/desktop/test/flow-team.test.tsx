@@ -8,7 +8,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
 import { flowChatOptionsQuery } from "../src/mainview/lib/flow-chat-queries.ts";
-import { agentUpdate, runnerRows, runOutcome } from "../src/mainview/lib/team.ts";
+import {
+  agentUpdate,
+  loginCode,
+  RUNNER_LOGIN_COMMAND,
+  runnerAccounts,
+  runnerRows,
+  runOutcome,
+} from "../src/mainview/lib/team.ts";
 import { routeTree } from "../src/mainview/router.tsx";
 import { renderPage, textOf } from "./route-harness.tsx";
 
@@ -96,8 +103,46 @@ describe("Team: Runners and People", () => {
     expect(text).toContain("M5 Online 2 jobs Takes new work Up to date");
     expect(text).toContain("M1 Online Nothing Takes new work Updating");
     expect(text).toContain("Mac mini Last seen 1d ago Nothing Not now: offline Up to date");
-    expect(text).not.toMatch(/heavy|light \d/i);
+    expect(text).not.toMatch(/heavy|light|pool|compat|fencing/i);
     expect(text).toContain("Settings › This Mac");
+    expect(text).toContain("Connect a runner");
+    // Each row opens the runner's detail.
+    expect(html).toContain('href="/flow/org_personal/team?tab=runners&amp;runner=rnr_m1"');
+  });
+
+  it("opens a runner's detail: how it is and its Claude accounts, with Use on the others", async () => {
+    const html = await renderPage(`/flow/${ORG}/team?tab=runners&runner=rnr_m5`);
+    const detail = textOf(html.slice(html.indexOf('data-testid="runner-detail"')));
+    expect(detail).toContain(
+      "M5 Seen Online Working on 2 jobs New work Takes new work Code Up to date",
+    );
+    expect(detail).toContain("Claude accounts default Whoever Claude is signed in as there");
+    expect(detail).toContain("Claude usage limit reached; resets at 5pm Use work In use");
+    expect(detail).toContain("sf-runner account add");
+    expect(detail).not.toMatch(/heavy|light|pool|compat|fencing/i);
+    // A runner that hasn't said which accounts it has.
+    const older = await renderPage(`/flow/${ORG}/team?tab=runners&runner=rnr_m5`, {
+      answers: {
+        "runner.list": () => ({
+          runners: (ANSWERS["runner.list"]?.({})?.runners ?? []).map((r) => ({
+            ...r,
+            accounts: null,
+          })),
+        }),
+      },
+    });
+    expect(older).toContain('data-testid="runner-accounts-unknown"');
+  });
+
+  it("with no runners, says so in one line and offers Connect a runner", async () => {
+    const html = await renderPage(`/flow/${ORG}/team?tab=runners`, {
+      answers: { "runner.list": { result: { runners: [] } } },
+    });
+    expect(textOf(html)).toContain(
+      "No runners yet: connect a Mac and your agents run on it. Connect a runner",
+    );
+    expect(html).toContain('data-testid="connect-runner-empty"');
+    expect(html).not.toContain('data-testid="runner-row"');
   });
 
   it("lists the org's members by name", async () => {
@@ -251,8 +296,41 @@ describe("Team's wording", () => {
     const [first] = listed;
     if (!first) throw new Error("no runner");
     const limited = { ...first, rateLimitedUntil: new Date(Date.now() + 60_000).toISOString() };
-    expect(runnerRows([limited])[0]?.takesWork).toEqual({ yes: false, why: "rate-limited" });
+    expect(runnerRows([limited])[0]?.takesWork).toEqual({
+      yes: false,
+      why: "at its Claude usage limit",
+    });
     const full = { ...first, light: { max: 2, inUse: 2 } };
-    expect(runnerRows([full])[0]?.takesWork).toEqual({ yes: false, why: "full" });
+    expect(runnerRows([full])[0]?.takesWork).toEqual({ yes: false, why: "as busy as it gets" });
+  });
+
+  it("tells a runner's Claude accounts: the one in use, a pick on its way, a usage limit", () => {
+    const listed = ANSWERS["runner.list"]?.({})?.runners ?? [];
+    const [m5] = listed;
+    if (!m5?.accounts) throw new Error("no accounts");
+    expect(runnerAccounts(m5)).toEqual([
+      {
+        name: "default",
+        active: false,
+        switching: false,
+        limit: "Claude usage limit reached; resets at 5pm",
+      },
+      { name: "work", active: true, switching: false, limit: null },
+    ]);
+    const picked = { ...m5, accounts: { ...m5.accounts, requested: "default" } };
+    expect(runnerAccounts(picked)?.map((a) => [a.name, a.active, a.switching])).toEqual([
+      ["default", false, true],
+      ["work", true, false],
+    ]);
+    expect(runnerAccounts({ ...m5, accounts: null })).toBeNull();
+  });
+
+  it("reads a login code however it is typed", () => {
+    expect(loginCode("bcdf-ghjk")).toBe("BCDF-GHJK");
+    expect(loginCode(" BCDF GHJK ")).toBe("BCDF-GHJK");
+    expect(loginCode("bcdfghjk")).toBe("BCDF-GHJK");
+    expect(loginCode("BCDF")).toBeNull();
+    // The command is the runner host's own login, run from a checkout.
+    expect(RUNNER_LOGIN_COMMAND).toContain("local/runner-host/bin/sf-runner login");
   });
 });
