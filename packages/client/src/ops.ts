@@ -3,12 +3,14 @@
 // business: sf-app's server functions, or the desktop's main process and the client door.
 import type { operations } from "@software-factory/core";
 import type { z } from "zod";
+import type { FlowOpMap } from "./flow.ts";
 
 type Def<T> = T extends { input: infer I extends z.ZodType; output: infer O extends z.ZodType }
   ? { input: z.input<I>; output: z.output<O> }
   : never;
 
-export interface OpMap {
+/** The old core's operations, and the new core's `flow.*` (flow.ts). */
+export interface OpMap extends FlowOpMap {
   "inbox.list": Def<typeof operations.inboxList>;
   "org.list": Def<typeof operations.orgList>;
   "workItem.create": Def<typeof operations.workItemCreate>;

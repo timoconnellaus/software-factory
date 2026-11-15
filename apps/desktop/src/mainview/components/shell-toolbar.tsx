@@ -81,7 +81,8 @@ export function useTabs() {
   };
 }
 
-export function Toolbar({ onSearch }: { onSearch: () => void }) {
+/** `newItem`: the old factory's New item button (the new shell makes items on a project's board). */
+export function Toolbar({ onSearch, newItem = true }: { onSearch: () => void; newItem?: boolean }) {
   const router = useRouter();
   const tabs = useViewState((s) => s.tabs);
   const activeTab = useViewState((s) => s.activeTab);
@@ -184,17 +185,19 @@ export function Toolbar({ onSearch }: { onSearch: () => void }) {
         Search or go to
         <Kbd className="ml-auto bg-transparent font-mono text-[11px] text-ink-muted">⌘K</Kbd>
       </button>
-      <Link
-        to="/new"
-        className={cn(
-          NO_DRAG,
-          "ml-1.5 flex h-7 flex-none items-center gap-1.5 rounded-[7px] bg-primary px-2.5 font-medium text-primary-foreground hover:bg-primary/90",
-        )}
-        data-testid="nav-new-work"
-      >
-        <PlusIcon className="size-3" strokeWidth={2.2} />
-        New item
-      </Link>
+      {newItem && (
+        <Link
+          to="/new"
+          className={cn(
+            NO_DRAG,
+            "ml-1.5 flex h-7 flex-none items-center gap-1.5 rounded-[7px] bg-primary px-2.5 font-medium text-primary-foreground hover:bg-primary/90",
+          )}
+          data-testid="nav-new-work"
+        >
+          <PlusIcon className="size-3" strokeWidth={2.2} />
+          New item
+        </Link>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { type DesignPreview, planBlocks } from "@software-factory/client/plannin
 // Spec 22 part B: two designs as the runner's checks drew them (packages/planning-designs), a
 // pulled data model with its base, and an architecture the planner made.
 import DESIGNS from "./design-fixtures.json" with { type: "json" };
+import { FLOW_ANSWERS } from "./flow-fixtures.ts";
 
 /**
  * `?fixture=notrun`: the runner could not run the checks (the sandbox could not start), so the item
@@ -2022,6 +2023,8 @@ const ARCHIVE_INCIDENTS = () => {
 };
 
 export const ANSWERS: Answers = {
+  // The new core's (spec 70): flow-fixtures.ts.
+  ...FLOW_ANSWERS,
   "incident.listArchiveMissing": (input) => ({
     incidents: input.orgId === PERSONAL ? ARCHIVE_INCIDENTS() : [],
     more: false,

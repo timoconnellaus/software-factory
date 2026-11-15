@@ -19,6 +19,7 @@ import {
   LayoutGridIcon,
   LogOutIcon,
   SlidersHorizontalIcon,
+  SparklesIcon,
   SquareCheckIcon,
 } from "lucide-react";
 import { bun } from "../bridge.ts";
@@ -141,7 +142,7 @@ export function OrgRail() {
   );
 }
 
-function AccountMenu() {
+export function AccountMenu() {
   const session = useSession();
   const client = useQueryClient();
   const name = session.user.githubLogin ?? "you";
@@ -257,6 +258,15 @@ export function Sidebar() {
         </>
       )}
       <span className="mt-auto" />
+      {/* Back to the new core's shell (spec 70), which keeps these screens behind Old factory. */}
+      <Link
+        to="/flow"
+        className="flex h-[30px] items-center gap-[9px] rounded-[7px] px-2 text-ink-2 hover:bg-field/60 [&>svg]:size-4 [&>svg]:text-ink-3"
+        data-testid="nav-new-app"
+      >
+        <SparklesIcon />
+        New app
+      </Link>
       <SideLink to="/settings" active={section === "settings"} icon={<SlidersHorizontalIcon />}>
         Settings
         {setupUnfinished && <SetupDot className="mr-1.5 ml-auto" />}

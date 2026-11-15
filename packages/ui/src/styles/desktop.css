@@ -122,3 +122,88 @@
 [data-slot="badge"] {
   border-radius: 999px;
 }
+
+/* The new core's screens (spec 70; .kim/mockups/board-and-item-panel.html, board-dark.html). The
+   new shell sets data-look="flow" on <html> while it shows, so these values apply to it, its
+   dialogs and menus, and nothing else: the old screens keep the look above. The base tokens take
+   the mockups' values; the rest are the mockups' own (needs-you amber, working blue, ok, bad, the
+   board's ground). */
+:root {
+  --need: #b45f06;
+  --need-soft: #fdf1df;
+  --need-line: #f0c078;
+  --work: #2f5fd0;
+  --work-soft: #eaf0fd;
+  --ok: #2c8a4b;
+  --bad: #c2372d;
+  --board: #fbfbfa;
+  --hover: #ecebe8;
+  --picked: #e9e8e4;
+  --body-ink: #3c3c3a;
+  --need-ink: #5b4a2e;
+}
+:root[data-look="flow"] {
+  --window: #f6f6f5;
+  --panel: #ffffff;
+  --page: #ffffff;
+  --ink: #1b1b1a;
+  --ink-2: #1b1b1a;
+  --ink-3: #6f6e6a;
+  --ink-muted: #6f6e6a;
+  --ink-faint: #a3a29d;
+  --line: #e7e6e3;
+  --line-soft: #f0efec;
+  --line-strong: #cfcec9;
+  --field: #e6e5e1;
+  --selected: #ecebe8;
+  --primary-foreground: #ffffff;
+  --input: #e7e6e3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --need: #e6a04e;
+    --need-soft: #3a2c17;
+    --need-line: #6b4e22;
+    --work: #7ea2f5;
+    --work-soft: #1f2b47;
+    --ok: #5fbf7d;
+    --bad: #ee7b70;
+    --board: #1a1a19;
+    --hover: #262624;
+    --picked: #2b2b29;
+    --body-ink: #c9c8c3;
+    --need-ink: #d8c39d;
+  }
+  :root[data-look="flow"] {
+    --window: #161615;
+    --panel: #1f1f1e;
+    --page: #1f1f1e;
+    --ink: #ededeb;
+    --ink-2: #ededeb;
+    --ink-3: #a09f9a;
+    --ink-muted: #a09f9a;
+    --ink-faint: #6f6e6a;
+    --line: #2f2f2d;
+    --line-soft: #282826;
+    --line-strong: #44443f;
+    --field: #2b2b29;
+    --selected: #262624;
+    --primary-foreground: #161615;
+    --input: #2f2f2d;
+  }
+}
+
+@theme inline {
+  --color-need: var(--need);
+  --color-need-soft: var(--need-soft);
+  --color-need-line: var(--need-line);
+  --color-need-ink: var(--need-ink);
+  --color-work: var(--work);
+  --color-work-soft: var(--work-soft);
+  --color-ok: var(--ok);
+  --color-bad: var(--bad);
+  --color-board: var(--board);
+  --color-hover: var(--hover);
+  --color-picked: var(--picked);
+  --color-body-ink: var(--body-ink);
+}

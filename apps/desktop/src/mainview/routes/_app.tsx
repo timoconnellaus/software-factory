@@ -13,6 +13,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { bun } from "../bridge.ts";
+import { FlowShell } from "../components/flow/shell.tsx";
 import { FocusBar } from "../components/focus-bar.tsx";
 import { CommandPalette } from "../components/shell-palette.tsx";
 import { OrgRail, Sidebar } from "../components/shell-sidebar.tsx";
@@ -90,6 +91,18 @@ function AppLayout() {
   const focused = useFocused();
   const [search, setSearch] = useState(false);
   useShortcuts(() => setSearch(true));
+  // The new core's screens (spec 70) have their own shell under the same toolbar, and no status bar.
+  const flow = useRouterState({ select: (s) => s.location.pathname.startsWith("/flow") });
+  if (flow)
+    return (
+      <TooltipProvider>
+        <div className="flex h-dvh select-none flex-col bg-window text-ink" data-testid="window">
+          <Toolbar onSearch={() => setSearch(true)} newItem={false} />
+          <FlowShell />
+          <CommandPalette open={search} onOpenChange={setSearch} />
+        </div>
+      </TooltipProvider>
+    );
   return (
     <TooltipProvider>
       <div className="flex h-dvh select-none flex-col bg-window text-ink" data-testid="window">
