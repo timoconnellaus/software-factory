@@ -7,28 +7,11 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 /**
- * Blocks whose migrations may land after others'. Block AQ (0360–0369) was one until it was on main
- * and deployed (2026-11-13): 0390 rebuilds core_jobs with 0363's `shaping`, so AQ can no longer
- * apply after it. Add a block here while its PR may merge after higher-numbered ones.
+ * Blocks whose migrations may land after others'. None now: every earlier late block is on main and
+ * deployed, and 0438 dropped the tables they touched. Add a block here while its PR may merge after
+ * higher-numbered ones.
  */
-const LATE_BLOCKS: [number, number][] = [
-  // Spec 44 host ack: a column on core_run_steers, which nothing after 0390 rebuilds.
-  [369, 369],
-  // The audit archive's migration (block AQ, ADR 0591) lands after 0390: it only adds tables and
-  // replaces core_audit's delete trigger, which nothing later rebuilds.
-  [366, 366],
-  // Spec 44 PR 1's partial indexes (block AQ) land after 0390, which doesn't rebuild their tables.
-  [367, 368],
-  // The babysitter's reverts (block AT, spec 53 §5) land after 0400–0402: 0393 only creates
-  // core_reverts and its indexes, which nothing later touches.
-  [393, 393],
-  // The babysitter's resolutions (block AT, spec 53 decision 1) land after 0400–0402: 0392 only
-  // creates core_babysit_resolutions, which nothing later touches.
-  [392, 392],
-  // The merge queue's own merge commit (block AT, #190 review) lands after 0400–0402: 0394 only adds
-  // a column to core_merge_queue, which nothing later rebuilds.
-  [394, 394],
-];
+const LATE_BLOCKS: [number, number][] = [];
 
 const late = (name: string) => {
   const n = Number.parseInt(name, 10);

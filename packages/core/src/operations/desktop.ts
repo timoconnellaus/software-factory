@@ -7,7 +7,7 @@
 // desktop token bound to the device (desktop.authExchange). The token acts as the person on the
 // `desktop` surface, like a `write` CLI token.
 //
-// Deciding a gate: the app asks for a one-time challenge for one operation and the digest of its
+// A presence proof: the app asks for a one-time challenge for one operation and the digest of its
 // input (presence.challenge), signs it with the device key, which makes macOS ask for Touch ID, and
 // sends the signature with the call. The client door redeems it (presence.redeem) and only then
 // marks the call's origin with the proof that invoke() checks.
@@ -23,17 +23,8 @@ import { newId } from "../ids.ts";
 import { inputDigest, presenceSurfaceAllowed } from "../invoke.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
 import { getOperation } from "../registry.ts";
-import { childrenOf } from "../splits.ts";
-import { CONFIG_WRITES, describeConfigDecision, overrideOrgValue } from "./config.ts";
+import { randomToken, sha256Hex } from "../tokens.ts";
 import { deviceList, deviceRevoke } from "./device.ts";
-import { randomToken, sha256Hex } from "./onboarding.ts";
-import {
-  describeKillSwitchOff,
-  describeOrgConfigDecision,
-  describeOverrideApprove,
-} from "./policy-summary.ts";
-import { MAX_FACTS, titled } from "./summary.ts";
-import { ORG_CONFIG_WRITES } from "./workflows.ts";
 
 /** The actor the client door uses for the two unsigned desktop sign-in calls. */
 export const DESKTOP_DEVICE_ACTOR: Actor = { type: "runner", id: "desktop-device-login" };
@@ -164,102 +155,12 @@ export function rawSignature(sig: Uint8Array): Uint8Array<ArrayBuffer> {
 export const presenceMessage = (nonce: string, op: string, digest: string, summary: string) =>
   `${nonce}\n${op}\n${digest}\n${summary}`;
 
-export { cleanTitle, MAX_FACTS, MAX_SUMMARY, titled } from "./summary.ts";
-
-/** `s` cut in the middle to `max` characters (a branch name too long for the facts' limit). */
-const middle = (s: string, max: number) => {
-  const c = [...s];
-  if (c.length <= max) return s;
-  const half = Math.max(1, Math.floor((max - 1) / 2));
-  return `${c.slice(0, half).join("")}…${c.slice(-half).join("")}`;
-};
-
 /**
- * The words for the decision a presence proof is for (ADR 0391), from the engine's own records,
- * never from the caller: the Touch ID prompt shows them, completing "SF Keys is trying to …".
- * **Every case puts the engine's facts first and anything a person or agent wrote (a title) last,
- * through `titled`**: the facts whole (an unusual condition first among them), the title only in the
- * room they leave under MAX_SUMMARY. New cases
- * (the config and workflow decisions included) follow the same rule.
+ * The words for what a presence proof is for (ADR 0391), from the engine's own records, never from
+ * the caller: the Touch ID or fingerprint prompt shows them.
  */
-async function describeDecision(ctx: HandlerContext, op: string, input: Record<string, unknown>) {
-  const item = async (id: unknown) =>
-    typeof id === "string"
-      ? await ctx.db
-          .selectFrom("core_work_items as w")
-          .leftJoin("core_repositories as r", "r.id", "w.repository_id")
-          .select(["w.number", "w.title", "r.default_branch", "r.owner", "r.name"])
-          .where("w.id", "=", id)
-          .executeTakeFirst()
-      : undefined;
-  /** `<prefix> #12 "title"`, or `<prefix> a work item`. */
-  const onItem = async (prefix: string, id: unknown) => {
-    const w = await item(id);
-    return w ? titled(`${prefix} #${w.number}`, w.title) : `${prefix} a work item`;
-  };
+function describeDecision(op: string, input: Record<string, unknown>): string {
   switch (op) {
-    case "spec.approve": {
-      // A split approves its work items too (spec 24, review of #173): the count is a fact from
-      // the gated spec in the engine's records, before the item's title.
-      // The spec the open gate was opened for (review of #173), not whatever is current.
-      const w =
-        typeof input.workItemId === "string"
-          ? await ctx.db
-              .selectFrom("core_work_items as w")
-              .leftJoin("core_pending_actions as g", (j) =>
-                j
-                  .onRef("g.work_item_id", "=", "w.id")
-                  .on("g.kind", "=", "spec")
-                  .on("g.status", "=", "pending"),
-              )
-              .leftJoin("core_specs as s", (j) =>
-                j.on((eb) =>
-                  eb(
-                    "s.id",
-                    "=",
-                    eb.fn.coalesce(
-                      eb.fn<string>("json_extract", ["g.input", eb.val("$.specId")]),
-                      eb.ref("w.current_spec_id"),
-                    ),
-                  ),
-                ),
-              )
-              .select(["w.number", "w.title", "s.children"])
-              .where("w.id", "=", input.workItemId)
-              .limit(1)
-              .executeTakeFirst()
-          : undefined;
-      let n = 0;
-      try {
-        n = childrenOf(w?.children ?? null).length;
-      } catch {
-        n = 0;
-      }
-      if (!w || n === 0) return onItem("Approve the spec for", input.workItemId);
-      return titled(
-        `Approve the plan and ${n} work item${n === 1 ? "" : "s"} for #${w.number}`,
-        w.title,
-      );
-    }
-    case "spec.requestChanges":
-      return onItem("Request changes to the spec for", input.workItemId);
-    case "review.merge": {
-      // The prompt names a merge without checks first, then the commit, the branch and the
-      // repository, then the title (spec 40 M4b, spec 60): `Merge WITHOUT its checks: 3f2a91c into
-      // main of acme/widgets: "Fix the inbox count"`. The unusual condition leads, so it is in the
-      // first words even where the sheet can't show everything. Every client sends the head SHA;
-      // without one it falls back to the work item's number.
-      const w = await item(input.workItemId);
-      if (!w) return "Merge a work item";
-      const commit = typeof input.headSha === "string" ? input.headSha.slice(0, 7) : `#${w.number}`;
-      const verb = input.mergeWithoutChecks === true ? "Merge WITHOUT its checks:" : "Merge";
-      const repo = w.owner ? ` of ${w.owner}/${w.name}` : "";
-      const fixed = `${verb} ${commit} into ${repo}:`.length;
-      // GitHub bounds owners (39) and repository names (100); only the branch can outgrow the facts'
-      // limit, and only it is shortened.
-      const branch = middle(w.default_branch ?? "the default branch", MAX_FACTS - fixed);
-      return titled(`${verb} ${commit} into ${branch}${repo}:`, w.title);
-    }
     case "mobile.pairOffer":
       return "Add a phone to your account";
     case "mobile.renew":
@@ -268,149 +169,8 @@ async function describeDecision(ctx: HandlerContext, op: string, input: Record<s
       return input.decides === true
         ? "Turn on fingerprint approvals on this device"
         : "Change this device's settings";
-    case "review.sendBack":
-      return onItem("Send back to build", input.workItemId);
-    case "question.acceptDefaults":
-      return onItem("Accept the recommended answers on", input.workItemId);
-    case "question.answer": {
-      const q =
-        typeof input.questionId === "string"
-          ? await ctx.db
-              .selectFrom("core_questions")
-              .select(["work_item_id"])
-              .where("id", "=", input.questionId)
-              .executeTakeFirst()
-          : undefined;
-      return onItem("Answer a question on", q?.work_item_id);
-    }
-    case "approval.decide": {
-      const pa =
-        typeof input.pendingActionId === "string"
-          ? await ctx.db
-              .selectFrom("core_pending_actions")
-              .select(["operation", "work_item_id", "input", "project_id"])
-              .where("id", "=", input.pendingActionId)
-              .executeTakeFirst()
-          : undefined;
-      const verb = input.decision === "rejected" ? "Reject" : "Approve";
-      // A config change names the versions and what it loosens, the project last (ADR 0610).
-      const config = pa ? await describeConfigDecision(ctx, pa, verb) : null;
-      if (config) return config;
-      const org =
-        pa && (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation)
-          ? await describeOrgConfigDecision(ctx.db, pa.operation, parsed(pa.input), verb)
-          : null;
-      if (org) return org;
-      // An override approval waits for an org admin (review of #185): the decision names what it
-      // loosens, as the call itself does.
-      if (pa?.operation === "override.approve") {
-        const o = parsed(pa.input);
-        return describeOverrideApprove(
-          ctx.db,
-          ctx.floor,
-          o,
-          typeof o.projectId === "string" &&
-            typeof o.stageId === "string" &&
-            typeof o.setting === "string"
-            ? await overrideOrgValue(ctx.db, o.projectId, o.stageId, o.setting)
-            : undefined,
-          verb,
-        );
-      }
-      return pa
-        ? onItem(`${verb} ${pa.operation} on`, pa.work_item_id)
-        : `${verb} a pending action`;
-    }
-    case "workflow.save":
-    case "agent.save":
-    case "autopilot.save":
-    case "autopilot.enable":
-    case "workflow.archive":
-    case "workflow.createFromTemplate":
-    case "orgConfig.rollback":
-    case "orgConfig.adoptProjectWorkflows":
-      return (await describeOrgConfigDecision(ctx.db, op, input)) ?? `Decide ${op}`;
-    case "workItem.markRepair": {
-      // The red main it repairs, the item, then its title (review of #165).
-      const w =
-        typeof input.workItemId === "string"
-          ? await ctx.db
-              .selectFrom("core_work_items as w")
-              .leftJoin("core_repositories as r", "r.id", "w.repository_id")
-              .select(["w.number", "w.title", "r.owner", "r.name"])
-              .where("w.id", "=", input.workItemId)
-              .executeTakeFirst()
-          : undefined;
-      const repo = w?.owner ? ` ${w.owner}/${w.name}` : "";
-      const facts =
-        input.repair === false
-          ? `No longer a repair of red main${repo}: #${w?.number ?? "?"}`
-          : `Mark as a repair of red main${repo}: #${w?.number ?? "?"}`;
-      return titled(facts, w?.title);
-    }
-    case "killSwitch.set":
-      return (await describeKillSwitchOff(ctx.db, input)) ?? `Decide ${op}`;
-    case "override.approve":
-      return describeOverrideApprove(
-        ctx.db,
-        ctx.floor,
-        input,
-        typeof input.projectId === "string" &&
-          typeof input.stageId === "string" &&
-          typeof input.setting === "string"
-          ? await overrideOrgValue(ctx.db, input.projectId, input.stageId, input.setting)
-          : undefined,
-      );
     default:
       return `Decide ${op}`;
-  }
-}
-
-/**
- * The operations that change the factory's own rules (ADR 0610): org config writes, approving a
- * looser override, a kill switch off, and deciding a waiting config or self-modify change.
- */
-export const POLICY_DECISION_OPS = [
-  "workflow.save",
-  "workflow.createFromTemplate",
-  "workflow.archive",
-  "agent.save",
-  "autopilot.save",
-  "autopilot.enable",
-  "orgConfig.rollback",
-  "orgConfig.adoptProjectWorkflows",
-  "override.approve",
-  "killSwitch.set",
-] as const;
-
-/** Whether this call is a policy decision: a software key may never make one (ADR 0610). */
-export async function isPolicyDecision(
-  ctx: HandlerContext,
-  op: string,
-  input: Record<string, unknown>,
-): Promise<boolean> {
-  if ((POLICY_DECISION_OPS as readonly string[]).includes(op)) return true;
-  if (op !== "approval.decide" || typeof input.pendingActionId !== "string") return false;
-  const pa = await ctx.db
-    .selectFrom("core_pending_actions")
-    .select(["operation", "risk"])
-    .where("id", "=", input.pendingActionId)
-    .executeTakeFirst();
-  return (
-    !!pa &&
-    (pa.risk === "self-modify" ||
-      (CONFIG_WRITES as readonly string[]).includes(pa.operation) ||
-      (ORG_CONFIG_WRITES as readonly string[]).includes(pa.operation))
-  );
-}
-
-/** A stored pending input, or `{}`. */
-function parsed(raw: string): Record<string, unknown> {
-  try {
-    const v = JSON.parse(raw) as unknown;
-    return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
   }
 }
 
@@ -808,7 +568,7 @@ export const desktopDeviceRevoke = {
 export const presenceChallenge = defineOperation({
   name: "presence.challenge",
   description:
-    "A one-time challenge (60 s) for deciding one gate from the desktop app or the phone (ADR 0391, 0541): bound to the operation and the SHA-256 of its canonical input, with a summary of the decision written from the factory's own records (the Touch ID or fingerprint prompt shows it). The device signs nonce, op, digest and summary with its hardware key. Desktop and phone devices only, for operations presence-decidable on that surface; refused for a device whose approvals are off.",
+    "A one-time challenge (60 s) for one call that takes a presence proof from the desktop app or the phone (ADR 0391, 0541): bound to the operation and the SHA-256 of its canonical input, with a summary written from the factory's own records (the Touch ID or fingerprint prompt shows it). The device signs nonce, op, digest and summary with its hardware key. Desktop and phone devices only, for operations that take a proof on that surface; refused for a device whose approvals are off.",
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
@@ -831,31 +591,15 @@ export const presenceChallenge = defineOperation({
   async handler(input, ctx) {
     const { deviceId, surface } = requireDevice(ctx);
     const target = getOperation(input.op);
-    if (!target || !presenceSurfaceAllowed(target, surface, input.input)) {
+    if (!target || !presenceSurfaceAllowed(target, surface)) {
       throw new OperationError(
         "forbidden",
         `${input.op} can't be decided with a presence proof from the ${surface}: it stays in the browser (ADR 0391, 0541)`,
       );
     }
     await requireDecides(ctx, deviceId, input.op);
-    // A policy decision never takes a software key's proof, whatever DESKTOP_ALLOW_SOFTWARE_KEYS
-    // says (that is for deciding merges on a dev build): a key any process of the user can read
-    // must not loosen the factory's own rules (ADR 0610, review of #156).
-    if (await isPolicyDecision(ctx, input.op, input.input)) {
-      const d = await ctx.db
-        .selectFrom("core_desktop_devices")
-        .select(["key_storage"])
-        .where("id", "=", deviceId)
-        .executeTakeFirst();
-      if (d?.key_storage === "software")
-        throw new OperationError(
-          "forbidden",
-          "presence proof refused: this device's key isn't in the Secure Enclave, and a policy decision never takes a software key",
-          { browserOnly: true },
-        );
-    }
     const digest = await inputDigest(input.input);
-    const summary = await describeDecision(ctx, input.op, input.input);
+    const summary = describeDecision(input.op, input.input);
     const nonce = randomToken();
     const challengeId = newId("presenceChallenge");
     const expiresAt = new Date(Date.parse(ctx.now) + PRESENCE_TTL_MS).toISOString();

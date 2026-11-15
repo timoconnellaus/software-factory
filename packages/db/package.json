@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "D1 migrations and typed access (Kysely) for the core_* schema: identity, projects, work items, questions, gates, runners, jobs, leases, audit journal and outbox.",
+  "description": "D1 migrations and typed access (Kysely) for the core_* schema: sign-in and orgs, devices and tokens, runners, the GitHub connection, the audit journal and the outbox; and the flow_* tables packages/store reads.",
   "exports": {
     ".": "./src/index.ts"
   },
