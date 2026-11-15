@@ -42,6 +42,33 @@ export const SCREENS = [
   { name: "flow-item-stopped", path: "/flow/org_personal/p/fprj_api?item=fitm_postgres" },
   { name: "flow-project-empty", path: "/flow/org_personal/p/fprj_launch" },
   { name: "flow-coming-next", path: "/flow/org_personal/team" },
+  // The inbox (.kim/mockups/inbox.html): `--out flow-inbox`.
+  { name: "flow-inbox", path: "/flow/org_personal/inbox" },
+  { name: "flow-inbox-decision", path: "/flow/org_personal/inbox?item=fitm_audit" },
+  // The workflow editor and the Workflows list (workflow-editor.html): `--out flow-workflow`.
+  {
+    name: "flow-workflow",
+    path: "/flow/org_personal/p/fprj_api?view=workflow",
+    clicks: ['[data-testid="status-row"] > div:nth-child(3) [data-testid="status-box"]'],
+  },
+  {
+    name: "flow-workflow-agent",
+    path: "/flow/org_personal/p/fprj_api?view=workflow",
+    clicks: ['[data-testid="status-row"] > div:nth-child(2) [data-testid="status-box"]'],
+  },
+  { name: "flow-workflows", path: "/flow/org_personal/workflows" },
+  { name: "flow-workflows-edit", path: "/flow/org_personal/workflows?workflow=fwf_ship" },
+  // Plugins, gateways, and plugin fields on cards and the item (plugins.html, gateways.html):
+  // `--out flow-plugins`.
+  { name: "flow-plugins", path: "/flow/org_personal/plugins" },
+  { name: "flow-plugin-code", path: "/flow/org_personal/plugins?plugin=fplg_slack" },
+  { name: "flow-gateways", path: "/flow/org_personal/plugins?tab=gateways" },
+  {
+    name: "flow-gateway-form",
+    path: "/flow/org_personal/plugins?tab=gateways",
+    clicks: ['[data-testid="connect-system"]'],
+  },
+  { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
   { name: "inbox-merge", path: "/?item=wi_13", design: "InboxMerge.html" },
   { name: "inbox-question", path: "/?item=wi_11", design: "InboxQuestion.html" },
   { name: "inbox-spec", path: "/?item=wi_12", design: "InboxMerge.html" },

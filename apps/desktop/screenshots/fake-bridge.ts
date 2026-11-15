@@ -222,7 +222,8 @@ function answer(op: string, input: unknown): CallResult {
   try {
     return { ok: true, result: f(input) };
   } catch (e) {
-    if (e instanceof Refusal) return { ok: false, code: e.code, error: e.message } as CallResult;
+    if (e instanceof Refusal)
+      return { ok: false, code: e.code, error: e.message, details: e.details } as CallResult;
     throw e;
   }
 }

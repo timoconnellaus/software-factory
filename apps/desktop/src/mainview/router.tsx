@@ -27,6 +27,7 @@ import { Route as flowSettings } from "./routes/flow.$orgId.settings.tsx";
 import { Route as flowTeam } from "./routes/flow.$orgId.team.tsx";
 import { flowOrg, flowOrgIndex } from "./routes/flow.$orgId.tsx";
 import { Route as flowWork } from "./routes/flow.$orgId.work.tsx";
+import { Route as flowWorkflows } from "./routes/flow.$orgId.workflows.tsx";
 import { Route as flowOrgs } from "./routes/flow.orgs.tsx";
 import { flowIndex, flowLayout } from "./routes/flow.tsx";
 import { Route as inbox } from "./routes/index.tsx";
@@ -75,6 +76,7 @@ export const routeTree = rootRoute.addChildren([
         flowPlugins,
         flowSettings,
         flowProject,
+        flowWorkflows,
         flowItem,
       ]),
     ]),

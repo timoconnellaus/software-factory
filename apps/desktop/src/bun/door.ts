@@ -83,7 +83,12 @@ export class Door {
     }
     return "result" in json
       ? { ok: true, result: json.result }
-      : { ok: false, code: String(json.code ?? "failed"), error: String(json.error ?? "failed") };
+      : {
+          ok: false,
+          code: String(json.code ?? "failed"),
+          error: String(json.error ?? "failed"),
+          ...(json.details !== undefined ? { details: json.details } : {}),
+        };
   }
 
   async batch(calls: { op: string; input: unknown }[]): Promise<CallResult[]> {
