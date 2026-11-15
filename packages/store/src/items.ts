@@ -9,7 +9,7 @@ import {
   type Workflow,
 } from "@software-factory/flow";
 import { flowDb, iso, newId, StoreError, writeBatch } from "./db.ts";
-import type { FlowItemsTable } from "./schema.ts";
+import type { FlowEventsTable, FlowItemsTable } from "./schema.ts";
 import { advance, type Item, stateColumns, stepStatements, timelineRow, toItem } from "./step.ts";
 
 export type { Item } from "./step.ts";
@@ -131,11 +131,21 @@ export async function getItem(d1: D1Database, itemId: string): Promise<Item | nu
   return row ? toItem(row) : null;
 }
 
-/** A project's items in its workflow's columns, each column in item-number order. */
+/** The most items `board` returns (AGENTS.md cost rule 2). */
+export const BOARD_LIMIT = 500;
+/** The most entries `timeline` returns: the newest. */
+export const TIMELINE_LIMIT = 500;
+/** The most items in each of `inbox`'s lists. */
+export const INBOX_LIMIT = 100;
+
+/**
+ * A project's items in its workflow's columns, each column in item-number order. At most
+ * BOARD_LIMIT items, taken in status then number order; `truncated` says some were left out.
+ */
 export async function board(
   d1: D1Database,
   projectId: string,
-): Promise<{ columns: { status: Status; items: Item[] }[] }> {
+): Promise<{ columns: { status: Status; items: Item[] }[]; truncated: boolean }> {
   const db = flowDb(d1);
   const [projects, rows] = await readBatch(d1, [
     db
@@ -148,17 +158,19 @@ export async function board(
       .selectAll()
       .where("project_id", "=", projectId)
       .orderBy("status_id")
-      .orderBy("number"),
+      .orderBy("number")
+      .limit(BOARD_LIMIT + 1),
   ] as const);
   const project = projects[0];
   if (!project) throw new StoreError("not_found", `No project ${projectId}.`);
   const workflow = JSON.parse(project.definition) as Workflow;
-  const items = rows.map(toItem);
+  const items = rows.slice(0, BOARD_LIMIT).map(toItem);
   return {
     columns: workflow.statuses.map((status) => ({
       status,
       items: items.filter((i) => i.statusId === status.id),
     })),
+    truncated: rows.length > BOARD_LIMIT,
   };
 }
 
@@ -170,29 +182,65 @@ export interface TimelineEntry {
   createdAt: string;
 }
 
-/** An item's timeline in order. */
-export async function timeline(d1: D1Database, itemId: string): Promise<TimelineEntry[]> {
-  const rows = await flowDb(d1)
-    .selectFrom("flow_events")
-    .select(["seq", "kind", "actor", "data", "created_at"])
-    .where("item_id", "=", itemId)
-    .orderBy("seq")
-    .execute();
-  return rows.map((r) => ({
+type EntryRow = Pick<FlowEventsTable, "seq" | "kind" | "actor" | "data" | "created_at">;
+
+function toEntry(r: EntryRow): TimelineEntry {
+  return {
     seq: r.seq,
     kind: r.kind,
     actor: JSON.parse(r.actor) as Actor,
     data: JSON.parse(r.data) as unknown,
     createdAt: r.created_at,
-  }));
+  };
 }
 
-/** What waits on a person: items they own the work on, and the org's items waiting on a decision. */
+/**
+ * An item's timeline in order: its newest TIMELINE_LIMIT entries, oldest first. `truncated` says
+ * older ones were left out.
+ */
+export async function timeline(
+  d1: D1Database,
+  itemId: string,
+): Promise<{ entries: TimelineEntry[]; truncated: boolean }> {
+  const rows = await flowDb(d1)
+    .selectFrom("flow_events")
+    .select(["seq", "kind", "actor", "data", "created_at"])
+    .where("item_id", "=", itemId)
+    .orderBy("seq", "desc")
+    .limit(TIMELINE_LIMIT + 1)
+    .execute();
+  return {
+    entries: rows.slice(0, TIMELINE_LIMIT).reverse().map(toEntry),
+    truncated: rows.length > TIMELINE_LIMIT,
+  };
+}
+
+/** An item's newest `limit` comments, oldest first: what a run's prompt quotes. */
+export async function recentComments(
+  d1: D1Database,
+  itemId: string,
+  limit: number,
+): Promise<TimelineEntry[]> {
+  const rows = await flowDb(d1)
+    .selectFrom("flow_events")
+    .select(["seq", "kind", "actor", "data", "created_at"])
+    .where("item_id", "=", itemId)
+    .where("kind", "=", "comment")
+    .orderBy("seq", "desc")
+    .limit(limit)
+    .execute();
+  return rows.reverse().map(toEntry);
+}
+
+/**
+ * What waits on a person: items they own the work on, and the org's items waiting on a decision.
+ * At most INBOX_LIMIT in each list, oldest first; `truncated` says either list was cut.
+ */
 export async function inbox(
   d1: D1Database,
   orgId: string,
   userId: string,
-): Promise<{ work: Item[]; decisions: Item[] }> {
+): Promise<{ work: Item[]; decisions: Item[]; truncated: boolean }> {
   const db = flowDb(d1);
   const [work, decisions] = await readBatch(d1, [
     db
@@ -201,14 +249,20 @@ export async function inbox(
       .where("org_id", "=", orgId)
       .where("waiting_on", "=", "person")
       .where("waiting_ref", "=", userId)
-      .orderBy("updated_at"),
+      .orderBy("updated_at")
+      .limit(INBOX_LIMIT + 1),
     db
       .selectFrom("flow_items")
       .selectAll()
       .where("org_id", "=", orgId)
       .where("waiting_on", "=", "decision")
       .where("waiting_ref", "is", null)
-      .orderBy("updated_at"),
+      .orderBy("updated_at")
+      .limit(INBOX_LIMIT + 1),
   ] as const);
-  return { work: work.map(toItem), decisions: decisions.map(toItem) };
+  return {
+    work: work.slice(0, INBOX_LIMIT).map(toItem),
+    decisions: decisions.slice(0, INBOX_LIMIT).map(toItem),
+    truncated: work.length > INBOX_LIMIT || decisions.length > INBOX_LIMIT,
+  };
 }

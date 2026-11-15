@@ -57,6 +57,39 @@ Each ends with something that runs.
 5. **Cutover.** Move the data that matters, delete the old core, rewrite `AGENTS.md`, `CONTEXT.md`
    and `docs/architecture.md`.
 
+### Milestone 1: as built (2026-11-15)
+- `packages/flow`: the model and the reconciler. `packages/store`: the `flow_*` tables
+  (migration 0430), the kernel's effects, runs with leases and fencing tokens; the board, inbox and
+  timeline are capped (500, 100 per list, the newest 500) with a `truncated` flag.
+- `packages/ops`: 22 operations, all `flow.*` (workflows, projects, agents, items, the board,
+  timeline, inbox and runs). The one permission rule: the caller is a member of the org, and
+  everything named is in it.
+- `apps/engine`: a `flow.` call on the client door (`/client/v1/call`, `/cli/v1/call`, reads in
+  `batch`) runs in `packages/ops` in the door's usual envelope, and `ops` lists them. On the
+  runner channel a claim offers a queued flow run first (to a runner its creator owns, or one
+  shared into its org, with a free light slot), as a `flow` job with no repository whose id is the
+  run's (`frun_…`); its heartbeat renews the run's lease, its hand-back finishes or fails the run,
+  and the minute cron fails runs whose lease lapsed.
+
+To try it with the `sf` CLI (`sf login --write` first; `sf call <op> '<input-json>'`):
+
+```sh
+sf call org.list '{}'   # your org ids
+sf call flow.agent.create '{"orgId":"<org>","name":"Writer","instructions":"Write short, plain posts."}'
+sf call flow.workflow.create '{"orgId":"<org>","name":"Draft, review, done","statuses":[
+  {"id":"draft","name":"Draft","owner":{"kind":"agent","agentId":"<agent>"},"brief":"Draft the post."},
+  {"id":"review","name":"Review","owner":{"kind":"person","userId":"<you>"}},
+  {"id":"done","name":"Done","owner":{"kind":"none"}}]}'
+sf call flow.project.create '{"orgId":"<org>","name":"Blog","key":"BLG","workflowId":"<workflow>"}'
+sf call flow.item.create '{"orgId":"<org>","projectId":"<project>","title":"Launch post","body":"Announce it."}'
+# A runner of yours claims it and hands back; then:
+sf call flow.inbox.get '{"orgId":"<org>"}'
+sf call flow.item.finish '{"orgId":"<org>","itemId":"<item>","outcome":"done"}'
+sf call flow.timeline.get '{"orgId":"<org>","itemId":"<item>"}'
+```
+
+`sf ops` lists every operation; `sf call` also takes the input as `@file` or `-` (stdin).
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the

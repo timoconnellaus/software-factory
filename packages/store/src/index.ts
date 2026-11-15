@@ -5,11 +5,15 @@ export { StoreError } from "./db.ts";
 export {
   addComment,
   applyEvent,
+  BOARD_LIMIT,
   board,
   createItem,
   getItem,
+  INBOX_LIMIT,
   type Item,
   inbox,
+  recentComments,
+  TIMELINE_LIMIT,
   type TimelineEntry,
   timeline,
 } from "./items.ts";
@@ -23,9 +27,11 @@ export {
 export {
   type ClaimedRun,
   claimRun,
+  expireRun,
   expireRuns,
   failRun,
   finishRun,
+  getRun,
   itemRuns,
   type Run,
   type RunResult,

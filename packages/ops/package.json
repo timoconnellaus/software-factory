@@ -1,0 +1,26 @@
+{
+  "name": "@software-factory/ops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The new core's operations (ADR 0660, spec 70): the flow.* verbs the desktop app, the sf CLI and agents call, each a thin layer over @software-factory/store, with one permission rule (the caller is a member of the org).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/flow": "workspace:*",
+    "@software-factory/store": "workspace:*",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}

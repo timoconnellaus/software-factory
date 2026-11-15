@@ -10,6 +10,7 @@ import {
   createItem,
   createProject,
   createWorkflow,
+  expireRun,
   expireRuns,
   failRun,
   finishRun,
@@ -18,6 +19,7 @@ import {
   inbox,
   itemRuns,
   listWorkflows,
+  recentComments,
   renewLease,
   StoreError,
   timeline,
@@ -27,6 +29,21 @@ import {
 const d1 = env.DB;
 const sam: Actor = { kind: "person", id: "sam" };
 const MINUTE = 60_000;
+
+/** Runners as core_runners has them: runner_1 and runner_2 are sam's, runner_3 is pat's. */
+await d1.batch(
+  [
+    ["runner_1", "sam"],
+    ["runner_2", "sam"],
+    ["runner_3", "pat"],
+  ].map(([id, owner]) =>
+    d1
+      .prepare(
+        "INSERT OR IGNORE INTO core_runners (id, owner_user_id, name, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .bind(id, owner, id, new Date().toISOString()),
+  ),
+);
 
 /** An org with an agent and a project on "Draft (agent) → Review (sam) → Done". */
 async function setup() {
@@ -114,7 +131,7 @@ describe("items and runs", () => {
     const { orgId, item, writer, project } = await setup();
     const run = await claim();
     expect(run).toMatchObject({ itemId: item.id, brief: "Draft it.", fencingToken: 1 });
-    expect(run.item).toEqual({ title: "Launch post", body: "Announce it." });
+    expect(run.item).toEqual({ number: 1, title: "Launch post", body: "Announce it." });
     expect(run.agent).toEqual({ id: writer.id, name: "Writer", instructions: "Write well." });
     expect(await claimRun(d1, "runner_2", Date.now(), MINUTE)).toBeNull();
 
@@ -137,12 +154,75 @@ describe("items and runs", () => {
     );
     expect(done).toMatchObject({ statusId: "done", waiting: { on: "nothing" } });
     expect((await inbox(d1, orgId, "sam")).work).toEqual([]);
-    const columns = (await board(d1, project.id)).columns;
-    expect(columns.map((c) => [c.status.id, c.items.map((i) => i.id)])).toEqual([
+    const view = await board(d1, project.id);
+    expect(view.truncated).toBe(false);
+    expect(view.columns.map((c) => [c.status.id, c.items.map((i) => i.id)])).toEqual([
       ["draft", []],
       ["review", []],
       ["done", [item.id]],
     ]);
+  });
+
+  it("only hands a runner runs it serves: its owner's items, or an org it is shared into", async () => {
+    const { orgId, item } = await setup();
+    // runner_3 is pat's, and sam created the item.
+    expect(await claimRun(d1, "runner_3", Date.now(), MINUTE)).toBeNull();
+    await d1
+      .prepare(
+        "INSERT INTO core_runner_shares (runner_id, scope, scope_id, created_at) VALUES ('runner_3', 'org', ?, ?)",
+      )
+      .bind(orgId, new Date().toISOString())
+      .run();
+    const run = await claimRun(d1, "runner_3", Date.now(), MINUTE);
+    expect(run).toMatchObject({ itemId: item.id, orgId, item: { number: 1 } });
+    await d1.prepare("DELETE FROM core_runner_shares WHERE runner_id = 'runner_3'").run();
+  });
+
+  it("caps the board, the inbox and the timeline, and says so", async () => {
+    const { orgId, project, item } = await setup();
+    // 501 more items straight into the table, waiting on sam: past the board's and inbox's caps.
+    const now = new Date().toISOString();
+    const rows = Array.from({ length: 501 }, (_, i) =>
+      d1
+        .prepare(
+          `INSERT INTO flow_items (id, org_id, project_id, number, title, body, status_id, waiting_on,
+             waiting_ref, error, stay, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 't', '', 'review', 'person', 'sam', NULL, 1, 'sam', ?, ?)`,
+        )
+        .bind(`fitm_cap_${orgId}_${i}`, orgId, project.id, 100 + i, now, now),
+    );
+    await d1.batch(rows);
+    const view = await board(d1, project.id);
+    expect(view.truncated).toBe(true);
+    expect(view.columns.flatMap((c) => c.items)).toHaveLength(500);
+    const waiting = await inbox(d1, orgId, "sam");
+    expect(waiting).toMatchObject({ truncated: true, decisions: [] });
+    expect(waiting.work).toHaveLength(100);
+
+    // 505 comments after the item's 3 entries: the timeline keeps the newest 500, in order.
+    await d1.batch(
+      Array.from({ length: 505 }, (_, i) =>
+        d1
+          .prepare(
+            `INSERT INTO flow_events (id, org_id, item_id, seq, kind, actor, data, created_at)
+             VALUES (?, ?, ?, ?, 'comment', ?, ?, ?)`,
+          )
+          .bind(
+            `fev_cap_${item.id}_${i}`,
+            orgId,
+            item.id,
+            4 + i,
+            JSON.stringify(sam),
+            JSON.stringify({ text: `c${i}` }),
+            now,
+          ),
+      ),
+    );
+    const { entries, truncated } = await timeline(d1, item.id);
+    expect(truncated).toBe(true);
+    expect(entries).toHaveLength(500);
+    expect(entries.at(-1)?.data).toEqual({ text: "c504" });
+    expect(entries.map((e) => e.seq)).toEqual([...entries.map((e) => e.seq)].sort((a, b) => a - b));
   });
 
   it("stops the item when the run fails, and a retry queues a new run", async () => {
@@ -185,6 +265,18 @@ describe("items and runs", () => {
     expect((await itemRuns(d1, item.id))[0]?.status).toBe("failed");
   });
 
+  it("doesn't expire a run whose lease was renewed after the sweep read it as lapsed", async () => {
+    const { item } = await setup();
+    const now = Date.now();
+    const run = await claim(now);
+    // The sweep at now + 2 minutes read the lease as lapsed; the runner renews before it writes.
+    expect(await renewLease(d1, run.id, "runner_1", now + 2 * MINUTE, MINUTE)).toBe(true);
+    expect(await expireRun(d1, run.id, run.fencingToken, now + 2 * MINUTE)).toBe(false);
+    expect((await itemRuns(d1, item.id))[0]?.status).toBe("claimed");
+    expect(await getItem(d1, item.id)).toMatchObject({ error: null, waiting: { on: "run" } });
+    expect(await expireRun(d1, run.id, run.fencingToken, now + 4 * MINUTE)).toBe(true);
+  });
+
   it("lets only one of two concurrent events advance an item", async () => {
     const { item } = await setup();
     const results = await Promise.allSettled([
@@ -211,7 +303,10 @@ describe("items and runs", () => {
     await addComment(d1, item.id, sam, "Keep it short.");
     const run = await claim();
     await finishRun(d1, run.id, run.fencingToken, { outcome: "done", summary: "Drafted." });
-    const entries = await timeline(d1, item.id);
+    const { entries } = await timeline(d1, item.id);
+    expect((await recentComments(d1, item.id, 1)).map((c) => c.data)).toEqual([
+      { text: "Drafted." },
+    ]);
     expect(entries.map((e) => e.seq)).toEqual(entries.map((_, i) => i + 1));
     expect(
       entries.map((e) => [

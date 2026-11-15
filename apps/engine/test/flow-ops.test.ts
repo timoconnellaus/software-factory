@@ -1,0 +1,305 @@
+// The new core through the engine's real routes (spec 70): a person's flow.* calls through the
+// client door (/cli/v1/call), and a runner's flow job through the signed channel (claim, heartbeat,
+// hand-back), with the item moving from an agent's status to a person's to one nobody owns.
+import { env } from "cloudflare:workers";
+import {
+  ChannelCallError,
+  httpControlPlane,
+  jobSchema,
+  PATHS,
+  runnerChannelKey,
+  signRunnerRequest,
+} from "@software-factory/runner-contract";
+import { describe, expect, it } from "vitest";
+import worker from "../src/index.ts";
+import { all, first, MANIFEST, ok, uid } from "./helpers.ts";
+
+const base = "https://sf-engine.example";
+
+const post = (path: string, body: unknown, token?: string) =>
+  worker.fetch(
+    new Request(`${base}/cli/v1/${path}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    }),
+    env,
+  );
+
+/** A person in their own org, signed in to the CLI with a write token, and a runner of theirs. */
+async function person() {
+  const userId = uid("usr_");
+  const orgId = uid("org_");
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO core_user (id, name, email, github_login, created_at, updated_at) VALUES (?, 'Sam', ?, ?, ?, ?)",
+    ).bind(userId, `${userId}@example.com`, `gh-${userId}`, now, now),
+    env.DB.prepare(
+      "INSERT INTO core_organization (id, name, slug, kind, created_at) VALUES (?, 'Acme', ?, 'team', ?)",
+    ).bind(orgId, orgId, now),
+    env.DB.prepare(
+      "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'owner', ?)",
+    ).bind(uid("mem_"), orgId, userId, now),
+  ]);
+  const human = { type: "human" as const, id: userId };
+  const started = (await (
+    await post("device/start", { name: "sam@m5", scope: "write" })
+  ).json()) as {
+    deviceCode: string;
+    userCode: string;
+  };
+  await ok("cli.approveDevice", { userCode: started.userCode, scope: "write" }, human);
+  const { token } = (await (
+    await post("device/poll", { deviceCode: started.deviceCode })
+  ).json()) as {
+    token: string;
+  };
+  const runner = await ok<{ runnerId: string; key: string }>(
+    "runner.register",
+    { name: "M5" },
+    human,
+  );
+  const channel = httpControlPlane({
+    baseUrl: base,
+    runnerId: runner.runnerId,
+    key: await runnerChannelKey("test-channel-secret", runner.runnerId, 1),
+    fetch: async (input, init) => worker.fetch(new Request(input, init), env),
+  });
+  /** One flow.* call through the door, as this person; throws on a refusal. */
+  const call = async <T = Record<string, unknown>>(op: string, input: Record<string, unknown>) => {
+    const res = await post("call", { op, input: { orgId, ...input } }, token);
+    const body = (await res.json()) as { result?: T; error?: string; code?: string };
+    if (res.status !== 200) throw new Error(`${op}: ${res.status} ${body.code} ${body.error}`);
+    return body.result as T;
+  };
+  return { userId, orgId, token, runner, channel, call };
+}
+
+const CAPACITY = { max: 1, inUse: 0, accepting: true, light: { max: 2, inUse: 0 } };
+
+async function claim(p: Awaited<ReturnType<typeof person>>) {
+  return (await p.channel.claim({ claimId: uid("claim-"), manifest: MANIFEST, capacity: CAPACITY }))
+    .job;
+}
+
+/** Draft (an agent) → Review (the person) → Done (nobody), a project on it, and an item. */
+async function draftReviewDone(p: Awaited<ReturnType<typeof person>>) {
+  const agent = await p.call<{ id: string }>("flow.agent.create", {
+    name: "Writer",
+    instructions: "You write short, plain posts.",
+  });
+  const workflow = await p.call<{ id: string }>("flow.workflow.create", {
+    name: "Draft, review, done",
+    statuses: [
+      {
+        id: "draft",
+        name: "Draft",
+        owner: { kind: "agent", agentId: agent.id },
+        brief: "Draft the launch post in under 200 words.",
+      },
+      { id: "review", name: "Review", owner: { kind: "person", userId: p.userId } },
+      { id: "done", name: "Done", owner: { kind: "none" } },
+    ],
+  });
+  const project = await p.call<{ id: string }>("flow.project.create", {
+    name: "Blog",
+    key: "BLG",
+    workflowId: workflow.id,
+  });
+  const item = await p.call<{ id: string; number: number; statusId: string }>("flow.item.create", {
+    projectId: project.id,
+    title: "Launch post",
+    body: "Announce the new core.",
+  });
+  return { agent, workflow, project, item };
+}
+
+describe("the new core through the engine", () => {
+  it("runs an item from an agent's status to a person's to the last, through the real routes", async () => {
+    const p = await person();
+    const { item } = await draftReviewDone(p);
+    expect(item.statusId).toBe("draft");
+    await p.call("flow.item.comment", { itemId: item.id, text: "Mention the board." });
+
+    // The runner claims it: a flow job with no repository, its prompt carrying the brief.
+    const job = await claim(p);
+    if (!job) throw new Error("no job");
+    expect(jobSchema.safeParse(job).success).toBe(true);
+    expect(job).toMatchObject({ stage: "flow", workItem: { id: item.id, number: 1 } });
+    expect(job.jobId).toMatch(/^frun_/);
+    expect(job.repo).toBeUndefined();
+    expect(job.branch).toBeUndefined();
+    expect(job.harness.prompt).toContain("Draft the launch post in under 200 words.");
+    expect(job.harness.prompt).toContain("You write short, plain posts.");
+    expect(job.harness.prompt).toContain("Mention the board.");
+    expect(job.harness.prompt).toContain('"outcome": "done" | "rejected"');
+    // Nothing more for it: the run is claimed.
+    expect(await claim(p)).toBeNull();
+
+    // It heartbeats: the lease is renewed and no cancel comes back, and nothing is audited.
+    const audits = async () =>
+      (await all("SELECT id FROM core_audit WHERE actor_id = ?", p.runner.runnerId)).length;
+    const auditedBefore = await audits();
+    const before = await first<{ lease_expires_at: string }>(
+      "SELECT lease_expires_at FROM flow_runs WHERE id = ?",
+      job.jobId,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    const beat = await p.channel.heartbeat({
+      manifest: MANIFEST,
+      capacity: { ...CAPACITY, light: { max: 2, inUse: 1 } },
+      activeJobs: [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }],
+    });
+    expect(beat.commands).toEqual([]);
+    expect(beat.leases.map((l) => l.jobId)).toEqual([job.jobId]);
+    const after = await first<{ lease_expires_at: string }>(
+      "SELECT lease_expires_at FROM flow_runs WHERE id = ?",
+      job.jobId,
+    );
+    expect(after?.lease_expires_at && before?.lease_expires_at).toBeTruthy();
+    expect((after?.lease_expires_at ?? "") > (before?.lease_expires_at ?? "")).toBe(true);
+    expect(await audits()).toBe(auditedBefore);
+
+    // A hand-back with a stale fencing token is refused (its own idempotency key: the real
+    // hand-back below uses the host's).
+    const stale = JSON.stringify({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken - 1,
+      outcome: "completed",
+      artifactIds: [],
+      branch: "",
+      result: { outcome: "done", summary: "Too late." },
+    });
+    const refused = await worker.fetch(
+      new Request(`${base}${PATHS.handback(job.jobId)}`, {
+        method: "POST",
+        headers: await signRunnerRequest({
+          key: p.runner.key,
+          runner: p.runner.runnerId,
+          method: "POST",
+          path: PATHS.handback(job.jobId),
+          body: stale,
+          idempotencyKey: `hand:stale-${job.jobId}`,
+        }),
+        body: stale,
+      }),
+      env,
+    );
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: "fenced" });
+    // And its repository token is refused: a flow job has none.
+    const token = await p.channel.token(job.jobId, job.lease.fencingToken).catch((e) => e);
+    expect(token).toBeInstanceOf(ChannelCallError);
+
+    // The agent hands back done: the item is in the person's status and their inbox.
+    await p.channel.handback({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken,
+      outcome: "completed",
+      artifactIds: [],
+      branch: "",
+      summary: "Drafted.",
+      result: { outcome: "done", summary: "Drafted the post: 150 words." },
+    });
+    await p.channel.release({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken,
+      finalState: "handed_back",
+    });
+    const moved = await p.call<{ statusId: string; waiting: unknown }>("flow.item.get", {
+      itemId: item.id,
+    });
+    expect(moved).toMatchObject({
+      statusId: "review",
+      waiting: { on: "person", userId: p.userId },
+    });
+    const inbox = await p.call<{ work: { id: string }[] }>("flow.inbox.get", {});
+    expect(inbox.work.map((i) => i.id)).toEqual([item.id]);
+
+    // The person finishes: the item is in the last status, and the timeline tells the story.
+    const done = await p.call<{ statusId: string }>("flow.item.finish", {
+      itemId: item.id,
+      outcome: "done",
+    });
+    expect(done.statusId).toBe("done");
+    const tl = await p.call<{
+      entries: { kind: string; data: { type?: string; to?: string; text?: string } }[];
+    }>("flow.timeline.get", { itemId: item.id });
+    expect(tl.entries.filter((e) => e.data.type === "entered").map((e) => e.data.to)).toEqual([
+      "draft",
+      "review",
+      "done",
+    ]);
+    expect(tl.entries.some((e) => e.data.text === "Drafted the post: 150 words.")).toBe(true);
+    const runs = await p.call<{ runs: { status: string }[] }>("flow.run.list", { itemId: item.id });
+    expect(runs.runs.map((r) => r.status)).toEqual(["done"]);
+  });
+
+  it("offers a run only to a runner that serves its org, and keeps the door's envelope", async () => {
+    const p = await person();
+    const stranger = await person();
+    const { item } = await draftReviewDone(p);
+    // Another person's runner, with no share into p's org: nothing.
+    expect(await claim(stranger)).toBeNull();
+    // Nor can that person read the item.
+    const res = await post(
+      "call",
+      { op: "flow.item.get", input: { orgId: p.orgId, itemId: item.id } },
+      stranger.token,
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "forbidden" });
+    // A bad input is the door's invalid_input, with details.
+    const bad = await post("call", { op: "flow.item.create", input: { orgId: p.orgId } }, p.token);
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ code: "invalid_input", details: expect.any(Array) });
+    // `ops` lists the flow operations beside the old core's.
+    const ops = await worker.fetch(
+      new Request(`${base}/cli/v1/ops`, { headers: { authorization: `Bearer ${p.token}` } }),
+      env,
+    );
+    const names = ((await ops.json()) as { operations: { name: string }[] }).operations.map(
+      (o) => o.name,
+    );
+    expect(names).toContain("flow.item.create");
+    expect(names).toContain("workItem.create");
+    // p's own runner gets it.
+    expect((await claim(p))?.workItem.id).toBe(item.id);
+  });
+
+  it("fails the run on a hand-back without a valid result", async () => {
+    const p = await person();
+    const { item } = await draftReviewDone(p);
+    const job = await claim(p);
+    if (!job) throw new Error("no job");
+    await p.channel.handback({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken,
+      outcome: "completed",
+      artifactIds: [],
+      branch: "",
+    });
+    const stopped = await p.call<{ statusId: string; error: string | null }>("flow.item.get", {
+      itemId: item.id,
+    });
+    expect(stopped.statusId).toBe("draft");
+    expect(stopped.error).toMatch(/valid result/);
+    // Its release afterwards is accepted as it is.
+    await p.channel.release({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken,
+      finalState: "failed",
+    });
+    // A heartbeat still holding it is told to cancel it.
+    const beat = await p.channel.heartbeat({
+      manifest: MANIFEST,
+      capacity: CAPACITY,
+      activeJobs: [{ jobId: job.jobId, fencingToken: job.lease.fencingToken }],
+    });
+    expect(beat.commands).toEqual([expect.objectContaining({ kind: "cancel", jobId: job.jobId })]);
+  });
+});

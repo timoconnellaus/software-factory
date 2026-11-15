@@ -33,6 +33,7 @@ import {
   terminalCallRequestSchema,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "./deps.ts";
+import { beatFlowJobs, claimFlowJob, flowJobReply, isFlowJob } from "./flow/channel.ts";
 import { secrets } from "./secrets.ts";
 import { terminalRelay } from "./terminal-relay.ts";
 
@@ -97,9 +98,11 @@ async function route(
   let op: string;
   let input: unknown;
   if (path === PATHS.heartbeat) {
-    op = "runner.heartbeat";
-    input = record;
+    return heartbeatReply(env, runner, record, signedAt);
   } else if (path === PATHS.claim) {
+    // The new core's runs first (spec 70), then the old core's jobs.
+    const flowJob = await claimFlowJob(env, runner, record, signedAt);
+    if (flowJob) return { body: { job: flowJob } };
     op = "job.claim";
     input = record;
   } else {
@@ -111,6 +114,7 @@ async function route(
         body: { error: "jobId in the body doesn't match the path", code: "invalid_input" },
       };
     }
+    if (isFlowJob(job.jobId)) return flowJobReply(env, runner, job.jobId, job.call, record);
     input = { ...record, jobId: job.jobId };
     if (job.call === "attachments" || job.call === "attachment") {
       return attachmentReply(env, runner, job.call, input as Record<string, unknown>);
@@ -129,15 +133,51 @@ async function route(
       release: "run.release",
     }[job.call];
   }
-  // The heartbeat and the claim are unstored: their signed time keeps a replayed one from changing
-  // state (ADR 0016, 0590).
+  // The claim is unstored: its signed time keeps a replayed one from changing state (ADR 0016, 0590).
   return invokeReply(
     env,
     op,
     input,
     { type: "runner", id: runner },
-    path === PATHS.heartbeat || path === PATHS.claim ? signedAt : undefined,
+    path === PATHS.claim ? signedAt : undefined,
   );
+}
+
+/**
+ * The heartbeat: the old core's runner.heartbeat for everything but the flow jobs it holds, whose
+ * leases the new core renews (spec 70). The old core never sees a flow job, so it never answers
+ * `cancel "not assigned to this runner"` for one. Unstored: its signed time keeps a replayed one
+ * from changing the runner's state (ADR 0016, 0590).
+ */
+async function heartbeatReply(
+  env: Env,
+  runner: string,
+  record: Record<string, unknown>,
+  signedAt?: number,
+): Promise<ChannelReply> {
+  const active = Array.isArray(record.activeJobs) ? (record.activeJobs as unknown[]) : null;
+  const isFlow = (j: unknown) =>
+    typeof (j as { jobId?: unknown } | null)?.jobId === "string" &&
+    isFlowJob((j as { jobId: string }).jobId);
+  const flowHeld = (active ?? []).filter(isFlow) as { jobId: string; fencingToken: number }[];
+  const input = active ? { ...record, activeJobs: active.filter((j) => !isFlow(j)) } : record;
+  const reply = await invokeReply(
+    env,
+    "runner.heartbeat",
+    input,
+    { type: "runner", id: runner },
+    signedAt,
+  );
+  if (flowHeld.length === 0 || (reply.status && reply.status !== 200)) return reply;
+  const flow = await beatFlowJobs(env, runner, flowHeld);
+  const out = reply.body as { leases: unknown[]; commands: unknown[] };
+  return {
+    body: {
+      ...out,
+      commands: [...out.commands, ...flow.commands],
+      leases: [...out.leases, ...flow.leases],
+    },
+  };
 }
 
 /**

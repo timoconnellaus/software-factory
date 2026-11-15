@@ -14,8 +14,10 @@ import {
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
+import { call as callFlow } from "@software-factory/ops";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import {
+  board,
   claimRun,
   createAgent,
   createItem,
@@ -23,7 +25,10 @@ import {
   createWorkflow,
   expireRuns,
   finishRun,
+  inbox,
+  recentComments,
   renewLease,
+  timeline,
 } from "@software-factory/store";
 import { beforeAll, describe, expect, it } from "vitest";
 import { archiveAudit } from "../src/audit-archive.ts";
@@ -206,18 +211,47 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
         key: "P",
         workflowId: wf.workflow.id,
       });
-      await createItem(e.DB, {
+      // The claiming runner is the item creator's (claimRun serves only its runner's orgs).
+      await e.DB.prepare(
+        "INSERT OR IGNORE INTO core_runners (id, owner_user_id, name, created_at) VALUES ('runner_qp', 'u_qp', 'qp', ?)",
+      )
+        .bind(new Date().toISOString())
+        .run();
+      const item = await createItem(e.DB, {
         orgId,
         projectId: project.id,
         title: "t",
         body: "",
-        createdBy: "u",
+        createdBy: "u_qp",
       });
       const now = Date.now();
       const run = await claimRun(e.DB, "runner_qp", now, 60_000);
       if (!run) throw new Error("nothing to claim");
+      await recentComments(e.DB, item.id, 10);
       await renewLease(e.DB, run.id, "runner_qp", now, 60_000);
       await finishRun(e.DB, run.id, run.fencingToken, { outcome: "done", summary: "ok" });
+      // The desktop app's polled reads: the board, the inbox and the timeline, each capped.
+      await board(e.DB, project.id);
+      await inbox(e.DB, orgId, "u_qp");
+      await timeline(e.DB, item.id);
+      // The door's org check for a flow.* call (packages/ops scope.ts), with each kind of id named.
+      // u_qp is no member, so each is refused after the one check query, which is what is planned.
+      const as = { d1: e.DB, actor: { kind: "person" as const, id: "u_qp" } };
+      await callFlow("flow.item.get", { orgId, itemId: item.id }, as);
+      await callFlow(
+        "flow.project.setWorkflow",
+        { orgId, projectId: project.id, workflowId: wf.workflow.id },
+        as,
+      );
+      await callFlow(
+        "flow.workflow.create",
+        {
+          orgId,
+          name: "x",
+          statuses: [{ id: "a", name: "A", owner: { kind: "agent", agentId: agent.id } }],
+        },
+        as,
+      );
       return expireRuns(e.DB, now, 10);
     },
   },
