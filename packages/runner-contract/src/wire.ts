@@ -288,6 +288,11 @@ export const handbackSchema = z.object({
   fencingToken,
   outcome: z.enum(["completed", "failed", "timed_out", "cancelled"]),
   summary: z.string().max(20_000).optional(),
+  /**
+   * Why the run did not complete, alone and short (a refused push, a timeout), apart from the
+   * summary, which also carries the agent's own words. What a stopped item shows.
+   */
+  error: z.string().max(2_000).optional(),
   artifactIds: z.array(z.string()),
   /** The branch the run pushed (the job's branch), or empty for a job without a repository. */
   branch: z.string(),

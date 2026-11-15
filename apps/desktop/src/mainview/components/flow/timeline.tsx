@@ -15,6 +15,7 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { CircleCheckIcon, CircleXIcon } from "lucide-react";
 import type * as React from "react";
+import { useState } from "react";
 import { ExternalLink } from "../../lib/external.tsx";
 import { OwnerMark } from "./parts.tsx";
 
@@ -251,16 +252,37 @@ export function DecisionCard({
 }
 
 function Stopped({ error, busy, onRetry }: { error: string; busy: boolean; onRetry: () => void }) {
+  const [all, setAll] = useState(false);
+  const long = error.length > 240 || error.split("\n").length > 4;
   return (
     <div
       className="rounded-[10px] border border-bad/30 bg-bad/5 px-3 py-[11px]"
       data-testid="item-stopped"
     >
       <div className="font-semibold text-bad">Stopped</div>
-      <p className="mt-0.5 mb-[9px] whitespace-pre-wrap">{error}</p>
-      <Button size="md" disabled={busy} onClick={onRetry} data-testid="retry">
-        Retry
-      </Button>
+      {/* An error can be a whole git or API message: four lines, and the rest on request. */}
+      <p
+        className={cn("mt-0.5 mb-[9px] whitespace-pre-wrap break-words", !all && "line-clamp-4")}
+        data-testid="stopped-error"
+      >
+        {error}
+      </p>
+      <div className="flex items-center gap-1.5">
+        <Button size="md" disabled={busy} onClick={onRetry} data-testid="retry">
+          Retry
+        </Button>
+        {long && (
+          <Button
+            variant="ghost"
+            size="md"
+            className="text-ink-muted"
+            onClick={() => setAll((v) => !v)}
+            data-testid="stopped-more"
+          >
+            {all ? "Show less" : "Show all"}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
