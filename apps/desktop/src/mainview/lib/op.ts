@@ -106,6 +106,9 @@ export type ReadOpName =
   | "flow.member.list"
   | "flow.inbox.all"
   | "flow.run.list"
+  // The run view (spec 70): one run's totals, and its events a page at a time.
+  | "flow.run.get"
+  | "flow.run.events"
   // Chat's reads (flow-chat-queries.ts).
   | "flow.chat.list"
   | "flow.chat.get"

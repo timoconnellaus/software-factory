@@ -137,6 +137,8 @@
   --ok: #2c8a4b;
   --bad: #c2372d;
   --board: #fbfbfa;
+  /* A board column's lane: a shade under the board, so a column's header and cards read as one. */
+  --lane: #f3f2ef;
   --hover: #ecebe8;
   --picked: #e9e8e4;
   --body-ink: #3c3c3a;
@@ -169,6 +171,7 @@
     --ok: #5fbf7d;
     --bad: #ee7b70;
     --board: #1a1a19;
+    --lane: #141413;
     --hover: #262624;
     --picked: #2b2b29;
     --body-ink: #c9c8c3;
@@ -203,6 +206,7 @@
   --color-ok: var(--ok);
   --color-bad: var(--bad);
   --color-board: var(--board);
+  --color-lane: var(--lane);
   --color-hover: var(--hover);
   --color-picked: var(--picked);
   --color-body-ink: var(--body-ink);

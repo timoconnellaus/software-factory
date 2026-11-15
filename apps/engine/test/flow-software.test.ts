@@ -287,6 +287,21 @@ describe("the built-in github gateway", () => {
       auth: { kind: "none" },
     });
     expect(save.status).toBe(409);
+    // Nor can another gateway be renamed to it, or it be deleted.
+    const blog = await p.call<{ id: string }>("flow.gateway.save", {
+      name: "blog",
+      baseUrl: "https://blog.example",
+      auth: { kind: "none" },
+    });
+    const rename = await refused(p, "flow.gateway.save", {
+      gatewayId: blog.id,
+      name: "github",
+      baseUrl: "https://blog.example",
+      auth: { kind: "none" },
+    });
+    expect(rename.status).toBe(409);
+    expect((await refused(p, "flow.gateway.delete", { name: "github" })).status).toBe(409);
+    await p.call("flow.gateway.delete", { gatewayId: blog.id });
 
     const { project, workflow } = await software(p);
     const other = await p.call<{ id: string }>("flow.project.create", {

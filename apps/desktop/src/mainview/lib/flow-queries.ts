@@ -2,6 +2,7 @@
 // What the board and an open item show is re-read every few seconds while the window shows it
 // (react-query stops polling when the window is hidden) and after any write the app makes.
 import type { FlowInboxAll, FlowRun, Names } from "@software-factory/client/flow";
+import { runLive } from "@software-factory/client/flow-run";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { OpError, read } from "./op.ts";
 import { useSession } from "./session.ts";
@@ -122,6 +123,32 @@ export const flowAgentRunsQuery = (orgId: string, agentId: string) =>
       ),
     staleTime: 5_000,
     refetchInterval: FLOW_POLL_MS,
+  });
+
+/**
+ * An item's runs, for the run line under each agent's summary (empty when the server can't list
+ * them). Re-read with the timeline.
+ */
+export const flowItemRunsQuery = (orgId: string, itemId: string) =>
+  queryOptions({
+    queryKey: ["flow", orgId, "item", itemId, "runs"],
+    queryFn: () =>
+      orEmpty<{ runs: FlowRun[] }>(read("flow.run.list", { orgId, itemId }), { runs: [] }),
+    staleTime: 2_000,
+    refetchInterval: FLOW_POLL_MS,
+  });
+
+/** How often an open run in flight is read again (its totals and its new events). */
+export const RUN_POLL_MS = 3_000;
+
+/** One run's totals; re-read every 3 s while it is queued or running. */
+export const flowRunQuery = (orgId: string, runId: string) =>
+  queryOptions({
+    queryKey: ["flow", orgId, "run", runId],
+    queryFn: () => read("flow.run.get", { orgId, runId }),
+    staleTime: 1_000,
+    refetchInterval: (q) =>
+      !q.state.data || runLive(q.state.data.run.status) ? RUN_POLL_MS : false,
   });
 
 /** After a write: everything the org's flow screens show is read again. */

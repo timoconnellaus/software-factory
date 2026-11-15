@@ -211,7 +211,10 @@ function BoardSkeleton() {
   return (
     <div className="flex flex-1 gap-3 bg-board px-4 py-3.5" aria-busy="true">
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="grid w-[236px] flex-none content-start gap-2">
+        <div
+          key={i}
+          className="grid w-[256px] flex-none content-start gap-2 rounded-[12px] bg-lane p-2"
+        >
           <Skeleton className="h-4 w-24" />
           <Skeleton className="h-20 w-full" />
         </div>
@@ -246,7 +249,7 @@ function Board({ board, project, names, me, selected }: ViewProps) {
           names={names}
           me={me}
           selected={selected}
-          fields={board.fields}
+          fields={board.declaredFields}
         />
       ))}
     </div>
@@ -276,8 +279,11 @@ function Column({
 }) {
   const owner = ownerOf(names, status.owner);
   return (
-    <section className="flex w-[236px] flex-none flex-col gap-2" data-testid="board-column">
-      <header className="flex items-center gap-[7px] px-0.5 pb-0.5 font-semibold text-[12.5px]">
+    <section
+      className="flex w-[256px] flex-none flex-col gap-2 self-stretch rounded-[12px] bg-lane p-2"
+      data-testid="board-column"
+    >
+      <header className="flex items-center gap-[7px] px-1.5 pt-1 pb-0.5 font-semibold text-[12.5px]">
         <StatusMark index={index} count={count} />
         <span className="truncate">{status.name}</span>
         <span className="font-normal text-ink-faint" data-testid="column-count">

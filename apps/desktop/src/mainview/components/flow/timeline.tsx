@@ -5,11 +5,14 @@
 import {
   type Decision,
   type FlowCard,
+  type FlowRun,
   type TimelineRow,
   when,
 } from "@software-factory/client/flow";
+import { runLine } from "@software-factory/client/flow-run";
 import { Button } from "@software-factory/ui/components/button";
 import { cn } from "@software-factory/ui/lib/utils";
+import { Link } from "@tanstack/react-router";
 import { CircleCheckIcon, CircleXIcon } from "lucide-react";
 import type * as React from "react";
 import { ExternalLink } from "../../lib/external.tsx";
@@ -23,8 +26,11 @@ export function Timeline({
   onAction,
   onRetry,
   decisionRef,
+  runs = [],
 }: {
   rows: TimelineRow[];
+  /** The item's runs: an agent's summary shows its run's line. */
+  runs?: FlowRun[];
   decision: Decision | null;
   error: string | null;
   busy: boolean;
@@ -35,7 +41,7 @@ export function Timeline({
   return (
     <div className="flex flex-col gap-[9px]" data-testid="timeline">
       {rows.map((row) => (
-        <Row key={`${row.type}${row.seq}`} row={row} />
+        <Row key={`${row.type}${row.seq}`} row={row} runs={runs} />
       ))}
       {error && <Stopped error={error} busy={busy} onRetry={onRetry} />}
       {decision && (
@@ -51,8 +57,8 @@ export function Timeline({
 }
 
 /** One row of the timeline: a move's line, or an entry's card. The inbox shows a few on their own. */
-export function Row({ row }: { row: TimelineRow }) {
-  return row.type === "line" ? <Line row={row} /> : <Entry row={row} />;
+export function Row({ row, runs = [] }: { row: TimelineRow; runs?: FlowRun[] }) {
+  return row.type === "line" ? <Line row={row} /> : <Entry row={row} runs={runs} />;
 }
 
 function Line({ row }: { row: Extract<TimelineRow, { type: "line" }> }) {
@@ -78,8 +84,9 @@ function Line({ row }: { row: Extract<TimelineRow, { type: "line" }> }) {
   );
 }
 
-function Entry({ row }: { row: Extract<TimelineRow, { type: "entry" }> }) {
+function Entry({ row, runs }: { row: Extract<TimelineRow, { type: "entry" }>; runs: FlowRun[] }) {
   const kind = row.by === "system" ? "agent" : row.by;
+  const run = row.runId ? runs.find((r) => r.id === row.runId) : undefined;
   return (
     <div
       className="rounded-[10px] border border-line bg-panel px-3 py-2.5"
@@ -95,6 +102,30 @@ function Entry({ row }: { row: Extract<TimelineRow, { type: "entry" }> }) {
         // biome-ignore lint/suspicious/noArrayIndexKey: an entry's cards never reorder.
         <RichCard key={i} card={card} className={i > 0 ? "mt-2" : undefined} />
       ))}
+      {row.runId && <RunLine runId={row.runId} run={run} />}
+    </div>
+  );
+}
+
+/** Under an agent's summary: how long its run took, its cost when known, its steps, and Open run. */
+function RunLine({ runId, run }: { runId: string; run: FlowRun | undefined }) {
+  const parts = run ? runLine(run) : [];
+  return (
+    <div
+      className="mt-2 flex items-center gap-3.5 text-[11.5px] text-ink-muted"
+      data-testid="run-line"
+    >
+      {parts.map((p) => (
+        <span key={p}>{p}</span>
+      ))}
+      <Link
+        to="."
+        search={(s: Record<string, unknown>) => ({ ...s, run: runId })}
+        className="ml-auto text-work hover:underline"
+        data-testid="open-run"
+      >
+        Open run
+      </Link>
     </div>
   );
 }

@@ -7,9 +7,8 @@ import type {
   FlowRun,
 } from "@software-factory/client/flow";
 import { ago } from "@software-factory/client/format";
-import type { Inbox, OpOutput } from "@software-factory/client/ops";
+import type { OpOutput } from "@software-factory/client/ops";
 
-type Health = Inbox["runners"][number];
 type Listed = OpOutput<"runner.list">["runners"][number];
 
 export interface RunnerRow {
@@ -27,17 +26,14 @@ export interface RunnerRow {
 }
 
 /**
- * One row per runner: what it reported about itself (`runner.list`) joined with its health
- * (`inbox.list`'s runners: online, busy, its slots in use, paused). Without the health, a runner
- * is online if it was seen in the last two minutes.
+ * One row per runner, from what it reported about itself (`runner.list`; the old core's inbox is
+ * no longer read): online if it was seen in the last two minutes, working on its light pool's jobs
+ * in use (where flow runs go), rate-limited until its `rateLimitedUntil`.
  */
-export function runnerRows(listed: Listed[], health: Health[], now = Date.now()): RunnerRow[] {
-  const byId = new Map(health.map((h) => [h.id, h]));
+export function runnerRows(listed: Listed[], now = Date.now()): RunnerRow[] {
   return listed.map((r) => {
-    const h = byId.get(r.id);
-    const recent = r.lastSeenAt !== null && now - Date.parse(r.lastSeenAt) < 2 * 60_000;
-    const online = h ? h.state !== "offline" : recent;
-    const working = h ? h.inUse + (h.light?.inUse ?? 0) : (r.light?.inUse ?? 0);
+    const online = r.lastSeenAt !== null && now - Date.parse(r.lastSeenAt) < 2 * 60_000;
+    const working = r.light?.inUse ?? 0;
     const seen = online
       ? "Online"
       : r.lastSeenAt
@@ -49,24 +45,23 @@ export function runnerRows(listed: Listed[], health: Health[], now = Date.now())
       online,
       seen,
       working,
-      takesWork: takesWork(r, h, online),
-      code: codeOf(r, h),
+      takesWork: takesWork(r, online, now),
+      code: codeOf(r),
     };
   });
 }
 
-function takesWork(r: Listed, h: Health | undefined, online: boolean): RunnerRow["takesWork"] {
+function takesWork(r: Listed, online: boolean, now: number): RunnerRow["takesWork"] {
   if (!online) return { yes: false, why: "offline" };
-  if (!r.accepting || h?.state === "draining") return { yes: false, why: "paused" };
-  if (h?.state === "rate-limited") return { yes: false, why: "rate-limited" };
-  if (h?.paused) return { yes: false, why: h.paused.reason === "load" ? "machine busy" : "paused" };
-  if (h && h.inUse >= h.max && (!h.light || h.light.inUse >= h.light.max))
-    return { yes: false, why: "full" };
+  if (!r.accepting) return { yes: false, why: "paused" };
+  if (r.rateLimitedUntil && Date.parse(r.rateLimitedUntil) > now)
+    return { yes: false, why: "rate-limited" };
+  if (r.light && r.light.inUse >= r.light.max) return { yes: false, why: "full" };
   return { yes: true, why: null };
 }
 
-function codeOf(r: Listed, h: Health | undefined): RunnerRow["code"] {
-  const update = h?.update ?? r.update;
+function codeOf(r: Listed): RunnerRow["code"] {
+  const update = r.update;
   if (update?.state === "behind") return { current: false, text: "Updating" };
   if (update?.state === "blocked")
     return { current: false, text: `Can't update${update.reason ? `: ${update.reason}` : ""}` };

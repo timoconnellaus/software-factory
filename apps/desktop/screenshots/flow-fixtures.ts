@@ -22,6 +22,7 @@ import type {
   FlowMember,
   FlowPluginDetail,
 } from "@software-factory/client/flow-edit";
+import type { FlowRunEvent, FlowRunView } from "@software-factory/client/flow-run";
 import { CHAT_ANSWERS, CHAT_WORKFLOWS } from "./chat-fixtures.ts";
 // A refused write carries its problems as the door does (`details`). fixtures.ts imports this file;
 // Refusal is only used when an answer runs, after both have loaded.
@@ -29,6 +30,9 @@ import { Refusal } from "./fixtures.ts";
 
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
+
+const ENOSPC =
+  "The run's sandbox ran out of disk while installing dependencies (ENOSPC: no space left on device).";
 
 export const FLOW_ME = "usr_owner";
 export const FLOW_ORG = "org_personal";
@@ -182,8 +186,7 @@ export const FLOW_ITEMS: FlowItem[] = [
     14,
   ),
   item("fitm_postgres", 8, "Upgrade the Postgres driver to v5", "build", { on: "nothing" }, 40, {
-    error:
-      "The run's sandbox ran out of disk while installing dependencies (ENOSPC: no space left on device).",
+    error: ENOSPC,
     body: "pg 4 is out of support. Move to v5 and drop the pool shim we added for 4.x.",
   }),
   item(
@@ -268,11 +271,13 @@ const ended = (
   next: unknown,
   summary: string,
   min: number,
+  runId?: string,
 ): [FlowTimelineEntry["kind"], FlowActor, unknown, number][] => [
-  ["event", agent(by), { type: "run.ended", stay: 1, outcome: "done" }, min],
+  ["event", agent(by), { type: "run.ended", stay: 1, outcome: "done", runId }, min],
   ["effect", agent(by), { type: "entered", from, to, by: agent(by) }, min],
   ["effect", agent(by), next, min],
-  ["comment", agent(by), { text: summary }, min],
+  // The summary carries its run's id, as the store writes it: its run line opens the run.
+  ["comment", agent(by), runId ? { text: summary, runId } : { text: summary }, min],
 ];
 
 export const PLAN_CARD = {
@@ -319,6 +324,7 @@ const TIMELINES: Record<string, FlowTimelineEntry[]> = {
       { type: "run.start", agentId: "fagt_backend", statusId: "build", stay: 2 },
       "Here is the plan.",
       120,
+      "frun_rate_spec",
     ),
     ["card", agent("fagt_lead"), PLAN_CARD, 120],
     ...ended(
@@ -328,15 +334,22 @@ const TIMELINES: Record<string, FlowTimelineEntry[]> = {
       { type: "run.start", agentId: "fagt_qa", statusId: "review", stay: 3 },
       "Limiter and tests are in.",
       40,
+      "frun_fitm_rate",
     ),
     ["card", agent("fagt_backend"), PR_CARD, 40],
-    ["event", agent("fagt_qa"), { type: "run.ended", stay: 3, outcome: "done" }, 9],
+    [
+      "event",
+      agent("fagt_qa"),
+      { type: "run.ended", stay: 3, outcome: "done", runId: "frun_rate_review" },
+      9,
+    ],
     ["effect", agent("fagt_qa"), { type: "decision.ask", statusId: "review" }, 9],
     [
       "comment",
       agent("fagt_qa"),
       {
         text: "Reviewed #318. One note, fixed: Retry-After now rounds up, so clients never retry at once.",
+        runId: "frun_rate_review",
       },
       9,
     ],
@@ -416,16 +429,436 @@ const run = (
   ...over,
 });
 const RUNS: FlowRun[] = [
-  run("fitm_webhooks", "Move auth webhooks onto the job queue", "claimed", 14, null),
-  run("fitm_rate", "Add rate limiting to the public API", "done", 55, 15, {
+  run("fitm_webhooks", "Move auth webhooks onto the job queue", "claimed", 14, null, {
+    steps: 9,
+    costUsd: null,
+  }),
+  // 15m 3s, as the mockup's.
+  run("fitm_rate", "Add rate limiting to the public API", "done", 55.05, 15.05, {
     result: { outcome: "done" },
+    steps: 13,
+    costUsd: null,
   }),
-  run("fitm_audit", "Paginate the audit log endpoint", "done", 110, 17),
-  run("fitm_postgres", "Upgrade the Postgres driver to v5", "failed", 60, 1, {
-    error: "The run's sandbox ran out of disk",
+  run("fitm_audit", "Paginate the audit log endpoint", "done", 110, 17, { steps: 8 }),
+  run("fitm_postgres", "Upgrade the Postgres driver to v5", "failed", 41.5, 1.5, {
+    error: ENOSPC,
+    steps: 3,
+    costUsd: null,
   }),
-  run("fitm_enum", "Rename the billing plan enum", "done", 60 * 26, 10),
+  run("fitm_enum", "Rename the billing plan enum", "done", 60 * 26, 10, { steps: 5 }),
 ];
+
+// ---- Runs (the run view, .kim/mockups/run.html) -------------------------------------------------
+
+/** A run's events, each at `sec` seconds after it was claimed (`claimedMin` minutes ago). */
+function events(
+  claimedMin: number,
+  list: (
+    | [number, "note", string]
+    | [number, "tool", string, string, Record<string, unknown>, string | null]
+    | [number, "result", string, string, boolean?]
+  )[],
+): FlowRunEvent[] {
+  const start = now - claimedMin * 60_000;
+  return list.map((e, i) => {
+    const at = new Date(start + e[0] * 1000).toISOString();
+    const seq = i + 1;
+    if (e[1] === "note") return { seq, at, kind: "note", text: e[2] };
+    if (e[1] === "tool")
+      return {
+        seq,
+        at,
+        kind: "tool",
+        name: e[2],
+        label: e[3],
+        input: JSON.stringify(e[4]),
+        toolId: e[5],
+      };
+    return { seq, at, kind: "result", toolId: e[2], output: e[3], isError: e[4] ?? false };
+  });
+}
+
+/** A tool call and its result `took` seconds later, with its own id. */
+let toolNo = 0;
+const call = (
+  sec: number,
+  took: number,
+  name: string,
+  label: string,
+  input: Record<string, unknown>,
+  output: string,
+  isError = false,
+) => {
+  const id = `toolu_${++toolNo}`;
+  return [
+    [sec, "tool", name, label, input, id] as [number, "tool", string, string, typeof input, string],
+    [sec + took, "result", id, output, isError] as [number, "result", string, string, boolean],
+  ];
+};
+
+const TEST_FAIL = `ok    acme/api    1.84s
+--- FAIL: TestLimiter_RetryAfter (0.00s)
+    limiter_test.go:58: Retry-After = 0, want 1
+FAIL  acme/api/ratelimit  0.41s`;
+
+const RATE_EVENTS = events(55.05, [
+  [
+    33,
+    "note",
+    "Plan: a per-key token bucket in front of the /v1 router, limits read from the customer's plan, and a 429 with Retry-After when the bucket is empty.",
+  ],
+  ...call(58, 1.6, "Grep", "api/", { pattern: "func NewRouter", path: "api/" }, "api/router.go:14"),
+  ...call(80, 1.6, "Read", "api/router.go", { file_path: "api/router.go" }, "package api\n…"),
+  ...call(
+    116,
+    1.6,
+    "Read",
+    "billing/plans.go",
+    { file_path: "billing/plans.go" },
+    "package billing\n…",
+  ),
+  ...call(
+    264,
+    1.6,
+    "Write",
+    "api/ratelimit/limiter.go",
+    { file_path: "api/ratelimit/limiter.go", content: "package ratelimit\n…" },
+    "File created.",
+  ),
+  ...call(
+    339,
+    1.6,
+    "Edit",
+    "api/router.go",
+    {
+      file_path: "api/router.go",
+      old_string: "r := chi.NewRouter()",
+      new_string: "r := chi.NewRouter()\n\tr.Use(ratelimit.Middleware(plans))",
+    },
+    "The file api/router.go has been updated.",
+  ),
+  ...call(
+    495,
+    30,
+    "Bash",
+    "Run the API tests",
+    { command: "go test ./api/...", description: "Run the API tests" },
+    TEST_FAIL,
+    true,
+  ),
+  [
+    561,
+    "note",
+    "Retry-After rounds sub-second waits down to 0, which tells clients to retry at once. Rounding up instead.",
+  ],
+  ...call(
+    603,
+    1.6,
+    "Edit",
+    "api/ratelimit/limiter.go",
+    {
+      file_path: "api/ratelimit/limiter.go",
+      old_string: "int(wait.Seconds())",
+      new_string: "int(math.Ceil(wait.Seconds()))",
+    },
+    "The file api/ratelimit/limiter.go has been updated.",
+  ),
+  ...call(
+    627,
+    26,
+    "Bash",
+    "Run the API tests",
+    { command: "go test ./api/...", description: "Run the API tests" },
+    "ok    acme/api            1.84s\nok    acme/api/ratelimit  0.44s",
+  ),
+  [693, "note", "Tests pass. Opening the pull request."],
+  ...call(
+    712,
+    4,
+    "Bash",
+    "Open the pull request",
+    {
+      command: 'gh pr create --title "Rate limit the public API" --fill',
+      description: "Open the pull request",
+    },
+    "https://github.com/acme/api/pull/318",
+  ),
+  ...call(
+    730,
+    1.2,
+    "Read",
+    "api/ratelimit/limiter_test.go",
+    { file_path: "api/ratelimit/limiter_test.go" },
+    "package ratelimit\n…",
+  ),
+  ...call(
+    760,
+    2.2,
+    "Grep",
+    "Retry-After",
+    { pattern: "Retry-After", path: "docs/" },
+    "docs/api/errors.md:41",
+  ),
+  ...call(
+    802,
+    1.6,
+    "Edit",
+    "docs/api/errors.md",
+    { file_path: "docs/api/errors.md", old_string: "429", new_string: "429 Too Many Requests" },
+    "The file docs/api/errors.md has been updated.",
+  ),
+  ...call(
+    840,
+    3.1,
+    "Bash",
+    "Push the docs fix",
+    { command: "git push", description: "Push the docs fix" },
+    "To github.com:acme/api.git",
+  ),
+  [880, "note", "Limiter and tests are in. #318 is open with the docs updated."],
+]);
+
+/** In flight: claimed 14 minutes ago; its last call has no result yet. */
+const WEBHOOK_EVENTS = events(14, [
+  [
+    21,
+    "note",
+    "The auth webhooks run inline in the request. I'll move them onto the job queue and keep the 200 fast.",
+  ],
+  ...call(
+    40,
+    1.4,
+    "Grep",
+    "webhook",
+    { pattern: "webhook", path: "auth/" },
+    "auth/hooks.go:22\nauth/hooks.go:61",
+  ),
+  ...call(66, 1.6, "Read", "auth/hooks.go", { file_path: "auth/hooks.go" }, "package auth\n…"),
+  ...call(98, 1.5, "Read", "jobs/queue.go", { file_path: "jobs/queue.go" }, "package jobs\n…"),
+  ...call(
+    250,
+    1.6,
+    "Write",
+    "auth/hook_job.go",
+    { file_path: "auth/hook_job.go", content: "package auth\n…" },
+    "File created.",
+  ),
+  ...call(
+    330,
+    1.6,
+    "Edit",
+    "auth/hooks.go",
+    {
+      file_path: "auth/hooks.go",
+      old_string: "deliver(ev)",
+      new_string: "jobs.Enqueue(HookJob{ev})",
+    },
+    "The file auth/hooks.go has been updated.",
+  ),
+  ...call(
+    410,
+    41,
+    "Bash",
+    "Run the auth tests",
+    { command: "go test ./auth/...", description: "Run the auth tests" },
+    "ok    acme/auth  2.31s",
+  ),
+  [520, "note", "Tests pass. Checking that a failed delivery is retried with backoff."],
+  ...call(560, 1.6, "Read", "jobs/retry.go", { file_path: "jobs/retry.go" }, "package jobs\n…"),
+  [
+    800,
+    "tool",
+    "Bash",
+    "Run the job queue tests",
+    { command: "go test ./jobs/... -run Retry", description: "Run the job queue tests" },
+    "toolu_live",
+  ],
+]);
+
+const POSTGRES_EVENTS = events(41.5, [
+  [12, "note", "Bumping pg to v5 and removing the pool shim."],
+  ...call(
+    30,
+    1.6,
+    "Edit",
+    "package.json",
+    { file_path: "package.json", old_string: '"pg": "^4.9.0"', new_string: '"pg": "^5.0.0"' },
+    "The file package.json has been updated.",
+  ),
+  ...call(
+    48,
+    38,
+    "Bash",
+    "Install dependencies",
+    { command: "pnpm install", description: "Install dependencies" },
+    "ERR_PNPM_ENOSPC  ENOSPC: no space left on device, write\n\nThis error happened while installing the dependencies of pg@5.0.0",
+    true,
+  ),
+  ...call(
+    87,
+    0.4,
+    "Bash",
+    "Check the free disk",
+    { command: "df -h .", description: "Check the free disk" },
+    "Filesystem  Size  Used Avail Use%\n/dev/disk3  20G   20G    0  100%",
+  ),
+]);
+
+/** The summary runs of the Lead and QA on API-10, so their run lines open too. */
+const SPEC_EVENTS = events(130, [
+  [15, "note", "Reading the item and the API's router to write the plan."],
+  ...call(30, 1.2, "Read", "api/router.go", { file_path: "api/router.go" }, "package api\n…"),
+  ...call(70, 1.5, "Grep", "plan", { pattern: "Plan", path: "billing/" }, "billing/plans.go:8"),
+  [400, "note", "Here is the plan."],
+]);
+const REVIEW_EVENTS = events(15.7, [
+  [20, "note", "Reviewing #318."],
+  ...call(
+    40,
+    2.1,
+    "Bash",
+    "Check out the pull request",
+    { command: "gh pr checkout 318", description: "Check out the pull request" },
+    "Switched to branch 'rate-limit'",
+  ),
+  ...call(
+    120,
+    27,
+    "Bash",
+    "Run the tests",
+    { command: "go test ./...", description: "Run the tests" },
+    "ok    acme/api  1.84s",
+  ),
+  [380, "note", "Retry-After now rounds up; looks right."],
+]);
+
+const runView = (
+  id: string,
+  over: Partial<FlowRunView> & Pick<FlowRunView, "agentId" | "status" | "claimedAt">,
+): FlowRunView => {
+  const finished = over.finishedAt ?? null;
+  return {
+    id,
+    orgId: FLOW_ORG,
+    itemId: "fitm_rate",
+    statusId: "build",
+    stay: 2,
+    brief: "",
+    runnerId: "rnr_m5",
+    result: null,
+    error: null,
+    createdAt: over.claimedAt ?? ago(0),
+    finishedAt: null,
+    itemTitle: "Add rate limiting to the public API",
+    itemNumber: 10,
+    projectId: API,
+    projectKey: "API",
+    agentName: AGENTS.find((a) => a.id === over.agentId)?.name ?? null,
+    statusName: "Build",
+    startedBy: "entering Build",
+    durationMs:
+      finished && over.claimedAt ? Date.parse(finished) - Date.parse(over.claimedAt) : null,
+    steps: 0,
+    costUsd: null,
+    tokens: null,
+    runnerName: "M5",
+    eventsTruncated: false,
+    eventsRemoved: false,
+    ...over,
+  };
+};
+
+const toolCount = (list: FlowRunEvent[]) => list.filter((e) => e.kind === "tool").length;
+
+export const RUN_VIEWS: Record<string, { run: FlowRunView; events: FlowRunEvent[] }> = {
+  frun_fitm_rate: {
+    run: runView("frun_fitm_rate", {
+      agentId: "fagt_backend",
+      status: "done",
+      claimedAt: ago(55.05),
+      finishedAt: ago(40),
+      result: { outcome: "done", summary: "Limiter and tests are in." },
+      steps: toolCount(RATE_EVENTS),
+      tokens: 1_240_000,
+    }),
+    events: RATE_EVENTS,
+  },
+  frun_fitm_webhooks: {
+    run: runView("frun_fitm_webhooks", {
+      agentId: "fagt_backend",
+      status: "claimed",
+      claimedAt: ago(14),
+      itemId: "fitm_webhooks",
+      itemTitle: "Move auth webhooks onto the job queue",
+      itemNumber: 12,
+      steps: toolCount(WEBHOOK_EVENTS),
+    }),
+    events: WEBHOOK_EVENTS,
+  },
+  frun_fitm_postgres: {
+    run: runView("frun_fitm_postgres", {
+      agentId: "fagt_backend",
+      status: "failed",
+      claimedAt: ago(41.5),
+      finishedAt: ago(40),
+      error: ENOSPC,
+      itemId: "fitm_postgres",
+      itemTitle: "Upgrade the Postgres driver to v5",
+      itemNumber: 8,
+      steps: toolCount(POSTGRES_EVENTS),
+    }),
+    events: POSTGRES_EVENTS,
+  },
+  frun_rate_spec: {
+    run: runView("frun_rate_spec", {
+      agentId: "fagt_lead",
+      status: "done",
+      claimedAt: ago(127),
+      finishedAt: ago(120),
+      statusId: "spec",
+      stay: 1,
+      statusName: "Spec",
+      startedBy: "entering Spec",
+      steps: toolCount(SPEC_EVENTS),
+    }),
+    events: SPEC_EVENTS,
+  },
+  frun_rate_review: {
+    run: runView("frun_rate_review", {
+      agentId: "fagt_qa",
+      status: "done",
+      claimedAt: ago(15.7),
+      finishedAt: ago(9),
+      statusId: "review",
+      stay: 3,
+      statusName: "Review",
+      startedBy: "entering Review",
+      steps: toolCount(REVIEW_EVENTS),
+    }),
+    events: REVIEW_EVENTS,
+  },
+};
+
+/** An item's runs as `flow.run.list { itemId }` lists them, by stay. */
+const itemRunsOf = (itemId: string): FlowRun[] =>
+  Object.values(RUN_VIEWS)
+    .filter((v) => v.run.itemId === itemId)
+    .sort((a, b) => a.run.stay - b.run.stay || a.run.createdAt.localeCompare(b.run.createdAt))
+    .map(({ run: r }) => ({
+      id: r.id,
+      itemId,
+      itemTitle: r.itemTitle ?? undefined,
+      agentId: r.agentId,
+      status: r.status,
+      createdAt: r.createdAt,
+      claimedAt: r.claimedAt,
+      finishedAt: r.finishedAt,
+      result: r.result,
+      error: r.error,
+      steps: r.steps,
+      costUsd: r.costUsd,
+      tokens: r.tokens,
+    }));
 
 // ---- The inbox, workflow editor, plugins and gateways (flow-edit.ts) ----------------------------
 
@@ -576,7 +1009,7 @@ export const FLOW_ANSWERS: FlowAnswers = {
       items: FLOW_ITEMS.filter((i) => i.projectId === input.projectId && i.statusId === status.id),
     })),
     truncated: false,
-    fields: FIELDS,
+    declaredFields: FIELDS,
   }),
   "flow.timeline.get": (input) => ({ entries: TIMELINES[input.itemId] ?? [], truncated: false }),
   "flow.inbox.get": (input) => {
@@ -584,6 +1017,11 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return {
       work: inOrg.filter((i) => i.waiting.on === "person" && i.waiting.userId === FLOW_ME),
       decisions: inOrg.filter((i) => i.waiting.on === "decision"),
+      // What you finished or decided last: the shipped item, then the one you approved.
+      done: [
+        { ...named(find("fitm_members") as FlowItem), doneAt: ago(300) },
+        { ...named(find("fitm_enum") as FlowItem), doneAt: ago(60 * 26) },
+      ].filter((i) => i.orgId === input.orgId),
       truncated: false,
     };
   },
@@ -617,9 +1055,28 @@ export const FLOW_ANSWERS: FlowAnswers = {
     mcp: input.mcp ?? [],
   }),
   "flow.run.list": (input) => ({
-    runs: RUNS.filter((r) => r.agentId === input.agentId).slice(0, input.limit ?? 20),
+    runs: input.itemId
+      ? itemRunsOf(input.itemId)
+      : RUNS.filter((r) => r.agentId === input.agentId).slice(0, input.limit ?? 20),
   }),
-  "flow.item.get": (input) => find(input.itemId) ?? (FLOW_ITEMS[0] as FlowItem),
+  "flow.run.get": (input) => {
+    const found = RUN_VIEWS[input.runId];
+    if (!found) throw new Refusal("not_found", `No run ${input.runId} in this org.`);
+    return { run: found.run };
+  },
+  "flow.run.events": (input) => {
+    const found = RUN_VIEWS[input.runId];
+    if (!found) throw new Refusal("not_found", `No run ${input.runId} in this org.`);
+    return {
+      events: found.events.filter((e) => input.after === undefined || e.seq > input.after),
+      truncated: found.run.eventsTruncated,
+      done: found.run.status !== "queued" && found.run.status !== "claimed",
+    };
+  },
+  "flow.item.get": (input) => ({
+    ...(find(input.itemId) ?? (FLOW_ITEMS[0] as FlowItem)),
+    declaredFields: FIELDS,
+  }),
   "flow.item.create": (input) =>
     item("fitm_new", 13, input.title, "spec", { on: "run", agentId: "fagt_lead" }, 0, {
       projectId: input.projectId,

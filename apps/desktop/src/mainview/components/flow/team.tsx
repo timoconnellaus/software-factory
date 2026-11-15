@@ -37,7 +37,7 @@ import {
   useFlowRefresh,
 } from "../../lib/flow-queries.ts";
 import { OpError, op, submitKey } from "../../lib/op.ts";
-import { runnerHealthQuery, runnersQuery } from "../../lib/queries.ts";
+import { runnersQuery } from "../../lib/queries.ts";
 import { agentUpdate, agentWorking, duration, runnerRows, runOutcome } from "../../lib/team.ts";
 import { MembersList } from "./members.tsx";
 import { PageHeader, Pill } from "./parts.tsx";
@@ -286,8 +286,8 @@ function AgentPage({ orgId, agent }: { orgId: string; agent: FlowAgent }) {
               recent.slice(0, 10).map((r, n) => {
                 const out = runOutcome(r);
                 const took = duration(r.claimedAt, r.finishedAt);
-                return (
-                  <Line key={r.id ?? `${r.itemId}-${n}`} data-testid="agent-run">
+                const row = (
+                  <>
                     {out.ok === false ? (
                       <CircleXIcon className="size-4 flex-none text-bad" />
                     ) : out.ok ? (
@@ -303,6 +303,23 @@ function AgentPage({ orgId, agent }: { orgId: string; agent: FlowAgent }) {
                       {r.finishedAt && ` · ${when(r.finishedAt)}`}
                       {took && ` · ${took}`}
                     </span>
+                  </>
+                );
+                // A run with an id opens over the page (`?run=`).
+                return r.id ? (
+                  <Line key={r.id} className="p-0">
+                    <Link
+                      to="."
+                      search={(s: Record<string, unknown>) => ({ ...s, run: r.id })}
+                      className="-mx-1.5 flex min-w-0 flex-1 items-center gap-2.5 rounded-[6px] px-1.5 py-1.5 hover:bg-hover"
+                      data-testid="agent-run"
+                    >
+                      {row}
+                    </Link>
+                  </Line>
+                ) : (
+                  <Line key={r.id ?? `${r.itemId}-${n}`} data-testid="agent-run">
+                    {row}
                   </Line>
                 );
               })
@@ -448,11 +465,10 @@ function NewAgentDialog({
 
 function Runners({ orgId }: { orgId: string }) {
   const listed = useQuery(runnersQuery());
-  const health = useQuery(runnerHealthQuery());
   if (listed.error)
     return <p className="p-6 text-bad">Couldn't load the runners. {listed.error.message}</p>;
   if (!listed.data) return <Skeleton className="m-4 h-40" />;
-  const rows = runnerRows(listed.data.runners, health.data ?? []);
+  const rows = runnerRows(listed.data.runners);
   return (
     <div className="grid gap-3 p-4" data-testid="runners">
       {rows.length === 0 ? (

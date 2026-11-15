@@ -8,7 +8,7 @@ import {
   flowInboxAllQuery,
   flowMembersQuery,
 } from "../lib/flow-queries.ts";
-import { runnerHealthQuery, runnersQuery } from "../lib/queries.ts";
+import { runnersQuery } from "../lib/queries.ts";
 import { flowOrg } from "./flow.$orgId.tsx";
 
 interface Search {
@@ -25,11 +25,7 @@ export const Route = createRoute({
   }),
   loaderDeps: ({ search }) => ({ tab: search.tab, agent: search.agent }),
   loader: async ({ context: { queryClient }, params: { orgId }, deps: { tab, agent } }) => {
-    if (tab === "runners")
-      return Promise.all([
-        queryClient.ensureQueryData(runnersQuery()),
-        queryClient.ensureQueryData(runnerHealthQuery()),
-      ]).catch(() => null);
+    if (tab === "runners") return queryClient.ensureQueryData(runnersQuery()).catch(() => null);
     if (tab === "people") return queryClient.ensureQueryData(flowMembersQuery(orgId));
     const [agents] = await Promise.all([
       queryClient.ensureQueryData(flowAgentsQuery(orgId)),

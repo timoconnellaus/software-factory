@@ -7,6 +7,7 @@ import { endRunWithHooks } from "@software-factory/plugins";
 import {
   type ChannelReply,
   claimRequestSchema,
+  eventsRequestSchema,
   flowResultSchema,
   handbackSchema,
   type Job,
@@ -27,6 +28,7 @@ import {
   recentComments,
   renewLease,
   StoreError,
+  storeRunEvents,
 } from "@software-factory/store";
 import { chatPrompt, PROMPT_CHAT_MESSAGES } from "./chat-prompt.ts";
 import { flowHost } from "./door.ts";
@@ -263,10 +265,11 @@ async function flowJobToken(
 /**
  * A job-scoped call on a flow job. `handback` finishes the run with the agent's result (an invalid
  * or missing one fails it) and, for a run with a repository, its branch and head; `release` after a
- * failure, or with the run still open, fails it; `events` and `artifacts` are accepted and dropped
- * for now; `token` mints a run with a repository its push token (flowJobToken); every other call is
- * refused, since a flow job has no steers, terminal or planning. Each checks the run is this
- * runner's and the fencing token is current: a stale one is 409 `fenced`, so the host stops.
+ * failure, or with the run still open, fails it; `events` are stored for the run view; `artifacts`
+ * are accepted and dropped; `token` mints a run with a repository its push token (flowJobToken);
+ * every other call is refused, since a flow job has no steers, terminal or planning. Each checks
+ * the run is this runner's and the fencing token is current: a stale one is 409 `fenced`, so the
+ * host stops.
  */
 export async function flowJobReply(
   env: Env,
@@ -289,8 +292,25 @@ export async function flowJobReply(
   const open = run.status === "claimed";
   if (call === "token") return flowJobToken(env, run);
   try {
-    // Dropped for now. Accepted after the hand-back too: the host flushes its last events then.
-    if (call === "events" || call === "artifacts") return { body: { ok: true } };
+    // Stored for the run view (packages/store run-events.ts): one D1 batch, no audit row. Accepted
+    // after the hand-back too: the host flushes its last events then.
+    if (call === "events") {
+      const parsed = eventsRequestSchema.safeParse(body);
+      if (!parsed.success) return refuse(400, "invalid_input", parsed.error.message);
+      try {
+        await storeRunEvents(env.DB, jobId, parsed.data.events);
+      } catch (error) {
+        // Two batches raced twice: a 5xx, so the host keeps the batch and sends it again (a 409
+        // would stop its job).
+        if (error instanceof StoreError && error.code === "conflict") {
+          return refuse(503, "unavailable", error.message);
+        }
+        throw error;
+      }
+      return { body: { ok: true } };
+    }
+    // Dropped: a flow job has no repository, so nothing it produces is an artifact yet.
+    if (call === "artifacts") return { body: { ok: true } };
     if (call === "release") {
       const parsed = releaseRequestSchema.safeParse({ ...body, jobId });
       if (!parsed.success) return refuse(400, "invalid_input", parsed.error.message);

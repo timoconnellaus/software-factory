@@ -155,10 +155,11 @@ export const gatewayOps = [
   defineOperation({
     name: "flow.gateway.save",
     description:
-      'Create the gateway `name`, or replace its base URL and auth: { kind: "none" } | { kind: "bearer" } (Authorization: Bearer <secret>) | { kind: "header", header } (<header>: <secret>). `secret` sets the secret (stored encrypted, never shown again), null removes it, and leaving it out keeps it.',
+      'Create the gateway `name`, or replace its base URL and auth: { kind: "none" } | { kind: "bearer" } (Authorization: Bearer <secret>) | { kind: "header", header } (<header>: <secret>). With `gatewayId`, change that gateway instead, its name too (a rename keeps its secret). `secret` sets the secret (stored encrypted, never shown again), null removes it, and leaving it out keeps it.',
     risk: "write",
     input: z.object({
       orgId,
+      gatewayId: z.string().min(1).max(100).optional(),
       name,
       baseUrl: z.string().url().max(2_000),
       auth,
@@ -168,6 +169,7 @@ export const gatewayOps = [
       if (input.name === GITHUB_GATEWAY) throw builtIn();
       return saveGateway(ctx.d1, ctx.host.FLOW_GATEWAY_KEY, {
         orgId: ctx.orgId,
+        ...(input.gatewayId !== undefined ? { gatewayId: input.gatewayId } : {}),
         name: input.name,
         baseUrl: input.baseUrl,
         auth: input.auth,
@@ -178,12 +180,19 @@ export const gatewayOps = [
   defineOperation({
     name: "flow.gateway.delete",
     description:
-      "Delete the gateway `name`. Plugins that use it then get an error when they call it.",
+      "Delete the gateway `name` (or the one with `gatewayId`). Plugins that use it then get an error when they call it.",
     risk: "write",
-    input: z.object({ orgId, name }),
+    input: z.union([
+      z.object({ orgId, gatewayId: z.string().min(1).max(100) }),
+      z.object({ orgId, name }),
+    ]),
     handler: async (input, ctx) => {
-      if (input.name === GITHUB_GATEWAY) throw builtIn();
-      await deleteGateway(ctx.d1, ctx.orgId, input.name);
+      if ("name" in input && input.name === GITHUB_GATEWAY) throw builtIn();
+      await deleteGateway(
+        ctx.d1,
+        ctx.orgId,
+        "gatewayId" in input ? { id: input.gatewayId } : input.name,
+      );
       return { ok: true };
     },
   }),

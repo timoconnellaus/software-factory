@@ -70,7 +70,7 @@ describe("the timeline", () => {
     e("event", writer, { type: "run.ended", stay: 1, outcome: "done" }),
     e("effect", writer, { type: "entered", from: "draft", to: "review", by: writer }),
     e("effect", writer, { type: "run.start", agentId: "agt_editor", statusId: "review", stay: 2 }),
-    e("comment", writer, { text: "Draft is ready." }),
+    e("comment", writer, { text: "Draft is ready.", runId: "frun_1" }),
     e("card", writer, { kind: "document", title: "launch.md", subtitle: "1,180 words" }),
     e("comment", me, { text: "Keep it short." }),
     e("card", editor, {
@@ -105,7 +105,11 @@ describe("the timeline", () => {
   it("puts an agent's run summary, with its cards, before the move it caused", () => {
     const at = rows.findIndex((r) => r.type === "entry" && r.text === "Draft is ready.");
     const summary = rows[at];
-    expect(summary).toMatchObject({ who: "Writer", by: "agent" });
+    // It carries its run's id, for the run line under it; a person's comment has none.
+    expect(summary).toMatchObject({ who: "Writer", by: "agent", runId: "frun_1" });
+    expect(rows.find((r) => r.type === "entry" && r.text === "Keep it short.")).toMatchObject({
+      runId: null,
+    });
     expect(summary?.type === "entry" && summary.cards.map((c) => c.title)).toEqual(["launch.md"]);
     expect(rows[at + 1]).toMatchObject({ type: "line", what: "moved it from Draft to Review" });
   });

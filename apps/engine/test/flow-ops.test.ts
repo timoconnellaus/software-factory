@@ -229,4 +229,87 @@ describe("the new core through the engine", () => {
     });
     expect(beat.commands).toEqual([expect.objectContaining({ kind: "cancel", jobId: job.jobId })]);
   });
+
+  it("stores a run's events from the channel, refuses a stale token, and takes the last ones after the hand-back", async () => {
+    const p = await person();
+    await draftReviewDone(p);
+    const job = await claim(p);
+    if (!job) throw new Error("no job");
+    const audits = async () =>
+      (await all("SELECT id FROM core_audit WHERE actor_id = ?", p.runner.runnerId)).length;
+    const auditedBefore = await audits();
+    let seq = 0;
+    const ev = (e: Record<string, unknown>) => ({
+      jobId: job.jobId,
+      seq: ++seq,
+      at: new Date(Date.UTC(2026, 10, 15, 10, 0, seq)).toISOString(),
+      ...e,
+    });
+    const send = (events: unknown[], fencingToken = job.lease.fencingToken) =>
+      p.channel.events(job.jobId, {
+        fencingToken,
+        events: events as Parameters<typeof p.channel.events>[1]["events"],
+      });
+    await send([
+      ev({ type: "job.state", state: "running" }),
+      ev({ type: "message", role: "assistant", text: "Drafting it now." }),
+      ev({ type: "tool", name: "Write", input: '{"file_path":"post.md"}', id: "tu_1" }),
+      ev({ type: "tool.result", toolId: "tu_1", output: "Wrote post.md" }),
+    ]);
+    // A stale fencing token is refused, and stores nothing.
+    const stale = await send(
+      [ev({ type: "message", role: "assistant", text: "Not mine." })],
+      job.lease.fencingToken - 1,
+    ).catch((e) => e);
+    expect(stale).toBeInstanceOf(ChannelCallError);
+    expect(stale).toMatchObject({ status: 409, code: "fenced" });
+
+    const events = await p.call<{ events: { kind: string; seq: number }[]; done: boolean }>(
+      "flow.run.events",
+      { runId: job.jobId },
+    );
+    expect(events.events.map((e) => [e.seq, e.kind])).toEqual([
+      [2, "note"],
+      [3, "tool"],
+      [4, "result"],
+    ]);
+    expect(events.done).toBe(false);
+
+    await p.channel.handback({
+      jobId: job.jobId,
+      fencingToken: job.lease.fencingToken,
+      outcome: "completed",
+      artifactIds: [],
+      branch: "",
+      result: { outcome: "done", summary: "Drafted." },
+    });
+    // The host's last events, flushed after its hand-back: kept.
+    await send([
+      ev({
+        type: "turn",
+        outcome: "success",
+        usage: { inputTokens: 5, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      }),
+      ev({ type: "message", role: "assistant", text: "Done." }),
+      ev({ type: "job.state", state: "handed_back" }),
+    ]);
+    const after = await p.call<{ events: { kind: string }[]; done: boolean }>("flow.run.events", {
+      runId: job.jobId,
+      after: 4,
+    });
+    expect(after).toMatchObject({ events: [{ kind: "note", text: "Done." }], done: true });
+    const { run } = await p.call<{ run: Record<string, unknown> }>("flow.run.get", {
+      runId: job.jobId,
+    });
+    expect(run).toMatchObject({
+      status: "done",
+      steps: 1,
+      tokens: 12,
+      costUsd: null,
+      runnerName: "M5",
+      startedBy: "entering Draft",
+    });
+    // Machine-frequency: no audit row for any of it.
+    expect(await audits()).toBe(auditedBefore);
+  });
 });

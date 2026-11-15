@@ -91,6 +91,20 @@ export const SCREENS = [
   },
   { name: "flow-project-settings-connect", path: "/flow/org_client/p/fprj_site?view=settings" },
   { name: "flow-gateways-github", path: "/flow/org_personal/plugins?tab=gateways" },
+  // The run view (run.html) and the run line under an agent's summary (board-and-item-panel.html):
+  // `--out flow-run`. The finished run with its first Bash step (the failing tests) chosen.
+  {
+    name: "flow-run-finished",
+    path: "/flow/org_personal/p/fprj_api?run=frun_fitm_rate",
+    clicks: ['[data-testid="step-list"] > :nth-child(7)'],
+  },
+  { name: "flow-run-live", path: "/flow/org_personal/p/fprj_api?run=frun_fitm_webhooks" },
+  { name: "flow-run-failed", path: "/flow/org_personal/p/fprj_api?run=frun_fitm_postgres" },
+  {
+    name: "flow-run-line",
+    path: "/flow/org_personal/p/fprj_api?item=fitm_rate",
+    scrolls: ['[data-testid="open-run"][href*="frun_fitm_rate"]'],
+  },
   // Auto's schedules (auto-schedules.html): `--out flow-auto`.
   { name: "flow-auto", path: "/flow/org_personal/auto" },
   {
@@ -150,7 +164,16 @@ const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
-async function shoot(cdp, url, file, theme, keys = [], clicks = [], pointerdowns = []) {
+async function shoot(
+  cdp,
+  url,
+  file,
+  theme,
+  keys = [],
+  clicks = [],
+  pointerdowns = [],
+  scrolls = [],
+) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -177,6 +200,13 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = [], pointerdowns
       expression: `document.querySelector(${JSON.stringify(selector)})?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }))`,
     });
     await sleep(500);
+  }
+  // `scrolls`: bring each element into the middle of its scrolling box before the shot.
+  for (const selector of scrolls) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: "center" })`,
+    });
+    await sleep(300);
   }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
@@ -238,6 +268,7 @@ try {
         s.keys,
         s.clicks,
         s.pointerdowns,
+        s.scrolls,
       );
     }
   }
