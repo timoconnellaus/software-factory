@@ -7,8 +7,8 @@ const dir = new URL("../src/mainview/", import.meta.url);
 const read = (rel: string) => readFileSync(new URL(rel, dir), "utf8");
 const pageFiles = readdirSync(new URL("routes/", dir)).filter((f) => f.endsWith(".tsx"));
 
-/** Not pages under the layout, or pages that read on demand by design (Setup asks GitHub). */
-const EXEMPT = new Set(["root.tsx", "_app.tsx", "settings.tsx", "setup.tsx"]);
+/** Not pages under the layout. */
+const EXEMPT = new Set(["root.tsx", "_app.tsx"]);
 
 /** The route's options: `createRoute({ ... })` up to the first top-level `});`. */
 function routeOptions(source: string): string {
@@ -38,10 +38,8 @@ describe("every page's loader asks for everything the page renders", () => {
 
   it("finds the pages", () => {
     expect(pages.length).toBeGreaterThanOrEqual(5);
-    // Setup's status (the dots on Settings and Setup) is started by the shell, not waited for.
-    expect(shell).toEqual(
-      new Set(["meQuery", "projectsQuery", "inboxQuery", "workListsQuery", "setupStatusQuery"]),
-    );
+    // The shell reads who is signed in; each org's pages read the rest (flow.$orgId.tsx).
+    expect(shell).toEqual(new Set(["meQuery"]));
   });
 
   for (const file of pages) {
@@ -63,9 +61,8 @@ describe("every page's loader asks for everything the page renders", () => {
   }
 
   it("the shell's own components are covered by the shell's loader", () => {
-    // Focus mode's bar shows only on a work item's page, whose loader reads the item and its
-    // planning (checked above as work.$id.index.tsx).
-    const missing = componentSources(read("routes/_app.tsx").replace(/^import .*focus-bar.*$/m, ""))
+    // Search (⌘K) reads the org's projects only once it opens, by design.
+    const missing = componentSources(read("routes/_app.tsx").replace(/^import .*palette.*$/m, ""))
       .flatMap((c) => [...queriesIn(c)])
       .filter((q) => !shell.has(q));
     expect(missing).toEqual([]);

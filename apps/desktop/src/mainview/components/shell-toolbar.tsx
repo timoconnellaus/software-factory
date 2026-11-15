@@ -1,22 +1,14 @@
 // The toolbar (spec 41): under the traffic lights, the window's drag region. Back and forward, the
-// sidebar toggle, the tabs, search (⌘K) and New item. Its controls opt out of dragging. Every
-// control in it is 28px high with the same 7px radius (spec 41, criterion 14).
+// tabs and search (⌘K). Its controls opt out of dragging. Every control in it is 28px high with the
+// same 7px radius (spec 41, criterion 14).
+import type { FlowProject } from "@software-factory/client/flow";
 import { Kbd } from "@software-factory/ui/components/kbd";
 import { cn } from "@software-factory/ui/lib/utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useRouter, useRouterState } from "@tanstack/react-router";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  PanelLeftIcon,
-  PlusIcon,
-  SearchIcon,
-  XIcon,
-} from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRouter, useRouterState } from "@tanstack/react-router";
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import { useEffect } from "react";
-import { type ItemRef, tabTitle } from "../lib/places.ts";
-import { workListsQuery } from "../lib/queries.ts";
-import { useProjects, useSession } from "../lib/session.ts";
+import { tabTitle } from "../lib/places.ts";
 import { shortcutLabel } from "../lib/shortcuts.ts";
 import { DRAG, NO_DRAG } from "../lib/title-bar.ts";
 import {
@@ -24,26 +16,12 @@ import {
   closeTab,
   followNavigation,
   openTab,
-  toggleSidebar,
   updateViewState,
   useViewState,
 } from "../lib/view-state.ts";
 
 /** The drag region's classes (Electrobun's preload turns them into window drags). */
 export { DRAG, NO_DRAG };
-
-/** Looks a work item up in what the app has loaded: the shell's lists, then the item's own read. */
-export function useItemLookup(): (id: string) => ItemRef | null {
-  const session = useSession();
-  const client = useQueryClient();
-  const lists = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
-  return (id) => {
-    const fromList = lists.data?.find((i) => i.id === id);
-    if (fromList) return fromList;
-    const detail = client.getQueryData<{ item: ItemRef }>(["workItem", id]);
-    return detail?.item ?? null;
-  };
-}
 
 /** Keeps the active tab on the router's location, and returns the tab helpers. */
 export function useTabs() {
@@ -81,15 +59,21 @@ export function useTabs() {
   };
 }
 
-/** `newItem`: the old factory's New item button (the new shell makes items on a project's board). */
-export function Toolbar({ onSearch, newItem = true }: { onSearch: () => void; newItem?: boolean }) {
+export function Toolbar({ onSearch }: { onSearch: () => void }) {
   const router = useRouter();
+  const client = useQueryClient();
   const tabs = useViewState((s) => s.tabs);
   const activeTab = useViewState((s) => s.activeTab);
-  const sidebar = useViewState((s) => s.sidebar);
-  const lookup = useItemLookup();
-  const projects = useProjects();
-  const projectName = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? null;
+  // A project's tab is its name once a sidebar has loaded it (any org's `flow.project.list`).
+  const projectName = (id: string) => {
+    for (const [, data] of client.getQueriesData<{ projects: FlowProject[] }>({
+      predicate: (q) => q.queryKey[0] === "flow" && q.queryKey[2] === "projects",
+    })) {
+      const found = data?.projects.find((p) => p.id === id);
+      if (found) return found.name;
+    }
+    return null;
+  };
   const { newTab, close, activate } = useTabs();
   const canBack = useRouterState({ select: (s) => (s.location.state.__TSR_index ?? 0) > 0 });
 
@@ -109,23 +93,10 @@ export function Toolbar({ onSearch, newItem = true }: { onSearch: () => void; ne
       >
         <ChevronRightIcon />
       </ToolButton>
-      <ToolButton
-        label={`${sidebar ? "Hide" : "Show"} the sidebar (${shortcutLabel("sidebar")})`}
-        onClick={() => updateViewState(toggleSidebar)}
-      >
-        <PanelLeftIcon />
-      </ToolButton>
       <span className="w-2 flex-none" />
       <div className="flex min-w-0 items-center gap-1 overflow-hidden" role="tablist">
         {tabs.map((t) => {
           const active = t.id === activeTab;
-          const ref = itemOfPath(t.path, lookup);
-          const dot =
-            ref?.status === "running"
-              ? "bg-status-running"
-              : ref?.status === "waiting"
-                ? "bg-status-waiting"
-                : null;
           return (
             <div
               key={t.id}
@@ -146,8 +117,7 @@ export function Toolbar({ onSearch, newItem = true }: { onSearch: () => void; ne
               )}
               data-testid="tab"
             >
-              {dot && <span className={cn("size-[7px] flex-none rounded-full", dot)} />}
-              <span className="truncate">{tabTitle(t.path, lookup, projectName)}</span>
+              <span className="truncate">{tabTitle(t.path, projectName)}</span>
               {(active || tabs.length > 1) && (
                 <button
                   type="button"
@@ -185,26 +155,8 @@ export function Toolbar({ onSearch, newItem = true }: { onSearch: () => void; ne
         Search or go to
         <Kbd className="ml-auto bg-transparent font-mono text-[11px] text-ink-muted">⌘K</Kbd>
       </button>
-      {newItem && (
-        <Link
-          to="/new"
-          className={cn(
-            NO_DRAG,
-            "ml-1.5 flex h-7 flex-none items-center gap-1.5 rounded-[7px] bg-primary px-2.5 font-medium text-primary-foreground hover:bg-primary/90",
-          )}
-          data-testid="nav-new-work"
-        >
-          <PlusIcon className="size-3" strokeWidth={2.2} />
-          New item
-        </Link>
-      )}
     </div>
   );
-}
-
-function itemOfPath(path: string, lookup: (id: string) => ItemRef | null): ItemRef | null {
-  const m = /^\/work\/([^/?]+)/.exec(path);
-  return m?.[1] ? lookup(decodeURIComponent(m[1])) : null;
 }
 
 function ToolButton({

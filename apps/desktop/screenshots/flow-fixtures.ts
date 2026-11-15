@@ -6,9 +6,11 @@
 import type {
   FlowActor,
   FlowAgent,
+  FlowInboxAllItem,
   FlowItem,
   FlowOpMap,
   FlowProject,
+  FlowRun,
   FlowStatus,
   FlowTimelineEntry,
   FlowWorkflow,
@@ -22,11 +24,53 @@ export const FLOW_ORG = "org_personal";
 export const API = "fprj_api";
 export const LAUNCH = "fprj_launch";
 
+/** The second org (All orgs, and an agent's work in another org). */
+export const CLIENT_ORG = "org_client";
+export const SITE = "fprj_site";
+
 const AGENTS: FlowAgent[] = [
-  { id: "fagt_lead", orgId: FLOW_ORG, name: "Lead", instructions: "", createdAt: ago(9000) },
-  { id: "fagt_backend", orgId: FLOW_ORG, name: "Backend", instructions: "", createdAt: ago(9000) },
-  { id: "fagt_qa", orgId: FLOW_ORG, name: "QA", instructions: "", createdAt: ago(9000) },
+  {
+    id: "fagt_lead",
+    orgId: FLOW_ORG,
+    name: "Lead",
+    instructions: "Turn each item into a short plan the builders can follow.",
+    createdAt: ago(9000),
+  },
+  {
+    id: "fagt_backend",
+    orgId: FLOW_ORG,
+    name: "Backend",
+    instructions:
+      "Backend engineer. Take a feature from migration to an open pull request, with tests.",
+    mcp: ["factory"],
+    createdAt: ago(9000),
+  },
+  {
+    id: "fagt_qa",
+    orgId: FLOW_ORG,
+    name: "QA",
+    instructions: "Check the change does what the item asks. Say what you tried.",
+    createdAt: ago(9000),
+  },
+  {
+    id: "fagt_builder",
+    orgId: CLIENT_ORG,
+    name: "Builder",
+    instructions: "Build the site's pages.",
+    createdAt: ago(9000),
+  },
 ];
+
+export const MEMBERS = {
+  [FLOW_ORG]: [
+    { userId: FLOW_ME, name: "owner", login: "owner" },
+    { userId: "usr_sam", name: "Sam Lee", login: "samlee" },
+  ],
+  [CLIENT_ORG]: [
+    { userId: FLOW_ME, name: "owner", login: "owner" },
+    { userId: "usr_ria", name: "Ria Patel", login: "riap" },
+  ],
+} as Record<string, { userId: string; name: string; login: string }[]>;
 
 const STATUSES: FlowStatus[] = [
   { id: "spec", name: "Spec", owner: { kind: "agent", agentId: "fagt_lead" } },
@@ -69,6 +113,15 @@ const PROJECTS: FlowProject[] = [
     workflowId: "fwf_ship",
     nextNumber: 1,
     createdAt: ago(600),
+  },
+  {
+    id: SITE,
+    orgId: CLIENT_ORG,
+    name: "Website",
+    key: "WEB",
+    workflowId: "fwf_ship",
+    nextNumber: 32,
+    createdAt: ago(9000),
   },
 ];
 
@@ -143,6 +196,25 @@ export const FLOW_ITEMS: FlowItem[] = [
     180,
   ),
   item("fitm_members", 4, "Lazy-load the members table", "shipped", { on: "nothing" }, 300),
+  // The Client org's site: one waits on you, one is being built.
+  item(
+    "fitm_footer",
+    31,
+    "Invoice footer shows the old address",
+    "approve",
+    { on: "person", userId: FLOW_ME },
+    65,
+    { orgId: CLIENT_ORG, projectId: SITE },
+  ),
+  item(
+    "fitm_booking",
+    30,
+    "Booking page loads slowly on phones",
+    "build",
+    { on: "run", agentId: "fagt_builder" },
+    11,
+    { orgId: CLIENT_ORG, projectId: SITE },
+  ),
 ];
 
 const me: FlowActor = { kind: "person", id: FLOW_ME };
@@ -292,6 +364,48 @@ const TIMELINES: Record<string, FlowTimelineEntry[]> = {
 
 const find = (itemId: string) => FLOW_ITEMS.find((i) => i.id === itemId);
 
+/** An item as `flow.inbox.all` lists it: its project and status named. */
+const named = (i: FlowItem): FlowInboxAllItem => {
+  const project = PROJECTS.find((p) => p.id === i.projectId);
+  return {
+    ...i,
+    projectName: project?.name ?? "",
+    projectKey: project?.key ?? "",
+    statusName: STATUSES.find((s) => s.id === i.statusId)?.name ?? i.statusId,
+  };
+};
+
+/** Backend's runs, newest first: the one going now, then what it finished. */
+const run = (
+  itemId: string,
+  itemTitle: string,
+  status: string,
+  started: number,
+  took: number | null,
+  over: Partial<FlowRun> = {},
+): FlowRun => ({
+  id: `frun_${itemId}`,
+  itemId,
+  itemTitle,
+  agentId: "fagt_backend",
+  status,
+  claimedAt: ago(started),
+  finishedAt: took === null ? null : ago(started - took),
+  error: null,
+  ...over,
+});
+const RUNS: FlowRun[] = [
+  run("fitm_webhooks", "Move auth webhooks onto the job queue", "claimed", 14, null),
+  run("fitm_rate", "Add rate limiting to the public API", "done", 55, 15, {
+    result: { outcome: "done" },
+  }),
+  run("fitm_audit", "Paginate the audit log endpoint", "done", 110, 17),
+  run("fitm_postgres", "Upgrade the Postgres driver to v5", "failed", 60, 1, {
+    error: "The run's sandbox ran out of disk",
+  }),
+  run("fitm_enum", "Rename the billing plan enum", "done", 60 * 26, 10),
+];
+
 type FlowAnswers = {
   [N in keyof FlowOpMap]?: (input: FlowOpMap[N]["input"]) => FlowOpMap[N]["output"];
 };
@@ -321,10 +435,45 @@ export const FLOW_ANSWERS: FlowAnswers = {
     truncated: false,
   }),
   "flow.timeline.get": (input) => ({ entries: TIMELINES[input.itemId] ?? [], truncated: false }),
-  "flow.inbox.get": () => ({
-    work: FLOW_ITEMS.filter((i) => i.waiting.on === "person" && i.waiting.userId === FLOW_ME),
-    decisions: FLOW_ITEMS.filter((i) => i.waiting.on === "decision"),
-    truncated: false,
+  "flow.inbox.get": (input) => {
+    const inOrg = FLOW_ITEMS.filter((i) => i.orgId === input.orgId);
+    return {
+      work: inOrg.filter((i) => i.waiting.on === "person" && i.waiting.userId === FLOW_ME),
+      decisions: inOrg.filter((i) => i.waiting.on === "decision"),
+      truncated: false,
+    };
+  },
+  "flow.inbox.all": () => ({
+    orgs: [
+      { orgId: FLOW_ORG, name: "Personal" },
+      { orgId: CLIENT_ORG, name: "Client" },
+    ].map((o) => {
+      const items = FLOW_ITEMS.filter((i) => i.orgId === o.orgId).map(named);
+      return {
+        ...o,
+        work: items.filter((i) => i.waiting.on === "person" && i.waiting.userId === FLOW_ME),
+        decisions: items.filter((i) => i.waiting.on === "decision"),
+        working: items.filter((i) => i.waiting.on === "run"),
+      };
+    }),
+  }),
+  "flow.member.list": (input) => ({ members: MEMBERS[input.orgId] ?? [] }),
+  "flow.agent.create": (input) => ({
+    id: "fagt_new",
+    orgId: input.orgId,
+    name: input.name,
+    instructions: input.instructions,
+    mcp: input.mcp ?? [],
+    createdAt: ago(0),
+  }),
+  "flow.agent.update": (input) => ({
+    ...(AGENTS.find((a) => a.id === input.agentId) as FlowAgent),
+    name: input.name,
+    instructions: input.instructions,
+    mcp: input.mcp ?? [],
+  }),
+  "flow.run.list": (input) => ({
+    runs: RUNS.filter((r) => r.agentId === input.agentId).slice(0, input.limit ?? 20),
   }),
   "flow.item.get": (input) => find(input.itemId) ?? (FLOW_ITEMS[0] as FlowItem),
   "flow.item.create": (input) =>

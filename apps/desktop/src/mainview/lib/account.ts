@@ -9,7 +9,6 @@
 // the hook's effect has run.
 import type { QueryClient } from "@tanstack/react-query";
 import type { Session } from "../../shared/rpc.ts";
-import { closeAllTerminals } from "./open-terminals.ts";
 import { resetViewState, VIEW_STATE_KEY } from "./view-state.ts";
 
 /** The signed-in account as a key ("in:<login>:<deviceId>"), "out", or null before the first answer. */
@@ -63,7 +62,7 @@ function removeKeys(store: KeyedStorage | undefined, which: (k: string) => boole
 /**
  * Forgets what this Mac kept for the previous account: the view state (open tabs, pinned items,
  * the chosen org), each item's planning canvas layout and mention drafts, which full diffs it
- * opened, and the open terminals. What isn't the account's (the panel width, developer switches)
+ * opened. What isn't the account's (the panel width, developer switches)
  * stays.
  */
 export function clearAccountLocal(storage?: KeyedStorage, session?: KeyedStorage) {
@@ -78,7 +77,6 @@ export function clearAccountLocal(storage?: KeyedStorage, session?: KeyedStorage
   removeKeys(local, ACCOUNT_KEYS);
   removeKeys(tab, (k) => k.startsWith(OPENED_DIFF_PREFIX));
   resetViewState();
-  closeAllTerminals();
 }
 
 /**

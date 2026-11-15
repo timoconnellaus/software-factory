@@ -4,7 +4,14 @@ export type DeepLink =
   | { kind: "route"; path: string }
   | { kind: "unknown"; url: string };
 
-const ROUTE = /^\/(work\/[A-Za-z0-9_-]{1,80}(\/review)?|attach|inbox|setup)$/;
+const ID = "[A-Za-z0-9_-]{1,80}";
+/**
+ * The new core's places (All orgs, an org's section, a board, an item), and the old core's links,
+ * which the view opens at the app's start now that their screens are gone (routes/root.tsx).
+ */
+const ROUTE = new RegExp(
+  `^/(flow(/orgs|/${ID}(/${ID}|/p/${ID}(/i/${ID})?)?)?|work/${ID}(/review)?|attach|inbox|setup)$`,
+);
 
 export function parseDeepLink(url: string): DeepLink {
   let u: URL;

@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseDeepLink } from "../src/bun/deeplink.ts";
+
+vi.mock("../src/mainview/bridge.ts", () => import("./bridge-stub.ts"));
 
 describe("sf:// links", () => {
   it("reads the sign-in callback", () => {
@@ -25,6 +27,36 @@ describe("sf:// links", () => {
     expect(parseDeepLink("sf://work/a%2F..%2Fb").kind).toBe("unknown");
     expect(parseDeepLink("https://example.com/work/1").kind).toBe("unknown");
     expect(parseDeepLink("not a url").kind).toBe("unknown");
+  });
+  it("routes the new core's places: an item on its board, a section, All orgs", () => {
+    expect(parseDeepLink("sf://flow/org_a/p/fprj_api?item=fitm_1")).toEqual({
+      kind: "route",
+      path: "/flow/org_a/p/fprj_api?item=fitm_1",
+    });
+    expect(parseDeepLink("sf://flow/org_a/p/fprj_api/i/fitm_1").kind).toBe("route");
+    expect(parseDeepLink("sf://flow/org_a/team").kind).toBe("route");
+    expect(parseDeepLink("sf://flow/orgs").kind).toBe("route");
+    expect(parseDeepLink("sf://flow/org_a/p/fprj_api/x/y").kind).toBe("unknown");
+  });
+});
+
+describe("a link's path in the view", async () => {
+  const { routeForLink } = await import("../src/mainview/routes/root.tsx");
+  it("goes to the new core's place it names, an item as the board's panel", () => {
+    expect(routeForLink("/flow/org_a/p/fprj_api?item=fitm_1")).toBe(
+      "/flow/org_a/p/fprj_api?item=fitm_1",
+    );
+    expect(routeForLink("/flow/org_a/p/fprj_api/i/fitm_1")).toBe("/flow/org_a/p/fprj_api/i/fitm_1");
+    expect(routeForLink("/flow/org_a/settings/")).toBe("/flow/org_a/settings");
+    expect(routeForLink("/flow/orgs")).toBe("/flow/orgs");
+  });
+  it("opens the app's start for the old screens' links, and anything else", () => {
+    expect(routeForLink("/work/wi_1")).toBe("/");
+    expect(routeForLink("/work/wi_1/review")).toBe("/");
+    expect(routeForLink("/attach?repo=o%2Fr&pr=4")).toBe("/");
+    expect(routeForLink("/inbox")).toBe("/");
+    expect(routeForLink("/flow/org_a/nowhere")).toBe("/");
+    expect(routeForLink("/flow/org_a/p/fprj_api?item=../x")).toBe("/flow/org_a/p/fprj_api");
   });
 });
 

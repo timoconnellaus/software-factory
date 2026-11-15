@@ -53,6 +53,8 @@ export interface FlowProject {
   key: string;
   workflowId: string;
   nextNumber: number;
+  /** Its items not yet in the workflow's last status (the server is adding it). */
+  openCount?: number;
   createdAt: string;
 }
 
@@ -61,7 +63,47 @@ export interface FlowAgent {
   orgId: string;
   name: string;
   instructions: string;
+  /** The MCP servers it gets beyond the base ones: `["factory"]` is the Plugin editor. */
+  mcp?: string[];
   createdAt: string;
+}
+
+/** One of the org's members, as `flow.member.list` names them. */
+export interface FlowMember {
+  userId: string;
+  name: string;
+  login: string | null;
+}
+
+/** An item as `flow.inbox.all` lists it: with its project and status named. */
+export interface FlowInboxAllItem extends FlowItem {
+  projectName: string;
+  projectKey: string;
+  statusName: string;
+}
+
+/** Across every org you are in: what waits on you and what agents are working on. */
+export interface FlowInboxAll {
+  orgs: {
+    orgId: string;
+    name: string;
+    work: FlowInboxAllItem[];
+    decisions: FlowInboxAllItem[];
+    working: FlowInboxAllItem[];
+  }[];
+}
+
+/** One run of an agent (`flow.run.list` by agent). */
+export interface FlowRun {
+  id?: string;
+  itemId: string;
+  itemTitle?: string;
+  agentId?: string;
+  status: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  result?: unknown;
+  error: string | null;
 }
 
 export interface FlowWorkflow {
@@ -123,6 +165,20 @@ export interface FlowOpMap {
   "flow.workflow.list": { input: Org; output: { workflows: FlowWorkflow[] } };
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };
+  "flow.agent.create": {
+    input: Org & { name: string; instructions: string; mcp?: string[] };
+    output: FlowAgent;
+  };
+  "flow.agent.update": {
+    input: Org & { agentId: string; name: string; instructions: string; mcp?: string[] };
+    output: FlowAgent;
+  };
+  "flow.member.list": { input: Org; output: { members: FlowMember[] } };
+  "flow.inbox.all": { input: Record<string, never>; output: FlowInboxAll };
+  "flow.run.list": {
+    input: Org & { agentId?: string; itemId?: string; limit?: number };
+    output: { runs: FlowRun[] };
+  };
   "flow.board.get": { input: Org & { projectId: string }; output: FlowBoard };
   "flow.timeline.get": { input: Org & { itemId: string }; output: FlowTimeline };
   "flow.inbox.get": { input: Org; output: FlowInbox };
@@ -148,19 +204,25 @@ export function flowKey(project: Pick<FlowProject, "key"> | undefined, number: n
   return project ? `${project.key}-${number}` : `#${number}`;
 }
 
-/** Who the app can name: the signed-in person, and the org's agents. */
+/** Who the app can name: the signed-in person, the org's agents and (once read) its members. */
 export interface Names {
   me: { id: string; name: string };
   agents: Pick<FlowAgent, "id" | "name">[];
+  members?: Pick<FlowMember, "userId" | "name">[];
 }
 
 /**
- * A person's name. The flow operations name no one but by id, and the app knows only who is signed
- * in, so anyone else is "A teammate" (the gap: a `flow.member.list`).
+ * A person's name: the signed-in person's own, else the org's member list's (`flow.member.list`),
+ * else "A teammate" (a server without that operation yet, or someone who has left).
  */
 export function personName(names: Names, userId: string): string {
-  return userId === names.me.id ? names.me.name : "A teammate";
+  if (userId === names.me.id) return names.me.name;
+  return names.members?.find((m) => m.userId === userId)?.name ?? "A teammate";
 }
+
+/** Whether an agent has the Plugin editor: its `mcp` has `factory`. A missing field is off. */
+export const hasPluginEditor = (agent: Pick<FlowAgent, "mcp">) =>
+  agent.mcp?.includes("factory") ?? false;
 
 export function agentName(names: Names, agentId: string): string {
   return names.agents.find((a) => a.id === agentId)?.name ?? "An agent";

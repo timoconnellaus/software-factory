@@ -5,6 +5,7 @@
 // packages/client/test/flow.test.ts and clicked through in screenshots/behave.mjs.
 import type { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import { ANSWERS } from "../screenshots/fixtures.ts";
 import {
   flowItemQuery,
   flowTimelineQuery,
@@ -29,19 +30,35 @@ const loaded = (itemId: string) => async (client: QueryClient) => {
 const count = (html: string, needle: string) => html.split(needle).length - 1;
 
 describe("the shell", () => {
-  it("has the org's sections, its projects, Old factory and Settings, and no status bar", async () => {
+  it("has the org's sections, its projects and Settings, and no status bar", async () => {
     const html = await renderPage(BOARD);
     const text = textOf(html);
     expect(html).toContain('data-testid="flow-shell"');
     expect(html).not.toContain('data-testid="status-bar"');
     expect(text).toContain("Inbox 3 Work Chat Team Auto Plugins Projects");
     expect(text).toContain("API Platform 12 Autopilots launch");
-    expect(text).toContain("Old factory Settings");
+    expect(text).toContain("Settings");
+    expect(text).not.toContain("Old factory");
+  });
+
+  it("counts a project's open items once the server gives them", async () => {
+    const text = textOf(
+      await renderPage(BOARD, {
+        answers: {
+          "flow.project.list": (input) => ({
+            projects: (
+              ANSWERS["flow.project.list"]?.(input as { orgId: string })?.projects ?? []
+            ).map((p) => ({ ...p, openCount: p.id === "fprj_api" ? 7 : 0 })),
+          }),
+        },
+      }),
+    );
+    expect(text).toContain("API Platform 7 Autopilots launch");
   });
 
   it("gives a section still to come one line", async () => {
-    const text = textOf(await renderPage(`/flow/${ORG}/team`));
-    expect(text).toContain("Team Coming next.");
+    const text = textOf(await renderPage(`/flow/${ORG}/chat`));
+    expect(text).toContain("Chat Coming next.");
   });
 });
 

@@ -97,7 +97,10 @@ export type ReadOpName =
   | "flow.board.get"
   | "flow.timeline.get"
   | "flow.inbox.get"
-  | "flow.item.get";
+  | "flow.item.get"
+  | "flow.member.list"
+  | "flow.inbox.all"
+  | "flow.run.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

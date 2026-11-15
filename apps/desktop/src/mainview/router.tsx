@@ -6,17 +6,6 @@ import { createHashHistory, createRouter } from "@tanstack/react-router";
 import { AppError } from "./components/app-error.tsx";
 import { PagePending } from "./components/page-pending.tsx";
 import { appRoute } from "./routes/_app.tsx";
-import { factoryLayout } from "./routes/_factory.tsx";
-import { settingsLayout } from "./routes/_settings.tsx";
-import { workLayout } from "./routes/_work.tsx";
-import { Route as attach } from "./routes/attach.tsx";
-import { Route as factoryAgents } from "./routes/factory.agents.tsx";
-import { Route as factoryIncidents } from "./routes/factory.incidents.tsx";
-import { Route as factoryOverview } from "./routes/factory.index.tsx";
-import { Route as factoryOrg } from "./routes/factory.org.tsx";
-import { Route as factoryPolicy } from "./routes/factory.policy.tsx";
-import { Route as factoryRunners } from "./routes/factory.runners.tsx";
-import { Route as factoryWorkflows } from "./routes/factory.workflows.tsx";
 import { Route as flowAuto } from "./routes/flow.$orgId.auto.tsx";
 import { Route as flowChat } from "./routes/flow.$orgId.chat.tsx";
 import { Route as flowInbox } from "./routes/flow.$orgId.inbox.tsx";
@@ -29,39 +18,13 @@ import { flowOrg, flowOrgIndex } from "./routes/flow.$orgId.tsx";
 import { Route as flowWork } from "./routes/flow.$orgId.work.tsx";
 import { Route as flowOrgs } from "./routes/flow.orgs.tsx";
 import { flowIndex, flowLayout } from "./routes/flow.tsx";
-import { Route as inbox } from "./routes/index.tsx";
-import { Route as newWork } from "./routes/new.tsx";
+import { Route as home } from "./routes/index.tsx";
 import { rootRoute } from "./routes/root.tsx";
-import { Route as settingsConnections } from "./routes/settings.connections.tsx";
-import { Route as settingsDevices } from "./routes/settings.devices.tsx";
-import { Route as settingsRepositories } from "./routes/settings.repositories.tsx";
-import { Route as settings } from "./routes/settings.tsx";
-import { Route as setup } from "./routes/setup.tsx";
-import { Route as workItem } from "./routes/work.$id.index.tsx";
-import { Route as review } from "./routes/work.$id.review.tsx";
-import { Route as workList } from "./routes/work.index.tsx";
 
+// The app is the new core's shell (spec 70), under /flow; `/` goes there.
 export const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
-    inbox,
-    workLayout.addChildren([newWork, attach, workList, workItem, review]),
-    factoryLayout.addChildren([
-      factoryOverview,
-      factoryOrg,
-      factoryRunners,
-      factoryIncidents,
-      factoryPolicy,
-      factoryAgents,
-      factoryWorkflows,
-    ]),
-    settingsLayout.addChildren([
-      setup,
-      settings,
-      settingsRepositories,
-      settingsConnections,
-      settingsDevices,
-    ]),
-    // The new core's shell and screens (spec 70); the routes above are the old factory's.
+    home,
     flowLayout.addChildren([
       flowIndex,
       flowOrgs,
