@@ -1,6 +1,6 @@
 # Spec 70: A new core
 
-Status: **being built.** Milestone 1 is built and was proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
+Status: **being built.** Milestones 1 and 2 are built and were proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
 first. This spec is the plan; each milestone gets its own short spec when it starts.
 
 ## The goal
@@ -174,6 +174,17 @@ moved to Done. The timeline shows each move and the agent's text. No code names 
 
 Known gaps, left on purpose: a claim whose reply is lost isn't retried cleanly; any org member can
 finish a person's status; a run's events aren't stored, so the run view has nothing to show yet.
+
+## Milestone 2, proved (2026-11-15)
+On the deployed engine: an agent "Builder" with the `factory` MCP server, a workflow "Ask, check"
+(Ask owned by Builder, Check by a person), and an item whose body asked, in plain words, for a
+plugin that adds a "Ready to check" card whenever an item enters Check. The M5's runner claimed the
+run; Builder read the plugin guide, wrote the plugin "Welcome card" and saved it through the MCP
+server, 31 seconds after the claim. When its run ended the item moved to Check, the new plugin's
+`entered` hook ran in a Dynamic Worker, and the card appeared on the item's timeline.
+
+Also on that day: the old app's screens were removed from the desktop app at the owner's request,
+ahead of milestone 5. The old core's server code is still in place.
 
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge
