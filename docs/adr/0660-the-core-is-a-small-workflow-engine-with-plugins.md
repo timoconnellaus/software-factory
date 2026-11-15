@@ -45,7 +45,8 @@ model and the layout; grokbot-headless is the reference for plugins on Cloudflar
    by name; no plugin carries its own access to an outside system, so two plugins can share Gmail.
 8. **Plugins are edited through an MCP server**, the plugin editor. An agent can change plugins
    if, and only if, that server is assigned to it. A change is live straight away, everywhere in
-   the org.
+   the org. For now plugins are built in Chat: a person talks to an agent that has the plugin
+   editor, and it sets up the workflow and builds plugins in the same conversation.
 9. **Kept simple on purpose (the owner, 2026-11-15).** There are no limits on what a plugin may
    do, no grants, and no approval of plugin edits: giving an agent the plugin editor means trusting
    it. When a plugin fails, the item stops with an error and can be retried. Approval of edits,
@@ -55,7 +56,7 @@ model and the layout; grokbot-headless is the reference for plugins on Cloudflar
     and the babysitter leave the core, and GitHub becomes a gateway. Each is ported only when
     needed. An org with no software work in it must be fully usable.
 11. **The layout** keeps the app's Slack-style sidebar: an org strip with an All orgs view, then
-    one sidebar that never changes (Inbox, Work, Team, Auto, Plugins, then the projects, with
+    one sidebar that never changes (Inbox, Work, Chat, Team, Auto, Plugins, then the projects, with
     Settings at the bottom). A section's own pages are tabs across the top. A project is a board
     with one column per status. An item opens as a panel on the right and can expand to a page.
 12. **The item's timeline is made of rich cards.** It shows status changes and handoffs as
