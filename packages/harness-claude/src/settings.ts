@@ -138,6 +138,11 @@ export interface SettingsOptions {
   /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
   denyReadFiles?: string[];
   /**
+   * A flow job's MCP servers by name (spec 70 milestone 2): each gets `mcp__<name>__*` allowed, and
+   * nothing broader. Ignored for every other stage.
+   */
+  mcpServers?: readonly string[];
+  /**
    * Where the run is confined (ADR 0430): `sandbox` (default) is Claude Code's OS sandbox on the
    * host (ADR 0270); `container` is a container per job, which is the floor instead. Claude's own
    * sandbox is off there, and every stage defaults to `bypassPermissions`.
@@ -528,6 +533,9 @@ export function runSettings(job: Pick<Job, "stage">, options: SettingsOptions): 
   const allow = [...stageAllow(job.stage, options.worktree, domains)];
   for (const rule of profile?.allow?.[job.stage] ?? []) if (!allow.includes(rule)) allow.push(rule);
   if (options.attachmentsDir) allow.push(`Read(${abs(options.attachmentsDir)}/**)`);
+  if (job.stage === "flow") {
+    for (const name of options.mcpServers ?? []) allow.push(`mcp__${name}__*`);
+  }
   const deny = [
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
