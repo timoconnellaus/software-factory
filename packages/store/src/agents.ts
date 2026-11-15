@@ -1,5 +1,6 @@
 // An org's agents: a name, instructions, and the MCP servers its runs get. A status's owner names
 // one by id.
+import { readBatch } from "@software-factory/db";
 import { flowDb, iso, newId, StoreError } from "./db.ts";
 import type { FlowAgentsTable } from "./schema.ts";
 
@@ -80,12 +81,57 @@ export async function getAgent(d1: D1Database, id: string): Promise<Agent | null
   return row ? toAgent(row) : null;
 }
 
-export async function listAgents(d1: D1Database, orgId: string): Promise<Agent[]> {
-  const rows = await flowDb(d1)
-    .selectFrom("flow_agents")
-    .selectAll()
-    .where("org_id", "=", orgId)
-    .orderBy("name")
-    .execute();
-  return rows.map(toAgent);
+/** The item an agent's open run is on. */
+export interface WorkingOn {
+  itemId: string;
+  itemTitle: string;
+  itemNumber: number;
+  projectKey: string;
+}
+
+/** The most open runs `listAgents` reads for the org's `workingOn`. */
+const OPEN_RUNS_LIMIT = 500;
+
+/**
+ * The org's agents by name, each with `workingOn`: the item of its claimed run, else of its oldest
+ * queued one, else null. The open runs are one read for the org: the items waiting on a run
+ * (flow_items_inbox_idx), each one's run for its stay (flow_runs_item_idx) and project (by key).
+ */
+export async function listAgents(
+  d1: D1Database,
+  orgId: string,
+): Promise<(Agent & { workingOn: WorkingOn | null })[]> {
+  const db = flowDb(d1);
+  const [rows, open] = await readBatch(d1, [
+    db.selectFrom("flow_agents").selectAll().where("org_id", "=", orgId).orderBy("name"),
+    db
+      .selectFrom("flow_items as i")
+      .innerJoin("flow_projects as p", "p.id", "i.project_id")
+      .innerJoin("flow_runs as r", (join) =>
+        join.onRef("r.item_id", "=", "i.id").onRef("r.stay", "=", "i.stay"),
+      )
+      .select(["r.agent_id", "r.status", "r.created_at", "i.id", "i.title", "i.number", "p.key"])
+      .where("i.org_id", "=", orgId)
+      .where("i.waiting_on", "=", "run")
+      .where("r.status", "in", ["queued", "claimed"])
+      .limit(OPEN_RUNS_LIMIT),
+  ] as const);
+  type Open = (typeof open)[number];
+  // A claimed run before a queued one, then the older first.
+  const first = (a: Open, b: Open) =>
+    a.status !== b.status ? a.status === "claimed" : a.created_at < b.created_at;
+  const working = new Map<string, Open>();
+  for (const run of open) {
+    const seen = working.get(run.agent_id);
+    if (!seen || first(run, seen)) working.set(run.agent_id, run);
+  }
+  return rows.map((row) => {
+    const run = working.get(row.id);
+    return {
+      ...toAgent(row),
+      workingOn: run
+        ? { itemId: run.id, itemTitle: run.title, itemNumber: run.number, projectKey: run.key }
+        : null,
+    };
+  });
 }

@@ -15,9 +15,11 @@ export {
   type Caller,
   type Ctx,
   defineOperation,
+  defineSelfOperation,
   type ErrorCode,
   OpError,
   type Operation,
   type Person,
+  type SelfCtx,
 } from "./operation.ts";
 export { triggerPath } from "./plugins.ts";

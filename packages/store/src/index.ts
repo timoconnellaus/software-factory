@@ -7,6 +7,7 @@ export {
   listAgents,
   parseMcp,
   updateAgent,
+  type WorkingOn,
 } from "./agents.ts";
 export { StoreError } from "./db.ts";
 export { addCard, FIELD_ID, setField, stopItem } from "./entries.ts";
@@ -24,18 +25,15 @@ export {
   appendEntry,
   applyEvent,
   applyEventStep,
-  BOARD_LIMIT,
-  board,
   createItem,
   getItem,
-  INBOX_LIMIT,
   type Item,
-  inbox,
   recentComments,
   TIMELINE_LIMIT,
   type TimelineEntry,
   timeline,
 } from "./items.ts";
+export { listMembers, MEMBER_LIMIT, type Member } from "./members.ts";
 export {
   declaredFields,
   deletePlugin,
@@ -66,7 +64,6 @@ export {
   failRun,
   finishRun,
   getRun,
-  itemRuns,
   type Run,
   type RunEnding,
   type RunResult,
@@ -76,6 +73,22 @@ export {
 } from "./runs.ts";
 export type * from "./schema.ts";
 export { type LoadedItem, loadItem, type Stepped } from "./step.ts";
+export {
+  AGENT_RUNS_LIMIT,
+  agentRuns,
+  BOARD_LIMIT,
+  board,
+  getListedRun,
+  INBOX_ALL_LIMIT,
+  INBOX_ALL_ORGS,
+  INBOX_LIMIT,
+  inbox,
+  inboxAll,
+  itemRuns,
+  type ListedItem,
+  type ListedRun,
+  type OrgInbox,
+} from "./views.ts";
 export {
   createWorkflow,
   getWorkflow,

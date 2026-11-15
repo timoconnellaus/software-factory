@@ -50,6 +50,21 @@ No approvals, roles, rate limits or audit: spec 70 keeps these out until the own
 - A new error code, `unavailable` (503 at the door): a gateway secret with no `FLOW_GATEWAY_KEY`,
   or plugins with no Worker Loader.
 
+## The desktop app's reads
+| Area | Operations |
+| --- | --- |
+| People | `flow.member.list { orgId }` → `{ members: [{ userId, name, login }] }` (at most 200) |
+| Inbox | `flow.inbox.all {}` → `{ orgs: [{ orgId, name, work, decisions, working }] }`: every org the caller is a member of (at most 10), 50 items per list |
+| Runs | `flow.run.list` takes `{ itemId }` or `{ agentId, limit? }` (newest first, default 20, at most 50); `flow.run.get { runId }` → `{ run }` |
+
+- Items in `flow.board.get`, `flow.inbox.get` and `flow.inbox.all` carry `projectId`,
+  `projectName`, `projectKey` and `statusName`; runs carry `itemTitle`, `itemNumber` and
+  `projectKey`. `flow.project.list` adds `openCount`; `flow.agent.list` adds `workingOn`.
+- An operation's `scope` is `org` (the default, `defineOperation`: the input names `orgId`, checked
+  by scope.ts) or `self` (`defineSelfOperation`: no `orgId`; the caller must be a person, and the
+  handler reads only the orgs they are a member of). `flow.inbox.all` is the one `self` operation.
+  scope.ts also checks a `runId` is in the org.
+
 ## Where it is called
 `apps/engine` sends every `flow.` call on the client door (`/client/v1/call`, `/cli/v1/call`,
 and read calls in `batch`) here, as the person behind the bearer token, in the door's usual

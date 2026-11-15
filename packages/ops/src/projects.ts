@@ -55,7 +55,8 @@ export const projectOps = [
   }),
   defineOperation({
     name: "flow.project.list",
-    description: "The org's projects, by name.",
+    description:
+      "The org's projects, by name, each with `openCount`: its items waiting on something (an agent, a person or a decision) or stopped with an error.",
     risk: "read",
     input: z.object({ orgId }),
     handler: async (_input, ctx) => ({ projects: await listProjects(ctx.d1, ctx.orgId) }),
@@ -102,7 +103,8 @@ export const agentOps = [
   }),
   defineOperation({
     name: "flow.agent.list",
-    description: "The org's agents, by name.",
+    description:
+      "The org's agents, by name, each with `workingOn`: { itemId, itemTitle, itemNumber, projectKey } of its claimed run (else its oldest queued one), or null.",
     risk: "read",
     input: z.object({ orgId }),
     handler: async (_input, ctx) => ({ agents: await listAgents(ctx.d1, ctx.orgId) }),

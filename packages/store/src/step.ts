@@ -151,8 +151,8 @@ export function stepStatements(
 export interface StepExtras {
   /** Statements that go first (a guarded update of the run that ended, say). */
   before?: D1PreparedStatement[];
-  /** A comment appended after the event and its effects. */
-  comment?: { actor: Actor; text: string };
+  /** A comment appended after the event and its effects (an agent's summary carries its run). */
+  comment?: { actor: Actor; text: string; runId?: string };
 }
 
 /** An item as a step reads it: its row, its workflow, and its timeline's last seq. */
@@ -239,7 +239,10 @@ export async function advance(
         seq: seq + 1 + step.effects.length,
         kind: "comment",
         actor: extras.comment.actor,
-        data: { text: extras.comment.text },
+        data: {
+          text: extras.comment.text,
+          ...(extras.comment.runId ? { runId: extras.comment.runId } : {}),
+        },
         created_at: now,
       }),
     );

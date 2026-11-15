@@ -17,6 +17,7 @@ import { createDb } from "@software-factory/db";
 import { call as callFlow } from "@software-factory/ops";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import {
+  agentRuns,
   board,
   claimRun,
   createAgent,
@@ -28,8 +29,14 @@ import {
   expireRuns,
   finishRun,
   gatewayForHost,
+  getListedRun,
   getPluginById,
   inbox,
+  inboxAll,
+  itemRuns,
+  listAgents,
+  listMembers,
+  listProjects,
   loadItem,
   recentComments,
   renewLease,
@@ -250,6 +257,31 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       await declaredFields(e.DB, orgId);
       await inbox(e.DB, orgId, "u_qp");
       await timeline(e.DB, item.id);
+      // Polled too: the inbox across a person's orgs (their memberships, then each list's arm per
+      // org on flow_items_inbox_idx), and the project list's open counts (flow_items_open_idx).
+      // u_qp_member is a member of this org, so every arm runs.
+      const stamp = new Date().toISOString();
+      await e.DB.batch([
+        e.DB.prepare(
+          "INSERT OR IGNORE INTO core_user (id, name, email, created_at, updated_at) VALUES ('u_qp_member', 'M', 'u_qp_member@example.com', ?, ?)",
+        ).bind(stamp, stamp),
+        e.DB.prepare(
+          "INSERT INTO core_organization (id, name, slug, kind, created_at) VALUES (?, 'QP', ?, 'team', ?)",
+        ).bind(orgId, orgId, stamp),
+        e.DB.prepare(
+          "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES (?, ?, 'u_qp_member', 'member', ?)",
+        ).bind(`mem_${crypto.randomUUID()}`, orgId, stamp),
+      ]);
+      await inboxAll(e.DB, "u_qp_member");
+      await listProjects(e.DB, orgId);
+      // On demand, not polled, but checked all the same: members, agents with what each works on
+      // (items waiting on a run, then each one's run by flow_runs_item_idx), an agent's runs
+      // (flow_runs_agent_idx), an item's runs and one run.
+      await listMembers(e.DB, orgId);
+      await listAgents(e.DB, orgId);
+      await agentRuns(e.DB, orgId, agent.id, 20);
+      await itemRuns(e.DB, item.id);
+      await getListedRun(e.DB, run.id);
       // The door's org check for a flow.* call (packages/ops scope.ts), with each kind of id named.
       // u_qp is no member, so each is refused after the one check query, which is what is planned.
       const as = { d1: e.DB, actor: { kind: "person" as const, id: "u_qp" } };

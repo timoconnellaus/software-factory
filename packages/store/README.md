@@ -40,6 +40,20 @@ kernel's effects. It never imports `@software-factory/core`.
   ended with `stopWith` is recorded done but stops the item. `claimRun` carries the agent's
   `mcp`; `setMcpTokenHash` and `runForToken` back the MCP server's per-run token.
 
+## The desktop app's reads (migration 0432)
+- `views.ts` holds the lists (`board`, `inbox` and `itemRuns` moved here from `items.ts` and
+  `runs.ts`). Lists carry names: `board` and `inbox` items are `ListedItem`s (`projectName`, `projectKey`,
+  `statusName`, the status's name picked from the workflow's JSON in SQL). `inboxAll(userId)`:
+  per org the person is a member of (at most 10), `work`, `decisions` and `working` (waiting on a
+  run), at most 50 each; two D1 requests (the orgs, then a batch of three statements, an arm per
+  org).
+- `listProjects` adds `openCount` (items waiting on something, or stopped with an error; the
+  partial `flow_items_open_idx`). `listAgents` adds `workingOn` (the item of its claimed run, else
+  its oldest queued one). `listMembers` reads `core_member` and `core_user` (at most 200).
+- `runs.ts`: `itemRuns`, `agentRuns` (newest first, at most 50; `flow_runs_agent_idx`) and
+  `getListedRun` return `ListedRun`s (`itemTitle`, `itemNumber`, `projectKey`). A run's
+  `run.ended` / `run.failed` event and its summary comment carry `runId`.
+
 ## Retention
 Items, their timeline (`flow_events`) and their runs are kept as the item's record. Nothing prunes
 them yet; workflows, projects and agents are a handful per org. Plugins and gateways are a handful
