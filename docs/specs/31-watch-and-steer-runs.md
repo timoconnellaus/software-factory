@@ -6,7 +6,7 @@ ADRs [0400](../adr/0400-watch-and-steer-runs-from-the-dashboard.md), [0380](../a
 `planning.wait`, the PlanningHub), [0023](../adr/0023-runners-owned-by-users-and-requester-routing.md)
 and [0038](../adr/0038-runner-sharing-is-an-owner-allowlist.md); spec [30](30-runner-local-without-orca.md);
 `packages/runner-local`, `local/runner-host`, `apps/engine/src/channel.ts`, and the work item page
-(`apps/app/src/routes/_app/work.$id.index.tsx`). Mockup: [`.kim/mockups/live-run.html`](../../.kim/mockups/live-run.html).
+(`apps/app/src/routes/_app/work.$id.index.tsx`). Mockup: `.kim/mockups/live-run.html`.
 
 This is piece 2 of 8 in the plan. Accounts on a host (3), containers (4), Linux (5), the web
 terminal (6), Sprites (7) and the chat UI (8) get their own specs.

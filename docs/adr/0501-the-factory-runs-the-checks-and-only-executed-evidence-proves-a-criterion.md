@@ -351,7 +351,7 @@ repo's workflows run, and the criteria were "met" because the reviewer said so.
 > no declared checks and no CI check its config requires reported on the SHA, nothing could prove a
 > criterion, so the gate and `factory/verify` no longer say "0/N criteria proven": they say "No
 > checks are set up for this project, so nothing can be proven" and link to
-> [`docs/checks.md`](../checks.md) (there is no screen to declare checks yet). The packet records
+> `docs/checks.md` (there is no screen to declare checks yet). The packet records
 > it as `proven.checksSetUp`. When checks exist, the count stays and each criterion not proven says
 > why ("no check is named for this", a named check that didn't pass, a static check, or only the
 > reviewer's link).

@@ -1,7 +1,7 @@
 # Spec 13 (R1): Work item detail
 
-Read first: [`docs/ui-plan.md`](../ui-plan.md), mockup
-[`work-item.html`](../../.kim/mockups/work-item.html), ADRs
+Read first: `docs/ui-plan.md`, mockup
+`work-item.html`, ADRs
 [0006](../adr/0006-work-item-workflows.md), [0011](../adr/0011-audit-journal-is-the-metrics.md),
 [0042](../adr/0042-one-question-object.md); specs [02](02-work-item-workflow.md),
 [10](10-r1-sign-in-and-org-switcher.md).

@@ -1,7 +1,7 @@
 # Spec 14 (R1): Review packet
 
-Read first: [`docs/ui-plan.md`](../ui-plan.md), mockup
-[`review-packet.html`](../../.kim/mockups/review-packet.html), ADRs
+Read first: `docs/ui-plan.md`, mockup
+`review-packet.html`, ADRs
 [0020](../adr/0020-verification-and-review-packet.md),
 [0008](../adr/0008-autonomy-presets-and-floor.md), [0034](../adr/0034-holdout-acceptance-tests.md),
 [0039](../adr/0039-per-project-evidence-policy.md),

@@ -1,7 +1,7 @@
 # Spec 12 (R1): Inbox
 
-Read first: [`docs/ui-plan.md`](../ui-plan.md), mockup
-[`home-inbox.html`](../../.kim/mockups/home-inbox.html), ADRs
+Read first: `docs/ui-plan.md`, mockup
+`home-inbox.html`, ADRs
 [0007](../adr/0007-human-gates-are-pending-actions.md),
 [0031](../adr/0031-dashboard-stack-and-inbox-first.md),
 [0040](../adr/0040-web-push-and-wip-backpressure.md), [0042](../adr/0042-one-question-object.md);

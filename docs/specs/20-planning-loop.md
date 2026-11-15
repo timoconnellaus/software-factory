@@ -6,9 +6,9 @@ Read first:
   [0302](../adr/0302-spec-provenance-coverage-and-critic.md), [0042](../adr/0042-one-question-object.md),
   [0100](../adr/0100-runner-contract.md), [0250](../adr/0250-runner-host-pushes-and-harness-projection.md);
 - the plan [`.kim/plans/2026-11-11-factory-planning.md`](../../.kim/plans/2026-11-11-factory-planning.md);
-- mockups [`planning-three-pane.html`](../../.kim/mockups/planning-three-pane.html),
-  [`planning-full-screen.html`](../../.kim/mockups/planning-full-screen.html) and
-  [`planning-session-states.html`](../../.kim/mockups/planning-session-states.html);
+- mockups `planning-three-pane.html`,
+  `planning-full-screen.html` and
+  `planning-session-states.html`;
 - kim's hooks as the reference: `src/hook.ts` and `src/hooks.ts` in the
   [keep-it-moving](https://github.com/timoconnellaus/keep-it-moving) repo.
 

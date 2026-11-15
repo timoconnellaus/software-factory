@@ -1,9 +1,9 @@
 # Deploying
 
-The factory deploys from source with wrangler. CI runs on every PR and push to `main`; when it
-passes on `main`, the Deploy workflow ships `main` to one Cloudflare account. Nothing in the repo
-names an account or resource ID: the account comes from a repo variable, resources are found or
-created by name.
+The engine and the website deploy from source with wrangler. CI runs on every PR and push to
+`main`; when it passes on `main`, the Deploy workflow ships `main` to one Cloudflare account.
+Nothing in the repo names an account or resource ID: the account comes from a repo secret, and
+resources are found or created by name.
 
 ## What deploys
 
@@ -12,14 +12,15 @@ Today that is:
 
 | Worker | Folder | Public | Notes |
 | --- | --- | --- | --- |
-| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel, client door, `/health`) | Every operation (RPC for `sf-app`), the runner channel, the client door, the GitHub webhook, the new core's MCP server and plugin triggers, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The Durable Object `ClientHub`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). The Worker Loader binding `LOADER` (plugins as Dynamic Workers; Workers Paid plan; see "The new core's plugins" below). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `GH_APP_WEBHOOK_SECRET`, `FLOW_GATEWAY_KEY` |
+| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel, client door, `/health`) | Every operation (RPC for `sf-app`), the runner channel, the client door, the GitHub webhook, the `factory` MCP server and plugin triggers, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The Durable Object `ClientHub`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). The Worker Loader binding `LOADER` (plugins as Dynamic Workers; Workers Paid plan; see "Plugins and gateways" below). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `GH_APP_WEBHOOK_SECRET`, `FLOW_GATEWAY_KEY` |
 | `sf-app` | `apps/app` | `software-factory.zerobsai.com` | GitHub sign-in, the device connect pages and the GitHub App's setup redirect (TanStack Start, built with `vite build` before `wrangler deploy`). D1 `software-factory` (Better Auth tables), service binding `ENGINE` → `sf-engine#EngineApi`. Secrets `BETTER_AUTH_SECRET`, `GH_APP_CLIENT_SECRET`; var `ALLOWED_GITHUB_LOGINS` |
 
-A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
+A new Worker (a gateway, say) is picked up automatically: add its `wrangler.jsonc` and it
 deploys. Workers deploy in dependency order: a Worker that another binds to with a service
 binding deploys first. `node scripts/deploy/deploy.ts list` prints the order.
 
-The resources the Workers bind to are created by name when missing (`scripts/deploy/provision.ts`):
+The resources the Workers bind to are created by name when missing (`scripts/deploy/provision.ts`).
+Today the only one is the D1 database; no Worker binds R2, a queue or KV:
 
 | Resource | How it gets created |
 | --- | --- |
@@ -35,18 +36,22 @@ are applied once, from the first Worker (in deploy order) that sets `migrations_
 ## The pipeline
 
 - **`.github/workflows/ci.yml`**, job `ci`: `pnpm install` (cached), `pnpm lint`,
-  `pnpm typecheck`, `pnpm test`, the deploy scripts' own tests, and `pnpm build` (a
+  `pnpm typecheck`, `pnpm test`, the repo guards and deploy scripts' tests
+  (`node --test "scripts/*/*.test.ts"`), and `pnpm build` (a
   `wrangler deploy --dry-run` of every Worker). Turborepo's cache is kept between runs. `ci` is a
   required status check on `main`.
 - **`.github/workflows/deploy.yml`** runs when CI passes on a push to `main`, or by hand
   (Actions → Deploy → Run workflow, or `gh workflow run deploy.yml`). In the GitHub environment
   `production` it runs, in order:
-  1. `node scripts/deploy/provision.ts`: create missing D1 databases, R2 buckets and queues;
-  2. `node scripts/deploy/deploy.ts migrate`: `wrangler d1 migrations apply <db> --remote`;
-  3. `node scripts/deploy/deploy.ts workers`: `wrangler deploy` for each Worker. A Worker that
-     declares `DEPLOYED_SHA` in its vars gets `--var DEPLOYED_SHA:<the deployed commit>`, and one
-     that declares `RUNNER_SHA` gets `--var RUNNER_SHA:<the last commit that changed runner code>`
-     (below). Only `sf-engine` declares them.
+  1. `node scripts/deploy/desktop-floor.ts`: refuse a `DESKTOP_MIN_PROTOCOL` no published desktop
+     build speaks;
+  2. `node scripts/deploy/provision.ts`: create missing D1 databases, R2 buckets and queues;
+  3. `node scripts/deploy/deploy.ts migrate`: `wrangler d1 migrations apply <db> --remote`;
+  4. `pnpm build`, then `node scripts/deploy/deploy.ts workers`: `wrangler deploy` for each Worker.
+     A Worker that declares `DEPLOYED_SHA` in its vars gets `--var DEPLOYED_SHA:<the deployed
+     commit>`, and one that declares `RUNNER_SHA` gets `--var RUNNER_SHA:<the last commit that
+     changed runner code>` (below). Only `sf-engine` declares them;
+  5. sync each Worker's secrets from the repo secrets with `wrangler secret bulk` (below).
 
   It deploys the commit CI passed on, checked out with full history (`fetch-depth: 0`). Deploys never overlap and are never cancelled half way. If
   the API token is not set, the deploy job is skipped with a notice and nothing fails.
@@ -101,13 +106,13 @@ scoped to the one account, with:
 
 | Scope | Permission | Why |
 | --- | --- | --- |
-| Account | Workers Scripts: Edit | Deploy Workers, Workflows, Durable Objects, cron triggers |
+| Account | Workers Scripts: Edit | Deploy Workers, the Durable Object, cron triggers, secrets |
 | Account | D1: Edit | Create databases, apply migrations |
-| Account | Workers KV Storage: Edit | Provision KV namespaces |
-| Account | Workers R2 Storage: Edit | Create R2 buckets |
-| Account | Queues: Edit | Create queues |
 | Account | Account Settings: Read | wrangler reads account details |
-| Zone | Workers Routes: Edit | Only once a Worker uses `routes` or a custom domain (none do yet) |
+| Zone | Workers Routes: Edit | The custom domains and `sf-engine`'s route for `/webhooks/*` on the website's host |
+
+Add Workers KV Storage, Workers R2 Storage or Queues (Edit) only when a Worker binds one; none does
+now.
 
 Add it as a repo secret (it prompts for the value, so it stays out of shell history):
 
@@ -119,72 +124,43 @@ Then run the first deploy: `gh workflow run deploy.yml`, or push to `main`. The 
 `production` exists already; add protection rules to it (a required reviewer, say) in Settings →
 Environments if you want a human to approve each deploy.
 
+### Secrets
+The deploy job copies these repo secrets into the Workers with `wrangler secret bulk`. Unset ones
+are skipped, and the Worker degrades instead of failing to deploy.
+
+| Worker | Secret | What |
+| --- | --- | --- |
+| `sf-engine` | `RUNNER_CHANNEL_SECRET` | The runner channel's master secret. Unset: the channel answers 503. |
+| | `GH_APP_PRIVATE_KEY` | The GitHub App's key: installations, a run's push token, the `github` gateway. Unset: GitHub calls are refused as `unavailable`. |
+| | `GH_APP_WEBHOOK_SECRET` | Checks the App's webhook. Unset: the webhook answers 503. |
+| | `FLOW_GATEWAY_KEY` | Seals gateway secrets (below). |
+| `sf-app` | `BETTER_AUTH_SECRET` | Better Auth's session secret. |
+| | `GH_APP_CLIENT_SECRET` | GitHub sign-in. |
+
+Vars are in each `wrangler.jsonc`: `sf-engine`'s `GH_APP_ID`, `GH_APP_SLUG`, `PUBLIC_BASE_URL`,
+`DESKTOP_MIN_PROTOCOL` and the phone sign-in's; `sf-app`'s `GH_APP_CLIENT_ID`,
+`BETTER_AUTH_URL` and `ALLOWED_GITHUB_LOGINS` (who may sign in; empty lets nobody in).
+
 ### Protecting `main`
-
-The factory never changes protection: its App has `administration: read` only (ADR 0280). Setup's
-**Protect `main`** step offers the generated ruleset (`<repo>-default-branch.json`: a PR, `ci` and
-`factory/verify` pinned to the App and up to date, no force pushes, no deletion, no bypass), a link
-to `https://github.com/<owner>/<repo>/settings/rules`, and **Check now**. On GitHub: **New ruleset →
-Import a ruleset → choose the file → Create**. If the repo has no ruleset confining the App to
-`factory/*` (ADR 0052), Setup offers `<repo>-factory-branches.json` too; import it the same way.
-
-If the import page refuses a file, a repo admin can apply the same JSON with
-`gh api -X POST repos/{owner}/{repo}/rulesets --input <file>`.
-
-#### software-factory itself (as of 2026-11-11)
-
-What GitHub reports today (read with the owner's `gh`, nothing changed):
-- **Classic branch protection** on `main`: requires `ci` (pinned to GitHub Actions, 15368), not
-  strict, `enforce_admins` on, no PR required, force pushes and deletion blocked.
-- **Ruleset** `factory: confine App pushes to factory/*` (id 27006249): active, `~ALL` minus
-  `refs/heads/factory/**` and `~DEFAULT_BRANCH`, creation/update/deletion, admins bypass. This is
-  exactly `<repo>-factory-branches.json`, so Setup won't offer that file.
-- No ruleset applies to `main` (`GET /rules/branches/main` is empty), and `factory/verify` isn't
-  required anywhere.
-
-So Setup's Protect `main` step is red with: a pull request isn't required, `factory/verify` not
-required, `ci` not required, force pushes are allowed, the branch can be deleted (the classic rule
-blocks the last two, but the factory checks rulesets only; a warning says so).
-
-**When to switch:** once the factory opens its own PRs for software-factory (V1 step 5: the project
-has its policy and a runner is online) and the PRs built by hand-run sessions are merged. With no
-bypass, a PR that `factory/verify` hasn't passed can't merge, and `factory/verify` fails every PR
-the factory didn't open, so switching earlier blocks those sessions (#20, #22 and #24 merged with it
-red as bootstrap exceptions).
-
-**What to click, then:**
-1. In the GitHub App's settings (GitHub → Settings → Developer settings → GitHub Apps →
-   software-factory-zerobsai → **Permissions & events**), under **Subscribe to events**, tick
-   **Repository ruleset** and **Branch protection rule**. Leave **Administration** at **Read-only**.
-   Setup lists these two events until they're ticked.
-2. In Setup → **Protect `main`** → **Download ruleset** (`software-factory-default-branch.json`).
-3. **Open GitHub rulesets** → **New ruleset → Import a ruleset** → choose the file. Check what GitHub
-   shows: Enforcement **Active**, Bypass list **empty**, Target **Default branch**; rules **Restrict
-   deletions**, **Block force pushes**, **Require a pull request before merging** (0 approvals),
-   **Require status checks to pass** with **Require branches to be up to date** on and the checks
-   `ci` and `factory/verify` (source: the software-factory-zerobsai App). → **Create**.
-4. Back in Setup → **Check now** → ✓.
-5. Delete the classic rule: Settings → Branches → the `main` rule → **Delete**. The ruleset covers all
-   of it. Check now again: the classic-protection warning goes away.
-
-To protect `main` before the factory opens PRs, do steps 1–3 but remove `factory/verify` from the
-status checks before **Create**. Setup then stays red with "`factory/verify` not required", which is
-true. When it's time, edit the ruleset (Settings → Rules → Rulesets → `factory: protect the default
-branch` → Require status checks → **Add checks** → `factory/verify`, source the App) and Check now.
+`main` has classic branch protection: the `ci` check is required, force pushes and deletion are
+blocked, and admins are not exempt. The ruleset `factory: confine App pushes to factory/*` keeps the
+GitHub App's pushes to `factory/**` branches, which is where the item's branch
+(`factory/flow-<key>-<number>`) lives. GitHub's `factory/**` matches one path level only, so an
+item's branch name must not contain another `/`. The old generated ruleset `factory: protect the
+default branch` is disabled; nothing requires `factory/verify` any more.
 
 ### The GitHub App
-
 **Setup URL** `https://software-factory.zerobsai.com/integrations/github/setup`, with **Redirect on
 update** on (ADR 0055): GitHub sends people there after they install the App or change its
-repositories, and Setup's **Connect GitHub** depends on it. "Request user authorization (OAuth)
-during installation" stays off (sign-in already authorizes).
+repositories. A project's Settings tab in the desktop app starts the connection
+(`github.connectStart`). "Request user authorization (OAuth) during installation" stays off
+(sign-in already authorizes).
 
 Webhook URL `https://software-factory.zerobsai.com/webhooks/github` (a Workers route on sf-engine in
-front of sf-app's domain; the deploy token needs Zone → Workers Routes: Edit), secret
-`GH_APP_WEBHOOK_SECRET` (synced to sf-engine). Permissions: contents and pull requests (write),
-checks (write), administration (**read only**: write would let the App delete repositories, ADR
-0280), metadata (read). Events: the engine reads installation and installation repositories
-(`apps/engine/src/webhooks.ts`); it acknowledges and ignores every other event.
+front of sf-app's domain), secret `GH_APP_WEBHOOK_SECRET`. The tokens the engine mints ask for
+contents and pull requests (write), checks (read) and metadata (read), so the App needs at least
+those. Events: the engine reads installation and installation repositories
+(`apps/engine/src/webhooks.ts`) and acknowledges and ignores every other event.
 
 ## The desktop app's releases
 `.github/workflows/desktop-release.yml` (spec 40 M4) builds, signs, notarizes and uploads the macOS
@@ -253,7 +229,7 @@ First install: download `https://downloads.zerobsai.com/desktop/canary-macos-arm
 unzip and move it to `/Applications`. After that the app updates itself; the app refuses an update
 that isn't a higher version, isn't signed with its own Team ID, or that Gatekeeper rejects.
 
-## The new core's plugins (spec 70 milestone 2)
+## Plugins and gateways
 
 - **Worker Loader.** `apps/engine/wrangler.jsonc` binds `worker_loaders: [{ binding: "LOADER" }]`.
   Each plugin runs as a Dynamic Worker loaded through it (`packages/plugins`), with
@@ -271,8 +247,6 @@ that isn't a higher version, isn't signed with its own Team ID, or that Gatekeep
   bearer token issued per claimed flow run) and `POST /flow/triggers/<pluginId>/<name>?key=…`
   (a plugin's trigger; the key is the check). No route or DNS change: the engine's custom domain
   already serves every path.
-- Migration `0431_flow_plugins.sql` rebuilds `flow_events` (to allow `card` entries); it is small
-  today, but the rebuild copies every row once.
 
 ## Deploying by hand
 
@@ -290,7 +264,3 @@ node scripts/deploy/deploy.ts                # provision + migrate + deploy ever
 - **Preview deploys per PR.** `wrangler versions upload --preview-alias pr-<n>` would give each
   PR a URL, but a preview version uses the production bindings, so it would read and write the
   production D1. It waits for separate preview resources.
-- **Secrets on the Workers** are synced by the deploy job from repo secrets with
-  `wrangler secret bulk`: `sf-app` gets `BETTER_AUTH_SECRET` and `GH_APP_CLIENT_SECRET`; `sf-engine` gets
-  `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `GH_APP_WEBHOOK_SECRET` and `FLOW_GATEWAY_KEY`. Unset ones are skipped, and the engine degrades
-  (the runner channel answers 503) instead of failing to deploy.

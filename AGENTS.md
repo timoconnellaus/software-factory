@@ -1,97 +1,125 @@
 # AGENTS.md
 
-A software factory: work comes in from anywhere, agents take it through triage, spec, build and
-verify, and people step in only at gates. Cloud control plane on Cloudflare, pluggable runners.
-Start with [`docs/architecture.md`](docs/architecture.md) and the product plan
-([`.kim/plans/2026-11-10-personal-software-factory-design.md`](.kim/plans/2026-11-10-personal-software-factory-design.md)),
-use the vocabulary in [`CONTEXT.md`](CONTEXT.md), and respect the decisions in [`docs/adr/`](docs/adr/).
-Fresh session? Read [`docs/handoff.md`](docs/handoff.md), then [`docs/parallel-work.md`](docs/parallel-work.md).
+A small workflow app: an org defines workflows as lists of statuses, each owned by an agent, a
+person or nobody, and items move through them on a board. Agents run on the owner's own machines
+(runners) and plugins, built by an agent from plain words, add what the base can't do. The cloud
+half runs on Cloudflare; the daily app is a macOS desktop app.
 
-## Working in a stage
+## Start here
+- [`docs/architecture.md`](docs/architecture.md): the parts and how a request flows.
+- [`CONTEXT.md`](CONTEXT.md): the words. Use them.
+- [ADR 0660](docs/adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md) and
+  [spec 70](docs/specs/70-a-new-core.md): why the core is what it is, and what was built.
+- [`docs/design/base-and-plugins.md`](docs/design/base-and-plugins.md): the base, plugins and
+  gateways in plain words.
+- [`docs/handoff.md`](docs/handoff.md): where things stand and what is next.
 
-- You will be pointed at a spec in `docs/specs/`. Build what it says. Its acceptance criteria
-  are the definition of done.
-- If the spec turns out to be wrong or ambiguous, don't silently diverge. Stop and ask, or record the
-  deviation and why in the PR description.
-- A new significant decision gets an ADR (`docs/adr/NNNN-title.md`, from the block you claimed in
-  `docs/parallel-work.md`). If a decision changes, amend the old ADR with a dated note. Never delete one.
-- Keep `docs/architecture.md` and `CONTEXT.md` true when you change what they describe.
+ADRs before 0660 and specs before 70 describe the old software factory, deleted on 2026-11-15.
+They are history, not a description of the code.
 
-## Rules that hold everywhere
+## Working rules
 
-- **Operations first.** Every factory verb (`workItem.create`, `spec.approve`, `run.start`,
-  `pr.merge`) is an operation in the registry (`packages/core`) with zod schemas, a model-facing
-  description, a permission and a risk class. The dashboard, MCP and the runner channel call
-  operations. Nothing writes to D1 directly. (ADR 0003, 0004)
-- **No ambient authority.** Agents and runners never hold standing tokens. Outside access goes
-  through connectors; repo access goes through the org's GitHub App, as a per-job token scoped to
-  one repo. The harness runs without its owner's git or cloud credentials. A run gets only what its
-  work item allows. (ADR 0010, 0025, 0033)
-- **Policy is enforced in code and is not AI-configurable.** Gates live in the Workflow state
-  machine, never in a prompt. The foreman picks a route only within them. Loosening an autonomy policy
-  or the floor is a human-only change, and self-modify always goes to a human. Merge and deploy go to
-  a human unless the workflow's `autoApprove` setting ("dark factory mode"), which only a person can
-  turn on, holds for that exact SHA, every condition checked in code (amended 2026-11-12, ADR 0515).
-  Config is a versioned app setting, written only through operations; a save that loosens it is
-  self-modify, and an invalid one is refused. The factory may change its own *practice* (how work
-  is done) as trials that roll back automatically, never *policy* (what's allowed).
-  (ADR 0005, 0008, 0370, 0373, 0515)
-- **Code asks for a model role, never a model id.** (ADR 0018)
-- **Runners are adapters.** The core knows only the runner contract and capabilities. It never
-  imports Orca or any other runner. Runner-specific features are optional capabilities the adapter
-  declares. (ADR 0014)
-- **Nothing reaches main except through `factory/verify` and the merge gate** (decided by a person,
-  or by `autoApprove` under ADR 0515). Local sessions can do anything locally, but every PR, whatever
-  its source, needs the `factory/verify` check from the org's App on its head SHA, with no admin
-  bypass. (ADR 0020, 0021, 0037)
-- **Model credentials stay with the runner's owner.** The factory never stores provider keys or
-  subscriptions; repo access is the per-job token, nothing else. (ADR 0023, 0033)
+**Keep it simple.** Build what the owner asked for and nothing around it: no limits, grants,
+approvals, roles or policy machinery, and no handling of edge cases nobody has hit. The first
+version of this project failed by designing for edge cases first and grew too big to change.
+
+**The base knows nothing about any kind of work.** `packages/flow`, `packages/store`,
+`packages/ops` and `packages/plugins` name no status, no service and no kind of work. The guard
+`scripts/checks/guards.test.ts` fails if any of them imports `packages/core` or has a source file
+over 400 lines. Split a file before it gets there.
+
+**Base, plugin or gateway.** If every kind of work needs it (items, statuses, owners, runs, the
+timeline, the inbox, schedules), it is the base. If only some kinds of work need it, it is a
+plugin. If it is a connection to an outside system, it is a gateway. Pull requests are a plugin
+(`plugins/software/plugin.js`), not base code.
+
+**Plugins are edited through the MCP server, and a save is live at once.** A plugin is one ES
+module stored in D1 and run as a Dynamic Worker. An agent changes plugins through the engine's
+`factory` MCP server; Chat always has it. A save takes effect for the whole org on the next event.
+A plugin that fails stops the item with its error, and the item can be retried.
+
+**Model credentials stay on the runner.** The cloud holds no model key or subscription and never
+calls a model. So every agent's turn, a chat reply included, is a run claimed by a runner its owner
+connected, and nothing happens while no runner is online. Code names Claude Code aliases (`opus`,
+`sonnet`, `haiku`, `fable`) from `packages/ops/src/models.ts`, never a model id; the guard checks.
+
+**Runners are adapters.** The engine knows the runner contract (`packages/runner-contract`), not
+any runner. `packages/core`, `packages/db`, `packages/runner-contract` and `apps/*` never import a
+runner adapter; the guard checks.
+
+**The app and the server keep one contract, checked by tests.** Every `flow.*` operation the
+desktop app calls is typed in `packages/client/src/flow*.ts` and listed in
+`packages/client/src/flow-contract.ts` (`FLOW_RESPONSES`, `FLOW_REQUESTS`), with an answer in the
+desktop's fixture door (`apps/desktop/screenshots/fixtures.ts`). Three tests hold it:
+`packages/client/test/flow-contract.test.ts` (each operation exists and each input parses),
+`apps/engine/test/flow-contract.test.ts` (each real answer parses) and
+`apps/desktop/test/flow-fixtures-contract.test.ts` (each fixture answer parses). A new operation the
+app calls goes in all three places.
+
+**A significant decision gets a short ADR** (`docs/adr/NNNN-title.md`, the next number after the
+highest). When a decision changes, add a dated note to the old ADR; never delete one. Keep
+`docs/architecture.md` and `CONTEXT.md` true when you change what they describe.
+
+**Migrations** are numbered one at a time: the next number above the highest in
+`packages/db/migrations`, and `SCHEMA_VERSION` in `packages/db/src/index.ts` equals it. If `main`
+took your number before you merge, renumber yours.
+
+**One shared Mac.** Run the tests you touched, cap concurrency (`pnpm test --concurrency=2`), use
+your own port for a dev server, and never stop a process you didn't start. Files that conflict
+often: the op maps and contract lists above, `SCHEMA_VERSION`, the screenshot fixtures in
+`apps/desktop/screenshots/`, and `pnpm-lock.yaml` (run `pnpm i` after merging).
 
 ## Cloudflare cost
 D1 bills every row a query reads and every row (and index entry) a write touches, deletes included;
 a database stops taking writes at 10 GB. A Durable Object is billed for every second it is awake.
-Each rule is checkable in review; the query-plan guard
-(`apps/engine/test/query-plans.test.ts`) checks rule 1 for every path registered in it.
-1. A query on a poll, heartbeat, cron, held-wait or socket path has its `EXPLAIN QUERY PLAN`
-   checked against the migrated schema: no SCAN of a growing table, and no temp B-tree sort in a
-   query that reads one unless the guard's `SORT_ALLOWED` says why the sorted rows are few. Register
-   new hot paths in the guard's `HOT_PATHS`.
+Each rule is checkable in review. Code comments cite them by number, so keep the numbers.
+1. A query on a poll, heartbeat, claim, cron or socket path has its `EXPLAIN QUERY PLAN` checked
+   against the migrated schema: no SCAN of a growing table, and no temp B-tree sort in a query that
+   reads one unless `SORT_ALLOWED` in `apps/engine/test/query-plans.ts` says why the sorted rows are
+   few. Register a new hot path as a scenario in `HOT_PATHS` in
+   `apps/engine/test/query-plans.test.ts`.
 2. Cron and polled queries filter on the leading columns of an index, and that index covers their
-   `ORDER BY`. A growing table's query has a LIMIT; no `COUNT(*)` or `OFFSET` paging on one.
-3. Every new table states its retention and gets a bounded prune in the cron, or an ADR says why
-   it is kept.
+   `ORDER BY`. A growing table's query has a LIMIT; no `COUNT(*)` or `OFFSET` paging on one. A capped
+   list says so (`truncated`).
+3. Every new table states its retention in its migration and gets a bounded prune in the minute
+   cron (`apps/engine/src/index.ts`), or says why it is kept.
 4. Every index names, in its migration, the query that reads it. Drop an index nothing reads.
 5. A Durable Object never holds a request, `setTimeout` or `setInterval` to wait. Use hibernatable
    WebSockets (`acceptWebSocket`) or alarms, and stop re-arming an alarm when there is nothing to do.
+   The one Durable Object is `ClientHub` (`apps/engine/src/client-hub.ts`).
 6. Every Durable Object that accepts sockets sets `setWebSocketAutoResponse` for its ping.
 7. One cron tick or request makes at most about 200 D1 queries (the cap is 1,000). Check rows in
    batches with `json_each(?)`, and carry a cursor between ticks for anything unbounded.
 8. No D1 query inside a loop over another query's rows unless the loop is bounded to 10 or fewer;
    join instead.
-9. The channel's idempotency store is only for calls that aren't naturally idempotent, and a call
-   left out of it must be harmless to replay (an older heartbeat only renews leases).
+9. The runner channel's idempotency store (`core_channel_requests`) is only for calls that aren't
+   naturally idempotent. A call left out of it (`isUnstoredPath` in
+   `packages/runner-contract/src/protocol.ts`: heartbeat, claim, token) must be harmless to replay.
 10. Expensive clients (the GitHub App, imported keys) are built once per isolate, not per call.
 11. Each wrangler config sets `observability.head_sampling_rate` and `limits.cpu_ms`, with the
     reason for the value beside it.
-12. Machine-frequency operations (heartbeat, presence, held waits, an empty claim, log batches)
-    write no audit row unless state changed (`audit: { changesOnly }`, ADR 0590). A runner's audit
-    `input` is its digest, not the body.
+12. Machine-frequency platform operations (heartbeat, claim, device-login polls) write no audit row
+    unless state changed (`audit: { changesOnly }`, ADR 0590), and a runner's audit `input` is its
+    digest. `flow.*` operations and a run's events write no audit row.
 
 ## Tooling
-
-- pnpm + Turborepo, Node 24 (`.nvmrc`). Run `pnpm lint`, `pnpm typecheck` and `pnpm test` before
-  pushing.
-- Biome formats and lints. Don't add ESLint or Prettier.
-- The app's UI is shadcn/ui from `packages/ui`. Use its components, not native `<select>`, `<input
-  type="checkbox">`, `<details>` or hand-styled buttons; if one is missing, add the shadcn component there.
-- Tests run in workerd via `@cloudflare/vitest-plugin`, except Node packages (`local/*`, `presets`,
-  `evals`). Prefer integration tests against real bindings over mocks.
+- pnpm, Turborepo, Node 24 (`.nvmrc`). On the shared Mac, put
+  `$HOME/.nvm/versions/node/v24.21.0/bin` first on `PATH`.
+- Before pushing: `pnpm lint`, `pnpm typecheck`, `pnpm test --concurrency=2` (or the packages you
+  touched, `pnpm --filter <package> test`), and `node --test "scripts/*/*.test.ts"`.
+- Biome formats and lints (`pnpm format` fixes). Don't add ESLint or Prettier.
+- The UI is shadcn/ui from `packages/ui`. Use its components, not native `<select>`,
+  `<input type="checkbox">`, `<details>` or hand-styled buttons; add a missing one there.
+- Tests run in workerd via `@cloudflare/vitest-plugin`, except where they drive the machine or the
+  window: `local/*`, `packages/runner-local`, `packages/harness-claude` and `apps/desktop` run on
+  Node. Prefer integration tests against real bindings over mocks.
 - TypeScript strict. No `any` without a comment saying why.
-- Generate Worker `Env` types with `wrangler types`. Don't hand-write them.
-- `spikes/` is outside the workspace and Biome. Spikes are throwaway; promote code out of them deliberately.
+- Generate Worker `Env` types with `pnpm types` (`wrangler types`). Don't hand-write them.
+- `spikes/` is outside the workspace and Biome. Spikes are throwaway.
 
 ## Git
-
-- Work on a branch, open a PR against `main`, and keep commits focused. Merge commits only, no rebase
-  or force-push.
-- The repo is public. Don't commit account IDs, secrets or `.dev.vars`.
+- Work on a branch and open a pull request against `main`. Merge commits only; never rebase or
+  force-push.
+- Merge your own pull request once CI (`ci`) is green. A merge to `main` deploys; nobody else uses
+  the system yet, so that is fine.
+- The repo is public. Never commit secrets, account ids or `.dev.vars`.
