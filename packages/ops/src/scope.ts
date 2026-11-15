@@ -1,5 +1,6 @@
 // The whole permission model: the caller is a member of the org the call names, and every project,
-// item, workflow and agent the call names belongs to that org. One query answers both.
+// item, workflow, run and agent the call names belongs to that org. One query answers both. (A
+// `self` operation names no org: it reads only the caller's own orgs; see operation.ts.)
 import { type Caller, OpError } from "./operation.ts";
 
 /** The ids an input names, by kind. */
@@ -7,6 +8,7 @@ interface Named {
   projectId?: string;
   itemId?: string;
   workflowId?: string;
+  runId?: string;
   /** An agent the input names: `agentId`, and every agent a workflow's statuses own. */
   agentIds: string[];
 }
@@ -28,9 +30,11 @@ function named(input: Record<string, unknown>): Named {
   const projectId = str(input.projectId);
   const itemId = str(input.itemId);
   const workflowId = str(input.workflowId);
+  const runId = str(input.runId);
   if (projectId) out.projectId = projectId;
   if (itemId) out.itemId = itemId;
   if (workflowId) out.workflowId = workflowId;
+  if (runId) out.runId = runId;
   return out;
 }
 
@@ -38,7 +42,10 @@ const TABLES = {
   projectId: ["flow_projects", "project"],
   itemId: ["flow_items", "item"],
   workflowId: ["flow_workflows", "workflow"],
+  runId: ["flow_runs", "run"],
 } as const;
+
+const KEYS = ["projectId", "itemId", "workflowId", "runId"] as const;
 
 /**
  * Refuses the call unless `userId` is a member of `orgId` (core_member's unique (organization_id,
@@ -62,7 +69,7 @@ export async function checkScope(
       : "EXISTS (SELECT 1 FROM core_member WHERE organization_id = ?1 AND user_id = ?2) AS member",
   ];
   const params: unknown[] = [orgId, caller.kind === "agent" ? caller.onBehalfOf : caller.id];
-  for (const key of ["projectId", "itemId", "workflowId"] as const) {
+  for (const key of KEYS) {
     const value = ids[key];
     if (value === undefined) continue;
     params.push(value);
@@ -79,7 +86,7 @@ export async function checkScope(
     .bind(...params)
     .first<Record<string, unknown>>();
   if (!row?.member) throw new OpError("forbidden", `You are not a member of org ${orgId}.`);
-  for (const key of ["projectId", "itemId", "workflowId"] as const) {
+  for (const key of KEYS) {
     const value = ids[key];
     if (value !== undefined && row[key] !== orgId) {
       throw new OpError("not_found", `No ${TABLES[key][1]} ${value} in this org.`);

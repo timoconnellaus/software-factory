@@ -32,7 +32,7 @@ export interface Run {
   finishedAt: string | null;
 }
 
-function toRun(row: FlowRunsTable): Run {
+export function toRun(row: FlowRunsTable): Run {
   return {
     id: row.id,
     orgId: row.org_id,
@@ -231,15 +231,16 @@ export async function endRun(
   const stepped = await advance(
     d1,
     run.item_id,
+    // The event and the summary carry the run's id, so the timeline can link them to it.
     ended.status === "failed"
-      ? { type: "run.failed", stay: run.stay, error: ended.error }
+      ? { type: "run.failed", stay: run.stay, error: ended.error, runId }
       : stopWith !== undefined
-        ? { type: "run.failed", stay: run.stay, error: stopWith }
-        : { type: "run.ended", stay: run.stay, outcome: ended.result.outcome },
+        ? { type: "run.failed", stay: run.stay, error: stopWith, runId }
+        : { type: "run.ended", stay: run.stay, outcome: ended.result.outcome, runId },
     agent,
     {
       before: [toStatement(d1, finish), guardChanged(d1, "flow_runs.fencing_token")],
-      ...(summary ? { comment: { actor: agent, text: summary } } : {}),
+      ...(summary ? { comment: { actor: agent, text: summary, runId } } : {}),
     },
   );
   return { ...stepped, run: toRun(after) };
@@ -318,17 +319,6 @@ export async function expireRuns(
     await onEnded?.(ended);
   }
   return failed;
-}
-
-/** An item's runs, by stay. */
-export async function itemRuns(d1: D1Database, itemId: string): Promise<Run[]> {
-  const rows = await flowDb(d1)
-    .selectFrom("flow_runs")
-    .selectAll()
-    .where("item_id", "=", itemId)
-    .orderBy("stay")
-    .execute();
-  return rows.map(toRun);
 }
 
 /** Stores the hash of a claimed run's MCP bearer token. */

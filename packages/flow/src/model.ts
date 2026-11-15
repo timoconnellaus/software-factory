@@ -60,9 +60,9 @@ export interface ItemState {
 export type ItemEvent =
   /** The item was created, in the workflow's first status or a named one. */
   | { type: "created"; statusId?: string }
-  /** The agent's run for stay `stay` ended. */
-  | { type: "run.ended"; stay: number; outcome: "done" | "rejected" }
-  | { type: "run.failed"; stay: number; error: string }
+  /** The agent's run for stay `stay` ended. `runId` is the store's, for the timeline to link. */
+  | { type: "run.ended"; stay: number; outcome: "done" | "rejected"; runId?: string }
+  | { type: "run.failed"; stay: number; error: string; runId?: string }
   /** The person who owns the status finished or rejected the work. */
   | { type: "person.finished"; by: Actor; outcome: "done" | "rejected" }
   /** A person decided on an item waiting for a decision. */

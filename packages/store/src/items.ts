@@ -1,13 +1,7 @@
-// Items: created into their project's workflow, moved by kernel events, commented on, and read as a
-// board, a timeline and an inbox.
-import { guardChanged, readBatch, toStatement } from "@software-factory/db";
-import {
-  type Actor,
-  apply,
-  type ItemEvent,
-  type Status,
-  type Workflow,
-} from "@software-factory/flow";
+// Items: created into their project's workflow, moved by kernel events, commented on, and read one
+// at a time and as a timeline. The lists (board, inbox) are in views.ts.
+import { guardChanged, toStatement } from "@software-factory/db";
+import { type Actor, apply, type ItemEvent, type Workflow } from "@software-factory/flow";
 import { flowDb, iso, newId, StoreError, writeBatch } from "./db.ts";
 import type { EntryKind, FlowEventsTable, FlowItemsTable } from "./schema.ts";
 import {
@@ -171,48 +165,8 @@ export async function getItem(d1: D1Database, itemId: string): Promise<Item | nu
   return row ? toItem(row) : null;
 }
 
-/** The most items `board` returns (AGENTS.md cost rule 2). */
-export const BOARD_LIMIT = 500;
 /** The most entries `timeline` returns: the newest. */
 export const TIMELINE_LIMIT = 500;
-/** The most items in each of `inbox`'s lists. */
-export const INBOX_LIMIT = 100;
-
-/**
- * A project's items in its workflow's columns, each column in item-number order. At most
- * BOARD_LIMIT items, taken in status then number order; `truncated` says some were left out.
- */
-export async function board(
-  d1: D1Database,
-  projectId: string,
-): Promise<{ columns: { status: Status; items: Item[] }[]; truncated: boolean }> {
-  const db = flowDb(d1);
-  const [projects, rows] = await readBatch(d1, [
-    db
-      .selectFrom("flow_projects as p")
-      .innerJoin("flow_workflows as w", "w.id", "p.workflow_id")
-      .select("w.definition")
-      .where("p.id", "=", projectId),
-    db
-      .selectFrom("flow_items")
-      .selectAll()
-      .where("project_id", "=", projectId)
-      .orderBy("status_id")
-      .orderBy("number")
-      .limit(BOARD_LIMIT + 1),
-  ] as const);
-  const project = projects[0];
-  if (!project) throw new StoreError("not_found", `No project ${projectId}.`);
-  const workflow = JSON.parse(project.definition) as Workflow;
-  const items = rows.slice(0, BOARD_LIMIT).map(toItem);
-  return {
-    columns: workflow.statuses.map((status) => ({
-      status,
-      items: items.filter((i) => i.statusId === status.id),
-    })),
-    truncated: rows.length > BOARD_LIMIT,
-  };
-}
 
 export interface TimelineEntry {
   seq: number;
@@ -270,39 +224,4 @@ export async function recentComments(
     .limit(limit)
     .execute();
   return rows.reverse().map(toEntry);
-}
-
-/**
- * What waits on a person: items they own the work on, and the org's items waiting on a decision.
- * At most INBOX_LIMIT in each list, oldest first; `truncated` says either list was cut.
- */
-export async function inbox(
-  d1: D1Database,
-  orgId: string,
-  userId: string,
-): Promise<{ work: Item[]; decisions: Item[]; truncated: boolean }> {
-  const db = flowDb(d1);
-  const [work, decisions] = await readBatch(d1, [
-    db
-      .selectFrom("flow_items")
-      .selectAll()
-      .where("org_id", "=", orgId)
-      .where("waiting_on", "=", "person")
-      .where("waiting_ref", "=", userId)
-      .orderBy("updated_at")
-      .limit(INBOX_LIMIT + 1),
-    db
-      .selectFrom("flow_items")
-      .selectAll()
-      .where("org_id", "=", orgId)
-      .where("waiting_on", "=", "decision")
-      .where("waiting_ref", "is", null)
-      .orderBy("updated_at")
-      .limit(INBOX_LIMIT + 1),
-  ] as const);
-  return {
-    work: work.slice(0, INBOX_LIMIT).map(toItem),
-    decisions: decisions.slice(0, INBOX_LIMIT).map(toItem),
-    truncated: work.length > INBOX_LIMIT || decisions.length > INBOX_LIMIT,
-  };
 }

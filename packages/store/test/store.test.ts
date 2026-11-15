@@ -3,6 +3,7 @@ import { type Actor, FlowError } from "@software-factory/flow";
 import { describe, expect, it } from "vitest";
 import {
   addComment,
+  agentRuns,
   applyEvent,
   board,
   claimRun,
@@ -15,13 +16,17 @@ import {
   failRun,
   finishRun,
   getItem,
+  getListedRun,
   getWorkflow,
   inbox,
   itemRuns,
+  listAgents,
+  listProjects,
   listWorkflows,
   recentComments,
   renewLease,
   StoreError,
+  stopItem,
   timeline,
   updateWorkflow,
 } from "../src/index.ts";
@@ -309,9 +314,16 @@ describe("items and runs", () => {
     const run = await claim();
     await finishRun(d1, run.id, run.fencingToken, { outcome: "done", summary: "Drafted." });
     const { entries } = await timeline(d1, item.id);
+    // The agent's summary, and the run.ended event, carry the run.
     expect((await recentComments(d1, item.id, 1)).map((c) => c.data)).toEqual([
-      { text: "Drafted." },
+      { text: "Drafted.", runId: run.id },
     ]);
+    expect(entries.find((e) => e.kind === "event" && e.seq === 5)?.data).toEqual({
+      type: "run.ended",
+      stay: 1,
+      outcome: "done",
+      runId: run.id,
+    });
     expect(entries.map((e) => e.seq)).toEqual(entries.map((_, i) => i + 1));
     expect(
       entries.map((e) => [
@@ -329,5 +341,90 @@ describe("items and runs", () => {
       ["comment", "Drafted."],
     ]);
     expect(entries.at(-1)?.actor).toEqual({ kind: "agent", id: writer.id });
+  });
+});
+
+describe("the desktop app's reads", () => {
+  it("lists items with their project's name and key and their status's name", async () => {
+    const { orgId, project, item } = await setup();
+    const named = { projectId: project.id, projectName: "Acme", projectKey: "ACM" };
+    const view = await board(d1, project.id);
+    expect(view.columns[0]?.items[0]).toMatchObject({
+      id: item.id,
+      ...named,
+      statusName: "Draft",
+    });
+    const run = await claim();
+    await finishRun(d1, run.id, run.fencingToken, { outcome: "done", summary: "" });
+    expect((await inbox(d1, orgId, "sam")).work).toEqual([
+      expect.objectContaining({ id: item.id, ...named, statusName: "Review" }),
+    ]);
+  });
+
+  it("counts each project's open items: waiting on something, or stopped with an error", async () => {
+    const { orgId, project, item, workflowId } = await setup();
+    await createProject(d1, { orgId, name: "Quiet", key: "QT", workflowId });
+    const add = (title: string) =>
+      createItem(d1, { orgId, projectId: project.id, title, body: "", createdBy: "sam" });
+    const second = await add("Second");
+    const third = await add("Third");
+    const counts = async () =>
+      Object.fromEntries((await listProjects(d1, orgId)).map((p) => [p.key, p.openCount]));
+    expect(await counts()).toEqual({ ACM: 3, QT: 0 });
+    // Done (nobody owns it, no error) isn't open; stopped with an error is.
+    await applyEvent(d1, item.id, { type: "moved", by: sam, to: "done" }, sam);
+    await stopItem(d1, second.id, "broke");
+    expect(await counts()).toEqual({ ACM: 2, QT: 0 });
+    await applyEvent(d1, third.id, { type: "moved", by: sam, to: "done" }, sam);
+    expect(await counts()).toEqual({ ACM: 1, QT: 0 });
+  });
+
+  it("lists an agent's runs newest first, capped, with their items", async () => {
+    const { orgId, project, writer } = await setup();
+    for (const title of ["Two", "Three"]) {
+      await createItem(d1, { orgId, projectId: project.id, title, body: "", createdBy: "sam" });
+    }
+    const runs = await agentRuns(d1, orgId, writer.id, 2);
+    expect(runs.map((r) => [r.itemTitle, r.itemNumber, r.projectKey])).toEqual([
+      ["Three", 3, "ACM"],
+      ["Two", 2, "ACM"],
+    ]);
+    expect(await agentRuns(d1, orgId, writer.id, 500)).toHaveLength(3);
+    // The same agent under another org's id finds nothing.
+    expect(await agentRuns(d1, "org_other", writer.id, 20)).toEqual([]);
+    expect(await getListedRun(d1, runs[0]?.id ?? "")).toMatchObject({
+      itemTitle: "Three",
+      itemNumber: 3,
+      projectKey: "ACM",
+    });
+  });
+
+  it("says what each agent is working on: its claimed run, else its oldest queued one", async () => {
+    const { orgId, project, item } = await setup();
+    await createAgent(d1, { orgId, name: "Idle", instructions: "" });
+    const later = await createItem(d1, {
+      orgId,
+      projectId: project.id,
+      title: "Later",
+      body: "",
+      createdBy: "sam",
+    });
+    const working = async () =>
+      Object.fromEntries((await listAgents(d1, orgId)).map((a) => [a.name, a.workingOn]));
+    expect(await working()).toEqual({
+      Idle: null,
+      Writer: { itemId: item.id, itemTitle: "Launch post", itemNumber: 1, projectKey: "ACM" },
+    });
+    // The later item's run is claimed: a claimed run comes before a queued one.
+    await d1
+      .prepare("UPDATE flow_runs SET status = 'claimed' WHERE item_id = ?")
+      .bind(later.id)
+      .run();
+    expect((await working()).Writer).toEqual({
+      itemId: later.id,
+      itemTitle: "Later",
+      itemNumber: 2,
+      projectKey: "ACM",
+    });
   });
 });

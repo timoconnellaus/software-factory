@@ -1,4 +1,5 @@
-// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql), as Kysely sees them.
+// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql; 0432 adds only
+// indexes), as Kysely sees them.
 
 export interface FlowWorkflowsTable {
   id: string;

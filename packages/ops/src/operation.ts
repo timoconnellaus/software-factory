@@ -53,24 +53,55 @@ export class OpError extends Error {
   }
 }
 
-export interface Operation<I extends { orgId: string } = { orgId: string }, O = unknown> {
+/**
+ * What a handler of a `self` operation gets: no org, and a person (never an agent, which acts only
+ * in its run's org). Whatever it reads, it reads through the person's own memberships.
+ */
+export interface SelfCtx {
+  d1: D1Database;
+  host: PluginHostEnv;
+  actor: Person;
+  now: number;
+}
+
+interface OperationBase {
   name: string;
   description: string;
   /** `read` changes nothing; a read-only CLI token may call only these. */
   risk: "read" | "write";
-  input: z.ZodType<I>;
-  handler(input: I, ctx: Ctx): Promise<O>;
 }
 
-/** Keeps the handler's input typed by its schema. */
-export function defineOperation<S extends z.ZodType<{ orgId: string }>, O>(op: {
-  name: string;
-  description: string;
-  risk: "read" | "write";
-  input: S;
-  handler(input: z.infer<S>, ctx: Ctx): Promise<O>;
-}): Operation {
-  return op as unknown as Operation;
+/**
+ * The operation's scope says how `call` checks the caller:
+ * - `org`: the input names `orgId`; the caller is a member of it, and everything the input names
+ *   is in it (scope.ts).
+ * - `self`: the input names no org; the caller is a person, and the handler reads only the orgs
+ *   they are a member of (each of its queries joins core_member on them).
+ */
+export type Operation =
+  | (OperationBase & {
+      scope: "org";
+      input: z.ZodType<{ orgId: string }>;
+      handler(input: { orgId: string }, ctx: Ctx): Promise<unknown>;
+    })
+  | (OperationBase & {
+      scope: "self";
+      input: z.ZodType<object>;
+      handler(input: object, ctx: SelfCtx): Promise<unknown>;
+    });
+
+/** An operation in one org. Keeps the handler's input typed by its schema. */
+export function defineOperation<S extends z.ZodType<{ orgId: string }>, O>(
+  op: OperationBase & { input: S; handler(input: z.infer<S>, ctx: Ctx): Promise<O> },
+): Operation {
+  return { ...op, scope: "org" } as unknown as Operation;
+}
+
+/** An operation over the caller's own orgs (scope `self`): no `orgId` in its input. */
+export function defineSelfOperation<S extends z.ZodType<object>, O>(
+  op: OperationBase & { input: S; handler(input: z.infer<S>, ctx: SelfCtx): Promise<O> },
+): Operation {
+  return { ...op, scope: "self" } as unknown as Operation;
 }
 
 /** Every operation's input starts with the org it acts in. */

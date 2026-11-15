@@ -1,5 +1,6 @@
 // The registry and `call`: look the operation up, validate its input, check the caller may act in
-// the org it names, run it, and answer { ok, result } or { ok: false, error }.
+// the org it names (or, for a `self` operation, that the caller is a person), run it, and answer
+// { ok, result } or { ok: false, error }.
 import { FlowError } from "@software-factory/flow";
 import { NoLoaderError, type PluginHostEnv, PluginRefusal } from "@software-factory/plugins";
 import { StoreError } from "@software-factory/store";
@@ -91,16 +92,21 @@ export async function call(name: string, rawInput: unknown, ctx: CallContext): P
       },
     };
   }
-  const input = parsed.data;
+  const base = { d1: ctx.d1, host: ctx.host ?? { DB: ctx.d1 }, now: ctx.now ?? Date.now() };
   try {
-    await checkScope(ctx.d1, input.orgId, ctx.actor, input as Record<string, unknown>);
-    const result = await op.handler(input, {
-      d1: ctx.d1,
-      host: ctx.host ?? { DB: ctx.d1 },
-      orgId: input.orgId,
-      actor: ctx.actor,
-      now: ctx.now ?? Date.now(),
-    });
+    let result: unknown;
+    if (op.scope === "self") {
+      // No org to check: the handler reads only the caller's own orgs. An agent acts only in its
+      // run's org, so it never spans them.
+      if (ctx.actor.kind !== "person") {
+        throw new OpError("forbidden", `${name} spans every org you belong to; an agent can't.`);
+      }
+      result = await op.handler(parsed.data as object, { ...base, actor: ctx.actor });
+    } else {
+      const input = parsed.data as { orgId: string };
+      await checkScope(ctx.d1, input.orgId, ctx.actor, input as Record<string, unknown>);
+      result = await op.handler(input, { ...base, orgId: input.orgId, actor: ctx.actor });
+    }
     return { ok: true, result };
   } catch (error) {
     if (error instanceof OpError) {

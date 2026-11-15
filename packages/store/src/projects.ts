@@ -1,4 +1,6 @@
 // An org's projects: a name, a key for item numbers, and the workflow its items move through.
+import { readBatch } from "@software-factory/db";
+import { sql } from "kysely";
 import { flowDb, iso, newId, StoreError } from "./db.ts";
 
 export interface Project {
@@ -59,14 +61,28 @@ export async function getProject(d1: D1Database, id: string): Promise<Project | 
   return row ? toProject(row) : null;
 }
 
-export async function listProjects(d1: D1Database, orgId: string): Promise<Project[]> {
-  const rows = await flowDb(d1)
-    .selectFrom("flow_projects")
-    .selectAll()
-    .where("org_id", "=", orgId)
-    .orderBy("name")
-    .execute();
-  return rows.map(toProject);
+/**
+ * The org's projects by name, each with `openCount`: its items not resting in a status nobody owns
+ * (waiting on something, or stopped with an error). The counts are one grouped read of the partial
+ * flow_items_open_idx, which holds only open items.
+ */
+export async function listProjects(
+  d1: D1Database,
+  orgId: string,
+): Promise<(Project & { openCount: number })[]> {
+  const db = flowDb(d1);
+  const [rows, counts] = await readBatch(d1, [
+    db.selectFrom("flow_projects").selectAll().where("org_id", "=", orgId).orderBy("name"),
+    // The predicate is written as the index's WHERE, literally, so SQLite uses the partial index.
+    db
+      .selectFrom("flow_items")
+      .select(["project_id", (eb) => eb.fn.countAll<number>().as("open")])
+      .where("org_id", "=", orgId)
+      .where(sql<boolean>`(waiting_on <> 'nothing' OR error IS NOT NULL)`)
+      .groupBy("project_id"),
+  ] as const);
+  const open = new Map(counts.map((c) => [c.project_id, Number(c.open)]));
+  return rows.map((row) => ({ ...toProject(row), openCount: open.get(row.id) ?? 0 }));
 }
 
 /** Points the project at another workflow. Its items keep their status ids. */
