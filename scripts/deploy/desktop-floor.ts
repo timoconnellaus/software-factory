@@ -58,17 +58,25 @@ async function getJson(url: string): Promise<Record<string, unknown> | null> {
 async function main() {
   const floor = floorOf(readFileSync(join("apps", "engine", "wrangler.jsonc"), "utf8"));
   if (floor <= 0) return console.log("desktop floor: none set");
-  const published: Published[] = [];
-  for (const channel of CHANNELS) {
-    const manifest = await getJson(`${BASE}/${channel}-macos-arm64-update-v2.json`);
-    const version = typeof manifest?.version === "string" ? manifest.version : null;
-    published.push({
-      channel,
-      manifestVersion: version,
-      protocol: version ? await getJson(`${BASE}/${channel}-macos-arm64-protocol.json`) : null,
-    });
+  // A release writes the manifest, then the protocol file. A deploy that reads between the two sees
+  // a manifest with no matching protocol (it failed a deploy on 2026-11-15), so look again for a
+  // few minutes before refusing.
+  let why: string | null = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const published: Published[] = [];
+    for (const channel of CHANNELS) {
+      const manifest = await getJson(`${BASE}/${channel}-macos-arm64-update-v2.json`);
+      const version = typeof manifest?.version === "string" ? manifest.version : null;
+      published.push({
+        channel,
+        manifestVersion: version,
+        protocol: version ? await getJson(`${BASE}/${channel}-macos-arm64-protocol.json`) : null,
+      });
+    }
+    why = floorProblem(floor, published);
+    if (!why) break;
+    if (attempt < 9) await new Promise((resolve) => setTimeout(resolve, 30_000));
   }
-  const why = floorProblem(floor, published);
   if (why) throw new Error(why);
   console.log(`desktop floor ${floor}: every published channel has a build that speaks it`);
 }
