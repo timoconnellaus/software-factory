@@ -14,7 +14,8 @@ outside service, GitHub. Spec 52 loosened this with stage types, but kept seven 
 fixed phases and no loadable plugins, and its reconciler only runs in shadow.
 
 The owner's direction on 2026-11-15: it should be possible to build any workflow, and what is
-specific to one kind of work should be a plugin. Multica (multica.ai) is the reference for the
+specific to one kind of work should be a plugin. The owner also asked that the design stay simple:
+the earlier work went wrong by designing for edge cases first. Multica (multica.ai) is the reference for the
 model and the layout; grokbot-headless is the reference for plugins on Cloudflare.
 
 ## Decision
@@ -30,29 +31,39 @@ model and the layout; grokbot-headless is the reference for plugins on Cloudflar
    are no workflow versions. `packages/core/src/stages/reconcile.ts` is the starting point.
 4. **Small modules.** The core is split into packages with one job each, and no source file is over
    400 lines. CI checks the limit.
-5. **Plugins are Dynamic Workers.** A plugin is a manifest and one module, loaded as a Cloudflare
-   Dynamic Worker, as in grokbot-headless (its ADR 0026, `docs/adr/0026-plugins.md` in that repo).
-   A plugin can add step kinds, hooks on the engine's events, triggers, connectors to outside
-   systems, operations, and panels drawn by the host. It gets only the grants its manifest names.
-6. **Plugins are edited through an MCP server.** There is one plugin MCP server (list, read, write,
-   enable). An agent can change plugins if, and only if, that server is assigned to it. Assigning
-   it is a person's action. An approval can be added to the flow: the org can set plugin edits to
-   wait for a person's decision before they go live. It is off unless someone turns it on, and the
-   engine never requires it.
-7. **Gates stay in the core.** A status can require a person's decision, and the engine enforces
-   it. A plugin can add a gate or a check; it cannot remove or answer one. This is the one rule
-   kept from "policy is enforced in code", and it is what makes decision 6 safe enough to be simple.
-8. **Software development is the first plugin.** GitHub, pull requests, `factory/verify`, the merge
-   queue and the babysitter leave the core. Each is ported only when the new core needs it.
-9. **The layout follows Multica's**, without copying it: a rail (Inbox, Work, Team, Chat, Auto), a
-   section sidebar, a board with one column per status, and a run view. An item opens as a panel
-   on the right of the board.
-10. **The item's timeline is made of rich cards.** The timeline shows status changes and handoffs
-    as one-line entries, and what an agent or person produced as a card: a plan with its steps, a
-    pull request with its diff size and checks, a chart, a document preview. A card is drawn by
-    the host from components the app ships; a plugin supplies the card's kind and data, never its
-    own markup. Cards are the main way a plugin shows up in the UI. The existing UI and its
-    mockups (`docs/design/factory-ui/`, `.kim/mockups/`) are redesigned around this.
+5. **A workflow is not a plugin.** Workflows, statuses and owners are the base, set up per org.
+   A workflow may later be saved as a template to start another project from.
+6. **A plugin is something the base can't do, built by an agent on request.** A person says what
+   they want in plain words; an agent with the plugin editor builds it. A plugin changes how the
+   current org works. It can add a step a status can use, start work from an outside event, react
+   when something happens, add a rule about when an item may move, add fields to items, change how
+   a card or an item looks, add a screen, give agents a tool, and change what agents are told.
+   Technically it is code loaded as a Cloudflare Dynamic Worker, as in grokbot-headless (its ADR
+   0026, `docs/adr/0026-plugins.md` in that repo).
+7. **Gateways are separate from plugins.** A gateway is the org's connection to one outside system
+   (Gmail, GitHub, Slack), set up once, holding its credentials. Plugins and agents use a gateway
+   by name; no plugin carries its own access to an outside system, so two plugins can share Gmail.
+8. **Plugins are edited through an MCP server**, the plugin editor. An agent can change plugins
+   if, and only if, that server is assigned to it. A change is live straight away, everywhere in
+   the org.
+9. **Kept simple on purpose (the owner, 2026-11-15).** There are no limits on what a plugin may
+   do, no grants, and no approval of plugin edits: giving an agent the plugin editor means trusting
+   it. When a plugin fails, the item stops with an error and can be retried. Approval of edits,
+   limits, trying a change on one item first, sharing plugins between orgs and a marketplace can
+   each come later, and none is designed now.
+10. **Software development is a plugin.** Pull requests, checks, `factory/verify`, the merge queue
+    and the babysitter leave the core, and GitHub becomes a gateway. Each is ported only when
+    needed. An org with no software work in it must be fully usable.
+11. **The layout** keeps the app's Slack-style sidebar: an org strip with an All orgs view, then
+    one sidebar that never changes (Inbox, Work, Team, Auto, Plugins, then the projects, with
+    Settings at the bottom). A section's own pages are tabs across the top. A project is a board
+    with one column per status. An item opens as a panel on the right and can expand to a page.
+12. **The item's timeline is made of rich cards.** It shows status changes and handoffs as
+    one-line entries, and what an agent or person produced as a card: a plan with its steps, a
+    pull request with its diff size and checks, a chart, a document preview. A decision that waits
+    on a person is the last card, with its buttons. A plugin can add card kinds and change how
+    cards look. The existing UI and its mockups (`docs/design/factory-ui/`, `.kim/mockups/`) are
+    replaced by this design.
 
 ## What is kept from the old core
 The operations registry and `invoke()` (ADR 0003, 0004), the runner contract and channel, jobs,
@@ -68,5 +79,7 @@ the desktop shell, and the Cloudflare cost rules in `AGENTS.md`.
   software plugin, not of the core. This repo keeps it until cutover.
 - `AGENTS.md`, `CONTEXT.md` and `docs/architecture.md` are rewritten at cutover, not before, so
   they stay true of what runs.
-- An agent holding the plugin MCP can change what the engine does on every event. That is accepted:
-  the answer is to be careful which agents get it.
+- An agent holding the plugin editor can change anything about how the org works. That is
+  accepted: the answer is to be careful which agents get it.
+- The policy rules in `AGENTS.md` (gates in code, not AI-configurable; self-modify goes to a
+  human) describe the old core. They stop applying at cutover, when `AGENTS.md` is rewritten.
