@@ -55,6 +55,21 @@ export const SCREENS = [
   { name: "team-agents", path: "/flow/org_personal/team?agent=fagt_backend" },
   { name: "team-runners", path: "/flow/org_personal/team?tab=runners" },
   { name: "team-people", path: "/flow/org_personal/team?tab=people" },
+  // Team › Runners (fixtures.ts): the list, a runner's detail, and Connect a runner at the code
+  // step and at the confirm step. `--out flow-runners`.
+  { name: "runners", path: "/flow/org_personal/team?tab=runners" },
+  { name: "runner-detail", path: "/flow/org_personal/team?tab=runners&runner=rnr_m5" },
+  {
+    name: "connect-runner-code",
+    path: "/flow/org_personal/team?tab=runners",
+    clicks: ['[data-testid="connect-runner"]'],
+  },
+  {
+    name: "connect-runner-confirm",
+    path: "/flow/org_personal/team?tab=runners",
+    clicks: ['[data-testid="connect-runner"]'],
+    types: [['[data-testid="runner-code"]', "BCDF-GHJK", '[data-testid="look-up-code"]']],
+  },
   { name: "settings-this-mac", path: "/flow/org_personal/settings" },
   { name: "settings-members", path: "/flow/org_personal/settings?tab=members" },
   { name: "all-orgs", path: "/flow/orgs" },
@@ -177,6 +192,7 @@ async function shoot(
   clicks = [],
   pointerdowns = [],
   scrolls = [],
+  types = [],
 ) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
@@ -204,6 +220,21 @@ async function shoot(
       expression: `document.querySelector(${JSON.stringify(selector)})?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }))`,
     });
     await sleep(500);
+  }
+  // `types`: after the clicks, each `[field, text, then]`: focus the field, type the text as a
+  // person would, then click `then` (if given).
+  for (const [field, text, then] of types) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(field)})?.focus()`,
+    });
+    await cdp.send("Input.insertText", { text });
+    await sleep(200);
+    if (then) {
+      await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelector(${JSON.stringify(then)})?.click()`,
+      });
+      await sleep(700);
+    }
   }
   // `scrolls`: bring each element into the middle of its scrolling box before the shot.
   for (const selector of scrolls) {
@@ -273,6 +304,7 @@ try {
         s.clicks,
         s.pointerdowns,
         s.scrolls,
+        s.types,
       );
     }
   }

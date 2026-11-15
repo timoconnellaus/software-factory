@@ -2,7 +2,10 @@
 // that take a desktop proof. The view sends them through `decide` (challenge, Touch ID, call), never
 // `call`; the main process refuses one that arrives through `call`. test/decisions.test.ts checks
 // this list against core's operations.
-export const DECISION_OPS: ReadonlySet<string> = new Set(["mobile.pairOffer"]);
+export const DECISION_OPS: ReadonlySet<string> = new Set([
+  "mobile.pairOffer",
+  "runner.approveDevice",
+]);
 
 /**
  * Every operation a desktop may run through `decide` with a presence proof: DECISION_OPS, and those

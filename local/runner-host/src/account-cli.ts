@@ -63,7 +63,9 @@ export async function accountCommand(args: string[], deps: AccountCliDeps): Prom
         );
         if (a.limit) log(`    hit a usage limit ${a.limit.at}: ${a.limit.message}`);
       }
-      log("* = active: new jobs use it. Switch with sf-runner account use <name>, or in Setup.");
+      log(
+        "* = active: new jobs use it. Switch with sf-runner account use <name>, or in the app (Team › Runners).",
+      );
       return 0;
     }
     case "add": {

@@ -21,7 +21,7 @@ and with the software plugin installed its runs push the item's branch and get a
 ## Try it
 In the desktop app: sign in, open your org, start a chat ("Set up a workflow Draft → Review → Done
 with an agent writing the drafts, and a project Blog on it"), then add an item to the project's
-board. A runner of yours must be online (Team → Runners).
+board. A runner of yours must be online (Team → Runners; Connect a runner there adds another Mac).
 
 From a terminal, with the `sf` CLI (`local/cli`; `sf login --write` first):
 
@@ -50,6 +50,12 @@ plugin, an agent with the `factory` MCP server, and a trigger.
   owner's Personal org.
 - The phone app (outside this repo) still shows the old pipeline's screens; its sign-in operations
   are kept here.
+- A runner can't be renamed or removed: there are no operations for either. Team › Runners shows
+  how many jobs a runner is running, not which items. Adding or removing a runner's Claude account
+  is done on that machine (`sf-runner account add`); the app only switches between them.
+- Connecting a runner from the app asks for Touch ID, so it needs a Mac whose key is in the Secure
+  Enclave with approvals on, and an app build whose key helper knows `runner.approveDevice`.
+  Otherwise approve on the website, at the link `sf-runner login` prints beside the code.
 - A plugin can't add a screen, give agents a tool or change how a card looks, and an agent can list
   gateways but not call one.
 

@@ -18,7 +18,11 @@ describe("the key helper's presence ops", () => {
   });
 
   it("are the operations that take a desktop presence proof", () => {
-    expect(desktopPresenceOps()).toEqual(["device.update", "mobile.pairOffer"]);
+    expect(desktopPresenceOps()).toEqual([
+      "device.update",
+      "mobile.pairOffer",
+      "runner.approveDevice",
+    ]);
   });
 });
 

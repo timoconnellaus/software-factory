@@ -204,11 +204,14 @@ export const runnerDeviceLookup = defineOperation({
 export const runnerApproveDevice = defineOperation({
   name: "runner.approveDevice",
   description:
-    "Approve a runner login code shown by `sf-runner login` (ADR 0056): registers a runner owned by the person approving, under the name they give, and lets the waiting CLI collect its key once. Human only, for a pending, unexpired code; a code another person already decided is refused.",
+    'Approve a runner login code shown by `sf-runner login` (ADR 0056): registers a runner owned by the person approving, under the name they give, and lets the waiting CLI collect its key once. Human only, for a pending, unexpired code; a code another person already decided is refused. On the website, or in the desktop app with Touch ID ("Connect a runner to your account").',
   risk: "write",
   actors: ["human"],
   permission: "signed-in",
   browserOnly: true,
+  // Team › Runners › Connect a runner in the desktop app, with Touch ID, as a phone is added from
+  // there (mobile.pairOffer); never from the CLI or a phone (ADR 0056, amended 2026-11-15).
+  presenceSurfaces: ["desktop"],
   input: z.object({ userCode, name: runnerName }),
   output: z.object({ runnerId: z.string(), name: z.string() }),
   async handler(input, ctx) {

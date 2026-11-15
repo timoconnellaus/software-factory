@@ -283,13 +283,43 @@ describe("the desktop app's client door (/client/v1)", () => {
       "cli.approveDevice",
       "desktop.approveDevice",
       "mobile.approveDevice",
-      "runner.approveDevice",
       "runner.register",
       "runner.rotateKey",
     ]) {
       const res = await callOp(token, "presence.challenge", { op, input: {} });
       expect([op, res.status]).toEqual([op, 403]);
     }
+  });
+
+  it("connects a runner from the desktop with Touch ID, never without a proof (ADR 0056, amended 2026-11-15)", async () => {
+    const w = await world();
+    const { token, device } = await signIn(w);
+    const started = await json<{ deviceCode: string; userCode: string }>(
+      await post("device/start", { name: "m1" }, undefined, "/runner/v1"),
+    );
+    const looked = await callOp(token, "runner.deviceLookup", { userCode: started.userCode });
+    expect(looked.status).toBe(200);
+    expect((await json<{ result: unknown }>(looked)).result).toMatchObject({
+      suggestedName: "m1",
+      status: "pending",
+    });
+    const input = { userCode: started.userCode, name: "Office Mac" };
+    const bare = await callOp(token, "runner.approveDevice", input);
+    expect(bare.status).toBe(403);
+    expect(await json(bare)).toMatchObject({ details: { browserOnly: true } });
+    const proof = await prove(token, device, "runner.approveDevice", input);
+    expect(proof.summary).toBe("Connect a runner to your account");
+    const proven = await callOp(token, "runner.approveDevice", input, proof);
+    expect(proven.status).toBe(200);
+    const runners = await json<{ result: { runners: { name: string; ownerUserId: string }[] } }>(
+      await callOp(token, "runner.list", {}),
+    );
+    expect(runners.result.runners.map((r) => r.name)).toContain("Office Mac");
+    // The waiting CLI collects its key.
+    const polled = await json<{ status: string }>(
+      await post("device/poll", { deviceCode: started.deviceCode }, undefined, "/runner/v1"),
+    );
+    expect(polled.status).toBe("approved");
   });
 
   it("refuses proofs from a software key: an unsigned build can't give one (criterion 6)", async () => {

@@ -1,5 +1,5 @@
 // Team (.kim/mockups/team-an-agent.html): Agents, Runners and People. `?tab=` picks the tab (Agents
-// without it), `?agent=` the agent shown (else the first).
+// without it), `?agent=` the agent shown (else the first), `?runner=` the runner whose detail is open.
 import { createRoute } from "@tanstack/react-router";
 import { TeamPage, type TeamTab } from "../components/flow/team.tsx";
 import {
@@ -14,6 +14,8 @@ import { flowOrg } from "./flow.$orgId.tsx";
 interface Search {
   tab?: Exclude<TeamTab, "agents">;
   agent?: string;
+  /** Runners: the runner whose detail is open. */
+  runner?: string;
 }
 
 export const Route = createRoute({
@@ -22,6 +24,7 @@ export const Route = createRoute({
   validateSearch: (s: Record<string, unknown>): Search => ({
     ...(s.tab === "runners" || s.tab === "people" ? { tab: s.tab } : {}),
     ...(typeof s.agent === "string" && s.agent ? { agent: s.agent } : {}),
+    ...(typeof s.runner === "string" && s.runner ? { runner: s.runner } : {}),
   }),
   loaderDeps: ({ search }) => ({ tab: search.tab, agent: search.agent }),
   loader: async ({ context: { queryClient }, params: { orgId }, deps: { tab, agent } }) => {
@@ -42,6 +45,6 @@ export const Route = createRoute({
 
 function TeamRoute() {
   const { orgId } = Route.useParams();
-  const { tab, agent } = Route.useSearch();
-  return <TeamPage orgId={orgId} tab={tab ?? "agents"} agentId={agent} />;
+  const { tab, agent, runner } = Route.useSearch();
+  return <TeamPage orgId={orgId} tab={tab ?? "agents"} agentId={agent} runnerId={runner} />;
 }

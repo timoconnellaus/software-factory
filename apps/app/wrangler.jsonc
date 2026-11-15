@@ -40,7 +40,7 @@
   "vars": {
     "BETTER_AUTH_URL": "https://software-factory.zerobsai.com",
     "GH_APP_CLIENT_ID": "Iv23li0zTckLOY2IO9aB",
-    // V1 has one user (docs/v1-scope.md): GitHub logins allowed to sign in, comma-separated. Empty
+    // Sign-in is invite-only for now: the GitHub logins allowed to sign in, comma-separated. Empty
     // lets nobody in (fail closed).
     "ALLOWED_GITHUB_LOGINS": "timoconnellaus",
     // The phone app's release signing certificate (ADR 0541): SHA-256, comma-separated, as
