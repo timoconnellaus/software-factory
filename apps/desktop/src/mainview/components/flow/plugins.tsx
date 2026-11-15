@@ -410,9 +410,12 @@ function Gateways({
               >
                 <CableIcon className="size-4 flex-none text-ink-muted" />
                 <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{g.name}</span>
+                  {/* Named for the system, not its key; the account is the line under it. */}
+                  <span className="block font-medium">
+                    {g.name === "github" ? "GitHub" : g.name}
+                  </span>
                   <span className="block truncate text-[12px] text-ink-muted">
-                    {g.description ?? g.baseUrl}
+                    {g.description?.replace(/^GitHub, connected/, "Connected") ?? g.baseUrl}
                   </span>
                 </span>
                 <span className="text-[12px] text-ink-muted">The item's repository</span>

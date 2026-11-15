@@ -79,9 +79,7 @@ describe("Gateways", () => {
     const html = await renderPage(`/flow/${ORG}/plugins?tab=gateways`);
     const text = textOf(html);
     expect(html.split('data-testid="gateway-builtin"').length - 1).toBe(1);
-    expect(text).toContain(
-      "github GitHub, connected as acme The item's repository Connected Built in",
-    );
+    expect(text).toContain("GitHub Connected as acme The item's repository Connected Built in");
     // Edit and Remove only on the org's own four.
     expect(html.split('data-testid="edit-gateway"').length - 1).toBe(4);
     expect(html.split('data-testid="remove-gateway"').length - 1).toBe(4);

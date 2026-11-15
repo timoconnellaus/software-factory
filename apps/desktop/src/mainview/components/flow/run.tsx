@@ -9,6 +9,7 @@ import {
   type BarSegment,
   type FlowRunEvent,
   type FlowRunView,
+  plumbingWords,
   type RunStep,
   readNewEvents,
   runCost,
@@ -20,6 +21,7 @@ import {
   sinceStart,
   stepDuration,
   stepInput,
+  stepLabel,
   stepMs,
   timeBar,
 } from "@software-factory/client/flow-run";
@@ -236,6 +238,7 @@ function Loaded({
       {steps.length > 0 && <TimeBar steps={steps} span={span} />}
       <div className="flex min-h-0 flex-1">
         <StepList
+          runId={run.id}
           steps={steps}
           start={span.start}
           live={live}
@@ -347,10 +350,13 @@ function TimeBar({ steps, span }: { steps: RunStep[]; span: { start: number; end
         Model
         {track(bar.model)}
       </div>
-      <div className="mt-1 grid grid-cols-[92px_1fr] items-center text-[11.5px] text-ink-muted">
-        Tools
-        {track(bar.tools)}
-      </div>
+      {/* No tool results (a runner that sends calls without them): no tool time to show. */}
+      {steps.some((s) => s.kind === "tool" && s.endAt !== null) && (
+        <div className="mt-1 grid grid-cols-[92px_1fr] items-center text-[11.5px] text-ink-muted">
+          Tools
+          {track(bar.tools)}
+        </div>
+      )}
     </div>
   );
 }
@@ -369,6 +375,7 @@ function ToolIcon({ name }: { name: string }) {
 }
 
 function StepList({
+  runId,
   steps,
   start,
   live,
@@ -376,6 +383,7 @@ function StepList({
   onSelect,
   empty,
 }: {
+  runId: string;
   steps: RunStep[];
   start: number;
   live: boolean;
@@ -405,6 +413,8 @@ function StepList({
       {steps.length === 0 && empty && <p className="p-4 text-ink-muted">{empty}</p>}
       {steps.map((s) => {
         const ms = stepMs(s);
+        // Every run's own plumbing (its prompt file, its result file) in plain words.
+        const plain = s.kind === "tool" ? plumbingWords(s, runId) : null;
         return (
           <Button
             key={s.seq}
@@ -430,10 +440,14 @@ function StepList({
             )}
             {s.kind === "note" ? (
               <span className="line-clamp-4 min-w-0 break-words">{s.text}</span>
+            ) : plain ? (
+              <span className={cn("min-w-0 truncate", s.isError && "text-bad")}>{plain}</span>
             ) : (
               <span className="min-w-0 truncate">
                 <b className={cn("font-semibold", s.isError && "text-bad")}>{s.name}</b>{" "}
-                <code className="font-mono text-[11.5px] text-ink-muted">{s.label}</code>
+                <code className="font-mono text-[11.5px] text-ink-muted">
+                  {stepLabel(s, runId)}
+                </code>
               </span>
             )}
             <span className="text-right text-[11.5px] text-ink-faint">

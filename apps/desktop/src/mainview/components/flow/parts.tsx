@@ -4,7 +4,7 @@
 import type { Chip } from "@software-factory/client/flow";
 import { Tabs, TabsList, TabsTrigger } from "@software-factory/ui/components/tabs";
 import { cn } from "@software-factory/ui/lib/utils";
-import { BotIcon } from "lucide-react";
+import { BotIcon, PuzzleIcon } from "lucide-react";
 import type * as React from "react";
 
 /** The content's header: the page's title, its section's tabs, then whatever the page adds. */
@@ -84,7 +84,13 @@ export function ChipPill({ chip, className }: { chip: Chip; className?: string }
 }
 
 /** An owner's mark: an agent's is square, a person's round. */
-export function OwnerMark({ name, kind }: { name: string; kind: "agent" | "person" | "none" }) {
+export function OwnerMark({
+  name,
+  kind,
+}: {
+  name: string;
+  kind: "agent" | "person" | "plugin" | "none";
+}) {
   if (kind === "none") return null;
   return (
     <span
@@ -93,8 +99,12 @@ export function OwnerMark({ name, kind }: { name: string; kind: "agent" | "perso
         "inline-grid size-[17px] flex-none place-items-center border border-line bg-window font-semibold text-[9px] text-ink",
         kind === "person" ? "rounded-full" : "rounded-[5px]",
       )}
+      data-kind={kind}
     >
-      {kind === "agent" && name === "An agent" ? (
+      {/* A plugin wears the Plugins screen's mark, so its name never reads as a person's. */}
+      {kind === "plugin" ? (
+        <PuzzleIcon className="size-[11px]" />
+      ) : kind === "agent" && name === "An agent" ? (
         <BotIcon className="size-[11px]" />
       ) : (
         initials(name)

@@ -60,6 +60,7 @@ export function chatPrompt(run: ClaimedRun, history: ChatMessage[]): string {
     '{ "outcome": "done", "summary": "your reply, in Markdown" }',
     "```",
     "The summary is your reply, shown to the person as it is: Markdown, as long as the answer needs. It is your answer to them, not a status report.",
+    'Do not mention the result file, the prompt file, the working folder or the word "outcome" in it.',
   );
   return lines.join("\n");
 }
