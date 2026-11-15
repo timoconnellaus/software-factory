@@ -12,6 +12,7 @@ import {
   ownerOf,
   when,
 } from "@software-factory/client/flow";
+import { type FlowField, fieldChips } from "@software-factory/client/flow-edit";
 import { Button } from "@software-factory/ui/components/button";
 import {
   Dialog,
@@ -48,8 +49,15 @@ import { OpError, op, submitKey } from "../../lib/op.ts";
 import { useSession } from "../../lib/session.ts";
 import { ItemPanel } from "./item.tsx";
 import { ChipPill, OwnerMark, PageHeader, Pill, StatusMark } from "./parts.tsx";
+import { WorkflowEditor } from "./workflow.tsx";
 
-export type BoardView = "board" | "list";
+export type BoardView = "board" | "list" | "workflow";
+
+const TAB: Record<BoardView, string> = { board: "Board", list: "List", workflow: "Workflow" };
+const VIEW: Record<string, "list" | "workflow" | undefined> = {
+  List: "list",
+  Workflow: "workflow",
+};
 
 export function ProjectPage({
   orgId,
@@ -77,18 +85,25 @@ export function ProjectPage({
   const me = session.user.id;
   const working = items.filter((i) => chipOf(i, me) === "working").length;
   const needs = items.filter((i) => chipOf(i, me) === "needs-you").length;
+  const sharedBy = project
+    ? (projects.data?.projects.filter((p) => p.workflowId === project.workflowId).length ?? 0)
+    : 0;
 
   return (
     <main className="flex min-w-0 flex-1 flex-col" data-testid="project-page">
       <PageHeader
         title={project?.name ?? ""}
-        tabs={["Board", "List"]}
-        tab={view === "list" ? "List" : "Board"}
+        tabs={["Board", "List", "Workflow"]}
+        tab={TAB[view]}
         onTab={(t) =>
           void navigate({
             to: "/flow/$orgId/p/$projectId",
             params: { orgId, projectId },
-            search: (s) => ({ ...s, view: t === "List" ? ("list" as const) : undefined }),
+            search: (s) => ({
+              ...s,
+              view: VIEW[t],
+              item: t === "Workflow" ? undefined : s.item,
+            }),
           })
         }
       >
@@ -96,7 +111,15 @@ export function ProjectPage({
           <Pill data-testid="workflow-name">
             <WorkflowIcon />
             {workflow.data.workflow.name}
+            {sharedBy > 1 && <span className="text-ink-faint">· used by {sharedBy} projects</span>}
           </Pill>
+        )}
+        {view === "workflow" && (
+          <Button asChild variant="ghost" size="xs" className="text-ink-muted">
+            <Link to="/flow/$orgId/workflows" params={{ orgId }} data-testid="all-workflows">
+              All workflows
+            </Link>
+          </Button>
         )}
         <span className="flex-1" />
         {working > 0 && (
@@ -120,7 +143,20 @@ export function ProjectPage({
           <PlusIcon />
         </Button>
       </PageHeader>
-      {board.error ? (
+      {view === "workflow" ? (
+        project && workflow.data ? (
+          <WorkflowEditor
+            key={workflow.data.id}
+            orgId={orgId}
+            workflow={workflow.data}
+            project={project}
+          />
+        ) : workflow.error ? (
+          <p className="p-6 text-bad">Couldn't load the workflow. {workflow.error.message}</p>
+        ) : (
+          <BoardSkeleton />
+        )
+      ) : board.error ? (
         <p className="p-6 text-bad">Couldn't load the board. {board.error.message}</p>
       ) : !board.data ? (
         <BoardSkeleton />
@@ -137,7 +173,9 @@ export function ProjectPage({
       ) : (
         <Board board={board.data} project={project} names={names} me={me} selected={itemId} />
       )}
-      {itemId && <ItemPanel orgId={orgId} itemId={itemId} project={project} />}
+      {itemId && view !== "workflow" && (
+        <ItemPanel orgId={orgId} itemId={itemId} project={project} />
+      )}
       <NewItemDialog
         orgId={orgId}
         projectId={projectId}
@@ -187,6 +225,7 @@ function Board({ board, project, names, me, selected }: ViewProps) {
           names={names}
           me={me}
           selected={selected}
+          fields={board.fields}
         />
       ))}
     </div>
@@ -202,6 +241,7 @@ function Column({
   names,
   me,
   selected,
+  fields,
 }: {
   status: FlowStatus;
   items: FlowItem[];
@@ -211,6 +251,7 @@ function Column({
   names: Names;
   me: string;
   selected: string | undefined;
+  fields: FlowField[] | undefined;
 }) {
   const owner = ownerOf(names, status.owner);
   return (
@@ -237,6 +278,7 @@ function Column({
           project={project}
           me={me}
           selected={item.id === selected}
+          fields={fields}
         />
       ))}
     </section>
@@ -249,13 +291,16 @@ function Card({
   project,
   me,
   selected,
+  fields,
 }: {
   item: FlowItem;
   owner: ReturnType<typeof ownerOf>;
   project: FlowProject | undefined;
   me: string;
   selected: boolean;
+  fields: FlowField[] | undefined;
 }) {
+  const chips = fieldChips(item, fields);
   return (
     <Link
       to="."
@@ -272,6 +317,15 @@ function Card({
         <ChipPill chip={chipOf(item, me)} className="ml-auto h-[18px] px-[7px] text-[10.5px]" />
       </span>
       <span className="font-medium leading-[1.35]">{item.title}</span>
+      {chips.length > 0 && (
+        <span className="flex flex-wrap gap-x-2 gap-y-0.5 text-[11.5px] text-ink-muted">
+          {chips.map((c) => (
+            <span key={c.id} className="truncate" data-testid="card-field">
+              <span className="text-ink-faint">{c.label}:</span> {c.value}
+            </span>
+          ))}
+        </span>
+      )}
       <span className="flex items-center gap-1.5 text-[11.5px] text-ink-muted">
         <OwnerMark name={owner.name} kind={owner.kind} />
         {owner.name}

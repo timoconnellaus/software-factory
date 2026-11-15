@@ -88,7 +88,10 @@ export type CheckPhase =
  * An operation's answer as the view sees it: the door's `{ result }` or `{ code, error }`. A call a
  * gate holds is `{ ok: false, code: "pending" }`. Bytes travel as `{ $bytes: base64 }` both ways.
  */
-export type CallResult = { ok: true; result: unknown } | { ok: false; code: string; error: string };
+export type CallResult =
+  | { ok: true; result: unknown }
+  /** `details`: what an `invalid_input` refusal carries beside its message (a workflow's problems). */
+  | { ok: false; code: string; error: string; details?: unknown };
 
 /**
  * What a run's web terminal socket did (spec 42, ADR 0530), relayed by the main process: the relay's

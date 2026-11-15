@@ -13,6 +13,7 @@ import {
   ownerOf,
   when,
 } from "@software-factory/client/flow";
+import { fieldChips } from "@software-factory/client/flow-edit";
 import { Button } from "@software-factory/ui/components/button";
 import { Skeleton } from "@software-factory/ui/components/skeleton";
 import { Textarea } from "@software-factory/ui/components/textarea";
@@ -30,6 +31,7 @@ import {
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  flowBoardQuery,
   flowItemQuery,
   flowTimelineQuery,
   flowWorkflowQuery,
@@ -41,8 +43,8 @@ import { useSession } from "../../lib/session.ts";
 import { ChipPill, OwnerMark, Pill, StatusMark } from "./parts.tsx";
 import { Timeline } from "./timeline.tsx";
 
-/** Everything an item's views show, and the writes they send. */
-function useItem(orgId: string, itemId: string, project: FlowProject | undefined) {
+/** Everything an item's views show (the panel, the page, the inbox), and the writes they send. */
+export function useItem(orgId: string, itemId: string, project: FlowProject | undefined) {
   const session = useSession();
   const names = useNames(orgId);
   const item = useQuery(flowItemQuery(orgId, itemId));
@@ -55,14 +57,22 @@ function useItem(orgId: string, itemId: string, project: FlowProject | undefined
   const [busy, setBusy] = useState(false);
   const statuses: FlowStatus[] = workflow.data?.workflow.statuses ?? [];
   const data = item.data;
+  // Plugin fields' labels come beside the board's items: the board's read, when it was made.
+  const board = useQuery({
+    ...flowBoardQuery(orgId, project?.id ?? data?.projectId ?? ""),
+    enabled: false,
+  });
   const me = session.user.id;
 
-  async function send(run: () => Promise<unknown>, failed: string) {
+  /** Sends one write; true when it went through. */
+  async function send(run: () => Promise<unknown>, failed: string): Promise<boolean> {
     setBusy(true);
     try {
       await run();
+      return true;
     } catch (error) {
       toast.error(error instanceof OpError || error instanceof Error ? error.message : failed);
+      return false;
     } finally {
       await refresh();
       setBusy(false);
@@ -80,6 +90,7 @@ function useItem(orgId: string, itemId: string, project: FlowProject | undefined
     rows: timeline.data ? buildTimeline(timeline.data.entries, statuses, names) : [],
     decision: data ? decisionFor(data, statuses, me) : null,
     chip: data ? chipOf(data, me) : null,
+    fields: data ? fieldChips(data, board.data?.fields) : [],
     busy,
     act: (a: Decision["actions"][number]) =>
       send(
@@ -261,6 +272,12 @@ export function ItemPage({
                 <dd>{when(item.createdAt)}</dd>
                 <dt className="text-ink-muted">Updated</dt>
                 <dd>{when(item.updatedAt)}</dd>
+                {view.fields.map((f) => (
+                  <div key={f.id} className="contents" data-testid="item-field">
+                    <dt className="truncate text-ink-muted">{f.label}</dt>
+                    <dd>{f.value}</dd>
+                  </div>
+                ))}
               </dl>
             </aside>
           )}
@@ -291,8 +308,6 @@ function ItemBody({
         <Skeleton className="h-16 w-full" />
       </div>
     );
-  const status = view.statuses[view.status];
-  const owner = status ? ownerOf(view.names, status.owner) : null;
   return (
     <>
       <h2
@@ -304,21 +319,7 @@ function ItemBody({
       >
         {item.title}
       </h2>
-      {size === "panel" && (
-        <div className="mb-3 flex flex-wrap gap-[5px]" data-testid="item-props">
-          <Pill className="rounded-[7px] text-ink">
-            {view.status >= 0 && <StatusMark index={view.status} count={view.statuses.length} />}
-            {status?.name ?? item.statusId}
-          </Pill>
-          {owner && owner.kind !== "none" && (
-            <Pill className="rounded-[7px] text-ink">
-              <OwnerMark name={owner.name} kind={owner.kind} />
-              {owner.name}
-            </Pill>
-          )}
-          {project && <Pill className="rounded-[7px] text-ink">{project.name}</Pill>}
-        </div>
-      )}
+      {size === "panel" && <ItemPills view={view} project={project} />}
       {item.body && <p className="mb-3.5 whitespace-pre-wrap text-body-ink">{item.body}</p>}
       <div className={cn(size === "panel" && "border-line-soft border-t pt-3")}>
         <Timeline
@@ -335,12 +336,45 @@ function ItemBody({
   );
 }
 
+/** The item's property pills: its status, its owner, its project, then its plugin fields. */
+export function ItemPills({ view, project }: { view: ItemView; project: FlowProject | undefined }) {
+  const { item } = view;
+  if (!item) return null;
+  const status = view.statuses[view.status];
+  const owner = status ? ownerOf(view.names, status.owner) : null;
+  return (
+    <div className="mb-3 flex flex-wrap gap-[5px]" data-testid="item-props">
+      <Pill className="rounded-[7px] text-ink">
+        {view.status >= 0 && <StatusMark index={view.status} count={view.statuses.length} />}
+        {status?.name ?? item.statusId}
+      </Pill>
+      {owner && owner.kind !== "none" && (
+        <Pill className="rounded-[7px] text-ink">
+          <OwnerMark name={owner.name} kind={owner.kind} />
+          {owner.name}
+        </Pill>
+      )}
+      {project && <Pill className="rounded-[7px] text-ink">{project.name}</Pill>}
+      <FieldPills view={view} />
+    </div>
+  );
+}
+
+function FieldPills({ view }: { view: ItemView }) {
+  return view.fields.map((f) => (
+    <Pill key={f.id} className="rounded-[7px] text-ink" data-testid="item-field">
+      <span className="text-ink-muted">{f.label}:</span>
+      {f.value}
+    </Pill>
+  ));
+}
+
 function CommentBox({
   onSend,
   busy,
   className,
 }: {
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string) => Promise<unknown>;
   busy: boolean;
   className?: string;
 }) {

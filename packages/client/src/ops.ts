@@ -145,6 +145,8 @@ export class OpError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** What the refusal carries beside its message (a refused workflow's problems). */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "OpError";
