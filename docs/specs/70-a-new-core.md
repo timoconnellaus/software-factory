@@ -144,6 +144,33 @@ sf call flow.agent.update '{"orgId":"<org>","agentId":"<agent>","name":"Builder"
 curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=<key>" -d '{"subject":"Help"}'
 ```
 
+### Milestone 4: the run view, as built (2026-11-15)
+- **What is stored.** The channel's `events` call for a flow run now stores what the runner sends
+  (`flow_run_events`, migration 0434), normalised to three kinds: `note` (the assistant's
+  `message`), `tool` (name, a short label from its input, the input, its id when the session
+  gives one) and `result` (a `tool.result`: output, isError). Logs, status changes, job states,
+  the person's messages and the session's start and end are dropped. Each text is capped at 4,000
+  characters, a label at 120, and a run at 2,000 events (the rest dropped, the run marked
+  truncated). Keyed by the runner's own per-job seq: a replay stores nothing twice. One D1 batch
+  per call, no audit row; accepted after the hand-back, since the host flushes its last then.
+- **What the runner sends.** A tmux session (the default) sends the assistant's text and each
+  tool call (from the PreToolUse hook), but no tool results and no usage, so its steps have no
+  duration and its run no tokens. A stream-json session also sends `tool.result` and, per turn,
+  token counts (input, output, cache read, cache write), which are summed into `flow_runs.tokens`.
+  No runner sends cost: `cost_usd` is there and stays null. No runner sends thinking.
+- **Retention.** A run's events are deleted 30 days after it finished, by the minute cron
+  (`pruneRunEvents`: the oldest due run through `flow_runs_events_due_idx`, 500 rows a round, at
+  most 4 rounds a tick). The run row and its totals are kept.
+- **Operations.** `flow.run.get` adds the totals (durationMs, steps, tokens, costUsd), what started
+  it (`startedBy`: "entering <status>"), agentName, runnerName, eventsTruncated, eventsRemoved, and
+  doesn't assume the run has an item. `flow.run.events { runId, after? }` returns at most 500
+  events after a seq, with `truncated` and `done`. `flow.run.list` rows carry steps, tokens and
+  costUsd. `flow.inbox.get` adds `done`: the last 30 items the person finished or decided
+  (`flow_events_person_done_idx`, a partial index on the timeline's own JSON). `flow.gateway.save`
+  takes `gatewayId` to change or rename one; `flow.gateway.delete` takes `gatewayId` or `name`.
+- **Left out** (keep it simple): a live stream, search or filters in a run, steering or typing
+  into a session, a terminal, and the mockup's "Produced" line (nothing reports it yet).
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the
@@ -173,7 +200,8 @@ later. The item moved to Review and appeared in the person's inbox; the person f
 moved to Done. The timeline shows each move and the agent's text. No code names either status.
 
 Known gaps, left on purpose: a claim whose reply is lost isn't retried cleanly; any org member can
-finish a person's status; a run's events aren't stored, so the run view has nothing to show yet.
+finish a person's status; a run's events aren't stored, so the run view has nothing to show yet
+(stored since migration 0434: see "the run view, as built" above).
 
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge

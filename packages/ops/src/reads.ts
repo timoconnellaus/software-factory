@@ -5,14 +5,19 @@ import {
   agentRuns,
   board,
   declaredFields,
-  getListedRun,
   INBOX_ALL_LIMIT,
   INBOX_ALL_ORGS,
+  INBOX_DONE_LIMIT,
   inbox,
   inboxAll,
   itemRuns,
   listMembers,
   MEMBER_LIMIT,
+  RUN_EVENT_TEXT_MAX,
+  RUN_EVENTS_CAP,
+  RUN_EVENTS_PAGE,
+  runEventsPage,
+  runView,
   timeline,
 } from "@software-factory/store";
 import { z } from "zod";
@@ -43,8 +48,7 @@ export const readOps = [
   }),
   defineOperation({
     name: "flow.inbox.get",
-    description:
-      "What waits on you in this org: items in statuses you own (`work`) and items waiting on a decision (`decisions`), each with projectName, projectKey and statusName. At most 100 of each.",
+    description: `What waits on you in this org: items in statuses you own (\`work\`) and items waiting on a decision (\`decisions\`), each with projectName, projectKey and statusName, at most 100 of each; and \`done\`: the last ${INBOX_DONE_LIMIT} items you finished or decided, newest first, each with \`doneAt\`.`,
     risk: "read",
     input: z.object({ orgId }),
     handler: (_input, ctx) => inbox(ctx.d1, ctx.orgId, personOf(ctx.actor)),
@@ -85,13 +89,24 @@ export const readOps = [
   defineOperation({
     name: "flow.run.get",
     description:
-      "One run: its agent, status, brief, result or error, and its item's itemTitle, itemNumber and projectKey.",
+      'One run: its agent (and agentName), status, brief, result or error; its item\'s itemTitle, itemNumber, projectId and projectKey (null for a run on no item); and its totals: claimedAt (started), finishedAt, durationMs, steps (tool calls), tokens and costUsd when the runner reports them (else null), startedBy ("entering <status name>"), runnerName, eventsTruncated and eventsRemoved (its events are kept 30 days after it finished).',
     risk: "read",
     input: z.object({ orgId, runId: id }),
     handler: async (input, ctx) => {
-      const run = await getListedRun(ctx.d1, input.runId);
+      const run = await runView(ctx.d1, input.runId, ctx.now);
       if (!run) throw new OpError("not_found", `No run ${input.runId}.`);
       return { run };
+    },
+  }),
+  defineOperation({
+    name: "flow.run.events",
+    description: `What a run's agent did, in order: \`note\` (it said something: text), \`tool\` (a call: name, label, input, toolId) and \`result\` (a call's output: toolId, output, isError), each with the runner's seq and its time \`at\`. At most ${RUN_EVENTS_PAGE} a call, after seq \`after\` (a full page means ask again from its last seq). Each text is capped at ${RUN_EVENT_TEXT_MAX} characters; \`truncated\` says the run went past ${RUN_EVENTS_CAP} events and the rest were dropped; \`done\` says the run has ended (a last few may still arrive).`,
+    risk: "read",
+    input: z.object({ orgId, runId: id, after: z.number().int().min(0).optional() }),
+    handler: async (input, ctx) => {
+      const page = await runEventsPage(ctx.d1, input.runId, input.after ?? 0);
+      if (!page) throw new OpError("not_found", `No run ${input.runId}.`);
+      return page;
     },
   }),
 ];

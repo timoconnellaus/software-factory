@@ -6,7 +6,7 @@ import type { Status, Workflow } from "@software-factory/flow";
 import { sql } from "kysely";
 import { flowDb, StoreError } from "./db.ts";
 import { type Run, toRun } from "./runs.ts";
-import type { FlowItemsTable, FlowRunsTable } from "./schema.ts";
+import type { FlowItemsTable, FlowRunRow } from "./schema.ts";
 import { type Item, toItem } from "./step.ts";
 
 /** The most items `board` returns. */
@@ -142,16 +142,65 @@ export async function inbox(
   d1: D1Database,
   orgId: string,
   userId: string,
-): Promise<{ work: ListedItem[]; decisions: ListedItem[]; truncated: boolean }> {
-  const [work = [], decisions = []] = await listedBatch(d1, [
+): Promise<{
+  work: ListedItem[];
+  decisions: ListedItem[];
+  done: DoneItem[];
+  truncated: boolean;
+}> {
+  const statements = [
     waitingIn(d1, [orgId], { on: "person", userId }, INBOX_LIMIT + 1),
     waitingIn(d1, [orgId], { on: "decision" }, INBOX_LIMIT + 1),
-  ]);
+    doneBy(d1, orgId, userId),
+  ];
+  const [work, decisions, done] = await d1.batch<ListedRow & { done_at: string }>(statements);
+  const oldestFirst = (rows: ListedRow[]) =>
+    rows.map(toListed).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const w = oldestFirst(work?.results ?? []);
+  const d = oldestFirst(decisions?.results ?? []);
   return {
-    work: work.slice(0, INBOX_LIMIT),
-    decisions: decisions.slice(0, INBOX_LIMIT),
-    truncated: work.length > INBOX_LIMIT || decisions.length > INBOX_LIMIT,
+    work: w.slice(0, INBOX_LIMIT),
+    decisions: d.slice(0, INBOX_LIMIT),
+    done: (done?.results ?? [])
+      .map(({ done_at, ...row }) => ({ ...toListed(row), doneAt: done_at }))
+      .sort((a, b) => b.doneAt.localeCompare(a.doneAt)),
+    truncated: w.length > INBOX_LIMIT || d.length > INBOX_LIMIT,
   };
+}
+
+/** The most items in the inbox's `done` list. */
+export const INBOX_DONE_LIMIT = 30;
+
+/** An item a person finished or decided, with when they last did. */
+export interface DoneItem extends ListedItem {
+  doneAt: string;
+}
+
+/**
+ * The last INBOX_DONE_LIMIT items `userId` finished or decided in the org, newest first: their
+ * newest 100 such timeline events (flow_events_person_done_idx, migration 0434), one row per item.
+ * The expressions and the partial index's WHERE are the index's own, word for word, so SQLite
+ * uses it; the GROUP BY sorts those 100 rows at most.
+ */
+function doneBy(d1: D1Database, orgId: string, userId: string): D1PreparedStatement {
+  return d1
+    .prepare(
+      `SELECT i.*, p.name AS project_name, p.key AS project_key,
+          (SELECT json_extract(s.value, '$.name') FROM json_each(w.definition, '$.statuses') AS s
+            WHERE json_extract(s.value, '$.id') = i.status_id) AS status_name,
+          d.done_at
+        FROM (SELECT item_id, MAX(created_at) AS done_at FROM (
+            SELECT item_id, created_at FROM flow_events
+              WHERE org_id = ?1 AND json_extract(actor, '$.id') = ?2
+                AND kind = 'event' AND json_extract(data, '$.type') IN ('person.finished', 'decided')
+                AND json_extract(actor, '$.kind') = 'person'
+              ORDER BY created_at DESC LIMIT 100)
+          GROUP BY item_id ORDER BY done_at DESC LIMIT ${INBOX_DONE_LIMIT}) AS d
+        JOIN flow_items AS i ON i.id = d.item_id
+        JOIN flow_projects AS p ON p.id = i.project_id
+        JOIN flow_workflows AS w ON w.id = p.workflow_id`,
+    )
+    .bind(orgId, userId);
 }
 
 export interface OrgInbox {
@@ -214,7 +263,7 @@ function listedRuns(d1: D1Database) {
 }
 
 function toListedRun(
-  row: FlowRunsTable & { item_title: string; item_number: number; project_key: string },
+  row: FlowRunRow & { item_title: string; item_number: number; project_key: string },
 ): ListedRun {
   const { item_title, item_number, project_key, ...run } = row;
   return {

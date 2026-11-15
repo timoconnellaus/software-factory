@@ -1,7 +1,7 @@
 // The desktop app's reads: members, the inbox across orgs, items with their project and status
 // names, open counts, runs by agent and by id, what each agent works on, and a summary's run.
 import { env } from "cloudflare:workers";
-import { finishRun } from "@software-factory/store";
+import { finishRun, type ReportedEvent, storeRunEvents } from "@software-factory/store";
 import { describe, expect, it } from "vitest";
 import { type Caller, type CallResult, call } from "../src/index.ts";
 
@@ -297,5 +297,143 @@ describe("the desktop app's reads", () => {
     expect(entries.find((e) => e.data.type === "run.ended")?.data).toMatchObject({
       runId: run.id,
     });
+  });
+
+  it("flow.run.get: the run's totals and what started it; flow.run.events pages with `after`", async () => {
+    const sam = await person("Sam");
+    const a = await org("A", [sam]);
+    const w = await world(a, sam, "ACM");
+    const id = await w.item("Post");
+    const [run] = ok<{ runs: { id: string }[] }>(await w.op("flow.run.list", { itemId: id })).runs;
+    if (!run) throw new Error("no run");
+    const claimedAt = new Date(Date.now() - 90_000).toISOString();
+    await d1
+      .prepare(
+        "UPDATE flow_runs SET status = 'claimed', fencing_token = 1, claimed_at = ? WHERE id = ?",
+      )
+      .bind(claimedAt, run.id)
+      .run();
+    const at = (s: number) => new Date(Date.parse(claimedAt) + s * 1000).toISOString();
+    // 600 events: a note, then tool calls and their results.
+    const events: ReportedEvent[] = [
+      { type: "message", role: "assistant", text: "Plan: write it.", seq: 1, at: at(1) },
+    ];
+    for (let n = 0; n < 300; n++) {
+      const seq = 2 + n * 2;
+      events.push(
+        {
+          type: "tool",
+          name: "Read",
+          input: JSON.stringify({ file_path: `/Users/sam/w/src/f${n}.ts` }),
+          id: `t${n}`,
+          seq,
+          at: at(2 + n),
+        },
+        { type: "tool.result", toolId: `t${n}`, output: "ok", seq: seq + 1, at: at(2 + n) },
+      );
+    }
+    await storeRunEvents(d1, run.id, events);
+    const live = ok<{ events: { seq: number }[]; truncated: boolean; done: boolean }>(
+      await w.op("flow.run.events", { runId: run.id }),
+    );
+    expect(live.events).toHaveLength(500);
+    expect(live.events[0]).toEqual({ seq: 1, at: at(1), kind: "note", text: "Plan: write it." });
+    expect(live.events[1]).toMatchObject({
+      kind: "tool",
+      name: "Read",
+      label: "w/src/f0.ts",
+      toolId: "t0",
+    });
+    expect(live).toMatchObject({ truncated: false, done: false });
+    const next = ok<{ events: { seq: number }[] }>(
+      await w.op("flow.run.events", { runId: run.id, after: live.events.at(-1)?.seq }),
+    );
+    expect(next.events.map((e) => e.seq)).toEqual(Array.from({ length: 101 }, (_, i) => 501 + i));
+
+    await finishRun(d1, run.id, 1, { outcome: "done", summary: "Drafted it." });
+    const got = ok<{ run: Record<string, unknown> }>(await w.op("flow.run.get", { runId: run.id }));
+    expect(got.run).toMatchObject({
+      id: run.id,
+      agentName: `Writer ACM`,
+      itemTitle: "Post",
+      projectId: w.project.id,
+      projectKey: "ACM",
+      statusName: "Draft",
+      startedBy: "entering Draft",
+      steps: 300,
+      tokens: null,
+      costUsd: null,
+      runnerName: null,
+      eventsTruncated: false,
+      eventsRemoved: false,
+    });
+    expect(got.run.durationMs).toBeGreaterThanOrEqual(89_000);
+    expect(
+      ok<{ done: boolean }>(await w.op("flow.run.events", { runId: run.id, after: 600 })),
+    ).toEqual({
+      events: [
+        { seq: 601, at: at(301), kind: "result", toolId: "t299", output: "ok", isError: false },
+      ],
+      truncated: false,
+      done: true,
+    });
+    // The runs list carries the totals too.
+    expect(
+      ok<{ runs: unknown[] }>(await w.op("flow.run.list", { itemId: id })).runs[0],
+    ).toMatchObject({ steps: 300, costUsd: null, tokens: null });
+  });
+
+  it("flow.inbox.get's `done`: the items you finished or decided, newest first", async () => {
+    const sam = await person("Sam");
+    const lee = await person("Lee");
+    const a = await org("A", [sam, lee]);
+    const w = await world(a, sam, "ACM");
+    const first = await w.item("First", "review");
+    const second = await w.item("Second", "review");
+    await w.item("Untouched", "review");
+    ok(await w.op("flow.item.finish", { itemId: first, outcome: "done" }));
+    ok(await w.op("flow.item.finish", { itemId: second, outcome: "done" }));
+    // Each now waits on a decision: Sam approves the first. Lee's decision isn't Sam's.
+    ok(await w.op("flow.item.decide", { itemId: first, decision: "approve" }));
+    ok(await as(lee)("flow.item.decide", { orgId: a, itemId: second, decision: "reject" }));
+    const inbox = ok<{ done: (Listed & { doneAt: string })[] }>(await w.op("flow.inbox.get", {}));
+    expect(inbox.done.map((i) => i.id)).toEqual([first, second]);
+    expect(inbox.done[0]).toMatchObject({ projectKey: "ACM", statusName: "Done" });
+    const leeDone = ok<{ done: Listed[] }>(await as(lee)("flow.inbox.get", { orgId: a })).done;
+    expect(leeDone.map((i) => i.id)).toEqual([second]);
+  });
+
+  it("flow.item.get carries the org's declared fields, and an agent keeps its `mcp`", async () => {
+    const sam = await person("Sam");
+    const a = await org("A", [sam]);
+    const w = await world(a, sam, "ACM");
+    const id = await w.item("Post");
+    expect(ok(await w.op("flow.item.get", { itemId: id }))).toMatchObject({
+      id,
+      declaredFields: [],
+    });
+    const made = ok<{ id: string; mcp: string[] }>(
+      await w.op("flow.agent.create", { name: "Editor", instructions: "", mcp: ["factory"] }),
+    );
+    expect(made.mcp).toEqual(["factory"]);
+    const listed = () =>
+      w
+        .op("flow.agent.list", {})
+        .then((r) => ok<{ agents: { id: string; mcp: string[] }[] }>(r).agents)
+        .then((agents) => agents.find((g) => g.id === made.id)?.mcp);
+    expect(await listed()).toEqual(["factory"]);
+    // Left out on update: kept. Given: replaced, even with none.
+    ok(await w.op("flow.agent.update", { agentId: made.id, name: "Editor", instructions: "x" }));
+    expect(await listed()).toEqual(["factory"]);
+    const cleared = ok<{ mcp: string[] }>(
+      await w.op("flow.agent.update", {
+        agentId: made.id,
+        name: "Editor",
+        instructions: "",
+        mcp: [],
+      }),
+    );
+    expect(cleared.mcp).toEqual([]);
+    expect(await listed()).toEqual([]);
   });
 });

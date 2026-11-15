@@ -5,7 +5,7 @@ import type { Actor } from "@software-factory/flow";
 import { sql } from "kysely";
 import { parseMcp } from "./agents.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
-import type { FlowRunsTable, RunStatus } from "./schema.ts";
+import type { FlowRunRow, RunStatus } from "./schema.ts";
 import { advance, type Item, type Stepped } from "./step.ts";
 
 export interface RunResult {
@@ -30,9 +30,15 @@ export interface Run {
   createdAt: string;
   claimedAt: string | null;
   finishedAt: string | null;
+  /** Tool calls the runner reported (runEvents.ts). */
+  steps: number;
+  /** Tokens the runner reported, or null when it reports none. */
+  tokens: number | null;
+  /** Cost the runner reported, or null (no runner reports cost yet). */
+  costUsd: number | null;
 }
 
-export function toRun(row: FlowRunsTable): Run {
+export function toRun(row: FlowRunRow): Run {
   return {
     id: row.id,
     orgId: row.org_id,
@@ -50,6 +56,9 @@ export function toRun(row: FlowRunsTable): Run {
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     finishedAt: row.finished_at,
+    steps: row.steps,
+    tokens: row.tokens,
+    costUsd: row.cost_usd,
   };
 }
 
@@ -206,7 +215,7 @@ export async function endRun(
     );
   }
   const now = iso();
-  const after: FlowRunsTable = {
+  const after: FlowRunRow = {
     ...run,
     status: ended.status,
     result: ended.status === "done" ? JSON.stringify(ended.result) : null,

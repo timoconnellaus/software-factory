@@ -55,6 +55,24 @@ export {
   setProjectWorkflow,
 } from "./projects.ts";
 export {
+  normaliseEvent,
+  pruneRunEvents,
+  type ReportedEvent,
+  RUN_EVENT_LABEL_MAX,
+  RUN_EVENT_TEXT_MAX,
+  RUN_EVENTS_CAP,
+  RUN_EVENTS_KEEP_DAYS,
+  RUN_EVENTS_PAGE,
+  RUN_EVENTS_PRUNE_BATCH,
+  RUN_EVENTS_PRUNE_ROUNDS,
+  type RunEvent,
+  runEvents,
+  runEventsPage,
+  storeRunEvents,
+  toolLabel,
+} from "./run-events.ts";
+export { type RunView, runView } from "./run-view.ts";
+export {
   type ClaimedRun,
   claimRun,
   type EndedRun,
@@ -78,9 +96,11 @@ export {
   agentRuns,
   BOARD_LIMIT,
   board,
+  type DoneItem,
   getListedRun,
   INBOX_ALL_LIMIT,
   INBOX_ALL_ORGS,
+  INBOX_DONE_LIMIT,
   INBOX_LIMIT,
   inbox,
   inboxAll,

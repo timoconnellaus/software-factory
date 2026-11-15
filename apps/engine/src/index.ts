@@ -15,6 +15,7 @@ import {
 } from "@software-factory/core";
 import { expireRunsWithHooks } from "@software-factory/plugins";
 import { parseTerminalPath } from "@software-factory/runner-contract";
+import { pruneRunEvents } from "@software-factory/store";
 import { archiveAudit } from "./audit-archive.ts";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
@@ -70,6 +71,11 @@ export default {
     // of the tick.
     await expireRunsWithHooks(flowHost(env), now.getTime(), 10).catch((error) => {
       console.error("flow expireRuns failed", error);
+    });
+    // And their events, 30 days after each run finished (AGENTS.md cost rule 3): every minute, at
+    // most 4 rounds of 500 rows through flow_runs_events_due_idx; a tick with none due reads none.
+    await pruneRunEvents(env.DB, now.getTime()).catch((error) => {
+      console.error("flow pruneRunEvents failed", error);
     });
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);

@@ -11,6 +11,8 @@
 //   core_planning_events         kept: the planning record (ADR 0350), one row per person's action
 //   core_run_events, _steers     30 days after the run ended      archived to sf-archive, read back
 //                                                                  by run.live, then deleted
+//   flow_run_events (new core)   30 days after the run finished   deleted, every minute, by
+//                                                                  pruneRunEvents (packages/store)
 
 import { invoke, RUN_ARCHIVE_AFTER_DAYS, SCHEDULER } from "@software-factory/core";
 import { invokeDeps } from "./deps.ts";
