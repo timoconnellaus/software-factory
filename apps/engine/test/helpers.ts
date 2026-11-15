@@ -39,7 +39,7 @@ export const MANIFEST: CapabilityManifest = {
   harnesses: ["claude-code"],
   // `checks`: the test runner plays a host that runs the project's checks (ADR 0501), and
   // `babysit`: one that runs the babysitter's jobs (ADR 0620).
-  capabilities: ["hooks", "headless", "checks", "babysit"],
+  capabilities: ["hooks", "headless", "checks", "babysit", "flow"],
 };
 
 export const sha40 = (seed: string) =>

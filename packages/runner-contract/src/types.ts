@@ -111,6 +111,12 @@ export const CAPABILITIES = [
    * says so instead of holding them. Used only when the engine's heartbeat also declares it.
    */
   "job-line",
+  /**
+   * The runner host runs a `flow` job, the new core's run (spec 70): no repository, no branch, a
+   * plain folder. A flow run is offered only to a runner that declares it: an older host would
+   * read the stage as unknown and try to clone.
+   */
+  "flow",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 

@@ -55,6 +55,8 @@ export async function claimFlowJob(
   if (!parsed.success) return null;
   const { capacity, manifest } = parsed.data;
   if (!capacity.accepting || !manifest.harnesses.includes("claude-code")) return null;
+  // Only a host that knows the `flow` stage: an older one would try to clone a repository.
+  if (!manifest.capabilities.includes("flow")) return null;
   const paused = capacity.paused?.pools ?? [];
   const room = capacity.light
     ? capacity.light.inUse < capacity.light.max && !paused.includes("light")

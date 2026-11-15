@@ -101,7 +101,11 @@ async function route(
     return heartbeatReply(env, runner, record, signedAt);
   } else if (path === PATHS.claim) {
     // The new core's runs first (spec 70), then the old core's jobs.
-    const flowJob = await claimFlowJob(env, runner, record, signedAt);
+    // A failure here must never stop the old core's claim, which is live.
+    const flowJob = await claimFlowJob(env, runner, record, signedAt).catch((error) => {
+      console.error("flow claim failed", error);
+      return null;
+    });
     if (flowJob) return { body: { job: flowJob } };
     op = "job.claim";
     input = record;
