@@ -5,6 +5,7 @@ import {
   type CapabilityManifest,
   CONTRACT_VERSION,
   type Job,
+  type RepoJob,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "../src/deps.ts";
 
@@ -176,9 +177,9 @@ export async function runStage(
   w: World,
   workItemId: string,
   stage: Job["stage"],
-  result: (job: Job) => Promise<StageOut> | StageOut,
+  result: (job: RepoJob) => Promise<StageOut> | StageOut,
   options: { summary?: string } = {},
-): Promise<Job> {
+): Promise<RepoJob> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
       "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = ? AND status = 'queued'",
@@ -186,7 +187,7 @@ export async function runStage(
       stage,
     ),
   );
-  const claimed = await ok<{ job: Job | null }>(
+  const claimed = await ok<{ job: RepoJob | null }>(
     "job.claim",
     { claimId: uid("claim-"), manifest: MANIFEST, capacity: { max: 4, inUse: 0, accepting: true } },
     w.runnerActor,

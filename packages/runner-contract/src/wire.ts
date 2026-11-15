@@ -116,68 +116,92 @@ export const harnessProfileSchema = z
 export type HarnessProfile = z.infer<typeof harnessProfileSchema>;
 
 /** One stage job the scheduler assigned to a runner. Everything a runner needs, nothing more. */
-export const jobSchema = z.object({
-  jobId: id,
-  runId: id,
-  /** Run number within the work item (1, 2, …). Retries and send-backs get a new run. */
-  runNo: z.number().int().positive(),
-  stage: z.enum(JOB_STAGES),
-  workItem: z.object({ id, number: z.number().int().positive(), title: z.string() }),
-  repo: z.object({
-    /** Canonical clone URL; the runner maps it to a local checkout or clones it. */
-    url: z.string().url(),
-    owner: z.string(),
-    name: z.string(),
-    /** Where the run starts: the work item branch `factory/<n>-<slug>`. */
-    baseRef: z.string(),
+export const jobSchema = z
+  .object({
+    jobId: id,
+    runId: id,
+    /** Run number within the work item (1, 2, …). Retries and send-backs get a new run. */
+    runNo: z.number().int().positive(),
+    stage: z.enum(JOB_STAGES),
+    workItem: z.object({ id, number: z.number().int().positive(), title: z.string() }),
     /**
-     * The project's default branch (ADR 0320). A build merges it into the run branch before the
-     * session, so the PR stays mergeable. Optional: a job without it skips the merge.
+     * The repository. Required for every stage but `flow` (refined below), which may have none: a
+     * job without one gets a plain directory, no token, no push and no checks.
      */
-    defaultBranch: z.string().optional(),
-  }),
-  /** The run branch, `factory/<n>-<slug>-run-<k>`. The only branch this run may push (ADR 0035). */
-  branch: z.string(),
-  harness: z.object({
-    id: z.enum(HARNESSES),
-    role: z.enum(MODEL_ROLES),
-    /** The model the role resolves to (ADR 0018); the harness may ignore it. */
-    model: z.string().optional(),
-    prompt: z.string(),
+    repo: z
+      .object({
+        /** Canonical clone URL; the runner maps it to a local checkout or clones it. */
+        url: z.string().url(),
+        owner: z.string(),
+        name: z.string(),
+        /** Where the run starts: the work item branch `factory/<n>-<slug>`. */
+        baseRef: z.string(),
+        /**
+         * The project's default branch (ADR 0320). A build merges it into the run branch before the
+         * session, so the PR stays mergeable. Optional: a job without it skips the merge.
+         */
+        defaultBranch: z.string().optional(),
+      })
+      .optional(),
     /**
-     * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it
-     * ignores it, and a job without one gets the harness defaults.
+     * The run branch, `factory/<n>-<slug>-run-<k>`. The only branch this run may push (ADR 0035).
+     * Required with a repo; a `flow` job without one has none.
      */
-    profile: harnessProfileSchema.optional(),
-  }),
-  /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
-  context: z.record(z.string(), z.unknown()),
-  /**
-   * A planning job (ADR 0300, 0350): the session it belongs to, the harness conversation to start
-   * (`--session-id`) or resume (`--resume`), and whether this is a resume. The workspace is the
-   * session's, kept across yields.
-   */
-  planning: z
-    .object({
-      sessionId: id,
-      sessionRef: z.string().regex(/^[0-9a-f-]{36}$/),
-      resume: z.boolean(),
-    })
-    .optional(),
-  /** Capabilities the job needs. A runner refuses a job whose needs its manifest doesn't cover. */
-  requires: z.array(capabilitySchema),
-  /** Visual evidence to capture after the session, when the runner has `browser`. */
-  evidence: z.object({ screenshotUrls: z.array(z.string()).optional() }).optional(),
-  limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
-  /**
-   * The project's checks (ADR 0501): the host runs them itself in the worktree, on the commit it
-   * hands back, and reports each on the hand-back. Optional: a runner that predates it ignores it,
-   * and the verdict then fails for want of results.
-   */
-  checks: jobChecksSchema.optional(),
-  /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
-  lease: z.object({ fencingToken, expiresAt: iso }),
-});
+    branch: z.string().optional(),
+    harness: z.object({
+      id: z.enum(HARNESSES),
+      role: z.enum(MODEL_ROLES),
+      /** The model the role resolves to (ADR 0018); the harness may ignore it. */
+      model: z.string().optional(),
+      prompt: z.string(),
+      /**
+       * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it
+       * ignores it, and a job without one gets the harness defaults.
+       */
+      profile: harnessProfileSchema.optional(),
+    }),
+    /** Stage input (spec, acceptance criteria, send-back notes). Never holdout tests (ADR 0034). */
+    context: z.record(z.string(), z.unknown()),
+    /**
+     * A planning job (ADR 0300, 0350): the session it belongs to, the harness conversation to start
+     * (`--session-id`) or resume (`--resume`), and whether this is a resume. The workspace is the
+     * session's, kept across yields.
+     */
+    planning: z
+      .object({
+        sessionId: id,
+        sessionRef: z.string().regex(/^[0-9a-f-]{36}$/),
+        resume: z.boolean(),
+      })
+      .optional(),
+    /** Capabilities the job needs. A runner refuses a job whose needs its manifest doesn't cover. */
+    requires: z.array(capabilitySchema),
+    /** Visual evidence to capture after the session, when the runner has `browser`. */
+    evidence: z.object({ screenshotUrls: z.array(z.string()).optional() }).optional(),
+    limits: z.object({ sessionTimeoutMs: z.number().int().positive() }),
+    /**
+     * The project's checks (ADR 0501): the host runs them itself in the worktree, on the commit it
+     * hands back, and reports each on the hand-back. Optional: a runner that predates it ignores it,
+     * and the verdict then fails for want of results.
+     */
+    checks: jobChecksSchema.optional(),
+    /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
+    lease: z.object({ fencingToken, expiresAt: iso }),
+  })
+  .superRefine((job, ctx) => {
+    // Every stage but `flow` needs a repo and a run branch, exactly as before they were optional.
+    if (job.stage === "flow") return;
+    if (job.repo === undefined) {
+      ctx.addIssue({ code: "custom", path: ["repo"], message: `a ${job.stage} job needs a repo` });
+    }
+    if (job.branch === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["branch"],
+        message: `a ${job.stage} job needs a branch`,
+      });
+    }
+  });
 
 const eventBase = { jobId: id, seq: z.number().int().nonnegative(), at: iso };
 const takeoverSchema = z.object({ label: z.string(), hint: z.string() });

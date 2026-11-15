@@ -5,7 +5,9 @@ import {
   ChannelCallError,
   CONTRACT_VERSION,
   canRun,
+  flowResultSchema,
   handleRunnerCall,
+  hasRepo,
   httpControlPlane,
   isFactoryBranch,
   isUnstoredPath,
@@ -13,10 +15,12 @@ import {
   memoryIdempotencyStore,
   PATHS,
   parseJobPath,
+  type RepoJob,
   runBranch,
   runnerChannelKey,
   runnerEventSchema,
   STEER_MAX,
+  stagePool,
   steerText,
   triageResultSchema,
   UNTRUSTED_PREAMBLE,
@@ -125,6 +129,38 @@ describe("contract helpers", () => {
     );
   });
 
+  it("takes a flow job without a repo, and still needs one for every other stage", () => {
+    const base = {
+      jobId: "job_f",
+      runId: "run_f",
+      runNo: 1,
+      workItem: { id: "wi_1", number: 1, title: "Write the launch post" },
+      harness: { id: "claude-code", role: "implement", prompt: "write it" },
+      context: {},
+      requires: [],
+      limits: { sessionTimeoutMs: 60_000 },
+      lease: { fencingToken: 1, expiresAt: "2026-11-11T01:00:00Z" },
+    };
+    const flow = jobSchema.parse({ ...base, stage: "flow" });
+    expect(hasRepo(flow)).toBe(false);
+    const build = jobSchema.safeParse({ ...base, stage: "build" });
+    expect(build.success).toBe(false);
+    expect(build.error?.issues.map((i) => i.path.join("."))).toEqual(["repo", "branch"]);
+    expect(
+      jobSchema.safeParse({
+        ...base,
+        stage: "verify",
+        repo: { url: "https://github.com/o/r.git", owner: "o", name: "r", baseRef: "factory/1-x" },
+      }).success,
+    ).toBe(false);
+    expect(stagePool("flow")).toBe("light");
+    expect(flowResultSchema.parse({ outcome: "done", summary: "posted" })).toEqual({
+      outcome: "done",
+      summary: "posted",
+    });
+    expect(flowResultSchema.safeParse({ outcome: "maybe", summary: "x" }).success).toBe(false);
+  });
+
   it("gives an artifact a content-hash id", async () => {
     const a = await artifactId({ kind: "summary", text: "hi" });
     expect(a).toMatch(/^a_[0-9a-f]{32}$/);
@@ -153,7 +189,7 @@ describe("httpControlPlane against handleRunnerCall", () => {
     requires: [],
     limits: { sessionTimeoutMs: 60_000 },
     lease: { fencingToken: 1, expiresAt: "2026-11-11T01:00:00Z" },
-  });
+  }) as RepoJob;
   const cloudFetch: typeof fetch = async (input, init) =>
     handleRunnerCall(
       new Request(input, init),

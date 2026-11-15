@@ -37,9 +37,11 @@ import {
   type AdapterEvent,
   type Artifact,
   type CapabilityManifest,
+  hasRepo,
   type Job,
   RESULT_FILE,
   ReleaseIncomplete,
+  type RepoJob,
   type RunnerAdapter,
 } from "@software-factory/runner-contract";
 import {
@@ -462,7 +464,7 @@ export function createSpritesRunner(
   const mirrors = new Map<string, Mirror>();
   const active = new Map<string, SpriteWorkspace>();
 
-  async function checkoutFor(job: Job): Promise<string> {
+  async function checkoutFor(job: RepoJob): Promise<string> {
     const found = await findCheckout(job, search);
     if (found) return found.path;
     const clone = await config.resolveRepoPath(job);
@@ -631,6 +633,9 @@ export function createSpritesRunner(
 
     async prepareWorkspace(job, signal, prepareOptions): Promise<LocalWorkspace> {
       if (job.stage === "planning") return local.prepareWorkspace(job, signal, prepareOptions);
+      // A job without a repo (a `flow` job, spec 70) gets only the local adapter's plain directory.
+      if (!hasRepo(job))
+        throw new Error(`job ${job.jobId} has no repo; this runner takes only repo jobs`);
       const session = sessionName(job.jobId);
       const name = spriteName(prefix, job.jobId);
       const root = await spritesRoot();

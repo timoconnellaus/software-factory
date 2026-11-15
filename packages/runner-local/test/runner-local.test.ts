@@ -3,7 +3,7 @@
 // steering, release and reaping.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,12 @@ import {
   SETTINGS_FILE,
   STATUS_HOOK_EVENTS,
 } from "@software-factory/harness-claude";
-import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import {
+  type AdapterEvent,
+  type Job,
+  RESULT_FILE,
+  type RepoJob,
+} from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkRunningHarness,
@@ -42,7 +47,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-function job(overrides: Partial<Job> = {}): Job {
+function job(overrides: Partial<RepoJob> = {}): RepoJob {
   return {
     jobId: "job_1",
     runId: "run_1",
@@ -419,6 +424,49 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(isWaitingNotification({ type: "auth_success" })).toBe(false);
     expect(isWaitingNotification({ message: "Claude is waiting for your input" })).toBe(true);
     await w.runner.release(job(), ws, session);
+  });
+
+  it("gives a job without a repo (flow, spec 70) a plain directory, no git, removed on release", async () => {
+    const gitCalls: string[][] = [];
+    const w = await world();
+    const runner = createLocalRunner({
+      ...w.config,
+      exec: (cmd, args, opts) => {
+        if (cmd === "git") gitCalls.push(args);
+        return w.tmux.exec(cmd, args, opts);
+      },
+    });
+    const { repo: _repo, branch: _branch, ...rest } = job();
+    const j: Job = { ...rest, stage: "flow" };
+    const signal = new AbortController().signal;
+
+    expect(await runner.resolveCheckout?.(j)).toBeNull();
+    const ws = await runner.prepareWorkspace(j, signal);
+    expect(ws.path).toBe(join(await realpathOf(join(w.root, "worktrees")), "sf-job_1"));
+    expect(ws.branch).toBe("");
+    expect(ws.baseSha).toBe("");
+    expect(existsSync(join(ws.path, ".git"))).toBe(false);
+    // Only the harness's own settings in it; dontAsk, writes inside the directory.
+    expect(await readdir(ws.path)).toEqual([".claude"]);
+    const settings = JSON.parse(await readFile(join(ws.path, SETTINGS_FILE), "utf8"));
+    expect(settings.permissions.defaultMode).toBe("dontAsk");
+    expect(settings.permissions.allow).toContain(`Write(/${ws.path}/**)`);
+
+    const session = await runner.startSession(j, ws, signal);
+    expect(await readFile(join(ws.path, PROMPT_FILE), "utf8")).toBe(j.harness.prompt);
+    expect(w.tmux.sessions.get("sf-job_1")?.submitted).toEqual([PROMPT_POINTER]);
+    await writeFile(join(ws.path, RESULT_FILE), '{"outcome":"done","summary":"ok"}');
+    const s = w.tmux.sessions.get("sf-job_1");
+    if (s) s.dead = true;
+    const events = await drain(runner.events(j, session, signal));
+    expect(events.at(-1)).toMatchObject({ type: "session.ended", outcome: "completed" });
+
+    w.tmux.sessions.delete("sf-job_1");
+    await runner.release(j, ws, session);
+    await expect(runner.release(j, ws, session)).resolves.toBeUndefined();
+    expect(existsSync(ws.path)).toBe(false);
+    expect(existsSync(join(w.runsDir, "job_1"))).toBe(false);
+    expect(gitCalls).toEqual([]);
   });
 
   it("ends when the tmux session goes: completed with a result file, failed without", async () => {

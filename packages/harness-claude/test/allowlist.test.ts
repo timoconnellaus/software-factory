@@ -71,7 +71,7 @@ describe("read-only stage allowlists", () => {
     }
   });
 
-  for (const stage of ["triage", "spec", "planning"] as const) {
+  for (const stage of ["triage", "spec", "planning", "flow"] as const) {
     it(`${stage}: no allowlisted command can start another program`, () => {
       const commands = bashCommands(stageAllow(stage, "/w"));
       expect(commands.length).toBeGreaterThan(0);

@@ -2,9 +2,9 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { RESULT_FILE } from "@software-factory/runner-contract";
+import { flowResultSchema, type Job, RESULT_FILE } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertPushable } from "../src/git.ts";
+import { assertPushable, type HostGit } from "../src/git.ts";
 import { RunnerHost } from "../src/host.ts";
 import { runJob } from "../src/job.ts";
 import { controlPlane, fakeAdapter, fakeCloud, git, job, scratchRepo } from "./helpers.ts";
@@ -80,6 +80,67 @@ describe("runJob", () => {
     expect(adapter.calls).toEqual(["prepare", "start", "events", "collect", "release"]);
     const events = cloud.events.get(j.jobId) ?? [];
     expect(events.every((e, i) => e.seq === i + 1)).toBe(true);
+    expect(events.at(-1)).toMatchObject({ type: "job.state", state: "released" });
+  });
+
+  it("runs a flow job without a repo: no token, no git, hands back { outcome, summary }", async () => {
+    const { cloud, cp } = await world();
+    const { repo: _repo, branch: _branch, ...rest } = job();
+    const j: Job = {
+      ...rest,
+      stage: "flow",
+      harness: { id: "claude-code", role: "implement", prompt: "write the post" },
+    };
+    cloud.claims.set("c", j);
+    // Any git call fails the test: a job without a repo never reaches the host's git.
+    const noGit = new Proxy({} as HostGit, {
+      get: (_t, name) => () => {
+        throw new Error(`git.${String(name)} called for a job without a repo`);
+      },
+    });
+    let dir = "";
+    const adapter = fakeAdapter(
+      () => {
+        throw new Error("clonePath called for a job without a repo");
+      },
+      async (wt) => {
+        dir = wt;
+        await writeFile(
+          join(wt, RESULT_FILE),
+          JSON.stringify({ outcome: "done", summary: "wrote it" }),
+        );
+        return [
+          { type: "agent.status" as const, status: "working" as const },
+          { type: "session.ended" as const, outcome: "completed" as const, summary: "wrote it" },
+        ];
+      },
+    );
+    const report = await runJob({ adapter, cp, git: noGit, job: j, flushMs: 5 });
+
+    expect(report.error).toBeUndefined();
+    expect(report.outcome).toBe("completed");
+    expect(report.handedBack).toBe(true);
+    expect(cloud.tokens).toBe(0);
+    const handback = cloud.handbacks.get(j.jobId);
+    expect(handback).toMatchObject({
+      branch: "",
+      outcome: "completed",
+      result: { outcome: "done", summary: "wrote it" },
+    });
+    expect(handback?.headSha).toBeUndefined();
+    expect(flowResultSchema.parse(handback?.result)).toEqual({
+      outcome: "done",
+      summary: "wrote it",
+    });
+    // No diff: the logs and the summary only.
+    const kinds = [...cloud.artifacts.values()].map((a) => a.kind).sort();
+    expect(kinds).toEqual(["log", "summary"]);
+    expect(cloud.released.get(j.jobId)?.finalState).toBe("handed_back");
+    expect(adapter.calls).toEqual(["prepare", "start", "events", "collect", "release"]);
+    // The result file was read and removed; release removed the directory.
+    expect(dir).not.toBe("");
+    expect(existsSync(dir)).toBe(false);
+    const events = cloud.events.get(j.jobId) ?? [];
     expect(events.at(-1)).toMatchObject({ type: "job.state", state: "released" });
   });
 

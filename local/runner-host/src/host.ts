@@ -408,7 +408,9 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       handedBack: false,
       done: Promise.resolve(null as unknown as JobReport),
     };
-    this.log(`claimed ${job.jobId}: ${job.stage} for #${job.workItem.number} on ${job.branch}`);
+    this.log(
+      `claimed ${job.jobId}: ${job.stage} for #${job.workItem.number}${job.branch ? ` on ${job.branch}` : ""}`,
+    );
     const done = runJob({
       adapter: this.options.adapter,
       cp: this.options.cp,

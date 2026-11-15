@@ -13,7 +13,7 @@ import { readLaunchRecord } from "@software-factory/harness-claude";
 import {
   type AdapterEvent,
   isReleaseIncomplete,
-  type Job,
+  type RepoJob,
 } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -50,7 +50,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-function job(overrides: Partial<Job> = {}): Job {
+function job(overrides: Partial<RepoJob> = {}): RepoJob {
   return {
     jobId: "job_1",
     runId: "run_1",
