@@ -7,7 +7,7 @@
 //
 // No user settings source, so the owner's personal Claude config (their own default mode, hooks,
 // plugins) never applies to a run. No MCP servers, except a planning session's own planning server
-// (`--mcp-config`), which starts (`--session-id`) or resumes (`--resume`) a known conversation. The prompt is not an argument: the adapter sends
+// and a flow job's own HTTP servers (`--mcp-config`); a planning session starts (`--session-id`) or resumes (`--resume`) a known conversation. The prompt is not an argument: the adapter sends
 // it once the launch is verified, so nothing runs before the check passes.
 //
 // After launch, `inspectLaunch` reads the pid the launch script recorded, the live process's
@@ -101,6 +101,8 @@ export function claudeArgv(
     stream?: { sessionId?: string };
     /** A container per job changes the stage's default mode (ADR 0430). */
     isolation?: Isolation;
+    /** A flow job's MCP config (spec 70 milestone 2), when the job names MCP servers. */
+    mcpConfigPath?: string;
   },
 ): string[] {
   const planning = options.planning;
@@ -121,7 +123,9 @@ export function claudeArgv(
           planning.resume ? "--resume" : "--session-id",
           planning.sessionRef,
         ]
-      : []),
+      : options.mcpConfigPath
+        ? ["--mcp-config", options.mcpConfigPath]
+        : []),
     ...(stream && !planning && stream.sessionId ? ["--session-id", stream.sessionId] : []),
     ...(job.harness.model ? ["--model", job.harness.model] : []),
     ...(stream ? STREAM_FLAGS : []),

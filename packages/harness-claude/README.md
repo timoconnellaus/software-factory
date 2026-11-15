@@ -45,6 +45,12 @@ says how Claude runs there:
   - **Hooks**, kim's semantics: `PostToolUse` brings the news since the cursor at most every 15 s;
     `UserPromptSubmit` brings it every time and cancels a waiting Stop hook; `Stop` (asyncRewake)
     waits on `planning.wait` and wakes the model when news is due, or yields when the factory asks.
+- **A flow job's MCP servers** (spec 70 milestone 2, `src/flow-mcp.ts`): a `flow` job's
+  `mcpServers` are written as HTTP servers, with their headers, to `<runDir>/mcp.json` (0600, denied
+  to the Read tool, gone with the run dir), and the launch gains `--mcp-config`. Each named server
+  gets `mcp__<name>__*` allowed, nothing broader; a name outside `[A-Za-z0-9_-]` is refused. Every
+  other stage ignores the field. Claude Code connects to them itself, outside the Bash sandbox, so
+  the sandbox's host allowlist is unchanged.
 - `scrubbedProcessEnv`: the same, for a harness the runner spawns itself.
 - `findTranscript` / `parseTranscript` / `checkOutputLog`: the check output and final message from a
   session's transcript (Orca's per-profile `CLAUDE_CONFIG_DIR` homes are searched too).

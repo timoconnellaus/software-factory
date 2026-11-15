@@ -469,6 +469,81 @@ describe("runner-local adapter", { timeout: 30_000 }, () => {
     expect(gitCalls).toEqual([]);
   });
 
+  it("connects a flow job's MCP servers (spec 70 M2), keeps their token in the run dir, removes it on release", async () => {
+    const token = "Bearer flow-secret-0123456789";
+    const w = await world();
+    const { repo: _repo, branch: _branch, ...rest } = job();
+    const j: Job = {
+      ...rest,
+      stage: "flow",
+      mcpServers: [
+        {
+          name: "factory",
+          url: "https://engine.example.com/flow/mcp",
+          headers: { authorization: token },
+        },
+      ],
+    };
+    const signal = new AbortController().signal;
+    const ws = await w.runner.prepareWorkspace(j, signal);
+    const mcpConfig = join(w.runsDir, "job_1", "mcp.json");
+    expect(JSON.parse(await readFile(mcpConfig, "utf8"))).toEqual({
+      mcpServers: {
+        factory: {
+          type: "http",
+          url: "https://engine.example.com/flow/mcp",
+          headers: { authorization: token },
+        },
+      },
+    });
+    const settings = JSON.parse(await readFile(join(ws.path, SETTINGS_FILE), "utf8"));
+    expect(settings.permissions.allow.filter((r: string) => r.startsWith("mcp__"))).toEqual([
+      "mcp__factory__*",
+    ]);
+    expect(ws.launch.argv.slice(ws.launch.argv.indexOf("--mcp-config"))[1]).toBe(mcpConfig);
+
+    const session = await w.runner.startSession(j, ws, signal);
+    await writeFile(join(ws.path, RESULT_FILE), '{"outcome":"done","summary":"ok"}');
+    const s = w.tmux.sessions.get("sf-job_1");
+    if (s) s.dead = true;
+    const events = await drain(w.runner.events(j, session, signal));
+    const artifacts = await w.runner.collectArtifacts(j, ws, session);
+    // Nothing the host sees or hands back carries the token: only the run dir's MCP config does.
+    const seen = JSON.stringify({ ws, session, events, artifacts, sent: [...w.tmux.sessions] });
+    expect(seen).not.toContain("flow-secret");
+    for (const file of await readdir(join(w.runsDir, "job_1"), { recursive: true })) {
+      if (file === "mcp.json") continue;
+      const text = await readFile(join(w.runsDir, "job_1", file), "utf8").catch(() => "");
+      expect(text, file).not.toContain("flow-secret");
+    }
+
+    w.tmux.sessions.delete("sf-job_1");
+    await w.runner.release(j, ws, session);
+    expect(existsSync(mcpConfig)).toBe(false);
+  });
+
+  it("gives a flow job without MCP servers, and any other stage, no MCP config", async () => {
+    const w = await world();
+    const signal = new AbortController().signal;
+    const { repo: _repo, branch: _branch, ...rest } = job();
+    const flow: Job = { ...rest, stage: "flow" };
+    const flowWs = await w.runner.prepareWorkspace(flow, signal);
+    expect(flowWs.launch.argv).not.toContain("--mcp-config");
+    expect(existsSync(join(w.runsDir, "job_1", "mcp.json"))).toBe(false);
+    await w.runner.release(flow, flowWs, undefined);
+    // A build job that somehow carried the field (the contract refuses it) ignores it.
+    const build = {
+      ...job(),
+      mcpServers: [{ name: "factory", url: "https://engine.example.com/flow/mcp" }],
+    } as Job;
+    const ws = await w.runner.prepareWorkspace(build, signal);
+    expect(ws.launch.argv).not.toContain("--mcp-config");
+    expect(existsSync(join(w.runsDir, "job_1", "mcp.json"))).toBe(false);
+    const settings = JSON.parse(await readFile(join(ws.path, SETTINGS_FILE), "utf8"));
+    expect(settings.permissions.allow.some((r: string) => r.startsWith("mcp__"))).toBe(false);
+    await w.runner.release(build, ws, undefined);
+  });
+
   it("ends when the tmux session goes: completed with a result file, failed without", async () => {
     for (const withResult of [true, false]) {
       const w = await world();

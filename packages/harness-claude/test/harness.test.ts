@@ -722,6 +722,76 @@ describe("attachments in a run (ADR 0310)", () => {
   });
 });
 
+describe("a flow job's MCP servers (spec 70 milestone 2)", () => {
+  const server = {
+    name: "factory",
+    url: "https://engine.example.com/flow/mcp",
+    headers: { authorization: "Bearer flow-secret" },
+  };
+
+  it("writes them as HTTP servers into the run dir, allows exactly their tools, hides the file", async () => {
+    const worktree = await temp("sf-wt-");
+    const runDir = await temp("sf-run-");
+    const projected = await projectHarness(
+      { ...job("flow"), mcpServers: [server] },
+      { worktree, runDir, runTmp: join(runDir, "tmp") },
+    );
+    const path = join(runDir, "mcp.json");
+    const argv = projected.launch.argv;
+    expect(argv.slice(argv.indexOf("--mcp-config"), argv.indexOf("--mcp-config") + 2)).toEqual([
+      "--mcp-config",
+      path,
+    ]);
+    expect(argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      mcpServers: {
+        factory: { type: "http", url: server.url, headers: server.headers },
+      },
+    });
+    const { statSync } = await import("node:fs");
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const settings = projected.settings;
+    expect(settings.permissions.allow.filter((r) => r.startsWith("mcp__"))).toEqual([
+      "mcp__factory__*",
+    ]);
+    expect(settings.permissions.deny).toContain(`Read(/${path})`);
+    // The token is only in the MCP config: not the settings, the launch record or the script.
+    for (const file of [
+      projected.settingsPath,
+      projected.localSettingsPath,
+      projected.scriptPath,
+      join(runDir, "launch.json"),
+    ]) {
+      const text = await readFile(file, "utf8").catch(() => "");
+      expect(text, file).not.toContain("flow-secret");
+    }
+    expect(JSON.stringify(projected)).not.toContain("flow-secret");
+  });
+
+  it("gives a flow job without servers, and every other stage, none", async () => {
+    for (const j of [
+      job("flow"),
+      { ...job("build"), mcpServers: [server] },
+      { ...job("triage"), mcpServers: [server] },
+    ]) {
+      const runDir = await temp("sf-run-");
+      const projected = await projectHarness(j, { worktree: await temp("sf-wt-"), runDir });
+      expect(projected.launch.argv).not.toContain("--mcp-config");
+      expect(projected.settings.permissions.allow.some((r) => r.startsWith("mcp__"))).toBe(false);
+      await expect(readFile(join(runDir, "mcp.json"))).rejects.toThrow();
+    }
+  });
+
+  it("refuses a server name that would widen its allow rule", async () => {
+    await expect(
+      projectHarness(
+        { ...job("flow"), mcpServers: [{ ...server, name: "*" }] },
+        { worktree: await temp("sf-wt-"), runDir: await temp("sf-run-") },
+      ),
+    ).rejects.toThrow(/MCP server name/);
+  });
+});
+
 describe("a planning session's projection (spec 20, ADR 0350)", () => {
   const planningJob = (resume: boolean) => ({
     ...job("planning"),

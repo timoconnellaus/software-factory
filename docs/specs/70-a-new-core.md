@@ -114,8 +114,11 @@ sf call flow.timeline.get '{"orgId":"<org>","itemId":"<item>"}'
   claimed (only its hash is stored, on the run), carried in the job's new optional `mcpServers`;
   it works while the run is claimed. Tools: `flow_ops`, `flow_call` (any `flow.*` operation as the
   run's agent, in its org), `plugin_guide`, `plugin_list`, `plugin_read`, `plugin_save` (refused
-  with the load error unless the module loads), `plugin_delete`, `gateway_list`. The runner side
-  (passing `mcpServers` to the Claude session) is another agent's change.
+  with the load error unless the module loads), `plugin_delete`, `gateway_list`.
+- **The runner side** (plain mode only; container and sprites refuse no-repo jobs): the harness writes a flow job's
+  `mcpServers` as HTTP servers to `<runDir>/mcp.json` (0600, denied to Read, removed with the run dir
+  on release), passes it with `--mcp-config` as a planning session's server is, and allows exactly
+  `mcp__<name>__*` per named server. The token is in no settings file, launch record, argv or event.
 - **Operations**: `flow.plugin.list | get | save | delete | setEnabled`,
   `flow.gateway.list | save | delete`, `flow.item.setField`; `flow.agent.create | update` take
   `mcp`. Deploying needs the Workers Paid plan (Dynamic Workers) and the `FLOW_GATEWAY_KEY` secret

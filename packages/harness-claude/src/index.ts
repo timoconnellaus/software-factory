@@ -8,6 +8,7 @@ import { claudeArgv } from "./launch.ts";
 
 export * from "./account.ts";
 export * from "./attachments.ts";
+export * from "./flow-mcp.ts";
 export * from "./launch.ts";
 export * from "./planning/hooks.ts";
 export * from "./planning/mcp.ts";

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Job, PlanningRelay } from "@software-factory/runner-contract";
 import { accountLaunchLines, CREDENTIALS_FILE, type HarnessAccount } from "./account.ts";
+import { flowMcpServers, writeFlowMcpConfig } from "./flow-mcp.ts";
 import {
   claudeArgv,
   type LaunchRecord,
@@ -58,7 +59,8 @@ export async function systemTempDirs(
 }
 
 export async function projectHarness(
-  job: Pick<Job, "stage" | "jobId" | "harness"> & Partial<Pick<Job, "planning" | "workItem">>,
+  job: Pick<Job, "stage" | "jobId" | "harness"> &
+    Partial<Pick<Job, "planning" | "workItem" | "mcpServers">>,
   options: Omit<SettingsOptions, "statusHook"> & {
     identity?: { name: string; email: string };
     claudeBin?: string;
@@ -113,6 +115,12 @@ export async function projectHarness(
   if (job.stage === "planning" && !planning) {
     throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
   }
+  // A flow job's MCP servers (spec 70 milestone 2): their config holds a bearer token, so it lives
+  // only in the run dir (removed on release) and the Read tool may not open it.
+  const mcpServers = flowMcpServers(job);
+  const mcpConfigPath = mcpServers.length
+    ? await writeFlowMcpConfig(options.runDir, mcpServers)
+    : undefined;
   const {
     statusHook: _statusHook,
     planning: _planning,
@@ -133,6 +141,7 @@ export async function projectHarness(
     ...(options.denyReadFiles ?? []),
     ...accountSecrets,
     ...(planning ? [planning.relayFile] : []),
+    ...(mcpConfigPath ? [mcpConfigPath] : []),
   ];
   const settings = runSettings(job, {
     ...settingsOptions,
@@ -141,6 +150,7 @@ export async function projectHarness(
       : {}),
     ...(denyReadFiles.length ? { denyReadFiles } : {}),
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
+    ...(mcpServers.length ? { mcpServers: mcpServers.map((s) => s.name) } : {}),
     ...(planning
       ? {
           hooks: mergeHooks(
@@ -176,6 +186,7 @@ export async function projectHarness(
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(options.profile ? { profile: options.profile } : {}),
       ...(planning ? { planning: planning.launch } : {}),
+      ...(mcpConfigPath ? { mcpConfigPath } : {}),
       ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
       ...(options.isolation ? { isolation: options.isolation } : {}),
     }),
