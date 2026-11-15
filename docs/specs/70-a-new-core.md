@@ -1,6 +1,6 @@
 # Spec 70: A new core
 
-Status: **proposed, 2026-11-15.** Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
+Status: **being built.** Milestone 1 is built and was proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
 first. This spec is the plan; each milestone gets its own short spec when it starts.
 
 ## The goal
@@ -109,6 +109,17 @@ and the older files beside them:
 | Plugins and gateways | `plugins.html`, `gateways.html` |
 | Auto | `auto-schedules.html` |
 | All orgs | `all-orgs.html` |
+
+## Milestone 1, proved (2026-11-15)
+On the deployed engine, through the `sf` CLI: an agent "Writer", a workflow "Draft, review, done"
+(Draft owned by the agent, Review by a person, Done by nobody), a project and an item "A
+lighthouse". The M5's runner updated itself to the new code, claimed the run 16 seconds after the
+item was created, ran Claude in a folder with no repository, and handed back its text 17 seconds
+later. The item moved to Review and appeared in the person's inbox; the person finished it and it
+moved to Done. The timeline shows each move and the agent's text. No code names either status.
+
+Known gaps, left on purpose: a claim whose reply is lost isn't retried cleanly; any org member can
+finish a person's status; a run's events aren't stored, so the run view has nothing to show yet.
 
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge
