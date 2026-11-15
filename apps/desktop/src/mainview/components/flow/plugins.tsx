@@ -479,6 +479,8 @@ function GatewayDialog({
         "flow.gateway.save",
         {
           orgId,
+          // Editing one: by its id, so a new name renames it rather than making another.
+          ...(gateway ? { gatewayId: gateway.id } : {}),
           name: name.trim(),
           baseUrl: baseUrl.trim(),
           auth,

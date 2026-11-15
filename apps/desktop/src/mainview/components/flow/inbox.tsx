@@ -4,7 +4,7 @@
 // led to it, newest first, then "Show the whole timeline", which opens the item. Acting on it moves
 // to the next row. The item, its timeline and its decision are the item panel's own (item.tsx,
 // timeline.tsx); nothing here is built twice.
-import type { Decision, FlowProject, FlowWorkflow } from "@software-factory/client/flow";
+import type { Decision, FlowInbox, FlowProject, FlowWorkflow } from "@software-factory/client/flow";
 import { flowKey, when } from "@software-factory/client/flow";
 import {
   type InboxRow,
@@ -27,16 +27,8 @@ const LED_HERE = 3;
 
 export type InboxTab = "needs-you" | "done";
 
-/** What the person did from the Inbox while the app is open: the Done tab's rows. */
-interface Done {
-  itemId: string;
-  projectId: string;
-  title: string;
-  number: number;
-  label: string;
-  at: string;
-}
-const DONE = new Map<string, Done[]>();
+/** The Done tab's rows: what this person finished or decided last (flow.inbox.get's `done`). */
+type Done = NonNullable<FlowInbox["done"]>[number];
 
 export function InboxPage({
   orgId,
@@ -57,7 +49,7 @@ export function InboxPage({
   const workflowOf = (project: FlowProject | undefined) =>
     workflows.data?.workflows.find((w) => w.id === project?.workflowId);
   const chosen = rows.find((r) => r.item.id === itemId) ?? rows[0];
-  const done = DONE.get(orgId) ?? [];
+  const done = inbox.data?.done ?? [];
 
   return (
     <main className="flex min-w-0 flex-1 flex-col" data-testid="inbox-page">
@@ -112,19 +104,8 @@ export function InboxPage({
                 itemId={chosen.item.id}
                 project={projectOf(chosen.item.projectId)}
                 workflow={workflowOf(projectOf(chosen.item.projectId))}
-                onActed={(label) => {
+                onActed={() => {
                   const next = nextRow(rows, chosen.item.id);
-                  DONE.set(orgId, [
-                    {
-                      itemId: chosen.item.id,
-                      projectId: chosen.item.projectId,
-                      title: chosen.item.title,
-                      number: chosen.item.number,
-                      label,
-                      at: new Date().toISOString(),
-                    },
-                    ...done,
-                  ]);
                   onChoose({ item: next ?? undefined });
                 }}
               />
@@ -244,7 +225,7 @@ function InboxItem({
               </div>
               <div className="flex flex-col gap-[9px]" data-testid="led-here">
                 {led.map((row) => (
-                  <Row key={`${row.type}${row.seq}`} row={row} />
+                  <Row key={`${row.type}${row.seq}`} row={row} runs={view.runs} />
                 ))}
               </div>
             </>
@@ -276,7 +257,7 @@ function DoneList({
   if (done.length === 0)
     return (
       <p className="text-ink-muted" data-testid="inbox-done-empty">
-        Nothing done from here yet. What you act on shows here while the app is open.
+        Nothing done yet. What you finish or decide shows here.
       </p>
     );
   return (
@@ -285,23 +266,22 @@ function DoneList({
       data-testid="inbox-done"
     >
       {done.map((d) => (
-        <li key={`${d.itemId}${d.at}`} className="border-line-soft border-b last:border-b-0">
+        <li key={d.id} className="border-line-soft border-b last:border-b-0">
           <Link
             to="/flow/$orgId/p/$projectId"
             params={{ orgId, projectId: d.projectId }}
-            search={{ item: d.itemId }}
+            search={{ item: d.id }}
             className="flex items-start gap-2 px-3 py-2.5 hover:bg-hover"
+            data-testid="inbox-done-row"
           >
             <CircleIcon className="mt-[3px] size-3 flex-none fill-ok text-ok" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">
-                {d.label}: {d.title}
-              </span>
+              <span className="block truncate font-medium">{d.title}</span>
               <span className="block text-[12px] text-ink-muted">
-                {flowKey(projectOf(d.projectId), d.number)}
+                {flowKey(projectOf(d.projectId), d.number)} · now in {d.statusName}
               </span>
             </span>
-            <time className="flex-none text-[11.5px] text-ink-faint">{when(d.at)}</time>
+            <time className="flex-none text-[11.5px] text-ink-faint">{when(d.doneAt)}</time>
           </Link>
         </li>
       ))}

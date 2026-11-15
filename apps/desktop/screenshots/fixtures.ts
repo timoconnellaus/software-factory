@@ -24,7 +24,6 @@ export class Refusal extends Error {
 }
 
 type Listed = OpOutput<"runner.list">["runners"][number];
-type Health = OpOutput<"inbox.list">["runners"][number];
 
 const listed = (over: Partial<Listed> & Pick<Listed, "id" | "name">): Listed => ({
   ownerUserId: ME,
@@ -60,45 +59,6 @@ const RUNNERS: Listed[] = [
   listed({ id: "rnr_mini", name: "Mac mini", lastSeenAt: ago(60 * 26), accepting: false }),
 ];
 
-const HEALTH: Health[] = [
-  {
-    id: "rnr_m5",
-    name: "M5",
-    state: "busy",
-    inUse: 1,
-    max: 2,
-    light: { inUse: 2, max: 6 },
-    rateLimitedUntil: null,
-    lastSeenAt: ago(0),
-    paused: null,
-    update: null,
-  },
-  {
-    id: "rnr_m1",
-    name: "M1",
-    state: "online",
-    inUse: 0,
-    max: 2,
-    light: { inUse: 0, max: 6 },
-    rateLimitedUntil: null,
-    lastSeenAt: ago(0),
-    paused: null,
-    update: { state: "behind", reason: null },
-  },
-  {
-    id: "rnr_mini",
-    name: "Mac mini",
-    state: "offline",
-    inUse: 0,
-    max: 2,
-    light: null,
-    rateLimitedUntil: null,
-    lastSeenAt: ago(60 * 26),
-    paused: null,
-    update: null,
-  },
-];
-
 type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 
 export const ANSWERS: Answers = {
@@ -112,16 +72,4 @@ export const ANSWERS: Answers = {
     ],
   }),
   "runner.list": () => ({ runners: RUNNERS }),
-  // Only the runners' health is read from the old inbox (Team > Runners).
-  "inbox.list": () => ({
-    gates: [],
-    questions: [],
-    running: [],
-    runners: HEALTH,
-    planning: [],
-    wipHolds: [],
-    protection: [],
-    releaseFlags: [],
-    mainRed: [],
-  }),
 };

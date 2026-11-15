@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ANSWERS } from "../screenshots/fixtures.ts";
 import {
   flowItemQuery,
+  flowItemRunsQuery,
+  flowRunQuery,
   flowTimelineQuery,
   flowWorkflowQuery,
 } from "../src/mainview/lib/flow-queries.ts";
@@ -98,6 +100,47 @@ describe("the board", () => {
     const html = await renderPage(`/flow/${ORG}/p/fprj_launch`);
     expect(textOf(html)).toContain("No items yet. New item");
     expect(html).not.toContain('data-testid="board-column"');
+  });
+});
+
+describe("runs", () => {
+  it("shows the run line under an agent's summary: time, steps and Open run", async () => {
+    const html = await renderPage(`${BOARD}?item=fitm_rate`, {
+      after: async (client) => {
+        await loaded("fitm_rate")(client);
+        await client.prefetchQuery(flowItemRunsQuery(ORG, "fitm_rate"));
+      },
+    });
+    // Lead's, Backend's and QA's summaries each carry their run.
+    expect(count(html, 'data-testid="run-line"')).toBe(3);
+    const text = textOf(html);
+    expect(text).toContain("Limiter and tests are in.");
+    expect(text).toContain("15m 3s 13 steps Open run");
+    // No runner reports cost: none is shown, never made up.
+    expect(text).not.toContain("$");
+    expect(html).toContain("run=frun_fitm_rate");
+  });
+
+  it("opens a run over the page from ?run=: its status, agent, item and summary", async () => {
+    const html = await renderPage(`${BOARD}?run=frun_fitm_rate`, {
+      after: (client) => client.prefetchQuery(flowRunQuery(ORG, "frun_fitm_rate")).then(() => {}),
+    });
+    expect(html).toContain('data-testid="run-modal"');
+    expect(html).toContain('data-testid="board"');
+    const text = textOf(html);
+    expect(text).toContain("Finished B Backend on API-10 Add rate limiting to the public API");
+    expect(text).toContain("Started by entering Build Took 15m 3s Runner M5 Steps 13");
+    expect(text).not.toContain("Cost");
+  });
+
+  it("shows a failed run's error at the top", async () => {
+    const html = await renderPage(`/flow/${ORG}/team?run=frun_fitm_postgres`, {
+      after: (client) =>
+        client.prefetchQuery(flowRunQuery(ORG, "frun_fitm_postgres")).then(() => {}),
+    });
+    expect(textOf(html)).toContain("Failed B Backend on API-8");
+    expect(html).toContain('data-testid="run-error"');
+    expect(textOf(html)).toContain("ENOSPC");
   });
 });
 

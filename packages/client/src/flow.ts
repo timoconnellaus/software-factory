@@ -3,6 +3,7 @@
 // imports neither), and the pure logic the board and the item panel need: an item's key, its chips,
 // the decision it waits on, and its timeline told as one line per move.
 import type { FlowEditOpMap, FlowField, FlowMember } from "./flow-edit.ts";
+import type { FlowRunEvents, FlowRunView } from "./flow-run.ts";
 import { ago } from "./format.ts";
 
 export type FlowOwner =
@@ -89,17 +90,23 @@ export interface FlowInboxAll {
   }[];
 }
 
-/** One run of an agent (`flow.run.list` by agent). */
+/** One run (`flow.run.list` by agent or by item). */
 export interface FlowRun {
   id?: string;
   itemId: string;
   itemTitle?: string;
   agentId?: string;
   status: string;
+  createdAt?: string;
   claimedAt: string | null;
   finishedAt: string | null;
   result?: unknown;
   error: string | null;
+  /** Tool calls stored (an older server leaves it out). */
+  steps?: number;
+  /** Null when unknown: no runner reports cost today. */
+  costUsd?: number | null;
+  tokens?: number | null;
 }
 
 export interface FlowWorkflow {
@@ -114,7 +121,7 @@ export interface FlowBoard {
   columns: { status: FlowStatus; items: FlowItem[] }[];
   truncated: boolean;
   /** The plugin fields its items may carry. */
-  fields?: FlowField[];
+  declaredFields?: FlowField[];
 }
 
 /**
@@ -148,6 +155,8 @@ export interface FlowTimeline {
 export interface FlowInbox {
   work: FlowItem[];
   decisions: FlowItem[];
+  /** The last 30 items you finished or decided, newest first (an older server leaves it out). */
+  done?: (FlowInboxAllItem & { doneAt: string })[];
   truncated: boolean;
 }
 
@@ -176,10 +185,18 @@ export interface FlowOpMap extends FlowEditOpMap {
     input: Org & { agentId?: string; itemId?: string; limit?: number };
     output: { runs: FlowRun[] };
   };
+  "flow.run.get": { input: Org & { runId: string }; output: { run: FlowRunView } };
+  "flow.run.events": {
+    input: Org & { runId: string; after?: number };
+    output: FlowRunEvents;
+  };
   "flow.board.get": { input: Org & { projectId: string }; output: FlowBoard };
   "flow.timeline.get": { input: Org & { itemId: string }; output: FlowTimeline };
   "flow.inbox.get": { input: Org; output: FlowInbox };
-  "flow.item.get": { input: Org & { itemId: string }; output: FlowItem };
+  "flow.item.get": {
+    input: Org & { itemId: string };
+    output: FlowItem & { declaredFields?: FlowField[] };
+  };
   "flow.item.create": {
     input: Org & { projectId: string; title: string; body?: string };
     output: FlowItem;
@@ -338,6 +355,8 @@ export type TimelineRow =
       text: string | null;
       cards: FlowCard[];
       at: string;
+      /** The run an agent's summary comment reports on: its run line opens it. */
+      runId: string | null;
     };
 
 type Event =
@@ -361,6 +380,13 @@ const typed = <T>(data: unknown): T | null =>
   data && typeof data === "object" && typeof (data as { type?: unknown }).type === "string"
     ? (data as T)
     : null;
+
+/** The run an agent's comment reports on (its `runId`), else null. */
+function runIdOf(entry: FlowTimelineEntry): string | null {
+  if (entry.actor.kind !== "agent") return null;
+  const runId = (entry.data as { runId?: unknown } | null)?.runId;
+  return typeof runId === "string" && runId ? runId : null;
+}
 
 /** A card entry's data, if it has the card's shape. */
 export function asCard(data: unknown): FlowCard | null {
@@ -396,6 +422,7 @@ export function buildTimeline(
         text: typeof text === "string" ? text : "",
         cards: [],
         at: entry.createdAt,
+        runId: runIdOf(entry),
       });
       i++;
       continue;
@@ -414,6 +441,7 @@ export function buildTimeline(
           text: null,
           cards: [card],
           at: entry.createdAt,
+          runId: null,
         });
       i++;
       continue;
@@ -454,6 +482,7 @@ export function buildTimeline(
         text: typeof text === "string" ? text : "",
         cards,
         at: summary.createdAt,
+        runId: runIdOf(summary),
       });
     }
     rows.push(...before);

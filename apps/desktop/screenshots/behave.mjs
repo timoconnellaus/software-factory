@@ -73,6 +73,8 @@ function page(cdp, base) {
     },
     calls: (op) =>
       evaluate(`(window.__sfCalls ?? []).filter((c) => c.op === ${JSON.stringify(op)})`),
+    reads: (op) =>
+      evaluate(`(window.__sfReads ?? []).filter((c) => c.op === ${JSON.stringify(op)})`),
     path: () => evaluate("location.hash.slice(1)"),
     /** Which element has the keyboard, as `[data-testid]`, `[data-peek]` or the tag. */
     focused: () =>
@@ -323,7 +325,77 @@ export const TESTS = [
       await sleep(900);
       const again = await p.calls("flow.gateway.save");
       expect(again[1]?.input.name, "GitHub").toBe("GitHub");
+      // By its id, so a new name renames it; a new gateway goes without one.
+      expect(again[1]?.input.gatewayId, "the gateway's id").toBe("fgw_github");
+      expect("gatewayId" in (again[0]?.input ?? {}), "no id for a new one").toBe(false);
       expect("secret" in (again[1]?.input ?? {}), "no secret sent").toBe(false);
+    },
+  },
+  {
+    name: "runs: Open run on a summary opens the run over the page; a step shows its input and result",
+    async run(p) {
+      await p.open(`${FLOW_BOARD}?item=fitm_rate`);
+      await p.waitFor("document.querySelector('[data-testid=open-run][href*=frun_fitm_rate]')");
+      await p.click("[data-testid=open-run][href*=frun_fitm_rate]");
+      await p.waitFor("document.querySelector('[data-testid=run-step]')");
+      expect(await p.path(), "the run in the URL").toContain("run=frun_fitm_rate");
+      expect(await p.text("[data-testid=run-status]"), "finished").toBe("Finished");
+      expect(await p.exists("[data-testid=item-panel]"), "the page stays behind").toBeTruthy();
+      // The first Bash call: the failing tests.
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=run-step]')].find((s) => s.textContent.includes('Bash')).click()",
+      );
+      await sleep(200);
+      expect(await p.text("[data-testid=step-input]"), "its command").toBe("go test ./api/...");
+      expect(await p.text("[data-testid=step-result]"), "its result").toContain("--- FAIL");
+      await p.click("[data-testid=close-run]");
+      await sleep(300);
+      expect(await p.exists("[data-testid=run-modal]"), "closed").toBeFalsy();
+      expect(await p.path(), "the run left the URL").not.toContain("run=");
+      expect(await p.path(), "the item still open").toContain("item=fitm_rate");
+      // Escape closes it too.
+      await p.click("[data-testid=open-run][href*=frun_fitm_rate]");
+      await p.waitFor("document.querySelector('[data-testid=run-modal]')");
+      await p.key("Escape");
+      await sleep(300);
+      expect(await p.exists("[data-testid=run-modal]"), "Escape closed it").toBeFalsy();
+    },
+  },
+  {
+    name: "runs: a run in flight reads only what is new, every 3 seconds",
+    async run(p) {
+      await p.open("/flow/org_personal/p/fprj_api?run=frun_fitm_webhooks&end=1");
+      await p.waitFor("document.querySelector('[data-testid=run-step]')");
+      expect(await p.text("[data-testid=run-status]"), "running").toBe("Running");
+      const first = (await p.reads("flow.run.events")).length;
+      await sleep(3500);
+      const reads = await p.reads("flow.run.events");
+      expect(reads.length > first, "read again").toBe(true);
+      expect(typeof reads.at(-1)?.input.after, "with after").toBe("number");
+      // The list keeps to the newest step.
+      const atEnd = await p.evaluate(
+        "(() => { const l = document.querySelector('[data-testid=step-list]'); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()",
+      );
+      expect(atEnd, "scrolled to the newest").toBe(true);
+    },
+  },
+  {
+    name: "runs: Team's Recent work opens a run; Inbox's Done lists what you finished",
+    async run(p) {
+      await p.open("/flow/org_personal/team?agent=fagt_backend");
+      await p.waitFor("document.querySelector('[data-testid=agent-run]')");
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=agent-run]')].find((r) => r.textContent.includes('Postgres')).click()",
+      );
+      await p.waitFor("document.querySelector('[data-testid=run-error]')");
+      expect(await p.text("[data-testid=run-status]"), "failed").toBe("Failed");
+      expect(await p.text("[data-testid=run-error]"), "its error").toContain("ENOSPC");
+      await p.open("/flow/org_personal/inbox?tab=done");
+      await p.waitFor("document.querySelector('[data-testid=inbox-done-row]')");
+      expect(
+        await p.evaluate("document.querySelectorAll('[data-testid=inbox-done-row]').length"),
+        "two done",
+      ).toBe(2);
     },
   },
   {

@@ -3,6 +3,7 @@
 // The desktop token and the device key stay here; the view only ever sees results.
 import { hostname } from "node:os";
 import { join } from "node:path";
+import type { FlowInboxAll } from "@software-factory/client/flow";
 import Electrobun, {
   ApplicationMenu,
   BrowserView,
@@ -12,6 +13,7 @@ import Electrobun, {
   Updater,
   Utils,
 } from "electrobun/main";
+import { waitingOnYou } from "../shared/flow-inbox.ts";
 import type { AppRPC, RunnerState, UpdateStatus } from "../shared/rpc.ts";
 import {
   type ApplyEvent,
@@ -85,7 +87,8 @@ let win: BrowserWindow | null = null;
 const frames = new FrameKeeper(fileStore(dataDir));
 let pendingPath: string | null = null;
 let inboxCount = 0;
-let seenGates = new Set<string>();
+/** The items waiting on you at the last poll: a new one is notified once. */
+let seenWaiting = new Set<string>();
 
 type ViewMessages = AppRPC["webview"]["messages"];
 const toView = <K extends keyof ViewMessages>(name: K, payload: ViewMessages[K]) => {
@@ -666,34 +669,29 @@ function setBadge(count: number) {
   refreshTray();
 }
 
-/** The inbox count, and a notification for each gate or question that wasn't there before. */
+/**
+ * The inbox count across every org (the new core's `flow.inbox.all`: work plus decisions), and a
+ * notification for each item that wasn't waiting before. Electrobun 2.0.6's notifications take no
+ * click handler, so a notification names the item; the app's Inbox opens it.
+ */
 async function pollInbox(opts: { notify?: boolean } = {}) {
   if (!auth.session().signedIn) return;
-  const res = await guarded(() => door().call("inbox.list", {}), {
+  const res = await guarded(() => door().call("flow.inbox.all", {}), {
     ok: false,
     code: "unauthenticated",
     error: "",
   });
   if (!res.ok) return;
-  const inbox = res.result as {
-    gates: { id: string; kind: string; title: string; workItemId: string | null }[];
-    questions: { id: string; title: string; prompt: string; workItemId: string }[];
-  };
-  const waiting = [
-    ...inbox.gates.map((g) => ({ id: g.id, title: `${gateLabel(g.kind)}: ${g.title}` })),
-    ...inbox.questions.map((q) => ({ id: q.id, title: `Question: ${q.title}` })),
-  ];
-  const fresh = waiting.filter((w) => !seenGates.has(w.id));
+  const waiting = waitingOnYou(res.result as FlowInboxAll);
+  const fresh = waiting.filter((w) => !seenWaiting.has(w.id));
   // Not on the first poll after launch: those were waiting already.
-  if (opts.notify !== false && (seenGates.size > 0 || inboxCount > 0)) {
+  if (opts.notify !== false && (seenWaiting.size > 0 || inboxCount > 0)) {
     for (const w of fresh.slice(0, 3))
-      Utils.showNotification({ title: "Software Factory", body: w.title });
+      Utils.showNotification({ title: "Software Factory", body: w.line });
   }
-  seenGates = new Set(waiting.map((w) => w.id));
+  seenWaiting = new Set(waiting.map((w) => w.id));
   setBadge(waiting.length);
 }
-const gateLabel = (kind: string) =>
-  kind === "spec" ? "Spec waiting" : kind === "merge" ? "Ready to merge" : "Approval needed";
 
 // The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {

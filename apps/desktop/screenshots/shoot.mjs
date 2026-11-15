@@ -78,6 +78,20 @@ export const SCREENS = [
     clicks: ['[data-testid="connect-system"]'],
   },
   { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  // The run view (run.html) and the run line under an agent's summary (board-and-item-panel.html):
+  // `--out flow-run`. The finished run with its first Bash step (the failing tests) chosen.
+  {
+    name: "flow-run-finished",
+    path: "/flow/org_personal/p/fprj_api?run=frun_fitm_rate",
+    clicks: ['[data-testid="step-list"] > :nth-child(7)'],
+  },
+  { name: "flow-run-live", path: "/flow/org_personal/p/fprj_api?run=frun_fitm_webhooks" },
+  { name: "flow-run-failed", path: "/flow/org_personal/p/fprj_api?run=frun_fitm_postgres" },
+  {
+    name: "flow-run-line",
+    path: "/flow/org_personal/p/fprj_api?item=fitm_rate",
+    scrolls: ['[data-testid="open-run"][href*="frun_fitm_rate"]'],
+  },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready" },
@@ -128,7 +142,7 @@ const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
-async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
+async function shoot(cdp, url, file, theme, keys = [], clicks = [], scrolls = []) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -148,6 +162,13 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
       expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
     });
     await sleep(500);
+  }
+  // `scrolls`: bring each element into the middle of its scrolling box before the shot.
+  for (const selector of scrolls) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: "center" })`,
+    });
+    await sleep(300);
   }
   const shot = await cdp.send("Page.captureScreenshot", {
     format: "png",
@@ -201,7 +222,15 @@ try {
       await sleep(300);
       await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
       const file = resolve(out, `${s.name}-${theme}${tag ? `-${tag}` : ""}.png`);
-      await shoot(cdp, `${base}${s.query ?? ""}#${s.path}`, file, theme, s.keys, s.clicks);
+      await shoot(
+        cdp,
+        `${base}${s.query ?? ""}#${s.path}`,
+        file,
+        theme,
+        s.keys,
+        s.clicks,
+        s.scrolls,
+      );
     }
   }
   cdp.close();

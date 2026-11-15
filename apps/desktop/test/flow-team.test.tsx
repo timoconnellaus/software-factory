@@ -73,7 +73,8 @@ describe("Team: Runners and People", () => {
     const html = await renderPage(`/flow/${ORG}/team?tab=runners`);
     const text = textOf(html);
     expect(count(html, 'data-testid="runner-row"')).toBe(3);
-    expect(text).toContain("M5 Online 3 jobs Takes new work Up to date");
+    // From runner.list alone: the jobs in its light pool, where flow runs go.
+    expect(text).toContain("M5 Online 2 jobs Takes new work Up to date");
     expect(text).toContain("M1 Online Nothing Takes new work Updating");
     expect(text).toContain("Mac mini Last seen 1d ago Nothing Not now: offline Up to date");
     expect(text).not.toMatch(/heavy|light \d/i);
@@ -221,11 +222,18 @@ describe("Team's wording", () => {
     });
   });
 
-  it("tells a runner online from its last report when the health line is missing", () => {
+  it("tells each runner from runner.list alone: online, busy, rate-limited, its code", () => {
     const listed = ANSWERS["runner.list"]?.({})?.runners ?? [];
-    const rows = runnerRows(listed, []);
+    const rows = runnerRows(listed);
     expect(rows.map((r) => r.online)).toEqual([true, true, false]);
+    expect(rows.map((r) => r.working)).toEqual([2, 0, 0]);
     expect(rows[2]?.takesWork).toEqual({ yes: false, why: "offline" });
     expect(rows[1]?.code).toEqual({ current: false, text: "Updating" });
+    const [first] = listed;
+    if (!first) throw new Error("no runner");
+    const limited = { ...first, rateLimitedUntil: new Date(Date.now() + 60_000).toISOString() };
+    expect(runnerRows([limited])[0]?.takesWork).toEqual({ yes: false, why: "rate-limited" });
+    const full = { ...first, light: { max: 2, inUse: 2 } };
+    expect(runnerRows([full])[0]?.takesWork).toEqual({ yes: false, why: "full" });
   });
 });

@@ -225,7 +225,7 @@ function Board({ board, project, names, me, selected }: ViewProps) {
           names={names}
           me={me}
           selected={selected}
-          fields={board.fields}
+          fields={board.declaredFields}
         />
       ))}
     </div>

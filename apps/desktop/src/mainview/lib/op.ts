@@ -105,7 +105,10 @@ export type ReadOpName =
   | "flow.item.get"
   | "flow.member.list"
   | "flow.inbox.all"
-  | "flow.run.list";
+  | "flow.run.list"
+  // The run view (spec 70): one run's totals, and its events a page at a time.
+  | "flow.run.get"
+  | "flow.run.events";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

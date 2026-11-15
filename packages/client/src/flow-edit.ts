@@ -78,7 +78,14 @@ export interface FlowEditOpMap {
   "flow.plugin.delete": { input: Org & { pluginId: string }; output: unknown };
   "flow.gateway.list": { input: Org; output: { gateways: FlowGateway[] } };
   "flow.gateway.save": {
-    input: Org & { name: string; baseUrl: string; auth: FlowGatewayAuth; secret?: string };
+    input: Org & {
+      /** An existing gateway's id: renames or changes that one. Left out: by `name`. */
+      gatewayId?: string;
+      name: string;
+      baseUrl: string;
+      auth: FlowGatewayAuth;
+      secret?: string;
+    };
     output: unknown;
   };
   "flow.gateway.delete": { input: Org & { gatewayId: string }; output: unknown };
