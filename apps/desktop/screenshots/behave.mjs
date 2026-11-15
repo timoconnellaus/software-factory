@@ -327,6 +327,55 @@ export const TESTS = [
     },
   },
   {
+    name: "flow chat: sending shows the agent working, then what it did and its reply",
+    async run(p) {
+      await p.open("/flow/org_personal/chat?chat=fchat_launch&end=1");
+      await p.waitFor("document.querySelector('[data-testid=chat-input]')");
+      const before = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
+      await p.focus("[data-testid=chat-input]");
+      await p.type("Also add a legal check before Edit.");
+      await p.key("Enter");
+      await p.waitFor("document.querySelector('[data-testid=chat-working]')");
+      const sent = await p.calls("flow.chat.send");
+      expect(sent[0]?.input.chatId, "this chat").toBe("fchat_launch");
+      expect(sent[0]?.input.text, "the message").toBe("Also add a legal check before Edit.");
+      expect(await p.text("[data-testid=chat-working]"), "working").toContain("Builder is working");
+      expect(
+        await p.evaluate("document.querySelector('[data-testid=chat-send]').disabled"),
+        "sending waits",
+      ).toBe(true);
+      // The fixture's run answers a moment later; the chat is re-read every 3 seconds meanwhile.
+      await p.waitFor("!document.querySelector('[data-testid=chat-working]')", 8000);
+      const after = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
+      expect(after, "a did row arrived").toBe(before + 1);
+      expect(
+        await p.evaluate(
+          "[...document.querySelectorAll('[data-testid=chat-reply]')].at(-1)?.textContent",
+        ),
+        "the reply",
+      ).toContain("Legal check before Edit");
+    },
+  },
+  {
+    name: "flow plugins: asking starts a chat with the builder and goes to it",
+    async run(p) {
+      await p.open("/flow/org_personal/plugins");
+      await p.waitFor("document.querySelector('[data-testid=plugin-ask-input]')");
+      await p.focus("[data-testid=plugin-ask-input]");
+      await p.type("Post to Slack when an item ships.");
+      await p.click("[data-testid=plugin-ask-send]");
+      await p.waitFor("document.querySelector('[data-testid=chat-page]')", 4000);
+      const made = await p.calls("flow.chat.create");
+      expect(made[0]?.input.agentId, "the builder").toBe("fagt_chat");
+      expect(made[0]?.input.text, "the words").toBe("Post to Slack when an item ships.");
+      expect(await p.path(), "the new chat").toContain("chat=fchat_new");
+      await p.waitFor("document.querySelector('[data-testid=chat-person]')");
+      expect(await p.text("[data-testid=chat-person]"), "the message").toBe(
+        "Post to Slack when an item ships.",
+      );
+    },
+  },
+  {
     name: "loading: the shell fills the window, its toolbar strip drags it, at the toolbar's height",
     async run(p) {
       await p.cdp.send("Page.navigate", { url: `${p.base}?session=slow#/` });

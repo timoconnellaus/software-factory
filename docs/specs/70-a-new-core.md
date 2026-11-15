@@ -144,6 +144,25 @@ sf call flow.agent.update '{"orgId":"<org>","agentId":"<agent>","name":"Builder"
 curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=<key>" -d '{"subject":"Help"}'
 ```
 
+### Chat: as built (2026-11-15)
+- **Tables** (migration 0433): `flow_chats` and `flow_chat_messages` (`person`, `agent`, `did`),
+  kept as the chat's record until `flow.chat.delete`. `flow_runs` was rebuilt: a run has an
+  `item_id` or a `chat_id`, never both. A chat run has `status_id` '', `stay` = the seq of the
+  message it answers, and that message as its `brief`.
+- **Operations**: `flow.chat.create | send | list | get | delete` and `flow.agent.ensureBuilder`
+  (the org's agent with the `factory` server, or a new "Builder"). `create` refuses an agent
+  without the Plugin editor; `send` is refused while the last run is queued or claimed. `get`
+  answers the messages, `working`, and `made` (the workflows and plugins its `did` rows name).
+- **A chat run** is claimed and handed back on the same channel path as an item's run. It differs
+  in three places: its prompt (`flow/chat-prompt.ts`: what the app is, the conversation so far
+  capped at 24,000 characters, the new message, and a summary that is the reply), its end
+  (`endChatRun` in the store adds the agent's message; no item is stepped and no plugin hook runs),
+  and the MCP server, which acts for the chat's creator and adds a `did` row for each successful
+  change (`flow/did.ts`). A failed or lapsed run leaves a plain agent message; sending again retries.
+- **The app**: Chat (`?chat=`), with recent chats in a switcher in the header, the conversation on
+  the left and what it made on the right; it polls `flow.chat.get` every 3 seconds only while a run
+  is in flight. The Plugins screen's "Say what you want the app to do…" starts a chat.
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the

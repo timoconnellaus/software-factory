@@ -196,32 +196,44 @@ export async function inboxAll(d1: D1Database, userId: string): Promise<OrgInbox
   }));
 }
 
-/** A run as the views show it: with its item's title and number and its project's key. */
+/**
+ * A run as the views show it: an item's run with its item's title and number and its project's key,
+ * or a chat's run with the chat's title (the item fields null).
+ */
 export interface ListedRun extends Run {
-  itemTitle: string;
-  itemNumber: number;
-  projectKey: string;
+  itemTitle: string | null;
+  itemNumber: number | null;
+  projectKey: string | null;
+  chatTitle: string | null;
 }
 
-/** Runs with their item (by primary key) and its project (by primary key). */
+/** Runs with their item and its project, or their chat (each by primary key). */
 function listedRuns(d1: D1Database) {
   return flowDb(d1)
     .selectFrom("flow_runs as r")
-    .innerJoin("flow_items as i", "i.id", "r.item_id")
-    .innerJoin("flow_projects as p", "p.id", "i.project_id")
+    .leftJoin("flow_items as i", "i.id", "r.item_id")
+    .leftJoin("flow_projects as p", "p.id", "i.project_id")
+    .leftJoin("flow_chats as c", "c.id", "r.chat_id")
     .selectAll("r")
-    .select(["i.title as item_title", "i.number as item_number", "p.key as project_key"]);
+    .select(["i.title as item_title", "i.number as item_number", "p.key as project_key"])
+    .select("c.title as chat_title");
 }
 
 function toListedRun(
-  row: FlowRunsTable & { item_title: string; item_number: number; project_key: string },
+  row: FlowRunsTable & {
+    item_title: string | null;
+    item_number: number | null;
+    project_key: string | null;
+    chat_title: string | null;
+  },
 ): ListedRun {
-  const { item_title, item_number, project_key, ...run } = row;
+  const { item_title, item_number, project_key, chat_title, ...run } = row;
   return {
     ...toRun(run),
     itemTitle: item_title,
     itemNumber: item_number,
     projectKey: project_key,
+    chatTitle: chat_title,
   };
 }
 
@@ -248,7 +260,7 @@ export async function agentRuns(
   return rows.map(toListedRun);
 }
 
-/** One run with its item and project, or null. */
+/** One run with its item and project (or its chat), or null. */
 export async function getListedRun(d1: D1Database, runId: string): Promise<ListedRun | null> {
   const row = await listedRuns(d1).where("r.id", "=", runId).executeTakeFirst();
   return row ? toListedRun(row) : null;

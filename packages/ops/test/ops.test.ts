@@ -73,7 +73,7 @@ async function world() {
 group("flow operations", () => {
   it("are all named flow.*, with descriptions", () => {
     const ops = describe();
-    expect(ops.length).toBe(34);
+    expect(ops.length).toBe(40);
     for (const op of ops) {
       expect(op.name).toMatch(/^flow\./);
       expect(op.description.length).toBeGreaterThan(10);

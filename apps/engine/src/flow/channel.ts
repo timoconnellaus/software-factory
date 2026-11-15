@@ -15,13 +15,16 @@ import {
   releaseRequestSchema,
 } from "@software-factory/runner-contract";
 import {
+  chatHistory,
   claimRun,
+  endChatRun,
   getRun,
   type RunResult,
   recentComments,
   renewLease,
   StoreError,
 } from "@software-factory/store";
+import { chatPrompt, PROMPT_CHAT_MESSAGES } from "./chat-prompt.ts";
 import { flowHost } from "./door.ts";
 import { FACTORY_MCP, issueMcpToken, MCP_PATH } from "./mcp-auth.ts";
 import { flowPrompt, PROMPT_COMMENTS } from "./prompt.ts";
@@ -40,13 +43,22 @@ const refuse = (status: number, code: string, error: string): ChannelReply => ({
   body: { error, code },
 });
 
-/** The run failed: through the plugin host, so the org's `runEnded` hooks run. */
-const failRun = (env: Env, runId: string, token: number, error: string) =>
-  endRunWithHooks(flowHost(env), runId, token, { status: "failed", error });
+type Ended = { status: "done"; result: RunResult } | { status: "failed"; error: string };
 
-/** The agent finished: `leaving`, the step, `runEnded` and `entered`, through the plugin host. */
-const finishRun = (env: Env, runId: string, token: number, result: RunResult) =>
-  endRunWithHooks(flowHost(env), runId, token, { status: "done", result });
+/**
+ * Ends a run. An item's run goes through the plugin host (`leaving`, the step, `runEnded` and
+ * `entered`). A chat's run has no item and no plugins around it: the store marks it and adds the
+ * agent's reply (its summary, or a plain note that it failed) to the chat.
+ */
+async function endFlowRun(
+  env: Env,
+  run: { id: string; chatId: string | null },
+  token: number,
+  end: Ended,
+): Promise<void> {
+  if (run.chatId !== null) await endChatRun(env.DB, run.id, token, end);
+  else await endRunWithHooks(flowHost(env), run.id, token, end);
+}
 
 /**
  * The claim, before the old core's job.claim: the oldest queued flow run this runner serves, built
@@ -94,7 +106,11 @@ export async function claimFlowJob(
 
   const run = await claimRun(env.DB, runnerId, now, FLOW_LEASE_MS);
   if (!run) return null;
-  const comments = await recentComments(env.DB, run.itemId, PROMPT_COMMENTS);
+  // A chat's run: the conversation before the message it answers. An item's: its recent comments.
+  const prompt =
+    run.chatId !== null
+      ? chatPrompt(run, await chatHistory(env.DB, run.chatId, run.stay, PROMPT_CHAT_MESSAGES))
+      : flowPrompt(run, await recentComments(env.DB, run.itemId ?? "", PROMPT_COMMENTS));
   const mcpServers = run.agent?.mcp.includes(FACTORY_MCP)
     ? [
         {
@@ -109,10 +125,16 @@ export async function claimFlowJob(
     runId: run.id,
     runNo: run.stay,
     stage: "flow",
-    workItem: { id: run.itemId, number: run.item.number, title: run.item.title },
+    // A chat's run stands for its chat here: the host only names a work item in its run folder.
+    workItem: run.item
+      ? { id: run.itemId ?? "", number: run.item.number, title: run.item.title }
+      : { id: run.chatId ?? "", number: run.stay, title: run.chat?.title ?? "Chat" },
     // As the old core's light stages: Claude Code, a role, no model named (the harness's default).
-    harness: { id: "claude-code", role: "implement", prompt: flowPrompt(run, comments) },
-    context: { orgId: run.orgId, statusId: run.statusId },
+    harness: { id: "claude-code", role: "implement", prompt },
+    context:
+      run.chatId !== null
+        ? { orgId: run.orgId, chatId: run.chatId }
+        : { orgId: run.orgId, statusId: run.statusId },
     requires: [],
     limits: { sessionTimeoutMs: FLOW_SESSION_TIMEOUT_MS },
     lease: { fencingToken: run.fencingToken, expiresAt: run.leaseExpiresAt },
@@ -184,12 +206,11 @@ export async function flowJobReply(
       if (!parsed.success) return refuse(400, "invalid_input", parsed.error.message);
       // A run that already ended (handed back, failed or cancelled) is released as it is.
       if (open) {
-        await failRun(
-          env,
-          jobId,
-          token,
-          parsed.data.reason?.trim() || "The runner released the job without handing it back.",
-        );
+        await endFlowRun(env, run, token, {
+          status: "failed",
+          error:
+            parsed.data.reason?.trim() || "The runner released the job without handing it back.",
+        });
       }
       return { body: { released: true } };
     }
@@ -198,20 +219,22 @@ export async function flowJobReply(
     if (!open) return refuse(409, "fenced", `the flow run is ${run.status}`);
     const handback = parsed.data;
     if (handback.outcome !== "completed") {
-      await failRun(env, jobId, token, handback.summary?.trim() || `The run ${handback.outcome}.`);
+      await endFlowRun(env, run, token, {
+        status: "failed",
+        error: handback.summary?.trim() || `The run ${handback.outcome}.`,
+      });
       return { body: { accepted: true } };
     }
     const result = flowResultSchema.safeParse(handback.result);
     if (!result.success) {
-      await failRun(
-        env,
-        jobId,
-        token,
-        "The agent didn't leave a valid result: it must write { outcome: done | rejected, summary }.",
-      );
+      await endFlowRun(env, run, token, {
+        status: "failed",
+        error:
+          "The agent didn't leave a valid result: it must write { outcome: done | rejected, summary }.",
+      });
       return { body: { accepted: true } };
     }
-    await finishRun(env, jobId, token, result.data);
+    await endFlowRun(env, run, token, { status: "done", result: result.data });
     return { body: { accepted: true } };
   } catch (error) {
     if (error instanceof StoreError) {

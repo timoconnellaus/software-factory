@@ -3,12 +3,33 @@
 export {
   type Agent,
   createAgent,
+  findBuilder,
   getAgent,
   listAgents,
   parseMcp,
   updateAgent,
   type WorkingOn,
 } from "./agents.ts";
+export { type ChatRunEnding, endChatRun, expireChatRun, failedReply } from "./chat-runs.ts";
+export {
+  addDid,
+  CHAT_LIST_LIMIT,
+  CHAT_MESSAGE_LIMIT,
+  type Chat,
+  type ChatMessage,
+  type ChatView,
+  chatHistory,
+  chatTitle,
+  createChat,
+  type DidData,
+  deleteChat,
+  getChat,
+  getChatRow,
+  listChats,
+  type MadeThing,
+  madeOf,
+  sendMessage,
+} from "./chats.ts";
 export { StoreError } from "./db.ts";
 export { addCard, FIELD_ID, setField, stopItem } from "./entries.ts";
 export {
