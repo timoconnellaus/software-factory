@@ -137,7 +137,7 @@ describe("items and runs", () => {
 
   it("gives a run on a project with a repository the item's branch, and keeps the head it pushed", async () => {
     const { item, project } = await setup();
-    expect(itemBranch("A_c m!", 3)).toBe("factory/flow/a-c-m-3");
+    expect(itemBranch("A_c m!", 3)).toBe("factory/flow-a-c-m-3");
     await setProjectRepo(d1, project.id, {
       owner: "acme",
       name: "app",
@@ -150,22 +150,22 @@ describe("items and runs", () => {
       repo: { owner: "acme", name: "app", defaultBranch: "main", installationId: "42" },
     });
     expect(run.item).toMatchObject({
-      branch: "factory/flow/acm-1",
+      branch: "factory/flow-acm-1",
       firstOnBranch: true,
       headSha: null,
     });
-    expect((await getItem(d1, item.id))?.branch).toBe("factory/flow/acm-1");
+    expect((await getItem(d1, item.id))?.branch).toBe("factory/flow-acm-1");
     // The run's own branch's head is kept, on the run and the item.
     const head = "a".repeat(40);
     const ended = await endRun(d1, run.id, run.fencingToken, {
       status: "done",
       result: { outcome: "done", summary: "Built." },
-      pushed: { branch: "factory/flow/acm-1", headSha: head },
+      pushed: { branch: "factory/flow-acm-1", headSha: head },
     });
-    expect(ended.run).toMatchObject({ branch: "factory/flow/acm-1", headSha: head });
+    expect(ended.run).toMatchObject({ branch: "factory/flow-acm-1", headSha: head });
     expect(ended.item).toMatchObject({
       statusId: "review",
-      branch: "factory/flow/acm-1",
+      branch: "factory/flow-acm-1",
       headSha: head,
     });
     expect((await getItem(d1, item.id))?.headSha).toBe(head);
@@ -173,14 +173,14 @@ describe("items and runs", () => {
     await applyEvent(d1, item.id, { type: "moved", by: sam, to: "draft" }, sam);
     const next = await claim();
     expect(next.item).toMatchObject({
-      branch: "factory/flow/acm-1",
+      branch: "factory/flow-acm-1",
       firstOnBranch: false,
       headSha: head,
     });
     const other = await endRun(d1, next.id, next.fencingToken, {
       status: "done",
       result: { outcome: "done", summary: "Again." },
-      pushed: { branch: "factory/flow/other-1", headSha: "b".repeat(40) },
+      pushed: { branch: "factory/flow-other-1", headSha: "b".repeat(40) },
     });
     expect(other.run.headSha).toBeNull();
     expect(other.item.headSha).toBe(head);

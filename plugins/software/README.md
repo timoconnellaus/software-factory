@@ -6,7 +6,7 @@ GitHub repository. It is plain JavaScript in the plugin contract's shape
 
 What it does, and nothing else:
 - **`runEnded`**: when an agent's run ends `done` and the item's branch has a head, it opens a pull
-  request from the item's branch (`factory/flow/<key>-<number>`) into the default branch unless
+  request from the item's branch (`factory/flow-<key>-<number>`) into the default branch unless
   one is open, keeps its number in the item's `pr` field, and adds a card: `#<n> <title>`,
   `+a −b`, the check runs on the head, and a link.
 - **`leaving`**: an item can't leave a status whose name contains "review" while a check run on the

@@ -167,7 +167,7 @@ export async function claimRun(
 }
 
 /**
- * The branch of an item numbered `number` in a project keyed `key`: `factory/flow/<key>-<number>`,
+ * The branch of an item numbered `number` in a project keyed `key`: `factory/flow-<key>-<number>`,
  * the key lower-cased with anything but letters and digits made a dash. Under `factory/` (the only
  * place the App may push) but never `factory/<digits>-…`, which is the old core's work items.
  */
@@ -177,7 +177,7 @@ export function itemBranch(key: string, number: number): string {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "item";
-  return `factory/flow/${slug}-${number}`;
+  return `factory/flow-${slug}-${number}`;
 }
 
 /** Extends the lease of a run this runner holds. False when it no longer holds it. */

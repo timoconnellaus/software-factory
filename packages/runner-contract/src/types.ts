@@ -487,7 +487,7 @@ export function canRun(
  * Whether the runner host commits and pushes the job's branch at the end of the job: a build, a
  * `babysit` job sent to resolve a conflict (spec 53 §4: it merges the default branch in on its run
  * branch, never a rebase or force push), and a `flow` job with a repository (spec 70: it pushes its
- * item's branch, `factory/flow/<key>-<n>`; no default-branch merge and no checks).
+ * item's branch, `factory/flow-<key>-<n>`; no default-branch merge and no checks).
  */
 export function pushesRunBranch(job: {
   stage: JobStage;
@@ -504,11 +504,13 @@ export function pushesRunBranch(job: {
 
 /**
  * A `flow` job with a repository (spec 70) works on, and pushes, its item's branch:
- * `factory/flow/<lower-cased project key>-<item number>`, one branch for every run on the item. Not
- * `factory/<digits>-…`, which the old core's webhook reads as its own work items.
+ * `factory/flow-<lower-cased project key>-<item number>`, one branch for every run on the item. Not
+ * `factory/<digits>-…`, which the old core's webhook reads as its own work items, and one level
+ * under `factory/`: GitHub's ruleset pattern `refs/heads/factory/**` matches a single level only
+ * (a push to `factory/flow/sf-1` was refused on 2026-11-15).
  */
 export function isFlowBranch(branch: string): boolean {
-  return /^factory\/flow\/[a-z0-9][a-z0-9-]*-[0-9]+$/.test(branch);
+  return /^factory\/flow-[a-z0-9][a-z0-9-]*-[0-9]+$/.test(branch);
 }
 
 /** Whether the job is a `flow` job with a repository: it pushes its item's branch. */

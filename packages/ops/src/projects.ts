@@ -113,7 +113,7 @@ export const projectOps = [
   defineOperation({
     name: "flow.project.setRepository",
     description:
-      "Give a project a GitHub repository ({ owner, name }), or take it away ({ clear: true }). The repository must be one the org's GitHub connection reaches (flow.github.repos); its default branch is stored with it. An agent's run on an item of a project with a repository works in a checkout of it, on the item's branch factory/flow/<key>-<number>, which the runner pushes; plugins reach it through the built-in `github` gateway.",
+      "Give a project a GitHub repository ({ owner, name }), or take it away ({ clear: true }). The repository must be one the org's GitHub connection reaches (flow.github.repos); its default branch is stored with it. An agent's run on an item of a project with a repository works in a checkout of it, on the item's branch factory/flow-<key>-<number>, which the runner pushes; plugins reach it through the built-in `github` gateway.",
     risk: "write",
     input: z.union([
       z.object({
