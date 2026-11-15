@@ -2,6 +2,7 @@
 // answers, typed by hand from @software-factory/store and @software-factory/flow (types only; a view
 // imports neither), and the pure logic the board and the item panel need: an item's key, its chips,
 // the decision it waits on, and its timeline told as one line per move.
+import type { FlowEditOpMap, FlowField } from "./flow-edit.ts";
 import { ago } from "./format.ts";
 
 export type FlowOwner =
@@ -44,6 +45,8 @@ export interface FlowItem {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Plugin fields' values, by field id, when the server sends them (flow-edit.ts `fieldChips`). */
+  fields?: Record<string, unknown>;
 }
 
 export interface FlowProject {
@@ -75,6 +78,8 @@ export interface FlowWorkflow {
 export interface FlowBoard {
   columns: { status: FlowStatus; items: FlowItem[] }[];
   truncated: boolean;
+  /** The plugin fields its items may carry. */
+  fields?: FlowField[];
 }
 
 /**
@@ -114,7 +119,7 @@ export interface FlowInbox {
 type Org = { orgId: string };
 
 /** The `flow.*` operations the desktop calls, for packages/client's OpMap. */
-export interface FlowOpMap {
+export interface FlowOpMap extends FlowEditOpMap {
   "flow.project.list": { input: Org; output: { projects: FlowProject[] } };
   "flow.project.create": {
     input: Org & { name: string; key: string; workflowId: string };
