@@ -5,7 +5,7 @@ import { guardChanged } from "@software-factory/db";
 import { appendMessage, chatBatch } from "./chats.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
 import { type Run, type RunResult, toRun } from "./run-row.ts";
-import type { FlowRunsTable } from "./schema.ts";
+import type { FlowRunRow } from "./schema.ts";
 
 /** How a chat's run ended. */
 export type ChatRunEnding =
@@ -44,7 +44,7 @@ export async function endChatRun(
   );
   if (run.status !== "claimed" || run.fencing_token !== fencingToken) throw stale;
   const now = iso();
-  const after: FlowRunsTable = {
+  const after: FlowRunRow = {
     ...run,
     status: ended.status,
     result: ended.status === "done" ? JSON.stringify(ended.result) : null,

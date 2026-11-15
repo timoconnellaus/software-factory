@@ -78,12 +78,16 @@ export async function saveGateway(
   key: string | undefined,
   input: {
     orgId: string;
+    /** The gateway to change, by id: it may be renamed. Without it, `name` picks or creates one. */
+    gatewayId?: string;
     name: string;
     baseUrl: string;
     auth: GatewayAuth;
     secret?: string | null;
   },
 ): Promise<Gateway> {
+  if (input.gatewayId !== undefined)
+    return updateGateway(d1, key, { ...input, id: input.gatewayId });
   let sealed: string | null | undefined;
   if (typeof input.secret === "string") {
     if (!key) throw new StoreError("unavailable", NO_KEY);
@@ -117,6 +121,66 @@ export async function saveGateway(
   return toGateway(row);
 }
 
+/**
+ * Changes the org's gateway `id`: its name, base URL and auth, and its secret as `saveGateway`
+ * does. The secret is sealed to the gateway's org and name, so a rename that keeps it opens it and
+ * seals it again under the new name (which needs `key`). A name another gateway of the org has is a
+ * conflict.
+ */
+async function updateGateway(
+  d1: D1Database,
+  key: string | undefined,
+  input: {
+    orgId: string;
+    id: string;
+    name: string;
+    baseUrl: string;
+    auth: GatewayAuth;
+    secret?: string | null;
+  },
+): Promise<Gateway> {
+  const db = flowDb(d1);
+  const row = await db
+    .selectFrom("flow_gateways")
+    .selectAll()
+    .where("id", "=", input.id)
+    .where("org_id", "=", input.orgId)
+    .executeTakeFirst();
+  if (!row) throw new StoreError("not_found", `No gateway ${input.id}.`);
+  const aad = `${input.orgId}:${input.name}`;
+  let secret: string | null;
+  if (typeof input.secret === "string") {
+    if (!key) throw new StoreError("unavailable", NO_KEY);
+    secret = await seal(key, aad, input.secret);
+  } else if (input.secret === null || row.secret === null || row.name === input.name) {
+    secret = input.secret === null ? null : row.secret;
+  } else {
+    if (!key) throw new StoreError("unavailable", NO_KEY);
+    secret = await seal(key, aad, await open(key, `${input.orgId}:${row.name}`, row.secret));
+  }
+  try {
+    const updated = await db
+      .updateTable("flow_gateways")
+      .set({
+        name: input.name,
+        base_url: input.baseUrl,
+        auth: JSON.stringify(input.auth),
+        secret,
+        updated_at: iso(),
+      })
+      .where("id", "=", input.id)
+      .where("org_id", "=", input.orgId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return toGateway(updated);
+  } catch (error) {
+    if (/UNIQUE constraint failed/.test(String(error))) {
+      throw new StoreError("conflict", `The org already has a gateway named "${input.name}".`);
+    }
+    throw error;
+  }
+}
+
 /** The org's gateways by name, without secrets. A handful per org: no cap. */
 export async function listGateways(d1: D1Database, orgId: string): Promise<Gateway[]> {
   const rows = await flowDb(d1)
@@ -142,13 +206,21 @@ export async function getGateway(
   return row ? toGateway(row) : null;
 }
 
-export async function deleteGateway(d1: D1Database, orgId: string, name: string): Promise<void> {
+/** Deletes the org's gateway named `name`, or with `{ id }` the one with that id. */
+export async function deleteGateway(
+  d1: D1Database,
+  orgId: string,
+  which: string | { id: string },
+): Promise<void> {
+  const byId = typeof which !== "string";
   const result = await flowDb(d1)
     .deleteFrom("flow_gateways")
     .where("org_id", "=", orgId)
-    .where("name", "=", name)
+    .where(byId ? "id" : "name", "=", byId ? which.id : which)
     .executeTakeFirst();
-  if (!result.numDeletedRows) throw new StoreError("not_found", `No gateway "${name}".`);
+  if (!result.numDeletedRows) {
+    throw new StoreError("not_found", byId ? `No gateway ${which.id}.` : `No gateway "${which}".`);
+  }
 }
 
 /**

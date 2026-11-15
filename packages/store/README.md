@@ -54,7 +54,21 @@ kernel's effects. It never imports `@software-factory/core`.
   `getListedRun` return `ListedRun`s (`itemTitle`, `itemNumber`, `projectKey`). A run's
   `run.ended` / `run.failed` event and its summary comment carry `runId`.
 
+## The run view (migration 0434)
+- `run-events.ts`: `storeRunEvents` keeps a runner's events for a run, normalised to `note`,
+  `tool` (with `toolLabel`'s short label) and `result`, each text at most 4,000 characters, at most
+  2,000 a run (then `events_truncated`), keyed by the runner's seq; it totals `steps` (tool calls)
+  and `tokens` (a stream-json turn's usage) on the run. One D1 batch, guarded on `last_event_seq`.
+  `runEvents` pages them (500 after a seq); `pruneRunEvents` deletes them 30 days after the run
+  finished (the minute cron, `flow_runs_events_due_idx`).
+- `views.ts`: `runView` (a run with its totals, what started it and the names around it; left
+  joins, so a run needs no item); `inbox` adds `done` (the person's last 30 finished or decided
+  items, `flow_events_person_done_idx`).
+- `gateways.ts`: `saveGateway` with `gatewayId` changes or renames one (a kept secret is sealed
+  again under the new name); `deleteGateway` takes a name or `{ id }`.
+
 ## Retention
+A run's events (`flow_run_events`) are deleted 30 days after it finished; the run row is kept.
 Items, their timeline (`flow_events`) and their runs are kept as the item's record. Nothing prunes
 them yet; workflows, projects and agents are a handful per org. Plugins and gateways are a handful
 per org too, kept until deleted through their operations.

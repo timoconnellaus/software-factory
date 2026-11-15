@@ -8,7 +8,7 @@ import { parseMcp } from "./agents.ts";
 import { expireChatRun } from "./chat-runs.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
 import { type Run, type RunResult, toRun } from "./run-row.ts";
-import type { FlowRunsTable } from "./schema.ts";
+import type { FlowRunRow } from "./schema.ts";
 import { advance, type Item, type Stepped } from "./step.ts";
 
 export { type Run, type RunResult, toRun } from "./run-row.ts";
@@ -188,7 +188,7 @@ export async function endRun(
     );
   }
   const now = iso();
-  const after: FlowRunsTable = {
+  const after: FlowRunRow = {
     ...run,
     status: ended.status,
     result: ended.status === "done" ? JSON.stringify(ended.result) : null,

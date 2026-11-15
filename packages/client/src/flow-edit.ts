@@ -88,6 +88,8 @@ export interface FlowEditOpMap {
   "flow.gateway.save": {
     /** `secret`: a string sets it, null removes it, left out keeps it. */
     input: Org & {
+      /** An existing gateway's id: renames or changes that one. Left out: by `name`. */
+      gatewayId?: string;
       name: string;
       baseUrl: string;
       auth: FlowGatewayAuth;

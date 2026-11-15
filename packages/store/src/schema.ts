@@ -1,5 +1,7 @@
 // The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0433_flow_chat.sql,
-// 0435_flow_schedules.sql; 0432 adds only indexes), as Kysely sees them.
+// 0434_flow_run_events.sql, 0435_flow_schedules.sql; 0432 adds only indexes), as Kysely sees them.
+
+import type { Generated, Selectable } from "kysely";
 
 export interface FlowWorkflowsTable {
   id: string;
@@ -91,6 +93,33 @@ export interface FlowRunsTable {
   finished_at: string | null;
   /** SHA-256 hex of the run's MCP bearer token, or null. */
   mcp_token_hash: string | null;
+  /** Events stored in flow_run_events (0 once pruned). */
+  event_count: Generated<number>;
+  /** The runner's seq of the last event stored: a replayed batch adds nothing. */
+  last_event_seq: Generated<number>;
+  /** Tool calls the runner reported. Kept after the events are pruned. */
+  steps: Generated<number>;
+  /** 1 when events beyond the cap were dropped. */
+  events_truncated: Generated<number>;
+  /** Tokens the runner reported (a stream-json session's turns), or null. */
+  tokens: number | null;
+  /** Cost the runner reported, or null (no runner reports one yet). */
+  cost_usd: number | null;
+}
+
+/** A flow_runs row as a read returns it. */
+export type FlowRunRow = Selectable<FlowRunsTable>;
+
+export type RunEventKind = "note" | "tool" | "result";
+
+export interface FlowRunEventsTable {
+  run_id: string;
+  seq: number;
+  org_id: string;
+  at: string;
+  kind: RunEventKind;
+  /** JSON: the kind's fields (runEvents.ts). */
+  data: string;
 }
 
 export interface FlowPluginsTable {
@@ -186,6 +215,7 @@ export interface FlowDatabase {
   flow_items: FlowItemsTable;
   flow_events: FlowEventsTable;
   flow_runs: FlowRunsTable;
+  flow_run_events: FlowRunEventsTable;
   flow_plugins: FlowPluginsTable;
   flow_gateways: FlowGatewaysTable;
   flow_schedules: FlowSchedulesTable;

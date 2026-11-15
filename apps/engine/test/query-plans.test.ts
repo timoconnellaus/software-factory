@@ -46,11 +46,15 @@ import {
   listProjects,
   listSchedules,
   loadItem,
+  pruneRunEvents,
   recentComments,
   renewLease,
+  runEventsPage,
   runForToken,
+  runView,
   saveSchedule,
   sendMessage,
+  storeRunEvents,
   timeline,
 } from "@software-factory/store";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -260,11 +264,27 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       await enabledPlugins(e.DB, orgId);
       await gatewayForHost(e.DB, undefined, orgId, "blog");
       await getPluginById(e.DB, "fplg_qp");
+      // The runner's events for the run view (packages/store run-events.ts): its totals by primary
+      // key, then the batch's insert and the guarded update.
+      const at = new Date(now).toISOString();
+      await storeRunEvents(e.DB, run.id, [
+        { type: "message", role: "assistant", text: "Plan.", seq: 1, at },
+        { type: "tool", name: "Read", input: '{"file_path":"a.ts"}', id: "t1", seq: 2, at },
+        { type: "tool.result", toolId: "t1", output: "ok", seq: 3, at },
+      ]);
       await finishRun(e.DB, run.id, run.fencingToken, { outcome: "done", summary: "ok" });
+      // The run view, polled while a run is live: the run with its names, and its events after a
+      // seq (the primary key).
+      await runView(e.DB, run.id);
+      await runEventsPage(e.DB, run.id, 1);
+      // The cron's prune, every minute: the oldest due run (flow_runs_events_due_idx), then a batch
+      // of its events by primary key. 40 days on, so this run is due and every statement runs.
+      await pruneRunEvents(e.DB, now + 40 * 86_400_000);
       // The desktop app's polled reads: the board, the inbox and the timeline, each capped.
       await board(e.DB, project.id);
       // And the fields the org's plugins declare, read with every board and item.
       await declaredFields(e.DB, orgId);
+      // The inbox, with `done`: the person's finishes and decisions (flow_events_person_done_idx).
       await inbox(e.DB, orgId, "u_qp");
       await timeline(e.DB, item.id);
       // Polled too: the inbox across a person's orgs (their memberships, then each list's arm per
@@ -1266,6 +1286,27 @@ describe("hot-path query plans (AGENTS.md, Cloudflare cost)", () => {
     const under = results.filter((r) => r.parent === q.id).map((r) => r.detail);
     expect(under.join("\n")).toMatch(/core_jobs_queue_idx/);
     expect(under.join("\n")).not.toMatch(/TEMP B-TREE/);
+  });
+
+  it("the inbox's `done` reads the person's events through its partial index, and the event prune its own", async () => {
+    const seen: Recorded[] = [];
+    const e = recordingEnv(env, seen);
+    await inbox(e.DB, "org_qp_done", "u_qp_done");
+    await pruneRunEvents(e.DB, Date.now());
+    const plan = async (match: RegExp) => {
+      const stmt = seen.find((r) => match.test(r.sql));
+      if (!stmt) throw new Error(`no statement matching ${match}`);
+      const { results } = await env.DB.prepare(`EXPLAIN QUERY PLAN ${stmt.sql}`)
+        .bind(...stmt.params)
+        .all<{ detail: string }>();
+      return results.map((r) => r.detail).join("\n");
+    };
+    expect(await plan(/FROM flow_events\s+WHERE org_id = \?1/)).toMatch(
+      /SEARCH flow_events USING INDEX flow_events_person_done_idx \(org_id=\? AND <expr>=\?\)/,
+    );
+    expect(await plan(/from "flow_runs" where "event_count" > \?/)).toMatch(
+      /flow_runs_events_due_idx \(finished_at<\?\)/,
+    );
   });
 
   for (const path of HOT_PATHS) {

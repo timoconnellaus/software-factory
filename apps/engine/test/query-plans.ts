@@ -73,6 +73,11 @@ function tableAliases(sql: string): Map<string, string> {
  */
 export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
   {
+    match:
+      /FROM \(SELECT item_id, MAX\(created_at\) AS done_at FROM \(\s*SELECT item_id, created_at FROM flow_events/,
+    why: "flow.inbox.get's `done`: groups and sorts the person's newest 100 finish and decide events at most, read in order from flow_events_person_done_idx",
+  },
+  {
     match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
     why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
   },

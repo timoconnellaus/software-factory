@@ -25,18 +25,6 @@ export const meQuery = (login: string | null) =>
     staleTime: 5 * 60_000,
   });
 
-/**
- * Your runners' health line (online, busy, the slots in use, paused), from the read the old inbox
- * used: `runner.list` says what each runner reported, not what it is running now.
- */
-export const runnerHealthQuery = () =>
-  queryOptions({
-    queryKey: ["runners", "health"],
-    queryFn: () => read("inbox.list", {}).then((i) => i.runners),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
-
 /** Your runners, each with its health (online, busy, rate-limited, offline) and whether it can take work. */
 export const runnersQuery = () =>
   queryOptions({

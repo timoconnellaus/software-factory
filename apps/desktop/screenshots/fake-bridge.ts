@@ -224,6 +224,9 @@ function answer(op: string, input: unknown): CallResult {
 /** The writes the view made, in order, for the behaviour tests (behave.mjs) to check. */
 const calls: { op: string; input: unknown }[] = [];
 (window as { __sfCalls?: typeof calls }).__sfCalls = calls;
+/** The reads, in order: a behaviour test checks what a poll asks for (`window.__sfReads`). */
+const reads: { op: string; input: unknown }[] = [];
+(window as { __sfReads?: typeof reads }).__sfReads = reads;
 /** A write takes a moment, as over the door, so a second click can land while one runs. */
 async function write(p: { op: string; input: unknown }): Promise<CallResult> {
   calls.push(p);
@@ -243,8 +246,10 @@ export const bun = {
   signInAgain: async () => session,
   cancelTouchId: async () => ({ cancelled: true }),
   call: (p: { op: string; input: unknown }) => write(p),
-  batch: async (p: { calls: { op: string; input: unknown }[] }) =>
-    p.calls.map((c) => answer(c.op, c.input)),
+  batch: async (p: { calls: { op: string; input: unknown }[] }) => {
+    reads.push(...p.calls);
+    return p.calls.map((c) => answer(c.op, c.input));
+  },
   decide: async (p: { op: string; input: unknown }) => answer(p.op, p.input),
   runnerState: async () => runner,
   runnerAction: async () => runner,

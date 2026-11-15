@@ -31,8 +31,8 @@ import {
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  flowBoardQuery,
   flowItemQuery,
+  flowItemRunsQuery,
   flowTimelineQuery,
   flowWorkflowQuery,
   useFlowRefresh,
@@ -57,11 +57,8 @@ export function useItem(orgId: string, itemId: string, project: FlowProject | un
   const [busy, setBusy] = useState(false);
   const statuses: FlowStatus[] = workflow.data?.workflow.statuses ?? [];
   const data = item.data;
-  // Plugin fields' labels come beside the board's items: the board's read, when it was made.
-  const board = useQuery({
-    ...flowBoardQuery(orgId, project?.id ?? data?.projectId ?? ""),
-    enabled: false,
-  });
+  // The item's runs: the run line under each agent's summary (its time, cost and steps).
+  const runs = useQuery(flowItemRunsQuery(orgId, itemId));
   const me = session.user.id;
 
   /** Sends one write; true when it went through. */
@@ -90,7 +87,9 @@ export function useItem(orgId: string, itemId: string, project: FlowProject | un
     rows: timeline.data ? buildTimeline(timeline.data.entries, statuses, names) : [],
     decision: data ? decisionFor(data, statuses, me) : null,
     chip: data ? chipOf(data, me) : null,
-    fields: data ? fieldChips(data, board.data?.fields) : [],
+    // Labelled by the fields the org's plugins declare, which flow.item.get returns beside the item.
+    fields: data ? fieldChips(data, data.declaredFields) : [],
+    runs: runs.data?.runs ?? [],
     busy,
     act: (a: Decision["actions"][number]) =>
       send(
@@ -330,6 +329,7 @@ function ItemBody({
           onAction={view.act}
           onRetry={view.retry}
           decisionRef={decisionRef}
+          runs={view.runs}
         />
       </div>
     </>

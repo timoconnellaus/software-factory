@@ -13,6 +13,9 @@ export const flowOrg = createRoute({
   getParentRoute: () => flowLayout,
   path: "$orgId",
   component: Outlet,
+  // `?run=<id>`: a run open over whatever page shows (components/flow/run.tsx), so it can be linked.
+  validateSearch: (s: Record<string, unknown>): { run?: string } =>
+    typeof s.run === "string" && s.run ? { run: s.run } : {},
   loader: ({ context: { queryClient }, params: { orgId } }) =>
     Promise.all([
       queryClient.ensureQueryData(flowProjectsQuery(orgId)),

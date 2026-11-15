@@ -47,6 +47,7 @@ import { orgInitial } from "../../lib/scope.ts";
 import { useSession } from "../../lib/session.ts";
 import { chooseOrg, updateViewState } from "../../lib/view-state.ts";
 import { AccountMenu } from "./account-menu.tsx";
+import { RunModal } from "./run.tsx";
 
 /** The org the new shell shows: the path's, else the chosen one, else Personal, else the first. */
 export function useFlowOrg(): string | null {
@@ -70,6 +71,13 @@ function useFlowLook() {
 export function FlowShell() {
   useFlowLook();
   const orgId = useFlowOrg();
+  // A run open over the page (`?run=`, validated by the org's route).
+  const runId = useRouterState({
+    select: (s) => {
+      const run = (s.location.search as { run?: unknown }).run;
+      return typeof run === "string" && run ? run : null;
+    },
+  });
   return (
     <div className="flex min-h-0 flex-1 pr-2 pb-2" data-testid="flow-shell">
       <OrgStrip orgId={orgId} />
@@ -79,6 +87,7 @@ export function FlowShell() {
         data-testid="content-panel"
       >
         <Outlet />
+        {orgId && runId && <RunModal orgId={orgId} runId={runId} />}
       </div>
     </div>
   );

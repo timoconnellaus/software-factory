@@ -1,5 +1,5 @@
 // A run as the store hands it out, from its flow_runs row. Shared by runs.ts and chat-runs.ts.
-import type { FlowRunsTable, RunStatus } from "./schema.ts";
+import type { FlowRunRow, RunStatus } from "./schema.ts";
 
 export interface RunResult {
   outcome: "done" | "rejected";
@@ -28,9 +28,15 @@ export interface Run {
   createdAt: string;
   claimedAt: string | null;
   finishedAt: string | null;
+  /** Tool calls the runner reported (run-events.ts). */
+  steps: number;
+  /** Tokens the runner reported, or null when it reports none. */
+  tokens: number | null;
+  /** Cost the runner reported, or null (no runner reports cost yet). */
+  costUsd: number | null;
 }
 
-export function toRun(row: FlowRunsTable): Run {
+export function toRun(row: FlowRunRow): Run {
   return {
     id: row.id,
     orgId: row.org_id,
@@ -49,5 +55,8 @@ export function toRun(row: FlowRunsTable): Run {
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     finishedAt: row.finished_at,
+    steps: row.steps,
+    tokens: row.tokens,
+    costUsd: row.cost_usd,
   };
 }
