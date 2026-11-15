@@ -3,76 +3,85 @@
 // pure logic the view needs: tool calls paired with their results into steps, each step's time from
 // the run's start, the time bar's segments, and the words for durations, cost and status.
 
-export type FlowRunStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
+import { z } from "zod";
+
+// The answers' shapes are zod schemas with their types inferred (see flow.ts).
+
+export const flowRunStatusSchema = z.enum(["queued", "claimed", "done", "failed", "cancelled"]);
+export type FlowRunStatus = z.infer<typeof flowRunStatusSchema>;
 
 /** `flow.run.get`'s run: the run, what it ran on, and its totals. */
-export interface FlowRunView {
-  id: string;
-  orgId: string;
+export const flowRunViewSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
   /** Null for a run that belongs to a chat, not an item. */
-  itemId: string | null;
-  agentId: string;
-  statusId: string;
-  stay: number;
-  brief: string;
-  status: FlowRunStatus;
-  runnerId: string | null;
-  result: { outcome: "done" | "rejected"; summary: string } | null;
-  error: string | null;
-  createdAt: string;
-  claimedAt: string | null;
-  finishedAt: string | null;
-  itemTitle: string | null;
+  itemId: z.string().nullable(),
+  agentId: z.string(),
+  statusId: z.string(),
+  stay: z.number(),
+  brief: z.string(),
+  status: flowRunStatusSchema,
+  runnerId: z.string().nullable(),
+  result: z.object({ outcome: z.enum(["done", "rejected"]), summary: z.string() }).nullable(),
+  error: z.string().nullable(),
+  createdAt: z.string(),
+  claimedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  itemTitle: z.string().nullable(),
   /** A chat's run: the chat's title (the item fields null). */
-  chatTitle?: string | null;
-  itemNumber: number | null;
-  projectId: string | null;
-  projectKey: string | null;
-  agentName: string | null;
-  statusName: string | null;
+  chatTitle: z.string().nullable().optional(),
+  itemNumber: z.number().nullable(),
+  projectId: z.string().nullable(),
+  projectKey: z.string().nullable(),
+  agentName: z.string().nullable(),
+  statusName: z.string().nullable(),
   /** "entering Build" for an item's run; null otherwise. */
-  startedBy: string | null;
+  startedBy: z.string().nullable(),
   /** Claimed to finished; null while it runs or if it was never claimed. */
-  durationMs: number | null;
+  durationMs: z.number().nullable(),
   /** Tool calls stored. */
-  steps: number;
+  steps: z.number(),
   /** Null: no runner reports cost today. */
-  costUsd: number | null;
-  tokens: number | null;
-  runnerName: string | null;
+  costUsd: z.number().nullable(),
+  tokens: z.number().nullable(),
+  runnerName: z.string().nullable(),
   /** It had more than the 2,000 events the engine keeps. */
-  eventsTruncated: boolean;
+  eventsTruncated: z.boolean(),
   /** Its events were removed 30 days after it finished. */
-  eventsRemoved: boolean;
-}
+  eventsRemoved: z.boolean(),
+});
+export type FlowRunView = z.infer<typeof flowRunViewSchema>;
 
 /** One stored event of a run, in seq order; `at` is the runner's clock. */
-export type FlowRunEvent =
-  | { seq: number; at: string; kind: "note"; text: string }
-  | {
-      seq: number;
-      at: string;
-      kind: "tool";
-      name: string;
-      label: string;
-      input: string;
-      toolId: string | null;
-    }
-  | {
-      seq: number;
-      at: string;
-      kind: "result";
-      toolId: string;
-      output: string;
-      isError: boolean;
-    };
+export const flowRunEventSchema = z.discriminatedUnion("kind", [
+  z.object({ seq: z.number(), at: z.string(), kind: z.literal("note"), text: z.string() }),
+  z.object({
+    seq: z.number(),
+    at: z.string(),
+    kind: z.literal("tool"),
+    name: z.string(),
+    label: z.string(),
+    input: z.string(),
+    toolId: z.string().nullable(),
+  }),
+  z.object({
+    seq: z.number(),
+    at: z.string(),
+    kind: z.literal("result"),
+    toolId: z.string(),
+    output: z.string(),
+    isError: z.boolean(),
+  }),
+]);
+export type FlowRunEvent = z.infer<typeof flowRunEventSchema>;
 
-export interface FlowRunEvents {
-  events: FlowRunEvent[];
-  truncated: boolean;
+export const flowRunEventsSchema = z.object({
+  events: z.array(flowRunEventSchema),
+  truncated: z.boolean(),
   /** The run is no longer queued or claimed. */
-  done: boolean;
-}
+  done: z.boolean(),
+});
+export type FlowRunEvents = z.infer<typeof flowRunEventsSchema>;
 
 /** The most events `flow.run.events` returns at once: a full page means there may be more. */
 export const RUN_EVENTS_PAGE = 500;
