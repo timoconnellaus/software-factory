@@ -22,7 +22,7 @@ import type {
   FlowPluginDetail,
 } from "@software-factory/client/flow-edit";
 import type { FlowRunEvent, FlowRunView } from "@software-factory/client/flow-run";
-import { CHAT_ANSWERS, CHAT_WORKFLOWS } from "./chat-fixtures.ts";
+import { CHAT_ANSWERS, CHAT_RUN_EVENTS, CHAT_WORKFLOWS } from "./chat-fixtures.ts";
 // A refused write carries its problems as the door does (`details`). fixtures.ts imports this file;
 // Refusal is only used when an answer runs, after both have loaded.
 import { Refusal } from "./fixtures.ts";
@@ -57,6 +57,8 @@ const AGENTS: FlowAgent[] = [
     instructions:
       "Backend engineer. Take a feature from migration to an open pull request, with tests.",
     mcp: ["factory"],
+    model: "sonnet",
+    effort: "high",
     createdAt: ago(9000),
   },
   {
@@ -67,7 +69,7 @@ const AGENTS: FlowAgent[] = [
     createdAt: ago(9000),
   },
   {
-    // Chat's agent (flow.agent.ensureBuilder): the Plugin editor's "factory" server.
+    // An agent with the Plugin editor (the "factory" server).
     id: "fagt_chat",
     orgId: FLOW_ORG,
     name: "Builder",
@@ -1028,12 +1030,13 @@ export const FLOW_ANSWERS: FlowAnswers = {
     mcp: input.mcp ?? [],
     createdAt: ago(0),
   }),
-  "flow.agent.update": (input) => ({
-    ...(AGENTS.find((a) => a.id === input.agentId) as FlowAgent),
-    name: input.name,
-    instructions: input.instructions,
-    mcp: input.mcp ?? [],
-  }),
+  "flow.agent.update": (input) => {
+    const agent = AGENTS.find((a) => a.id === input.agentId) as FlowAgent;
+    // Kept, as the engine keeps it: the agent page reads it back after a change.
+    if (input.model !== undefined) agent.model = input.model;
+    if (input.effort !== undefined) agent.effort = input.effort;
+    return { ...agent, name: input.name, instructions: input.instructions, mcp: input.mcp ?? [] };
+  },
   "flow.run.list": (input) => ({
     runs: input.itemId
       ? itemRunsOf(input.itemId)
@@ -1045,6 +1048,13 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return { run: found.run };
   },
   "flow.run.events": (input) => {
+    const chatRun = CHAT_RUN_EVENTS[input.runId];
+    if (chatRun)
+      return {
+        events: chatRun.events.filter((e) => input.after === undefined || e.seq > input.after),
+        truncated: false,
+        done: chatRun.done,
+      };
     const found = RUN_VIEWS[input.runId];
     if (!found) throw new Refusal("not_found", `No run ${input.runId} in this org.`);
     return {

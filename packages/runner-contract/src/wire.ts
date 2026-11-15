@@ -153,6 +153,12 @@ export const jobSchema = z
       role: z.enum(MODEL_ROLES),
       /** The model the role resolves to (ADR 0018); the harness may ignore it. */
       model: z.string().optional(),
+      /**
+       * How hard the model works (spec 70, Chat): the CLI's effort level ("low" … "max"). Only a
+       * `flow` job sets it (a chat's choice, or its agent's); absent, or one the harness doesn't
+       * know, means the harness's default. A runner that predates it ignores it.
+       */
+      effort: z.string().max(20).optional(),
       prompt: z.string(),
       /**
        * The project's harness settings (ADR 0270). Optional and additive: a runner that predates it

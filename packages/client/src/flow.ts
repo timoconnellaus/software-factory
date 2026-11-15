@@ -71,6 +71,9 @@ export interface FlowAgent {
   instructions: string;
   /** The MCP servers it gets beyond the base ones: `["factory"]` is the Plugin editor. */
   mcp?: string[];
+  /** The Claude Code model alias and effort its runs use (null or missing: the runner's default). */
+  model?: string | null;
+  effort?: string | null;
   createdAt: string;
 }
 
@@ -178,11 +181,16 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };
   "flow.agent.create": {
-    input: Org & { name: string; instructions: string; mcp?: string[] };
+    input: Org & { name: string; instructions: string; mcp?: string[] } & ModelChoice;
     output: FlowAgent;
   };
   "flow.agent.update": {
-    input: Org & { agentId: string; name: string; instructions: string; mcp?: string[] };
+    input: Org & {
+      agentId: string;
+      name: string;
+      instructions: string;
+      mcp?: string[];
+    } & ModelChoice;
     output: FlowAgent;
   };
   "flow.inbox.all": { input: Record<string, never>; output: FlowInboxAll };
@@ -243,7 +251,12 @@ export function personName(names: Names, userId: string): string {
 export const hasPluginEditor = (agent: Pick<FlowAgent, "mcp">) =>
   agent.mcp?.includes("factory") ?? false;
 
+/** A model and effort: left out, unchanged; null, the runner's default. */
+type ModelChoice = { model?: string | null; effort?: string | null };
+
 export function agentName(names: Names, agentId: string): string {
+  // A chat's run has no agent (agent_id ''): what it does is the chat's.
+  if (agentId === "") return "Chat";
   return names.agents.find((a) => a.id === agentId)?.name ?? "An agent";
 }
 

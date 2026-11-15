@@ -90,11 +90,17 @@ export function agentWorking(
 /**
  * What `flow.agent.update` is sent for one change: it takes the whole agent, so its name and saved
  * instructions go with it, and its `mcp` (missing reads as none). The Plugin editor is `factory`.
+ * A model or effort is sent only when it changes (null: the runner's default).
  */
 export function agentUpdate(
   orgId: string,
   agent: Pick<FlowAgent, "id" | "name" | "instructions" | "mcp">,
-  change: { instructions?: string; pluginEditor?: boolean },
+  change: {
+    instructions?: string;
+    pluginEditor?: boolean;
+    model?: string | null;
+    effort?: string | null;
+  },
 ) {
   const mcp =
     change.pluginEditor === undefined
@@ -108,6 +114,8 @@ export function agentUpdate(
     name: agent.name,
     instructions: change.instructions ?? agent.instructions,
     mcp,
+    ...(change.model !== undefined ? { model: change.model } : {}),
+    ...(change.effort !== undefined ? { effort: change.effort } : {}),
   };
 }
 

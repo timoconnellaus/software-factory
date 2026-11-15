@@ -10,6 +10,7 @@ export {
   getOperation,
   PREFIX,
 } from "./call.ts";
+export { CHAT_EFFORTS, CHAT_MODELS, chatOptions } from "./models.ts";
 export {
   type AgentCaller,
   type Caller,

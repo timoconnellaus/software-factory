@@ -31,7 +31,6 @@ import {
   enabledPlugins,
   endChatRun,
   expireRuns,
-  findBuilder,
   finishRun,
   gatewayForHost,
   getChat,
@@ -334,7 +333,7 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
     },
   },
   {
-    // Chat (migration 0433): the app polls flow.chat.get while a run is in flight (the chat, its
+    // Chat (migrations 0433, 0437): the app polls flow.chat.get while a run is in flight (the chat, its
     // newest messages and its `did` rows by the (chat_id, seq) key, its open run by
     // flow_runs_chat_idx) and reads flow.chat.list (flow_chats_org_idx). A runner claims a chat's
     // run (the queue, then the chat by primary key), its prompt reads the conversation, the MCP
@@ -347,16 +346,11 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       )
         .bind(new Date().toISOString())
         .run();
-      const agent = await findBuilder(e.DB, orgId).then(
-        (found) =>
-          found ??
-          createAgent(e.DB, { orgId, name: "Builder", instructions: "", mcp: ["factory"] }),
-      );
       const chat = await createChat(e.DB, {
         orgId,
-        agentId: agent.id,
         text: "Set up a workflow.",
         createdBy: "u_qp",
+        model: "sonnet",
       });
       await getChat(e.DB, chat.id);
       await listChats(e.DB, orgId);

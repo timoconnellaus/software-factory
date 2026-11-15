@@ -93,6 +93,25 @@ describe("run settings", () => {
     expect(contained.permissions.defaultMode).toBe("bypassPermissions");
   });
 
+  it("passes a flow job's model and effort to the CLI, and drops an effort it doesn't know", () => {
+    const flow = (harness: Partial<Job["harness"]>) => ({
+      stage: "flow" as const,
+      harness: { id: "claude-code" as const, role: "implement" as const, prompt: "p", ...harness },
+    });
+    const argv = claudeArgv(flow({ model: "sonnet", effort: "xhigh" }), { settingsPath: "/s" });
+    expect(argv.join(" ")).toContain("--model sonnet --effort xhigh");
+    expect(claudeArgv(flow({ effort: "turbo" }), { settingsPath: "/s" })).not.toContain("--effort");
+    const plain = claudeArgv(flow({}), { settingsPath: "/s" });
+    expect(plain).not.toContain("--model");
+    expect(plain).not.toContain("--effort");
+    // Only a flow job carries an effort.
+    const build = claudeArgv(
+      { ...flow({ effort: "high" }), stage: "build" },
+      { settingsPath: "/s" },
+    );
+    expect(build).not.toContain("--effort");
+  });
+
   it("lets verify run the toolchain but not edit", () => {
     const s = runSettings({ stage: "verify" }, { worktree: "/w/job", runDir: "/r/job" });
     expect(s.permissions.defaultMode).toBe("dontAsk");

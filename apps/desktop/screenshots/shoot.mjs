@@ -41,9 +41,13 @@ export const SCREENS = [
   { name: "flow-item-decision", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
   { name: "flow-item-stopped", path: "/flow/org_personal/p/fprj_api?item=fitm_postgres" },
   { name: "flow-project-empty", path: "/flow/org_personal/p/fprj_launch" },
-  // Chat (chat-build-a-workflow-and-a-plugin.html, chat-fixtures.ts): `--out flow-chat`.
+  // Chat, a conversation with a model (chat-fixtures.ts): `--out flow-chat`. A plain conversation
+  // (a Markdown reply, no side pane), one that created items (with the pane), one that built a
+  // workflow and a plugin, a run in flight with its live steps, a failed run, and a new chat.
   { name: "flow-chat-new", path: "/flow/org_personal/chat" },
-  { name: "flow-chat", path: "/flow/org_personal/chat?chat=fchat_launch" },
+  { name: "flow-chat", path: "/flow/org_personal/chat?chat=fchat_plain" },
+  { name: "flow-chat-made-items", path: "/flow/org_personal/chat?chat=fchat_notes" },
+  { name: "flow-chat-built", path: "/flow/org_personal/chat?chat=fchat_launch" },
   { name: "flow-chat-working", path: "/flow/org_personal/chat?chat=fchat_legal" },
   { name: "flow-chat-failed", path: "/flow/org_personal/chat?chat=fchat_slack" },
   // Team, Settings and All orgs (.kim/mockups/team-an-agent.html, all-orgs.html).

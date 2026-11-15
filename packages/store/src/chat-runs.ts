@@ -1,6 +1,7 @@
 // A chat's run ends (migration 0433): the runner's hand-back, its failure, or the lease sweep. There
-// is no item to step: the run is marked, and the agent's reply (its summary, or a plain note that it
-// failed) is added to the chat, in one batch. The person can simply send again after a failure.
+// is no item to step: the run is marked, and the model's reply (its summary, or a plain note that it
+// failed) is added to the chat, in one batch (stored with role `agent`, which the API calls
+// `assistant`). The person can simply send again after a failure.
 import { guardChanged } from "@software-factory/db";
 import { appendMessage, chatBatch } from "./chats.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
@@ -12,14 +13,14 @@ export type ChatRunEnding =
   | { status: "done"; result: RunResult }
   | { status: "failed"; error: string };
 
-/** The agent's message for a run that failed: plain, with the error, and what to do next. */
+/** The model's reply for a run that failed: plain, with the error, and what to do next. */
 export function failedReply(error: string): string {
   const said = error.trim() || "The run failed.";
   return `I couldn't finish that: ${said}${/[.!?]$/.test(said) ? "" : "."} Send your message again to have me try once more.`;
 }
 
 /**
- * Ends a claimed chat run and adds the agent's message. With `lapsedBefore` the run's update also
+ * Ends a claimed chat run and adds the model's reply. With `lapsedBefore` the run's update also
  * requires its lease to have lapsed before then (the sweep). A stale fencing token, or a run that
  * ended meanwhile, is refused (`stale_run`).
  */
@@ -30,12 +31,16 @@ export async function endChatRun(
   ended: ChatRunEnding,
   lapsedBefore?: string,
 ): Promise<Run> {
-  const run = await flowDb(d1)
-    .selectFrom("flow_runs")
-    .selectAll()
-    .where("id", "=", runId)
+  // With its chat's model (by primary key): the reply names the model that wrote it.
+  const found = await flowDb(d1)
+    .selectFrom("flow_runs as r")
+    .leftJoin("flow_chats as c", "c.id", "r.chat_id")
+    .selectAll("r")
+    .select("c.model as chat_model")
+    .where("r.id", "=", runId)
     .executeTakeFirst();
-  if (!run) throw new StoreError("not_found", `No run ${runId}.`);
+  if (!found) throw new StoreError("not_found", `No run ${runId}.`);
+  const { chat_model: model, ...run } = found;
   const chatId = run.chat_id;
   if (chatId === null) throw new StoreError("invalid", `Run ${runId} is an item's run.`);
   const stale = new StoreError(
@@ -51,10 +56,11 @@ export async function endChatRun(
     error: ended.status === "failed" ? ended.error : null,
     finished_at: now,
   };
+  // `model`: the alias the run used (null: the runner's default), so the app can label the reply.
   const reply =
     ended.status === "done"
-      ? { text: ended.result.summary.trim() || "Done.", data: undefined }
-      : { text: failedReply(ended.error), data: { failed: true, error: ended.error } };
+      ? { text: ended.result.summary.trim() || "Done.", data: { model } }
+      : { text: failedReply(ended.error), data: { failed: true, error: ended.error, model } };
   const lapsed = lapsedBefore !== undefined ? " AND lease_expires_at < ?" : "";
   await chatBatch(
     d1,

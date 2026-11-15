@@ -341,10 +341,15 @@ export const TESTS = [
     },
   },
   {
-    name: "flow chat: sending shows the agent working, then what it did and its reply",
+    name: "flow chat: sending shows the run's steps, then what it did and its reply, folded into one line",
     async run(p) {
       await p.open("/flow/org_personal/chat?chat=fchat_launch&end=1");
       await p.waitFor("document.querySelector('[data-testid=chat-input]')");
+      expect(
+        await p.text("[data-testid=chat-page]"),
+        "no agent in a chat with a model",
+      ).not.toContain("Builder");
+      expect(await p.text("[data-testid=chat-model-label]"), "the reply's model").toBe("Opus");
       const before = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
       await p.focus("[data-testid=chat-input]");
       await p.type("Also add a legal check before Edit.");
@@ -353,11 +358,17 @@ export const TESTS = [
       const sent = await p.calls("flow.chat.send");
       expect(sent[0]?.input.chatId, "this chat").toBe("fchat_launch");
       expect(sent[0]?.input.text, "the message").toBe("Also add a legal check before Edit.");
-      expect(await p.text("[data-testid=chat-working]"), "working").toContain("Builder is working");
+      expect(sent[0]?.input.model, "the chat's model is unchanged, so not sent").toBe(undefined);
       expect(
         await p.evaluate("document.querySelector('[data-testid=chat-send]').disabled"),
         "sending waits",
       ).toBe(true);
+      // The run's events are read every 2 seconds: its steps show in plain words.
+      await p.waitFor(
+        "[...document.querySelectorAll('[data-testid=chat-step]')].some((e) => e.textContent === 'Reading a workflow')",
+        5000,
+      );
+      expect(await p.text("[data-testid=chat-working]"), "thinking").toContain("Thinking…");
       // The fixture's run answers a moment later; the chat is re-read every 3 seconds meanwhile.
       await p.waitFor("!document.querySelector('[data-testid=chat-working]')", 8000);
       const after = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
@@ -366,12 +377,91 @@ export const TESTS = [
         await p.evaluate(
           "[...document.querySelectorAll('[data-testid=chat-reply]')].at(-1)?.textContent",
         ),
-        "the reply",
-      ).toContain("Legal check before Edit");
+        "the reply, as Markdown",
+      ).toContain("Launch content now has a Legal check before Edit");
+      expect(
+        await p.evaluate(
+          "[...document.querySelectorAll('[data-testid=chat-reply]')].at(-1)?.querySelector('strong')?.textContent",
+        ),
+        "bold rendered",
+      ).toBe("Legal");
+      await p.waitFor(
+        "[...document.querySelectorAll('[data-testid=chat-steps-summary]')].at(-1)?.textContent === 'Did 2 things'",
+        5000,
+      );
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=chat-steps-summary]')].at(-1).click()",
+      );
+      await p.waitFor(
+        "[...document.querySelectorAll('[data-testid=chat-steps]')].at(-1)?.textContent",
+      );
+      expect(
+        await p.evaluate(
+          "[...document.querySelectorAll('[data-testid=chat-steps]')].at(-1)?.textContent",
+        ),
+        "the steps",
+      ).toContain("Changing a workflow");
     },
   },
   {
-    name: "flow plugins: asking starts a chat with the builder and goes to it",
+    name: "flow chat: a model picked goes with the next message, and a new chat starts with it",
+    async run(p) {
+      await p.open("/flow/org_personal/chat?chat=fchat_plain&end=1");
+      await p.waitFor("document.querySelector('[data-testid=chat-model]')");
+      expect(await p.text("[data-testid=chat-model]"), "the chat's model").toBe("Opus");
+      expect(await p.text("[data-testid=chat-effort]"), "the chat's effort").toBe("High");
+      // A plain conversation: a Markdown reply (a table, a list) and no side pane.
+      expect(await p.exists("[data-testid=chat-reply] table"), "a table").toBe(true);
+      expect(await p.exists("[data-testid=chat-reply] ol"), "a list").toBe(true);
+      expect(await p.exists("[data-testid=chat-made]"), "no side pane").toBe(false);
+      await p.focus("[data-testid=chat-model]");
+      await p.key("Enter");
+      await p.waitFor("document.querySelector('[data-testid=chat-model-option]')");
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=chat-model-option]')].find((o) => o.textContent === 'Sonnet').focus()",
+      );
+      await p.key("Enter");
+      await p.waitFor(
+        "document.querySelector('[data-testid=chat-model]').textContent === 'Sonnet'",
+      );
+      await p.focus("[data-testid=chat-input]");
+      await p.type("Shorter, please.");
+      await p.key("Enter");
+      await p.waitFor("document.querySelector('[data-testid=chat-working]')");
+      const sent = await p.calls("flow.chat.send");
+      expect(sent[0]?.input.model, "the new model").toBe("sonnet");
+      expect(sent[0]?.input.effort, "the effort is unchanged").toBe(undefined);
+      // A new chat starts with the last choice.
+      await p.evaluate("location.hash = '#/flow/org_personal/chat'");
+      await p.waitFor("document.querySelector('[data-testid=chat-empty]')");
+      expect(await p.text("[data-testid=chat-model]"), "remembered").toBe("Sonnet");
+      await p.evaluate("document.querySelectorAll('[data-testid=chat-example]')[0].click()");
+      expect(
+        await p.evaluate("document.querySelector('[data-testid=chat-input]').value"),
+        "an example fills the box",
+      ).toContain("search across notes");
+      await p.click("[data-testid=chat-send]");
+      await p.waitFor("document.querySelector('[data-testid=chat-person]')", 4000);
+      const made = await p.calls("flow.chat.create");
+      expect(made[0]?.input.model, "the last model").toBe("sonnet");
+      expect(made[0]?.input.effort, "and effort").toBe("high");
+    },
+  },
+  {
+    name: "flow chat: the side pane lists what the chat made, and an item opens",
+    async run(p) {
+      await p.open("/flow/org_personal/chat?chat=fchat_notes&end=1");
+      await p.waitFor("document.querySelector('[data-testid=made-item]')");
+      expect(await p.text("[data-testid=made-item]"), "key and title").toContain(
+        "API-13Index note titles and bodies",
+      );
+      await p.click("[data-testid=made-item]");
+      await p.waitFor("location.hash.includes('item=fitm_chat_index')");
+      expect(await p.path(), "the item").toContain("/flow/org_personal/p/fprj_api");
+    },
+  },
+  {
+    name: "flow plugins: asking starts a chat and goes to it",
     async run(p) {
       await p.open("/flow/org_personal/plugins");
       await p.waitFor("document.querySelector('[data-testid=plugin-ask-input]')");
@@ -380,7 +470,7 @@ export const TESTS = [
       await p.click("[data-testid=plugin-ask-send]");
       await p.waitFor("document.querySelector('[data-testid=chat-page]')", 4000);
       const made = await p.calls("flow.chat.create");
-      expect(made[0]?.input.agentId, "the builder").toBe("fagt_chat");
+      expect(made[0]?.input.agentId, "no agent").toBe(undefined);
       expect(made[0]?.input.text, "the words").toBe("Post to Slack when an item ships.");
       expect(await p.path(), "the new chat").toContain("chat=fchat_new");
       await p.waitFor("document.querySelector('[data-testid=chat-person]')");

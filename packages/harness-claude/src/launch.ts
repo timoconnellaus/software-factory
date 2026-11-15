@@ -3,7 +3,7 @@
 // hosts it (a tmux session, a headless process) and runs the launch script as it is.
 //
 //   claude --permission-mode <mode> --setting-sources project,local
-//          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>]
+//          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>] [--effort <level>]
 //
 // No user settings source, so the owner's personal Claude config (their own default mode, hooks,
 // plugins) never applies to a run. No MCP servers, except a planning session's own planning server
@@ -85,6 +85,12 @@ export const STREAM_FLAGS = [
   "none",
 ] as const;
 
+/** The effort levels `claude --effort` accepts (Claude Code 2.1); any other value is left out. */
+export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+const isEffort = (value: string | undefined): value is (typeof CLAUDE_EFFORTS)[number] =>
+  (CLAUDE_EFFORTS as readonly (string | undefined)[]).includes(value);
+
 /** The exact argv for a run's Claude. */
 export function claudeArgv(
   job: Pick<Job, "stage" | "harness">,
@@ -128,6 +134,9 @@ export function claudeArgv(
         : []),
     ...(stream && !planning && stream.sessionId ? ["--session-id", stream.sessionId] : []),
     ...(job.harness.model ? ["--model", job.harness.model] : []),
+    ...(job.stage === "flow" && isEffort(job.harness.effort)
+      ? ["--effort", job.harness.effort]
+      : []),
     ...(stream ? STREAM_FLAGS : []),
   ];
 }

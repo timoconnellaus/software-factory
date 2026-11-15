@@ -1,7 +1,7 @@
-// Chat on the new core (migration 0433) through the engine's real routes: a person's message queues
-// one run of the chat's agent, a runner claims it as a flow job with no repository and the factory
-// MCP server, what the agent changes through that server becomes `did` rows, and the hand-back's
-// summary becomes the agent's reply.
+// Chat on the new core (migrations 0433, 0437) through the engine's real routes: a person's message
+// queues one run, with the chat's model and effort and no agent; a runner claims it as a flow job
+// with no repository and the factory MCP server, what the model changes through that server becomes
+// `did` rows, and the hand-back's summary becomes the reply.
 import { env } from "cloudflare:workers";
 import { jobSchema } from "@software-factory/runner-contract";
 import { expireRuns } from "@software-factory/store";
@@ -10,11 +10,19 @@ import worker from "../src/index.ts";
 import { base, claim, type Person, person, post } from "./flow-helpers.ts";
 
 type Message = { seq: number; role: string; text: string; data: unknown; runId: string | null };
+type Thing = { id: string; name: string; projectId?: string; number?: number };
 type ChatView = {
-  chat: { id: string; title: string; agentId: string };
+  chat: {
+    id: string;
+    title: string;
+    agentId: string | null;
+    model: string | null;
+    effort: string | null;
+  };
   messages: Message[];
   working: boolean;
-  made: { workflows: { id: string; name: string }[]; plugins: { id: string; name: string }[] };
+  workingRunId: string | null;
+  made: Record<"items" | "projects" | "workflows" | "plugins" | "agents" | "gateways", Thing[]>;
 };
 
 const mcp = (token: string, body: unknown) =>
@@ -61,20 +69,24 @@ const handback = (
   });
 
 describe("Chat", () => {
-  it("runs a message as one run, records what the agent did, and makes its summary the reply", async () => {
+  it("runs a message as one run with the chat's model and effort, records what the model did, and makes its summary the reply", async () => {
     const p = await person();
-    // A fresh org: ensureBuilder creates the Builder with the factory server, then finds it again.
-    const builder = await p.call<{ id: string; name: string; mcp: string[] }>(
-      "flow.agent.ensureBuilder",
-      {},
-    );
-    expect(builder).toMatchObject({ name: "Builder", mcp: ["factory"] });
-    expect((await p.call<{ id: string }>("flow.agent.ensureBuilder", {})).id).toBe(builder.id);
+    // A fresh org with no agents: Chat needs none.
+    const writer = await p.call<{ id: string }>("flow.agent.create", {
+      name: "Writer",
+      instructions: "Draft.",
+    });
 
     const text =
       "Set up a workflow for launch content: I write a brief, an agent drafts it, then I edit it.";
-    const started = await p.call<ChatView>("flow.chat.create", { agentId: builder.id, text });
+    const started = await p.call<ChatView>("flow.chat.create", {
+      text,
+      model: "sonnet",
+      effort: "high",
+    });
+    expect(started.chat).toMatchObject({ agentId: null, model: "sonnet", effort: "high" });
     expect(started.working).toBe(true);
+    expect(started.workingRunId).toMatch(/^frun_/);
     expect(started.chat.title).toBe(`${text.slice(0, 79).trimEnd()}…`);
     expect(started.messages.map((m) => m.role)).toEqual(["person"]);
     const chatId = started.chat.id;
@@ -82,7 +94,7 @@ describe("Chat", () => {
     // Sending while the run is queued is refused, plainly.
     const busy = await refused(p, "flow.chat.send", { orgId: p.orgId, chatId, text: "And?" });
     expect(busy.status).toBe(409);
-    expect(busy.body.error).toMatch(/still answering/);
+    expect(busy.body.error).toMatch(/Still answering/);
 
     const job = await claim(p);
     if (!job) throw new Error("no job");
@@ -92,6 +104,8 @@ describe("Chat", () => {
     expect(job.context).toMatchObject({ orgId: p.orgId, chatId });
     expect(job.harness.prompt).toContain(text);
     expect(job.harness.prompt).toContain("flow_ops");
+    expect(job.harness.prompt).not.toMatch(/Builder|You are an agent/);
+    expect(job.harness).toMatchObject({ model: "sonnet", effort: "high" });
     expect(job.mcpServers?.[0]).toMatchObject({ name: "factory", url: `${base}/flow/mcp` });
     const token = job.mcpServers?.[0]?.headers?.Authorization ?? "";
 
@@ -110,7 +124,7 @@ describe("Chat", () => {
         name: "Launch content",
         statuses: [
           { id: "brief", name: "Brief", owner: { kind: "person", userId: p.userId } },
-          { id: "draft", name: "Draft", owner: { kind: "agent", agentId: builder.id } },
+          { id: "draft", name: "Draft", owner: { kind: "agent", agentId: writer.id } },
           { id: "edit", name: "Edit", owner: { kind: "person", userId: p.userId } },
         ],
       },
@@ -138,37 +152,51 @@ describe("Chat", () => {
     await handback(p, job, "Done. Launch content has Brief, Draft and Edit.");
     const after = await p.call<ChatView>("flow.chat.get", { chatId });
     expect(after.working).toBe(false);
-    expect(after.messages.map((m) => m.role)).toEqual(["person", "did", "agent"]);
+    expect(after.messages.map((m) => m.role)).toEqual(["person", "did", "assistant"]);
     expect(after.messages[2]).toMatchObject({
       text: "Done. Launch content has Brief, Draft and Edit.",
       runId: job.jobId,
+      // The reply names the model that wrote it.
+      data: { model: "sonnet" },
     });
     expect(after.made.workflows).toEqual([{ id: workflowId, name: "Launch content" }]);
     expect(after.made.plugins).toEqual([]);
+    expect(after.made.items).toEqual([]);
 
-    // The run is a chat's: flow.run.list by agent names the chat, not an item.
-    const runs = await p.call<{ runs: { chatId: string; chatTitle: string; itemId: null }[] }>(
-      "flow.run.list",
-      { agentId: builder.id },
-    );
-    expect(runs.runs[0]).toMatchObject({ chatId, itemId: null, chatTitle: started.chat.title });
+    // The run is a chat's: its view names the chat, not an item or an agent.
+    const { run } = await p.call<{
+      run: { chatId: string; chatTitle: string; itemId: null; agentName: null };
+    }>("flow.run.get", { runId: job.jobId });
+    expect(run).toMatchObject({
+      chatId,
+      itemId: null,
+      agentName: null,
+      chatTitle: started.chat.title,
+    });
 
-    // The next message: its prompt carries the conversation so far.
-    await p.call<ChatView>("flow.chat.send", { chatId, text: "Add a Published status." });
+    // The next message, with another model: it sticks, and the prompt carries the conversation.
+    const sent = await p.call<ChatView>("flow.chat.send", {
+      chatId,
+      text: "Add a Published status.",
+      model: "opus",
+    });
+    expect(sent.chat).toMatchObject({ model: "opus", effort: "high" });
     const next = await claim(p);
+    expect(next?.harness).toMatchObject({ model: "opus", effort: "high" });
     expect(next?.harness.prompt).toContain("Created the workflow Launch content");
     expect(next?.harness.prompt).toContain("Add a Published status.");
+    if (!next) throw new Error("no job");
+    await handback(p, next, "Added.");
+    // And again without naming one: the chat's choice holds.
+    await p.call<ChatView>("flow.chat.send", { chatId, text: "Thanks." });
+    expect((await claim(p))?.harness).toMatchObject({ model: "opus", effort: "high" });
     const list = await p.call<{ chats: { id: string }[] }>("flow.chat.list", {});
     expect(list.chats.map((c) => c.id)).toEqual([chatId]);
   });
 
-  it("leaves a plain agent message when a run fails or its lease lapses, and the person can send again", async () => {
+  it("leaves a plain reply when a run fails or its lease lapses, and the person can send again", async () => {
     const p = await person();
-    const builder = await p.call<{ id: string }>("flow.agent.ensureBuilder", {});
-    const { chat } = await p.call<ChatView>("flow.chat.create", {
-      agentId: builder.id,
-      text: "Build a plugin.",
-    });
+    const { chat } = await p.call<ChatView>("flow.chat.create", { text: "Build a plugin." });
     const job = await claim(p);
     if (!job) throw new Error("no job");
     await p.channel.handback({
@@ -182,7 +210,7 @@ describe("Chat", () => {
     const failed = await p.call<ChatView>("flow.chat.get", { chatId: chat.id });
     expect(failed.working).toBe(false);
     expect(failed.messages.at(-1)).toMatchObject({
-      role: "agent",
+      role: "assistant",
       text: "I couldn't finish that: Claude stopped: the session timed out. Send your message again to have me try once more.",
       data: { failed: true },
     });
@@ -200,25 +228,82 @@ describe("Chat", () => {
     expect((await p.call<{ chats: unknown[] }>("flow.chat.list", {})).chats).toEqual([]);
   });
 
-  it("refuses an agent without the factory server, and another org's member", async () => {
+  it("starts with the runner's default model, records the items it creates, and lists the options", async () => {
     const p = await person();
-    const plain = await p.call<{ id: string }>("flow.agent.create", {
-      name: "Writer",
-      instructions: "Write.",
-    });
-    const no = await refused(p, "flow.chat.create", {
-      orgId: p.orgId,
-      agentId: plain.id,
-      text: "Hello",
-    });
-    expect(no.status).toBe(400);
-    expect(no.body.error).toContain('Turn on "Plugin editor" for Writer in Team');
+    const options = await p.call<{
+      models: { id: string; label: string }[];
+      efforts: { id: string; label: string }[];
+      defaultModel: string;
+      defaultEffort: string;
+    }>("flow.chat.options", {});
+    expect(options.models.map((m) => m.label)).toEqual(["Opus", "Sonnet", "Haiku", "Fable"]);
+    expect(options.efforts.map((e) => e.id)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(options.models.map((m) => m.id)).toContain(options.defaultModel);
+    expect(options.efforts.map((e) => e.id)).toContain(options.defaultEffort);
+    // An unknown model is refused.
+    const bad = await refused(p, "flow.chat.create", { orgId: p.orgId, text: "Hi", model: "gpt" });
+    expect(bad.status).toBe(400);
 
-    const builder = await p.call<{ id: string }>("flow.agent.ensureBuilder", {});
-    const { chat } = await p.call<ChatView>("flow.chat.create", {
-      agentId: builder.id,
-      text: "Hello",
+    const { chat } = await p.call<ChatView>("flow.chat.create", { text: "Plan the notes app." });
+    expect(chat).toMatchObject({ model: null, effort: null });
+    const job = await claim(p);
+    if (!job) throw new Error("no job");
+    // Nothing chosen: the job names no model or effort (the CLI's default), and has the factory server.
+    expect(job.harness.model).toBeUndefined();
+    expect(job.harness.effort).toBeUndefined();
+    expect(job.mcpServers?.[0]?.name).toBe("factory");
+    const token = job.mcpServers?.[0]?.headers?.Authorization ?? "";
+    const call = async (op: string, input: Record<string, unknown>) =>
+      JSON.parse((await tool(token, "flow_call", { op, input })).text) as Record<string, unknown>;
+    const wf = await call("flow.workflow.create", {
+      name: "Simple",
+      statuses: [{ id: "todo", name: "To do", owner: { kind: "none" } }],
     });
+    const project = await call("flow.project.create", {
+      name: "Notes",
+      key: "NOTE",
+      workflowId: wf.id,
+    });
+    const item = await call("flow.item.create", { projectId: project.id, title: "Search notes" });
+    const view = await p.call<ChatView>("flow.chat.get", { chatId: chat.id });
+    expect(view.made.projects).toEqual([{ id: project.id, name: "Notes" }]);
+    expect(view.made.items).toEqual([
+      { id: item.id, name: "Search notes", projectId: project.id, number: 1 },
+    ]);
+  });
+
+  it("reads and continues a chat from before 0437, which named an agent", async () => {
+    const p = await person();
+    const agent = await p.call<{ id: string }>("flow.agent.create", {
+      name: "Builder",
+      instructions: "Build.",
+      mcp: ["factory"],
+    });
+    const at = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO flow_chats (id, org_id, agent_id, title, created_by, created_at, updated_at)
+          VALUES ('fchat_old', ?, ?, 'Old chat', ?, ?, ?)`,
+      ).bind(p.orgId, agent.id, p.userId, at, at),
+      env.DB.prepare(
+        `INSERT INTO flow_chat_messages (id, chat_id, org_id, seq, role, text, created_at)
+          VALUES ('fmsg_o1', 'fchat_old', ?, 1, 'person', 'Hello', ?),
+            ('fmsg_o2', 'fchat_old', ?, 2, 'agent', 'Hi there.', ?)`,
+      ).bind(p.orgId, at, p.orgId, at),
+    ]);
+    const old = await p.call<ChatView>("flow.chat.get", { chatId: "fchat_old" });
+    expect(old.chat).toMatchObject({ agentId: agent.id, model: null, effort: null });
+    expect(old.messages.map((m) => m.role)).toEqual(["person", "assistant"]);
+    await p.call<ChatView>("flow.chat.send", { chatId: "fchat_old", text: "Again", effort: "low" });
+    const job = await claim(p);
+    expect(job?.harness).toMatchObject({ effort: "low" });
+    expect(job?.harness.prompt).toContain("You: Hi there.");
+    expect(job?.mcpServers?.[0]?.name).toBe("factory");
+  });
+
+  it("refuses another org's member", async () => {
+    const p = await person();
+    const { chat } = await p.call<ChatView>("flow.chat.create", { text: "Hello" });
     const other = await person();
     const theirs = await refused(
       other,

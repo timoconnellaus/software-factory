@@ -9,6 +9,7 @@ import {
   updateAgent,
 } from "@software-factory/store";
 import { z } from "zod";
+import { effortInput, modelInput } from "./models.ts";
 import { defineOperation, id, OpError, orgId } from "./operation.ts";
 
 const project = {
@@ -25,7 +26,16 @@ const agent = {
    * plugin editor. Left out on update: unchanged.
    */
   mcp: z.array(z.string().min(1).max(64)).max(20).optional(),
+  /** The Claude Code model alias and effort level its runs start with (null: the runner's default). */
+  model: modelInput,
+  effort: effortInput,
 };
+
+/** The model and effort as the store takes them: left out, unchanged. */
+const modelChoice = (input: { model?: string | null; effort?: string | null }) => ({
+  ...(input.model !== undefined ? { model: input.model } : {}),
+  ...(input.effort !== undefined ? { effort: input.effort } : {}),
+});
 
 export const projectOps = [
   defineOperation({
@@ -77,7 +87,7 @@ export const agentOps = [
   defineOperation({
     name: "flow.agent.create",
     description:
-      "Create an agent: a name, the instructions it runs with, and optionally `mcp`, the MCP servers its runs get ([\"factory\"]: the engine's own, with every flow.* operation and the plugin editor). A status's owner names it by id.",
+      "Create an agent: a name, the instructions it runs with, optionally `mcp`, the MCP servers its runs get ([\"factory\"]: the engine's own, with every flow.* operation and the plugin editor), and optionally the `model` and `effort` its runs use (as flow.chat.options lists; null: the runner's default). A status's owner names it by id.",
     risk: "write",
     input: z.object({ orgId, ...agent }),
     handler: (input, ctx) =>
@@ -86,12 +96,13 @@ export const agentOps = [
         name: input.name,
         instructions: input.instructions,
         ...(input.mcp ? { mcp: input.mcp } : {}),
+        ...modelChoice(input),
       }),
   }),
   defineOperation({
     name: "flow.agent.update",
     description:
-      "Change an agent's name and instructions, and its MCP servers when `mcp` is given. Runs already claimed keep what they got.",
+      "Change an agent's name and instructions, its MCP servers when `mcp` is given, and its `model` and `effort` when given (null: the runner's default). Runs already claimed keep what they got.",
     risk: "write",
     input: z.object({ orgId, agentId: id, ...agent }),
     handler: (input, ctx) =>
@@ -99,6 +110,7 @@ export const agentOps = [
         name: input.name,
         instructions: input.instructions,
         ...(input.mcp ? { mcp: input.mcp } : {}),
+        ...modelChoice(input),
       }),
   }),
   defineOperation({

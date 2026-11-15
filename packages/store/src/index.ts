@@ -3,13 +3,14 @@
 export {
   type Agent,
   createAgent,
-  findBuilder,
   getAgent,
   listAgents,
+  type ModelChoice,
   parseMcp,
   updateAgent,
   type WorkingOn,
 } from "./agents.ts";
+export { type DidData, type Made, type MadeThing, madeOf } from "./chat-made.ts";
 export { type ChatRunEnding, endChatRun, expireChatRun, failedReply } from "./chat-runs.ts";
 export {
   addDid,
@@ -17,17 +18,15 @@ export {
   CHAT_MESSAGE_LIMIT,
   type Chat,
   type ChatMessage,
+  type ChatMessageRole,
   type ChatView,
   chatHistory,
   chatTitle,
   createChat,
-  type DidData,
   deleteChat,
   getChat,
   getChatRow,
   listChats,
-  type MadeThing,
-  madeOf,
   sendMessage,
 } from "./chats.ts";
 export { StoreError } from "./db.ts";

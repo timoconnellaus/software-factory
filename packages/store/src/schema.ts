@@ -1,5 +1,6 @@
 // The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0433_flow_chat.sql,
-// 0434_flow_run_events.sql, 0435_flow_schedules.sql; 0432 adds only indexes), as Kysely sees them.
+// 0434_flow_run_events.sql, 0435_flow_schedules.sql, 0437_flow_chat_model.sql; 0432 adds only
+// indexes), as Kysely sees them.
 
 import type { Generated, Selectable } from "kysely";
 
@@ -31,6 +32,10 @@ export interface FlowAgentsTable {
   /** JSON: the MCP server names this agent's runs get ("factory": the engine's own). */
   mcp: string;
   created_at: string;
+  /** The Claude Code model alias its runs use (migration 0437); null = the runner's default. */
+  model: string | null;
+  /** The Claude Code effort level its runs use; null = the runner's default. */
+  effort: string | null;
 }
 
 export type WaitingOn = "run" | "person" | "decision" | "nothing";
@@ -183,14 +188,20 @@ export interface FlowSchedulesTable {
 export interface FlowChatsTable {
   id: string;
   org_id: string;
-  agent_id: string;
+  /** Only on chats from before migration 0437 (a chat then talked to an agent); unused. */
+  agent_id: string | null;
   /** The first message, cut to 80 characters. */
   title: string;
+  /** The Claude Code model alias its runs use (migration 0437); null = the runner's default. */
+  model: string | null;
+  /** The Claude Code effort level its runs use; null = the runner's default. */
+  effort: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
 }
 
+/** A message's role as stored: `agent` is the model's reply (the API calls it `assistant`). */
 export type ChatRole = "person" | "agent" | "did";
 
 export interface FlowChatMessagesTable {
