@@ -21,6 +21,7 @@ import type {
   FlowMember,
   FlowPluginDetail,
 } from "@software-factory/client/flow-edit";
+import { CHAT_ANSWERS, CHAT_WORKFLOWS } from "./chat-fixtures.ts";
 // A refused write carries its problems as the door does (`details`). fixtures.ts imports this file;
 // Refusal is only used when an answer runs, after both have loaded.
 import { Refusal } from "./fixtures.ts";
@@ -59,6 +60,15 @@ const AGENTS: FlowAgent[] = [
     orgId: FLOW_ORG,
     name: "QA",
     instructions: "Check the change does what the item asks. Say what you tried.",
+    createdAt: ago(9000),
+  },
+  {
+    // Chat's agent (flow.agent.ensureBuilder): the Plugin editor's "factory" server.
+    id: "fagt_chat",
+    orgId: FLOW_ORG,
+    name: "Builder",
+    instructions: "Set up how this org works when a person asks you to.",
+    mcp: ["factory"],
     createdAt: ago(9000),
   },
   {
@@ -448,6 +458,8 @@ const PLUGINS: FlowPluginDetail[] = [
     enabled: true,
     lastError: null,
     updatedAt: ago(7 * 24 * 60),
+    hooks: ["trigger"],
+    triggerPath: "/flow/triggers/fplg_customer/<name>?key=5f1c9a0e7b2d4c68a3e1f09b7d6c2a4e8b3f5d1c",
     code: `export default definePlugin({\n  name: "Customers on feedback",\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n});\n`,
   },
   {
@@ -535,7 +547,8 @@ export const FLOW_ANSWERS: FlowAnswers = {
     workflows: WORKFLOWS.filter((w) => w.orgId === input.orgId),
   }),
   "flow.workflow.get": (input) =>
-    WORKFLOWS.find((w) => w.id === input.workflowId) ?? (WORKFLOWS[0] as FlowWorkflow),
+    [...WORKFLOWS, ...CHAT_WORKFLOWS].find((w) => w.id === input.workflowId) ??
+    (WORKFLOWS[0] as FlowWorkflow),
   "flow.agent.list": (input) => ({ agents: AGENTS.filter((a) => a.orgId === input.orgId) }),
   "flow.board.get": (input) => ({
     columns: STATUSES.map((status) => ({
@@ -624,12 +637,23 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return project;
   },
   "flow.plugin.list": () => ({ plugins: PLUGINS.map(({ code: _code, ...p }) => p) }),
-  "flow.plugin.get": (input) => ({
-    plugin: PLUGINS.find((p) => p.id === input.pluginId) ?? (PLUGINS[0] as FlowPluginDetail),
-  }),
-  "flow.plugin.setEnabled": () => ({ ok: true }),
+  "flow.plugin.get": (input) =>
+    PLUGINS.find((p) => p.name === input.name) ?? (PLUGINS[0] as FlowPluginDetail),
+  "flow.plugin.setEnabled": (input) => {
+    const { code: _code, ...found } =
+      PLUGINS.find((p) => p.name === input.name) ?? (PLUGINS[0] as FlowPluginDetail);
+    return { ...found, enabled: input.enabled };
+  },
   "flow.plugin.delete": () => ({ ok: true }),
   "flow.gateway.list": () => ({ gateways: GATEWAYS }),
-  "flow.gateway.save": () => ({ ok: true }),
+  "flow.gateway.save": (input) => ({
+    id: GATEWAYS.find((g) => g.name === input.name)?.id ?? "fgw_new",
+    name: input.name,
+    baseUrl: input.baseUrl,
+    auth: input.auth,
+    hasSecret: input.secret != null || !!GATEWAYS.find((g) => g.name === input.name)?.hasSecret,
+  }),
   "flow.gateway.delete": () => ({ ok: true }),
+  // Chat (chat-fixtures.ts).
+  ...CHAT_ANSWERS,
 };

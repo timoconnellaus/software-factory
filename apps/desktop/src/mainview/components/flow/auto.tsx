@@ -1,6 +1,6 @@
 // Auto (.kim/mockups/auto-schedules.html): Schedules, each making an item in a project on a clock,
 // as a table (when it runs and next runs in plain words, what it last made or why it failed, an
-// on/off switch, and Edit, Run now and Remove); and Triggers, which come from plugins.
+// on/off switch, and Edit, Run now and Remove); and Triggers (auto-triggers.tsx), from plugins.
 import {
   everyText,
   type FlowSchedule,
@@ -44,6 +44,7 @@ import { flowSchedulesQuery } from "../../lib/flow-auto-queries.ts";
 import { useFlowRefresh } from "../../lib/flow-queries.ts";
 import { OpError, op, submitKey } from "../../lib/op.ts";
 import { ScheduleDialog } from "./auto-form.tsx";
+import { Triggers } from "./auto-triggers.tsx";
 import { PageHeader } from "./parts.tsx";
 
 export type AutoTab = "schedules" | "triggers";
@@ -341,23 +342,5 @@ function ScheduleRow({
         </span>
       </TableCell>
     </TableRow>
-  );
-}
-
-/** Triggers are plugins' own: the plugin list doesn't say yet which define one, or their URLs. */
-function Triggers({ orgId }: { orgId: string }) {
-  return (
-    <p className="max-w-[640px] text-ink-muted" data-testid="triggers-note">
-      Triggers come from plugins: a plugin can start work when an outside system calls it. See them
-      in{" "}
-      <Link
-        to="/flow/$orgId/plugins"
-        params={{ orgId }}
-        className="text-ink underline underline-offset-2"
-      >
-        Plugins
-      </Link>
-      .
-    </p>
   );
 }

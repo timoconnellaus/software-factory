@@ -1,8 +1,9 @@
 // Auto in the new shell (.kim/mockups/auto-schedules.html): the org's schedules, and its triggers
-// (`?tab=triggers`).
+// (`?tab=triggers`): each plugin's trigger URL, to copy.
 import { createRoute } from "@tanstack/react-router";
 import { AutoPage } from "../components/flow/auto.tsx";
 import { flowSchedulesQuery } from "../lib/flow-auto-queries.ts";
+import { flowPluginsQuery } from "../lib/flow-edit-queries.ts";
 import { flowProjectsQuery } from "../lib/flow-queries.ts";
 import { flowOrg } from "./flow.$orgId.tsx";
 
@@ -19,6 +20,7 @@ export const Route = createRoute({
     Promise.all([
       queryClient.ensureQueryData(flowSchedulesQuery(orgId)),
       queryClient.ensureQueryData(flowProjectsQuery(orgId)),
+      queryClient.ensureQueryData(flowPluginsQuery(orgId)),
     ]).catch(() => null),
   component: AutoRoute,
 });

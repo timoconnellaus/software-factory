@@ -47,10 +47,24 @@ describe("Auto", () => {
     expect(textOf(failed)).toContain("Couldn't load the schedules.");
   });
 
-  it("Triggers points at Plugins, where triggers come from", async () => {
+  it("Triggers lists each plugin's trigger URL to copy, and points at Plugins", async () => {
     const html = await renderPage("/flow/org_personal/auto?tab=triggers");
     expect(textOf(html)).toContain("Triggers come from plugins");
+    // Only the plugin that defines a trigger, its URL on the engine this app talks to.
+    expect(html.split('data-testid="trigger-row"').length - 1).toBe(1);
+    expect(textOf(html).replaceAll("&lt;", "<").replaceAll("&gt;", ">")).toContain(
+      "Customers on feedback https://sf-engine.example/flow/triggers/fplg_customer/<name>?key=5f1c9a0e",
+    );
+    expect(html).toContain('data-testid="copy-trigger"');
     expect(html).toContain('href="/flow/org_personal/plugins"');
     expect(html).not.toContain('data-testid="new-schedule"');
+  });
+
+  it("Triggers is one line when no plugin defines a trigger", async () => {
+    const html = await renderPage("/flow/org_personal/auto?tab=triggers", {
+      answers: { "flow.plugin.list": { result: { plugins: [] } } },
+    });
+    expect(html).not.toContain('data-testid="trigger-list"');
+    expect(textOf(html)).toContain("None of yours has one yet.");
   });
 });

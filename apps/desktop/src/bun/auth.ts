@@ -57,6 +57,7 @@ export class Auth {
       error: this.error,
       keyFingerprint: this.pending ? this.fingerprint : null,
       keyUpgrade: !!this.token && this.upgradable && this.key?.storage === "software",
+      engineUrl: this.door().baseUrl,
     };
   }
 

@@ -278,7 +278,7 @@ export const TESTS = [
       await p.click("[data-testid=plugin-switch]");
       await sleep(700);
       const set = await p.calls("flow.plugin.setEnabled");
-      expect(set[0]?.input.pluginId, "the first plugin").toBe("fplg_blog");
+      expect(set[0]?.input.name, "the first plugin, by name").toBe("Publish to the blog");
       expect(set[0]?.input.enabled, "off").toBe(false);
       await p.click("[data-testid=open-plugin]");
       await p.waitFor("document.querySelector('[data-testid=plugin-code]')");
@@ -287,7 +287,7 @@ export const TESTS = [
       await p.click("[data-testid=confirm-delete-plugin]");
       await sleep(700);
       const deleted = await p.calls("flow.plugin.delete");
-      expect(deleted[0]?.input.pluginId, "deleted").toBe("fplg_blog");
+      expect(deleted[0]?.input.name, "deleted, by name").toBe("Publish to the blog");
       expect(await p.exists("[data-testid=plugin-panel]"), "closed").toBe(false);
     },
   },
@@ -324,6 +324,64 @@ export const TESTS = [
       const again = await p.calls("flow.gateway.save");
       expect(again[1]?.input.name, "GitHub").toBe("GitHub");
       expect("secret" in (again[1]?.input ?? {}), "no secret sent").toBe(false);
+      // Removing one names it as the server keys gateways: by name.
+      await p.click("[data-testid=gateway-row]:nth-child(1) [data-testid=remove-gateway]");
+      await p.waitFor("document.querySelector('[data-testid=confirm-remove-gateway]')");
+      await p.click("[data-testid=confirm-remove-gateway]");
+      await sleep(700);
+      const removed = await p.calls("flow.gateway.delete");
+      expect(JSON.stringify(removed[0]?.input), "by name").toBe(
+        JSON.stringify({ orgId: "org_personal", name: "GitHub" }),
+      );
+    },
+  },
+  {
+    name: "flow chat: sending shows the agent working, then what it did and its reply",
+    async run(p) {
+      await p.open("/flow/org_personal/chat?chat=fchat_launch&end=1");
+      await p.waitFor("document.querySelector('[data-testid=chat-input]')");
+      const before = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
+      await p.focus("[data-testid=chat-input]");
+      await p.type("Also add a legal check before Edit.");
+      await p.key("Enter");
+      await p.waitFor("document.querySelector('[data-testid=chat-working]')");
+      const sent = await p.calls("flow.chat.send");
+      expect(sent[0]?.input.chatId, "this chat").toBe("fchat_launch");
+      expect(sent[0]?.input.text, "the message").toBe("Also add a legal check before Edit.");
+      expect(await p.text("[data-testid=chat-working]"), "working").toContain("Builder is working");
+      expect(
+        await p.evaluate("document.querySelector('[data-testid=chat-send]').disabled"),
+        "sending waits",
+      ).toBe(true);
+      // The fixture's run answers a moment later; the chat is re-read every 3 seconds meanwhile.
+      await p.waitFor("!document.querySelector('[data-testid=chat-working]')", 8000);
+      const after = await p.evaluate("document.querySelectorAll('[data-testid=chat-did]').length");
+      expect(after, "a did row arrived").toBe(before + 1);
+      expect(
+        await p.evaluate(
+          "[...document.querySelectorAll('[data-testid=chat-reply]')].at(-1)?.textContent",
+        ),
+        "the reply",
+      ).toContain("Legal check before Edit");
+    },
+  },
+  {
+    name: "flow plugins: asking starts a chat with the builder and goes to it",
+    async run(p) {
+      await p.open("/flow/org_personal/plugins");
+      await p.waitFor("document.querySelector('[data-testid=plugin-ask-input]')");
+      await p.focus("[data-testid=plugin-ask-input]");
+      await p.type("Post to Slack when an item ships.");
+      await p.click("[data-testid=plugin-ask-send]");
+      await p.waitFor("document.querySelector('[data-testid=chat-page]')", 4000);
+      const made = await p.calls("flow.chat.create");
+      expect(made[0]?.input.agentId, "the builder").toBe("fagt_chat");
+      expect(made[0]?.input.text, "the words").toBe("Post to Slack when an item ships.");
+      expect(await p.path(), "the new chat").toContain("chat=fchat_new");
+      await p.waitFor("document.querySelector('[data-testid=chat-person]')");
+      expect(await p.text("[data-testid=chat-person]"), "the message").toBe(
+        "Post to Slack when an item ships.",
+      );
     },
   },
   {

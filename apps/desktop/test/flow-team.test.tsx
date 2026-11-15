@@ -26,7 +26,8 @@ describe("Team: Agents", () => {
     const html = await renderPage(`/flow/${ORG}/team`);
     const text = textOf(html);
     expect(text).toContain("Team Agents Runners People New agent");
-    expect(count(html, 'data-testid="agent-row"')).toBe(3);
+    // Lead, Backend and QA, and Chat's Builder (chat-fixtures.ts).
+    expect(count(html, 'data-testid="agent-row"')).toBe(4);
     expect(text).toContain("Lead Working · API-5");
     expect(text).toContain("Backend Working · API-12");
     expect(text).toContain("QA Working · API-11");

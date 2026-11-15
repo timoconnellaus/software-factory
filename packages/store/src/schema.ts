@@ -1,5 +1,5 @@
-// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0435_flow_schedules.sql;
-// 0432 adds only indexes), as Kysely sees them.
+// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0433_flow_chat.sql,
+// 0435_flow_schedules.sql; 0432 adds only indexes), as Kysely sees them.
 
 export interface FlowWorkflowsTable {
   id: string;
@@ -72,7 +72,9 @@ export type RunStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
 export interface FlowRunsTable {
   id: string;
   org_id: string;
-  item_id: string;
+  /** A run belongs to an item or to a chat (migration 0433): exactly one of these is set. */
+  item_id: string | null;
+  chat_id: string | null;
   agent_id: string;
   status_id: string;
   stay: number;
@@ -149,7 +151,35 @@ export interface FlowSchedulesTable {
   updated_at: string;
 }
 
+export interface FlowChatsTable {
+  id: string;
+  org_id: string;
+  agent_id: string;
+  /** The first message, cut to 80 characters. */
+  title: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ChatRole = "person" | "agent" | "did";
+
+export interface FlowChatMessagesTable {
+  id: string;
+  chat_id: string;
+  org_id: string;
+  seq: number;
+  role: ChatRole;
+  text: string;
+  /** JSON: a `did` row's { kind, id, name? }, or an agent message's { failed: true }; else null. */
+  data: string | null;
+  run_id: string | null;
+  created_at: string;
+}
+
 export interface FlowDatabase {
+  flow_chats: FlowChatsTable;
+  flow_chat_messages: FlowChatMessagesTable;
   flow_workflows: FlowWorkflowsTable;
   flow_projects: FlowProjectsTable;
   flow_agents: FlowAgentsTable;

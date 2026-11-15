@@ -73,8 +73,8 @@ async function world() {
 group("flow operations", () => {
   it("are all named flow.*, with descriptions", () => {
     const ops = describe();
-    // 34, and Auto's four flow.schedule.* operations.
-    expect(ops.length).toBe(38);
+    // 40 with Chat's, and Auto's four flow.schedule.* operations.
+    expect(ops.length).toBe(44);
     for (const op of ops) {
       expect(op.name).toMatch(/^flow\./);
       expect(op.description.length).toBeGreaterThan(10);

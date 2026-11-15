@@ -43,6 +43,7 @@ const session: Session = {
   error: null,
   keyFingerprint: null,
   keyUpgrade: false,
+  engineUrl: "https://sf-engine.example",
 };
 /**
  * The device key's screens (spec 40 M4b), from `?key=` before the hash: `signing-in` (signed out,

@@ -106,6 +106,9 @@ export type ReadOpName =
   | "flow.member.list"
   | "flow.inbox.all"
   | "flow.run.list"
+  // Chat's reads (flow-chat-queries.ts).
+  | "flow.chat.list"
+  | "flow.chat.get"
   // Auto's schedules (flow-auto.ts).
   | "flow.schedule.list";
 
