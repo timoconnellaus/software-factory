@@ -10,6 +10,7 @@ import { type Caller, type ErrorCode, OpError, type Operation } from "./operatio
 import { gatewayOps, pluginOps } from "./plugins.ts";
 import { agentOps, projectOps } from "./projects.ts";
 import { readOps } from "./reads.ts";
+import { scheduleOps } from "./schedules.ts";
 import { checkScope } from "./scope.ts";
 import { workflowOps } from "./workflows.ts";
 
@@ -21,6 +22,7 @@ const OPERATIONS: readonly Operation[] = [
   ...readOps,
   ...pluginOps,
   ...gatewayOps,
+  ...scheduleOps,
 ];
 
 const BY_NAME = new Map(OPERATIONS.map((op) => [op.name, op]));

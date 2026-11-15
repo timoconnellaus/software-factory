@@ -144,6 +144,18 @@ sf call flow.agent.update '{"orgId":"<org>","agentId":"<agent>","name":"Builder"
 curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=<key>" -d '{"subject":"Help"}'
 ```
 
+### Auto (schedules): as built (2026-11-15)
+- A schedule (`flow_schedules`, migration 0435) makes an item in a project on a clock: every hour
+  at a minute, every day, weekdays, or one day a week at a time, in one IANA time zone (the
+  creator's, by default). The item goes through its project's workflow like any other, created as
+  the schedule's creator with the plugins' `entered` hooks. Nothing else: no cron expressions, no
+  run-only mode, no auto-pause, no webhooks (plugins have triggers).
+- The minute cron fires at most 20 due schedules a tick (`flow_schedules_due_idx`), moving each
+  `next_at` on with a conditional update before it makes the item, so two ticks can't both fire
+  it and a broken one fails once a period. A failure is kept as `last_error`.
+- Operations: `flow.schedule.list | save | delete | runNow`. The desktop app's Auto screen lists
+  them; its Triggers tab points at Plugins.
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the

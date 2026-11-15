@@ -13,6 +13,7 @@ import {
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
+import { runDueSchedules } from "@software-factory/ops";
 import { expireRunsWithHooks } from "@software-factory/plugins";
 import { parseTerminalPath } from "@software-factory/runner-contract";
 import { archiveAudit } from "./audit-archive.ts";
@@ -70,6 +71,11 @@ export default {
     // of the tick.
     await expireRunsWithHooks(flowHost(env), now.getTime(), 10).catch((error) => {
       console.error("flow expireRuns failed", error);
+    });
+    // The new core's schedules (the Auto screen): at most 20 due a tick, through
+    // flow_schedules_due_idx, each moved on to its next time before it makes its item. Caught.
+    await runDueSchedules(flowHost(env), now.getTime()).catch((error) => {
+      console.error("flow schedules failed", error);
     });
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);

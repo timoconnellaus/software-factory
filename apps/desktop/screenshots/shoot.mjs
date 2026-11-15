@@ -78,6 +78,14 @@ export const SCREENS = [
     clicks: ['[data-testid="connect-system"]'],
   },
   { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  // Auto's schedules (auto-schedules.html): `--out flow-auto`.
+  { name: "flow-auto", path: "/flow/org_personal/auto" },
+  {
+    name: "flow-auto-new",
+    path: "/flow/org_personal/auto",
+    clicks: ['[data-testid="new-schedule"]'],
+  },
+  { name: "flow-auto-empty", path: "/flow/org_client/auto" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready" },

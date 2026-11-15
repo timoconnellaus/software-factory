@@ -105,7 +105,9 @@ export type ReadOpName =
   | "flow.item.get"
   | "flow.member.list"
   | "flow.inbox.all"
-  | "flow.run.list";
+  | "flow.run.list"
+  // Auto's schedules (flow-auto.ts).
+  | "flow.schedule.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

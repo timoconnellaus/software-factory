@@ -2,6 +2,7 @@
 // answers, typed by hand from @software-factory/store and @software-factory/flow (types only; a view
 // imports neither), and the pure logic the board and the item panel need: an item's key, its chips,
 // the decision it waits on, and its timeline told as one line per move.
+import type { FlowAutoOpMap } from "./flow-auto.ts";
 import type { FlowEditOpMap, FlowField, FlowMember } from "./flow-edit.ts";
 import { ago } from "./format.ts";
 
@@ -154,7 +155,7 @@ export interface FlowInbox {
 type Org = { orgId: string };
 
 /** The `flow.*` operations the desktop calls, for packages/client's OpMap. */
-export interface FlowOpMap extends FlowEditOpMap {
+export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap {
   "flow.project.list": { input: Org; output: { projects: FlowProject[] } };
   "flow.project.create": {
     input: Org & { name: string; key: string; workflowId: string };
