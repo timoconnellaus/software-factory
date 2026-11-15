@@ -21,12 +21,7 @@ const PENDING: Record<string, string> = {};
  * Every alarm an object sets, one entry per `setAlarm(` call site in its file, each with why it
  * stops re-arming when there is nothing to do. A new call site fails until it is listed here.
  */
-const ALARMS: Record<string, string[]> = {
-  "../src/terminal-relay.ts": [
-    "the first viewer arms the viewer re-check (VIEWER_RECHECK_MS) when none is set",
-    "the re-check re-arms only while a viewer is still connected",
-  ],
-};
+const ALARMS: Record<string, string[]> = {};
 
 const strip = (text: string) => text.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -64,11 +59,7 @@ const durableObjects = Object.entries(sources).filter(([, text]) =>
 
 describe("Durable Objects are never held awake (spec 44)", () => {
   it("finds the objects", () => {
-    expect(durableObjects.map(([file]) => file)).toEqual(
-      expect.arrayContaining(["../src/terminal-relay.ts", "../src/client-hub.ts"]),
-    );
-    // Imports are followed, transitively: the relay's invoke() wiring and what it imports.
-    expect(withHelpers("../src/terminal-relay.ts").map(([f]) => f)).toContain("../src/deps.ts");
+    expect(durableObjects.map(([file]) => file)).toEqual(["../src/client-hub.ts"]);
   });
 
   for (const [file, text] of durableObjects) {

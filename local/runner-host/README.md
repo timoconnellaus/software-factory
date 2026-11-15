@@ -10,136 +10,74 @@ runner adapter. It wires `runner-local` (git worktrees + tmux, no desktop app) w
 ## What it does
 Every ~20 s it heartbeats: the manifest, capacity, and the jobs it holds with their fencing tokens.
 The heartbeat renews each lease (10 min), and cancel/drain commands come back on the response.
-While it has room it claims jobs; a retried claim reuses its `claimId`. For each job (`src/job.ts`):
+While it has room it claims jobs; a retried claim reuses its `claimId`. A job is a `flow` run of the
+new core (spec 70). For each job (`src/job.ts`):
 
-1. It fetches a **job token** (`run.issueToken`): a GitHub App installation token for the one repo.
-2. It fetches the item branch into the checkout this machine already has for the repo: the git repo
-   directly under one of the `checkouts` dirs in `runner.json` whose `origin` is the job's repo
-   (canonical remote identity, ADR 0260). It fetches by URL, into
-   `refs/software-factory/heads/<branch>`, with the token only in that git process's environment, and
-   never changes that checkout's config, remotes, branches or working tree. Only when no checkout
-   matches does it clone, once, into `~/.local/state/software-factory/runner/repos/<owner>/<name>`
-   (push URL disabled, no credential helper), and keeps it.
-3. runner-local adds a git worktree of that checkout at
-   `~/.local/share/software-factory/runner/worktrees/sf-<jobId>` (the data dir: the harness may not read the state dir, incident #10) on the run branch
-   `factory/<n>-<slug>-run-<k>` (hooks off, no upstream written) and projects `harness-claude`'s
-   per-run settings into it. Claude Code then starts in the tmux session `sf-<jobId>` on the
-   factory's own tmux server (`tmux -L software-factory`, never your default one or your
-   `~/.tmux.conf`), with the harness's own flags, and is checked before it gets the prompt
+1. **With a repository**, it fetches a **job token** (the `token` call): a GitHub App installation
+   token for the one repo, valid to push the item's branch only. Then it fetches the job's base (the
+   item's branch, or the default branch for its first run) into the checkout this machine already
+   has for the repo: the git repo directly under one of the `checkouts` dirs in `runner.json` whose
+   `origin` is the job's repo (canonical remote identity, ADR 0260). It fetches by URL, into
+   `refs/software-factory/heads/<branch>`, with the token only in that git process's environment,
+   and never changes that checkout's config, remotes, branches or working tree. Only when no
+   checkout matches does it clone, once, into
+   `~/.local/state/software-factory/runner/repos/<owner>/<name>` (push URL disabled, no credential
+   helper), and keeps it. **Without a repository** it does none of this.
+2. runner-local adds a git worktree of that checkout at
+   `~/.local/share/software-factory/runner/worktrees/sf-<jobId>` (the data dir: the harness may not
+   read the state dir, incident #10) on the item's branch `factory/flow-<key>-<n>` (hooks off, no
+   upstream written), or, without a repository, an empty directory there. It projects
+   `harness-claude`'s per-run settings into it. Claude Code then starts in the tmux session
+   `sf-<jobId>` on the factory's own tmux server (`tmux -L software-factory`, never your default one
+   or your `~/.tmux.conf`), with the harness's own flags, and is checked before it gets the prompt
    (ADR 0270). The prompt goes in `.factory-prompt.md`; the terminal gets one line pointing at it.
    **Take a run over** with the hint the run shows:
    `tmux -L software-factory attach -t sf-<jobId>` (detach with `C-b d`; the job still ends and
    hands back normally).
    **Or as a stream** (ADR 0450): with `"session": "stream-json"` in `runner.json` (then restart
-   the service), Claude runs headless as a two-way stream-json session instead (same launch script,
-   same check), the runner declares `chat`, and the Live tab shows the run as a chat. Take one over
-   with **Take over in a terminal** there: the session stops and the run shows a
-   `cd <worktree> && env -u … claude … --resume <id>` command to run on this machine; quit it to
-   hand the run back. `sf-runner` logs the mode it runs at start.
-   **Build only:** before the session the host fetches the job's `repo.defaultBranch` too and
-   merges it into the run branch (a merge commit, never a rebase, ADR 0320). A conflict is left in
-   progress for the session to resolve; unmerged paths at the end fail the run with no push.
-4. It streams events (state, agent status, tools, terminal output) with the fencing token. Agent
+   the service), Claude runs headless as a stream-json session instead (same launch script, same
+   check), the runner declares `chat`, and its events carry tool results and token counts for the
+   run view. `sf-runner` logs the mode it runs at start.
+3. It streams events (state, agent status, tools, what the agent says) with the fencing token. Agent
    status comes from the harness's status hook (`<runDir>/status.jsonl`), not the screen: a tool
    call is a `tool` event, a permission or idle notification is `waiting_input` (15 min, then the
    run fails), and `Stop` after the prompt ends the session.
-5. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
-6. **The project's checks** (ADR 0501, `src/checks.ts`), when the job carries them: after a build
-   session's turn, it commits the leftovers and runs each check on a **clean copy of that commit**
-   (a throwaway index and `checkout-index`: no ignored files, no git dir), through the adapter's
-   `exec` (a container job: a check container with no network or credential), else under the OS
-   sandbox with the harness's floor (`src/check-sandbox.ts`: srt's `SandboxManager` through
-   `src/check-sandbox-child.mjs`, with the harness's deny lists, a temporary HOME and the job's
-   network allowlist; the settings never touch disk, the command's own exit decides and a signal
-   death fails, and after every check its process group and anything left with a cwd under its root
-   are killed). The trees live in the runner's checks dir (`~/.local/share/software-factory/runner/
-   checks`), which every agent's sandbox denies. With neither, or for a job with no container on a
-   container runner, or where the sandbox can't start, it runs nothing and reports the check
-   **not run** (never failed, never a fix round). On a container runner the check container has no
-   network: declare the install check as `pnpm install --offline --frozen-lockfile`, which installs
-   from a copy of the job's pnpm store made for that check. Each check runs in a dir of its own
-   (`r<round>-<i>/`: its tree, HOME, temp and pnpm store): the first on the export, each later one
-   on a copy of the tree the one before left, made after it was killed. So declare the install
-   first, and don't install again in later checks. **On a Mac** (`src/check-mode.ts`) a `sandbox`
-   runner runs each check in a fresh check container when OrbStack or Docker Desktop answers: its
-   own loopback (a test that starts a server works), its own egress proxy with the job's allowlist,
-   its own pnpm store, and every process gone with it. With no container runtime, checks are not
-   run, unless runner.json sets `"checks": { "weakerMacSandbox": true }`: then the macOS OS sandbox
-   below, which can't stop a process a check leaves from outliving it, and the merge gate says the
-   checks ran in the weaker sandbox. `sf-runner doctor` says which. A check container gets 2 CPUs and
-   4 GB of memory (`/tmp` a 1 GB tmpfs within it), and a tree past 10 GB isn't carried to the next
-   check (measured every 15 s while a check runs: one that grows past it is stopped); runner.json
-   `checks` sets `cpus`, `memoryGb`, `tmpGb` and `maxTreeGb`. A check that fails on the memory
-   limit (the Docker daemon's OOMKilled) or the disk bound (measured by the host) is a failed check
-   that says so: "the check hit the runner's memory limit (4 GB). The code under check may be the
-   cause; raise the limit in the runner's config or fix the code". It goes to a person, not to a fix
-   round (see "Sizing a check" below). Nothing the check prints is read as a limit. At most
-   `checks.maxConcurrent` (default 1) checks run at once, each counted as a heavy job, and a check
-   waits while the load backoff has stopped heavy work. Check containers, proxies and networks a
-   runner that died mid-check left are reaped at start-up and on the periodic sweep. Under the OS sandbox a check reads none of the
-   owner's home but the toolchain on its PATH, reaches no loopback but the sandbox's proxy (on macOS,
-   not even a server it starts itself), and fetches through the proxy (`NODE_USE_ENV_PROXY`, so
-   Node ≥ 24.5); srt's sockets go in `~/.local/share/software-factory/runner/s`. Before a job's
-   checks the host runs `sandboxTrial()`: where the sandbox can't start (Ubuntu's AppArmor
-   restriction on unprivileged user namespaces left on) every check is not run, with the reason. The host declares the `checks` capability, so only it gets jobs that
-   carry checks. A failure is typed into the same session (the command, exit code and log tail,
-   one steer) and the fix checked again, up to `fixRounds`. Before any host git after the session,
-   a check or a fix round, the git config and the adapter's `checkWorkspace` are checked again. An
-   attached PR's verify job runs them once, on the PR's head, before its reviewer session. The
-   results, with secrets redacted, go on the hand-back.
-7. **Build only:** it commits any leftovers (unless checks ran: then it pushes exactly the last
-   checked commit and never commits after it), then pushes to the run branch, and only there, with
-   a *fresh* job token. It never forces.
-8. It uploads artifacts: the diff, the terminal screen, check output from Claude's transcript, and a summary.
-9. It hands back `{ branch, headSha, result, checks }`, releases the workspace, revokes the tokens and calls `release`.
+4. When the session ends it reads `.factory-result.json`, passes it through untouched, and deletes it.
+5. **With a repository** it commits any leftovers, then, if the run made commits, pushes the item's
+   branch, and only that branch, with a *fresh* job token. It never forces and never merges another
+   branch in. A run that made no commits pushes nothing.
+6. It uploads artifacts: the diff (with a repository), the terminal screen, the agent's last message,
+   its token usage, and a summary.
+7. It hands back `{ branch, headSha, result }`, releases the workspace, revokes the tokens and calls
+   `release`.
 
 A `409 fenced|killed`, or a cancel command, stops the session at once: no push and no hand-back.
 
-While a session runs, the host also keeps the channel's held `steer` call open (messages from the
-dashboard, ADR 0400) and, for an adapter with `terminal`, the held `terminal` call (ADR 0440,
-`src/terminal.ts`). When someone opens the run's **Web terminal** on the Live tab, the call answers
-with a one-use socket URL for the job's relay in sf-engine; the host connects outbound, starts the
-adapter's bridge, and relays until the relay says nobody is watching, the session ends, or the job
-stops. No port opens on the machine, and only the runner's owner's keys reach the session (the
-relay enforces it).
-
-### Pools and planning sessions (spec 20, ADR 0301, 0350)
-Capacity has two pools: heavy (build, verify; `maxConcurrent`) and light (triage, spec, planning;
-`maxLight`, default 6). The heartbeat and claim report both, and the host claims while either has
-room; the cloud picks a job for a pool with a free slot. Under load the host pauses pools, heavy
+### Pools (ADR 0301)
+Capacity has two pools, as the engine reads them: heavy (`maxConcurrent`), which no job uses now, and
+light (`maxLight`, default 6), where every flow job runs. Under load the host pauses pools, heavy
 first (`load` below, ADR 0552); a paused pool gets nothing, and so does every pool while the
 factory's tmux isn't answering (ADR 0550).
 
 A job is stopped from the process table (ADR 0550): release finds its Claude by the settings path on
 its command line, signals its process group (TERM, then KILL) and checks nothing is left, whether
 or not tmux answered. If something is left, the job is **not** reported released (the log says "NOT
-released") and `sf-runner doctor` shows the process (`orphan-process`; `--fix` stops it). Run
-branches the runner created carry a marker ref (`refs/software-factory/run-branches/<branch>`, ADR
-0551); doctor and the reaper sweep marked ones no worktree has checked out (`orphan-branch`).
-
-A **planning** job is a long-lived Claude session that plans one work item with people (ADR 0300):
-- The host serves it a **relay** on `127.0.0.1` (`src/planning-relay.ts`) with a per-job bearer
-  secret. The harness's planning MCP server and hooks call it; the host adds the job and fencing
-  token and signs the call (`/runner/v1/jobs/:id/planning`). The runner key never reaches the
-  harness.
-- runner-local puts every job of a session in the same worktree path (`sf-plan-<session>`), so a
-  resume (`claude --resume <sessionRef>`) finds the conversation. Its tmux session is still
-  `sf-<jobId>`; the worktree names its job in its private git dir (`sf-job`), for reaping.
-- The session idles in its Stop hook between turns. When the factory asks it to yield, the hook calls
-  `planning.yield`; the host then ends Claude and hands back `{ planning: "yielded" }`. No result file,
-  no diff, no push.
+released") and `sf-runner doctor` shows the process (`orphan-process`; `--fix` stops it). Branches
+the runner created carry a marker ref (`refs/software-factory/run-branches/<branch>`, ADR 0551);
+doctor and the reaper sweep marked ones no worktree has checked out (`orphan-branch`).
 
 ### Credentials (ADR 0033, 0052)
 - The harness never sees the job token or the owner's credentials. Git talks to GitHub only from the
   host, with no system or global git config, hooks off, and a credential helper that gives the token
   to `github.com` only. The token is passed in that one git process's environment.
-- Claude starts with `--permission-mode <stage mode> --setting-sources project,local --settings <run
+- Claude starts with `--permission-mode <mode> --setting-sources project,local --settings <run
   settings>`: never your user settings, so your own Claude mode, hooks and plugins don't apply to a
   run. The runner checks the live process against that before sending the prompt; a difference kills
-  it and fails the job (`harness-config-mismatch`). The mode per stage comes from the project's
-  `.factory/policy.json` (`harness`), not from `runner.json`; an old `permissionMode` there is ignored.
+  it and fails the job (`harness-config-mismatch`). The mode is the harness's (`bypassPermissions`
+  in the sandbox with a repository, `dontAsk` without), not `runner.json`'s; an old `permissionMode`
+  there is ignored.
 - Every Bash command runs in Claude Code's sandbox: writes only to the worktree and temp, network
-  only to the npm registry, GitHub, the Cloudflare API and the project's hosts.
+  only to the npm registry, GitHub and the Cloudflare API.
 - The harness's settings also do four things:
   - blank or redirect every credential variable (`GH_TOKEN`, `SSH_AUTH_SOCK`, AWS, Cloudflare, …);
   - point `GIT_CONFIG_GLOBAL` at a per-run config with no credential helper, and set `GIT_CONFIG_NOSYSTEM` (on macOS that turns off the keychain helper);
@@ -156,52 +94,6 @@ A **planning** job is a long-lived Claude session that plans one work item with 
   below. On `default` the launch leaves the environment as it is; on a named account it unsets
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CONFIG_DIR`, then
   sets that account's.
-
-## Containers from before runner labels
-
-A runner reaps only the containers and networks that carry its own `software-factory.runner` label,
-so ones made before that label existed are reaped by none. Remove them once by hand, with every
-runner on that Docker daemon stopped (`sf-runner uninstall`, or stop the service) so none of them
-is live:
-
-```sh
-docker ps -a --filter label=software-factory.job \
-  --format '{{.Names}} {{.Label "software-factory.runner"}}' |
-  awk 'NF == 1 { print $1 }' | while read -r c; do docker rm -f "$c"; done
-docker network ls --filter label=software-factory.job \
-  --format '{{.Name}} {{.Label "software-factory.runner"}}' |
-  awk 'NF == 1 { print $1 }' | while read -r n; do docker network rm "$n"; done
-```
-
-Each lists only factory containers (or networks) with no runner label and removes them; run each
-listing (up to the `awk`) alone first to see what would go.
-
-## Sizing a check
-
-A project's checks (`checks` in `.factory/policy.json`) run within the runner's check limits: by
-default 2 CPUs, 4 GB of memory with `/tmp` a 1 GB tmpfs inside it, 4,096 processes, and 10 GB of
-disk for the check's own dir. A check killed for memory, or whose dir grows past the disk bound,
-fails with the limit named, and a person decides whether to raise the limit or have the code fixed
-(the code under check may be what used it); no fix round is spent on it. Running out of processes or
-`/tmp` is an ordinary failure, with the error in its log. Size each check to fit, with room to spare:
-
-- **Memory is the usual one.** A test runner that starts a worker per CPU sees the machine's CPUs,
-  not the container's 2, and each worker can take hundreds of MB to a GB or more (workerd, a
-  TypeScript program, a browser). Cap the workers: for a Turborepo, `turbo run test
-  --concurrency=1` (or 2); for Vitest, `--maxWorkers=2` or `VITEST_MAX_WORKERS=2` in the
-  environment; for Jest, `--maxWorkers=2`. Inside the container a runner sees all the host's cores. Count about 1.5 GB per
-  worker for a workerd or TypeScript-heavy suite, and keep the total under the limit with the
-  tmpfs's 1 GB inside it.
-- **`/tmp` is memory too.** A test that writes big fixtures to `/tmp` spends the check's memory;
-  write them under the tree instead.
-- **Processes.** 4,096 is plenty unless a test forks without bound; a `fork: Resource temporarily
-  unavailable` is that limit.
-- **Disk.** Install once, first, as a check of its own (each later check gets a copy of its tree);
-  a build that writes gigabytes of artefacts should clean up after itself.
-- **Time.** `timeoutMinutes` (at most 60) is per check; a timeout is a failure the agent sees.
-
-If a check needs more, the runner's owner raises the limit in runner.json `checks` (`cpus`,
-`memoryGb`, `tmpGb`, `maxTreeGb`); a project can't.
 
 ## Claude accounts (spec 32, ADR 0410)
 A host can run Claude with several accounts and you pick which one new jobs use. With none added,
@@ -230,113 +122,6 @@ local/runner-host/bin/sf-runner account remove ci           # not the active one
   one, never a credential. Adding and removing accounts is only ever done here.
 - A run that hits a usage limit fails with "usage limit on Claude account …", and Setup shows it next
   to that account until a run on it ends cleanly. Switch by hand; nothing rotates accounts for you.
-- A planning session resumed after a switch gets its conversation copied into the new account's
-  config dir, so `claude --resume` finds it.
-
-### A container per job (`"isolation": "container"`, ADR 0430, spec 33)
-Opt in per runner. The default stays the worktree and Claude's sandbox above. With it, each job's
-Claude runs in its own Docker container (Docker Desktop or OrbStack on the Mac, Docker Engine on
-Linux), and every stage runs `bypassPermissions` unless the project's policy picks another mode.
-- **The job repo.** The job runs in a new repo, not a worktree of your checkout:
-  `<data dir>/containers/sf-<jobId>/work`, with its git dir in `…/git`. The host fetches into it only
-  the start point's history and the default branch, through a temporary
-  `refs/software-factory/jobs/<jobId>` in your checkout. Your other branches and uncommitted work are
-  never in it.
-- **What the container sees.** It mounts, at the same paths as on the host:
-  - the working tree;
-  - the git dir (its `config`, `hooks`, `info` and alternates read only);
-  - the run dir, read only (only `status.jsonl` and `claude.pid` are writable);
-  - a fresh home, its temp dir and the attachments.
-
-  No host home, no keychain, no Docker socket. The root filesystem is read-only, every capability is
-  dropped, and it runs as your uid.
-- **Egress.** The container is on an internal network with no route out. Its only way out is the
-  job's proxy container. The proxy allows the stage's hosts (npm, GitHub, Cloudflare, the project's
-  `allowedDomains`), `api.anthropic.com` and `container.allowedHosts`, and answers everything else
-  403. The run's `egress-log` artifact lists each decision.
-- **The launch check** runs inside the container: `docker exec … ps` against the launch record, the
-  settings hashes, and `docker inspect` against `container.json` (image, mounts, network,
-  privileges). `doctor` runs it on running jobs.
-- **The credential.** The one secret inside is the job's Claude account's token (ADR 0410), which
-  goes in as an env var:
-  - **A token account** works: `claude setup-token | sf-runner account add <name> --token-stdin`,
-    then `sf-runner account use <name>`. An API key account works too.
-  - **A login account** doesn't. Its login is in the Keychain or its config dir, which isn't
-    mounted, so the job fails before anything is made, and `doctor` says so.
-  - **`default`** uses `runner.json` `"container": { "env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" } }`
-    (or `ANTHROPIC_API_KEY`), else the same variable in sf-runner's environment.
-
-  It reaches Docker through a 0600 env file that is deleted once Claude is up.
-- **After the session.** The runner stops the containers, puts the job's git dir back (no
-  `commondir`, alternates, hooks, config changes or symlinks), and scans everything it would push
-  for the credential. Any finding fails the job without a push. Otherwise the host merges, commits
-  leftovers and pushes from the job repo exactly as before.
-- **Takeover** is unchanged: `tmux -L software-factory attach -t sf-<jobId>` attaches to Claude in
-  the container. Docker's detach keys are `ctrl-^ ctrl-_`.
-- **The image** is `packages/runner-local/container/Dockerfile` (Node 24, git, build tools,
-  corepack, Claude Code pinned), tagged `software-factory-agent:<content hash>`. The runner builds it
-  on the first job, or `sf-runner doctor --fix` does.
-- **Planning sessions** still run on the host, in a worktree with Claude's sandbox: their relay is on
-  the host's loopback (ADR 0350).
-
-Switching a runner: install Docker, then follow these steps with no jobs running.
-1. Set `"isolation": "container"` in `runner.json`, and make a token account active
-   (`claude setup-token | sf-runner account add work --token-stdin`, `sf-runner account use work`).
-2. Run `sf-runner doctor --fix`. It checks Docker and the credential, and builds the image.
-3. Run `sf-runner install`, which puts `docker` on the service's PATH and restarts the service.
-
-### A sprite per job (`"isolation": "sprites"`, ADR 0480, spec 36)
-Opt in per runner. Each job (but planning) runs in a fresh sprite on **your** Sprites account
-(Fly.io, [sprites.dev](https://sprites.dev)), made by this host. Jobs no longer use the Mac's CPU:
-the host only bridges the terminal and pulls the run's files, so `maxConcurrent` can go up.
-- **Your Sprites token stays here.** `sf-runner sprites login` keeps it in
-  `~/.config/software-factory/sprites.token` (0600), next to the runner key. It is never in
-  `runner.json`, never sent to the factory and never put in a sprite.
-- **A fresh sprite per job**, named `sf-<runner>-<job>-<hash>`, destroyed once its result is back.
-  First the toolchain: Claude Code at the agent image's pinned version (from
-  `packages/runner-local/container/Dockerfile`), in `/opt/software-factory/claude-code-<version>`,
-  before anything of the job is inside. That takes tens of seconds per job.
-- **Egress** is Sprites' network policy, set to the container allowlist (the stage's hosts,
-  `api.anthropic.com`, `sprites.allowedHosts`) followed by an explicit deny-all, and read back
-  (failing closed on anything unexpected) before the job's files go in. It is DNS-based: a port in
-  an entry is dropped, and there is no request log (the run gets an `egress-policy` artifact
-  instead). That is why a sprites runner doesn't declare `container-isolation`.
-- **What goes in**: the job repo (only the job's history, as for a container), the run dir and the
-  attachments, at the same paths as here. The credential is the active **token account**'s token
-  (a login account is refused), written last to a 0600 file in the sprite's `/dev/shm` (memory) that
-  its entry script reads and deletes. The job's GitHub token never goes in: this host pushes.
-- **Size and lifetime** are explicit: `sprites.cpus`, `memoryMb`, `storageGb` (default 4, 8192, 50)
-  and `sprites.maxLifetimeMinutes` (default 240). The sprite is kept awake only while Claude runs,
-  Claude is stopped at the lifetime, and the host sweeps every 10 minutes for this runner's sprites
-  that no job holds or that are past their lifetime. A sprite that can't be destroyed is logged
-  loudly (`DESTROYING SPRITE … FAILED`, `REAPING SPRITES FAILED`), and that job's release fails.
-- **The session** is still `tmux -L software-factory attach -t sf-<jobId>` here: the pane is bridged
-  to the sprite's terminal (and reattaches after a network drop). Steering and the web terminal work
-  as usual.
-- **The launch check** runs in the sprite (`ps`, the settings' hashes, the sprite's id and policy);
-  `doctor` runs it on running jobs.
-- **After the session** the sprite's repo comes back as a git bundle: the run branch on the agent's
-  HEAD, the rest as uncommitted changes. Then the credential scan, the leftovers commit and the push
-  with the job token, as for a container.
-- **Planning sessions** still run on this host.
-
-**Don't switch a runner yet:** spec 36's live-check gate must pass first (policy shapes and default
-deny, matching, bypasses with `sudo`, Fly's internal network, `/.sprite/api.sock`, checkpoints,
-`max_run_after_disconnect`, exec framing, create's size, the image). Run it on a scratch runner.
-
-Switching a runner, once the gate has passed, with no jobs running:
-1. Get a token at [sprites.dev/account](https://sprites.dev/account) (or `sprite login`, then the
-   org token) and run `pbpaste | local/runner-host/bin/sf-runner sprites login`. It checks the token
-   against the API before saving it.
-2. Make a token account active: `claude setup-token | sf-runner account add work --token-stdin`,
-   `sf-runner account use work`.
-3. In `~/.config/software-factory/runner.json`, set `"isolation": "sprites"` (optionally
-   `"sprites": { "allowedHosts": ["pypi.org"] }`, and a higher `maxConcurrent`).
-4. Run `sf-runner doctor` (token, API, credential, no leftover sprites), then `sf-runner install` to
-   restart the service.
-
-`sf-runner sprites status` shows the token's length (never any of it), the API and this runner's sprites;
-`sf-runner sprites logout` removes the token (revoke it at sprites.dev too).
 
 ## Connecting: `sf-runner login` (ADR 0056)
 From a checkout of software-factory with `pnpm install` done, on Node ≥ 24:
@@ -361,8 +146,8 @@ desktop app knows, when it is installed, else `[]` (edit it to list where you ke
    isn't `--runner-id`, `pair` says so instead of failing with `401 bad signature`.
    `pair` sends one signed heartbeat to prove the id and key. It then writes
    `~/.config/software-factory/runner.json` (mode 0600; `--url` for another engine, `--max` for
-   heavy slots, build and verify, default 2; `--max-light` for light slots, triage and planning
-   sessions, default 6: ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
+   the heavy pool, default 2; `--max-light` for the light pool, where flow jobs run, default 6:
+   ADR 0301) and restarts the service if one is installed. Pass the key on stdin, not as an
    argument, so it stays out of your shell history.
 3. Check it with `sf-runner doctor`, which looks at node ≥ 24, git, tmux ≥ 3.2, claude (on Linux
    also bubblewrap, socat, the user systemd and linger: below), the channel,
@@ -504,11 +289,10 @@ ahead of it (on a later deployed commit, say) is `current`. The runner reports i
      retried).
 2. **It keeps working** (`waiting`): it claims as usual on its current code, and the jobs it holds
    finish. None is cancelled for an update. If the update has been pending:
-   - **30 minutes**, it claims light jobs only (triage, spec, planning): its heartbeat and claims
-     report the heavy pool full, so no new build or verify comes; ones already claimed finish;
+   - **30 minutes**, it claims light jobs only (every flow job is one): its heartbeat and claims
+     report the heavy pool full; ones already claimed finish;
    - **60 minutes**, it claims nothing, so light jobs can't hold the update off forever. It
-     reports `claims: none`, and the engine asks its idle planning sessions to yield (they resume
-     here once it has updated). While it is `waiting` the engine starts no planning session on it.
+     reports `claims: none`.
 
    The timer is kept in `update-pending-since` in the state dir, so a restart doesn't restart it.
 3. **At the first heartbeat with no job running it updates** (`updating`): it writes the update record, moves the checkout to
@@ -567,58 +351,28 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 |---|---|---|
 | `baseUrl` | `https://sf-engine.zerobsai.com` | The engine |
 | `runnerId`, `key` | from `pair` | |
-| `maxConcurrent` | 2 | Heavy jobs at once: build and verify (each a git worktree + a Claude session in tmux) |
-| `maxLight` | 6 | Light jobs at once: triage, spec and planning sessions (ADR 0301). An idle planning session holds one |
+| `maxConcurrent` | 2 | The heavy pool's size, as reported; no job uses it now |
+| `maxLight` | 6 | Jobs at once: every flow job runs in the light pool (ADR 0301) |
 | `heartbeatMs` | 20000 | |
 | `checkouts` | set once by `login` / `doctor --fix` | Directories whose immediate git repos are your checkouts, e.g. `["~/code", "~/orca/projects"]`. A job runs as a worktree of the one whose `origin` is its repo; none → the runner's own clone |
-| `capabilities` | `hooks`, `ui-takeover`, `own-hardware`, `work-item-attachments` (+ `container-isolation` with containers) | No `browser`: screenshot evidence is skipped |
+| `capabilities` | `hooks`, `ui-takeover`, `own-hardware` (+ `chat` with stream-json); the host adds `flow` | |
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `load` | `{ "enabled": true, "heavyStop": 1.5, "lightStop": 2.0, "resumeFactor": 0.8 }` | Back off claiming under load (ADR 0552): above `heavyStop` × cores (1-minute load average) no new heavy jobs, above `lightStop` × cores none at all; each resumes below its stop × `resumeFactor`. The heartbeat says why (`capacity.paused`), the health line reads "runner busy: load". `"enabled": false` turns it off |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
-| `isolation` | `sandbox` | `container`: a Docker container per job, every stage `bypassPermissions` (ADR 0430, above); `sprites`: a fresh sprite per job on your Sprites account (ADR 0480, above) |
-| `container.env` | — | The model credential for containers on the `default` account: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY`. Else the same variable in sf-runner's environment. A token account's token wins; a login account can't be used in a container |
-| `container.docker` | found on PATH, Homebrew, `~/.local/bin`, Docker.app | The `docker` CLI |
-| `container.allowedHosts` | — | More egress hosts for every job on this runner (`host`, `*.host`, `host:port`) |
-| `container.cpus`, `container.memory`, `container.pids` | —, —, 4096 | Limits per job container (`memory` in Docker's syntax, `8g`) |
-| `sprites.apiUrl` | `https://api.sprites.dev` | The Sprites API, with `"isolation": "sprites"` (ADR 0480). The token is not here: `sf-runner sprites login` |
-| `sprites.allowedHosts` | — | More egress hosts for every job's sprite (`host`, `*.host`; a port is dropped) |
-| `sprites.cpus`, `sprites.memoryMb`, `sprites.storageGb` | 4, 8192, 50 | Each sprite's size, sent at creation |
-| `sprites.maxLifetimeMinutes` | 240 | The most a sprite lives: Claude is stopped then, and the sweep destroys older sprites |
+| `isolation` | `sandbox` | The only one left. `container` and `sprites` were removed with the old pipeline (spec 70): a runner.json that still names one takes no jobs until it says `sandbox` |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
-
-## End-to-end test (local engine)
-`e2e/` runs the real engine (`apps/engine/src`) under `wrangler dev` with its in-D1 fake GitHub, next
-to a test-only driver Worker. The driver does three things:
-- seeds a user, org, project, policy and runner;
-- invokes operations through `EngineApi`;
-- mirrors each real push into the fake GitHub, so the engine's hand-back and fast-forward checks run unchanged.
-
-A bare repo on disk stands in for GitHub's git side. The test files one small work item and lets the
-runner triage, build and verify it with real Claude sessions in tmux. It stops at the merge gate,
-cancels the item, and checks that nothing is left behind.
-```sh
-cd local/runner-host/e2e
-W=../../../apps/engine/node_modules/.bin/wrangler
-$W d1 migrations apply software-factory --local -c engine.wrangler.jsonc --persist-to .wrangler-state
-$W dev -c driver/wrangler.jsonc -c engine.wrangler.jsonc --persist-to .wrangler-state --ip 127.0.0.1 --port 8977 &
-cd .. && node --experimental-transform-types --no-warnings e2e/e2e.ts --driver http://127.0.0.1:8977
-```
 
 ## Layout
 | Path | What |
 |---|---|
 | `src/host.ts` | The daemon loop: heartbeat, commands, claims, concurrency, stop |
 | `src/job.ts` | One job's lifecycle, fencing, the result file, push, hand-back, release |
-| `src/checks.ts` | The project's checks (ADR 0501): clean trees, the git guards, failures back into the same session |
-| `src/check-sandbox.ts` | The OS sandbox a local check runs in (`srt` with the harness's floor), or none: checks not run |
-| `src/git.ts` | The host's clone, the token-only credential helper, the run-branch push, the config check, the diff, token revocation |
-| `src/runner.ts` | Wires config → channel client + git + runner-local, its container runner with `isolation: container`, or its sprites runner with `isolation: sprites` (the only file naming an adapter) |
+| `src/git.ts` | The host's clone, the token-only credential helper, the item-branch push, the config check, the diff, token revocation |
+| `src/runner.ts` | Wires config → channel client + git + runner-local (the only file naming an adapter) |
 | `src/checkouts.ts` | The `checkouts` dirs: `~` expansion and the one-time default |
-| `src/sprites-cli.ts` | `sf-runner sprites login/status/logout`: the owner's Sprites token (ADR 0480) |
 | `src/accounts.ts`, `src/account-cli.ts` | Claude accounts on the host (ADR 0410): the registry, token files, config dirs, usage limits, `sf-runner account` |
 | `src/config.ts`, `src/cli.ts` | `sf-runner pair/run/status/doctor/install/uninstall/account` |
 | `src/service.ts`, `src/launchd.ts`, `src/systemd.ts` | The service by platform: launchd on macOS, a systemd user unit on Linux (ADR 0420) |
 | `src/linux.ts` | `doctor`'s Linux checks: bubblewrap, socat, a bwrap smoke run, user systemd, linger |
 | `scripts/linux-prereqs.sh`, `scripts/linux-check.sh` | Check a Linux box's packages; run the Linux-sensitive tests in a container |
 | `test/` | The lifecycle against a fake cloud serving the real signed protocol and a local bare repo |
-| `e2e/` | The end-to-end test above |

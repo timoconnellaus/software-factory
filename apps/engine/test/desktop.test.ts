@@ -1,13 +1,13 @@
 // The desktop app's side of the client door (ADR 0391, spec 40 M1) end to end through sf-engine's
 // /client/v1: the PKCE sign-in, desktop tokens on the `desktop` surface, presence proofs that let a
-// device decide exactly one gate, and what stays browser-only whatever the proof.
+// device make exactly one call, and what stays browser-only whatever the proof.
 import { env } from "cloudflare:workers";
 import { canonicalJson, inputDigest, presenceMessage, rawSignature } from "@software-factory/core";
 import { describe, expect, it } from "vitest";
 import { pruneChannelStore } from "../src/channel.ts";
 import { DESKTOP_PROTOCOL_LATEST } from "../src/cli.ts";
 import worker from "../src/index.ts";
-import { notifyClients, notifyPlanningViewers } from "../src/outbox.ts";
+import { notifyClients } from "../src/outbox.ts";
 import { first, ok, type World, world } from "./helpers.ts";
 
 const post = (path: string, body: unknown, token?: string, prefix = "/client/v1") =>
@@ -121,63 +121,6 @@ async function prove(token: string, device: Device, op: string, input: unknown) 
   };
 }
 
-async function newItem(w: World, token: string) {
-  const created = await callOp(token, "workItem.create", {
-    state: "queued",
-    projectId: w.projectId,
-    title: "From the desktop",
-    source: "app",
-    eventId: crypto.randomUUID(),
-  });
-  expect(created.status).toBe(200);
-  return (await json<{ result: { workItemId: string } }>(created)).result.workItemId;
-}
-
-describe("a config change approved from the desktop (ADR 0610)", () => {
-  it("waits as a pending action, and the Touch ID summary names the project, versions and what it loosens", async () => {
-    const w = await world();
-    const { token, device } = await signIn(w);
-    const got = await json<{ result: { current: { version: number; policy: object } } }>(
-      await callOp(token, "config.get", { projectId: w.projectId }),
-    );
-    const base = got.result.current.version;
-    // A save from the desktop needs no proof; one that loosens waits for an approver.
-    const saved = await callOp(token, "config.save", {
-      projectId: w.projectId,
-      baseVersion: base,
-      policy: { ...got.result.current.policy, autonomyPolicy: "autonomous" },
-    });
-    const pendingActionId = (await json<{ pendingActionId: string }>(saved)).pendingActionId;
-    expect(pendingActionId).toBeTruthy();
-    const input = { pendingActionId, decision: "approved" };
-
-    // Approving needs a proof, and the prompt says what is being approved, from the engine.
-    expect((await callOp(token, "approval.decide", input)).status).toBe(403);
-    const proof = await prove(token, device, "approval.decide", input);
-    expect(proof.summary).toMatch(
-      new RegExp(
-        `^Approve a change to the policy \\(v${base} to v${base + 1}\\): loosens \\d+ things: Autonomy policy Balanced → Autonomous…`,
-      ),
-    );
-    const reject = await prove(token, device, "approval.decide", {
-      pendingActionId,
-      decision: "rejected",
-    });
-    expect(reject.summary).toMatch(
-      /^Reject a change to the policy \(v\d+ to v\d+\): loosens \d+ things: /,
-    );
-    // The facts are never cut: past the room for it, the project's name is left out instead.
-    expect(proof.summary).not.toMatch(/[;:] ?$/);
-
-    const decided = await callOp(token, "approval.decide", input, proof);
-    expect(decided.status).toBe(200);
-    const after = await json<{ result: { current: { version: number } } }>(
-      await callOp(token, "config.get", { projectId: w.projectId }),
-    );
-    expect(after.result.current.version).toBe(base + 1);
-  });
-});
-
 describe("the desktop app's client door (/client/v1)", () => {
   it("signs in once with PKCE; a wrong verifier or a reused code mints nothing (criterion 1)", async () => {
     const w = await world();
@@ -222,106 +165,74 @@ describe("the desktop app's client door (/client/v1)", () => {
   it("a desktop token acts on the desktop surface and the audit names the device (criterion 2)", async () => {
     const w = await world();
     const { token, deviceId } = await signIn(w);
-    expect((await callOp(token, "inbox.list", {})).status).toBe(200);
-    const workItemId = await newItem(w, token);
+    expect((await callOp(token, "org.list", {})).status).toBe(200);
+    expect((await callOp(token, "github.connectStart", { orgId: w.orgId })).status).toBe(200);
     const audited = await first<{ origin: string }>(
-      "SELECT origin FROM core_audit WHERE operation = 'workItem.create' AND work_item_id = ?",
-      workItemId,
+      "SELECT origin FROM core_audit WHERE operation = 'github.connectStart' AND org_id = ? ORDER BY rowid DESC LIMIT 1",
+      w.orgId,
     );
     expect(JSON.parse(String(audited?.origin))).toMatchObject({ surface: "desktop", deviceId });
     // /cli/v1 is the same door.
-    expect((await post("call", { op: "inbox.list", input: {} }, token, "/cli/v1")).status).toBe(
-      200,
-    );
-    // batch runs reads only.
+    expect((await post("call", { op: "org.list", input: {} }, token, "/cli/v1")).status).toBe(200);
+    // batch runs reads only, the new core's included.
     const batch = await json<{ results: { ok: boolean; code?: string }[] }>(
       await post(
         "batch",
         {
           calls: [
-            { op: "inbox.list", input: {} },
-            { op: "workItem.get", input: { workItemId } },
-            { op: "workItem.cancel", input: { workItemId, reason: "x" } },
+            { op: "org.list", input: {} },
+            { op: "flow.project.list", input: { orgId: w.orgId } },
+            { op: "github.connectStart", input: { orgId: w.orgId } },
+            { op: "flow.agent.create", input: { orgId: w.orgId, name: "x", instructions: "x" } },
           ],
         },
         token,
       ),
     );
-    expect(batch.results.map((r) => r.ok)).toEqual([true, true, false]);
+    expect(batch.results.map((r) => r.ok)).toEqual([true, true, false, false]);
     expect(batch.results[2]?.code).toBe("forbidden");
   });
 
-  it("says how many work items a split's approval creates, in the Touch ID prompt (spec 24, review of #173)", async () => {
+  it("refuses a browser-only call without a proof, and lets exactly one proven call past (criteria 3, 4)", async () => {
     const w = await world();
-    const { token, device } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    const child = (key: string, title: string) => ({
-      key,
-      title,
-      size: "small",
-      goal: "g",
-      scope: ["s"],
-      acceptanceCriteria: ["c"],
-    });
-    await env.DB.prepare(
-      "INSERT INTO core_specs (id, work_item_id, version, body_md, acceptance_criteria, status, created_by, created_at, children) VALUES ('spec_split', ?, 1, '# x', '[]', 'draft', 'test', '2026-11-13T00:00:00.000Z', ?)",
-    )
-      .bind(workItemId, JSON.stringify([child("a", "Issue intake"), child("b", "Report back")]))
-      .run();
-    await env.DB.prepare("UPDATE core_work_items SET current_spec_id = 'spec_split' WHERE id = ?")
-      .bind(workItemId)
-      .run();
-    const proof = await prove(token, device, "spec.approve", { workItemId });
-    const n = (
-      await first<{ number: number }>("SELECT number FROM core_work_items WHERE id = ?", workItemId)
-    )?.number;
-    expect(proof.summary).toBe(`Approve the plan and 2 work items for #${n} "From the desktop"`);
-  });
+    const { token, device, deviceId } = await signIn(w);
+    const op = "mobile.pairOffer";
+    const input = {};
 
-  it("refuses a gate decision without a proof, and lets exactly one proven call past (criteria 3, 4)", async () => {
-    const w = await world();
-    const { token, device } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    const input = { workItemId };
-
-    const bare = await callOp(token, "spec.approve", input);
+    const bare = await callOp(token, op, input);
     expect(bare.status).toBe(403);
     expect(await json(bare)).toMatchObject({ code: "forbidden", details: { browserOnly: true } });
 
-    // With a proof the call gets past the browser-only check: the item isn't at a spec gate, so the
-    // handler itself answers (conflict), not the gate (forbidden).
-    const proof = await prove(token, device, "spec.approve", input);
-    // The prompt names the decision, from the engine's records.
-    expect(proof.summary).toMatch(/^Approve the spec for #\d+ "From the desktop"$/);
-    const proven = await callOp(token, "spec.approve", input, proof);
-    expect(proven.status).not.toBe(403);
+    const proof = await prove(token, device, op, input);
+    // The prompt says what it is for, from the engine's own words.
+    expect(proof.summary).toBe("Add a phone to your account");
+    const proven = await callOp(token, op, input, proof);
+    expect(proven.status).toBe(200);
     const audit = await first<{ origin: string }>(
       "SELECT origin FROM core_audit WHERE operation = 'presence.redeem' ORDER BY at DESC LIMIT 1",
     );
     expect(JSON.parse(String(audit?.origin)).surface).toBe("desktop");
 
     // Replayed.
-    expect((await callOp(token, "spec.approve", input, proof)).status).toBe(403);
+    expect((await callOp(token, op, input, proof)).status).toBe(403);
     // For another op.
-    const forMerge = await prove(token, device, "review.merge", {
-      workItemId,
-      openedFullDiff: true,
-    });
-    expect((await callOp(token, "spec.approve", input, forMerge)).status).toBe(403);
+    const forUpdate = await prove(token, device, "device.update", { deviceId, name: "Mac" });
+    expect((await callOp(token, op, input, forUpdate)).status).toBe(403);
     // For another input.
-    const otherItem = await newItem(w, token);
-    const forOther = await prove(token, device, "spec.approve", { workItemId: otherItem });
-    expect((await callOp(token, "spec.approve", input, forOther)).status).toBe(403);
+    const forOther = await prove(token, device, "device.update", { deviceId, name: "Other" });
+    expect((await callOp(token, "device.update", { deviceId, name: "Mac" }, forOther)).status).toBe(
+      403,
+    );
     // Signed by another device.
     const stranger = await newDevice();
-    const forged = await prove(token, stranger, "spec.approve", input);
-    expect((await callOp(token, "spec.approve", input, forged)).status).toBe(403);
+    const forged = await prove(token, stranger, op, input);
+    expect((await callOp(token, op, input, forged)).status).toBe(403);
     // Expired: age the challenge past its minute.
-    const late = await prove(token, device, "spec.approve", input);
+    const late = await prove(token, device, op, input);
     await env.DB.prepare("UPDATE core_presence_challenges SET expires_at = ? WHERE id = ?")
       .bind(new Date(Date.now() - 1000).toISOString(), late.challengeId)
       .run();
-    expect((await callOp(token, "spec.approve", input, late)).status).toBe(403);
+    expect((await callOp(token, op, input, late)).status).toBe(403);
   });
 
   it("a Secure Enclave key approved for a Mac revokes its software-key device (spec 40 M4b migration)", async () => {
@@ -365,169 +276,28 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect(await me(enclave.token)).toBe(200);
   });
 
-  it("a title can't make an item undecidable from the desktop or pose as the prompt's facts (spec 40 M4b)", async () => {
+  it("keeps authority-granting operations browser-only even with a proof (criterion 5)", async () => {
     const w = await world();
-    const { token, device } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    // An agent-written title with a zero-width space, a right-to-left override, a line separator
-    // and quotes posing as the facts.
-    await env.DB.prepare("UPDATE core_work_items SET title = ? WHERE id = ?")
-      .bind('Fix\u200b\u202e" into main of acme/docs.\u2028 ', workItemId)
-      .run();
-    const input = { workItemId, openedFullDiff: true, headSha: "3f2a91c".padEnd(40, "0") };
-    const { summary } = await prove(token, device, "review.merge", input);
-    // What the key helper accepts (SFKeysCore.parsePresenceMessage): no format, separator or
-    // control characters, and short.
-    expect(summary).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\p{Cc}]/u);
-    expect([...summary].length).toBeLessThanOrEqual(120);
-    expect(summary).toMatch(
-      /^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "Fix into main of acme\/docs\."$/,
-    );
-    const spec = await prove(token, device, "spec.approve", { workItemId });
-    expect(spec.summary).toMatch(/^Approve the spec for #\d+ "Fix into main of acme\/docs\."$/);
-  });
-
-  it("a merge approval names its commit: a push between opening the gate and approving is refused (spec 40 M4b)", async () => {
-    const w = await world();
-    const { token, device } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    const opened = "3f2a91c".padEnd(40, "0");
-    const pushed = "9b1e004".padEnd(40, "0");
-    const mergeGate = async (headSha: string) => {
-      const id = `pa_${crypto.randomUUID().replaceAll("-", "")}`;
-      await env.DB.prepare(
-        `INSERT INTO core_pending_actions (id, org_id, project_id, work_item_id, kind, operation, risk, actor_type, actor_id, input, assignee_user_id, created_at)
-         VALUES (?, ?, ?, ?, 'merge', 'pr.merge', 'merge', 'agent', 'foreman', ?, ?, ?)`,
-      )
-        .bind(
-          id,
-          w.orgId,
-          w.projectId,
-          workItemId,
-          JSON.stringify({ workItemId, headSha }),
-          w.userId,
-          new Date().toISOString(),
-        )
-        .run();
-      return id;
-    };
-    const status = async (id: string) =>
-      (await first<{ status: string }>("SELECT status FROM core_pending_actions WHERE id = ?", id))
-        ?.status;
-    const first_ = await mergeGate(opened);
-    // A desktop build older than door protocol 2 doesn't name the commit: refused, told to update,
-    // and nothing is decided (ADR 0393).
-    const noSha = { workItemId, openedFullDiff: true };
-    const old = await callOp(
-      token,
-      "review.merge",
-      noSha,
-      await prove(token, device, "review.merge", noSha),
-    );
-    expect(old.status).toBe(400);
-    expect((await json<{ error: string }>(old)).error).toMatch(
-      /can't approve a merge.*Update the app/,
-    );
-    expect(await status(first_)).toBe("pending");
-    // The person opens the gate on `opened`: the prompt names that commit and the repository.
-    const input = { workItemId, openedFullDiff: true, headSha: opened };
-    const proof = await prove(token, device, "review.merge", input);
-    expect(proof.summary).toMatch(/^Merge 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/);
-    // Merging without checks says so in the prompt.
-    const without = await prove(token, device, "review.merge", {
-      ...input,
-      mergeWithoutChecks: true,
-    });
-    // ...first, so it is in the first words even where the sheet can't show it all.
-    expect(without.summary).toMatch(
-      /^Merge WITHOUT its checks: 3f2a91c into main of [^ ]+\/[^ ]+: "From the desktop"$/,
-    );
-    // With a 39-character owner and a 60-character repository the facts pass 120 characters:
-    // the title goes, the facts (and the condition) stay whole.
-    const repoOf = "(SELECT repository_id FROM core_work_items WHERE id = ?)";
-    const was = await first<{ owner: string; name: string }>(
-      `SELECT owner, name FROM core_repositories WHERE id = ${repoOf}`,
-      workItemId,
-    );
-    await env.DB.prepare(
-      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
-    )
-      .bind("o".repeat(39), "r".repeat(60), workItemId)
-      .run();
-    const longNames = await prove(token, device, "review.merge", {
-      ...input,
-      mergeWithoutChecks: true,
-    });
-    expect(longNames.summary).toBe(
-      `Merge WITHOUT its checks: 3f2a91c into main of ${"o".repeat(39)}/${"r".repeat(60)}:`,
-    );
-    await env.DB.prepare(
-      "UPDATE core_repositories SET owner = ?, name = ? WHERE id = (SELECT repository_id FROM core_work_items WHERE id = ?)",
-    )
-      .bind(was?.owner ?? "", was?.name ?? "", workItemId)
-      .run();
-
-    // An agent pushes before the person approves: the gate is withdrawn (as moveAttachedHead does).
-    await env.DB.prepare(
-      "UPDATE core_pending_actions SET status = 'rejected', decision = 'withdrawn', decided_at = ? WHERE id = ?",
-    )
-      .bind(new Date().toISOString(), first_)
-      .run();
-    const refused = await callOp(token, "review.merge", input, proof);
-    expect(refused.status).toBe(409);
-    expect((await json<{ error: string }>(refused)).error).toBe(
-      "A new push withdrew this approval: 3f2a91c is no longer the head. The factory verifies the new commit and asks again.",
-    );
-
-    // Verify passes on the pushed commit and a new gate opens for it: the old approval still can't
-    // merge it, and nothing is decided.
-    const second = await mergeGate(pushed);
-    const again = await prove(token, device, "review.merge", input);
-    const stale = await callOp(token, "review.merge", input, again);
-    expect(stale.status).toBe(409);
-    expect((await json<{ error: string }>(stale)).error).toBe(
-      "A new push withdrew this approval: the merge gate is for 9b1e004 now, not 3f2a91c. Review the new commit.",
-    );
-    expect(await status(second)).toBe("pending");
-  });
-
-  it("keeps authority-granting operations browser-only even with a proof (criterion 5, as amended by ADR 0610)", async () => {
-    const w = await world();
-    const { token, device } = await signIn(w);
-    for (const op of ["cli.approveDevice", "desktop.approveDevice", "runner.register"]) {
+    const { token } = await signIn(w);
+    for (const op of [
+      "cli.approveDevice",
+      "desktop.approveDevice",
+      "mobile.approveDevice",
+      "runner.approveDevice",
+      "runner.register",
+      "runner.rotateKey",
+    ]) {
       const res = await callOp(token, "presence.challenge", { op, input: {} });
       expect([op, res.status]).toEqual([op, 403]);
     }
-    // Turning a kill switch off: refused without a proof, decided with one (ADR 0610).
-    // The epoch the person saw (killSwitch.list): the desktop must name it (review of #165).
-    const input = { scope: "project", id: w.projectId, on: false, epoch: 0 };
-    expect((await callOp(token, "killSwitch.set", input)).status).toBe(403);
-    const proof = await prove(token, device, "killSwitch.set", input);
-    expect(proof.summary).toMatch(/^Turn a project's kill switch off: its work resumes "[^"]+"$/);
-    expect((await callOp(token, "killSwitch.set", input, proof)).status).toBe(200);
   });
 
-  it("saves an org workflow only with a proof, and the prompt says what it is (ADR 0610)", async () => {
-    const w = await world();
-    const { token, device } = await signIn(w);
-    const input = { orgId: w.orgId, baseVersion: 0, templateId: "wf_software", name: "Desk" };
-    const bare = await callOp(token, "workflow.createFromTemplate", input);
-    expect(bare.status).toBe(403);
-    const proof = await prove(token, device, "workflow.createFromTemplate", input);
-    expect(proof.summary).toMatch(
-      /^Add an org workflow from the wf_software template \(v0 to v1\) "Desk in [^"]+"$/,
-    );
-    const made = await callOp(token, "workflow.createFromTemplate", input, proof);
-    expect(made.status).toBe(200);
-  });
-
-  it("refuses proofs from a software key: an unsigned build can't decide (criterion 6)", async () => {
+  it("refuses proofs from a software key: an unsigned build can't give one (criterion 6)", async () => {
     const w = await world();
     const { token, device } = await signIn(w, undefined, "software");
-    const workItemId = await newItem(w, token);
-    const input = { workItemId };
-    const proof = await prove(token, device, "spec.approve", input);
-    const res = await callOp(token, "spec.approve", input, proof);
+    const input = {};
+    const proof = await prove(token, device, "mobile.pairOffer", input);
+    const res = await callOp(token, "mobile.pairOffer", input, proof);
     expect(res.status).toBe(403);
     expect((await json<{ error: string }>(res)).error).toMatch(/Secure Enclave/);
   });
@@ -541,7 +311,7 @@ describe("the desktop app's client door (/client/v1)", () => {
     const { token } = await json<{ token: string }>(
       await post("device/poll", { deviceCode: started.deviceCode }, undefined, "/cli/v1"),
     );
-    const res = await callOp(token, "presence.challenge", { op: "spec.approve", input: {} });
+    const res = await callOp(token, "presence.challenge", { op: "mobile.pairOffer", input: {} });
     expect(res.status).toBe(403);
   });
 
@@ -551,7 +321,7 @@ describe("the desktop app's client door (/client/v1)", () => {
     const listed = await ok<{ devices: { id: string }[] }>("desktopDevice.list", {}, w.human);
     expect(listed.devices.map((d) => d.id)).toContain(deviceId);
     await ok("desktopDevice.revoke", { deviceId }, w.human);
-    expect((await callOp(token, "inbox.list", {})).status).toBe(401);
+    expect((await callOp(token, "org.list", {})).status).toBe(401);
   });
 
   it("canonical digests ignore key order; DER signatures convert to raw", async () => {
@@ -614,70 +384,7 @@ describe("the desktop app's client door (/client/v1)", () => {
       title: "Ready to merge: x",
     });
 
-    // Assigned to nobody: the org's owners and admins hear it.
-    const workItemId = await newItem(w, token);
-    const heard = await notifyClients(env, {
-      event: "gate.opened",
-      userId: null,
-      workItemId,
-      title: "Spec waiting: From the desktop",
-    });
-    expect(heard).toContain(w.userId);
-    await until(3);
-    expect(got[2]).toMatchObject({ type: "notify", workItemId });
-
-    // Spec 26: a planning change reaches only the people who have that Planning view open.
-    expect(await notifyPlanningViewers(env, workItemId)).toEqual([]);
-    await env.DB.prepare(
-      "INSERT INTO core_planning_presence (work_item_id, user_id, seen_at, left_at) VALUES (?, ?, ?, NULL)",
-    )
-      .bind(workItemId, w.userId, new Date().toISOString())
-      .run();
-    expect(await notifyPlanningViewers(env, workItemId)).toEqual([w.userId]);
-    await until(4);
-    expect(got[3]).toEqual({ type: "planning.changed", workItemId });
     ws.close();
-  });
-
-  it("carries attachment bytes as { $bytes } both ways (spec 40 M3)", async () => {
-    const w = await world();
-    const { token } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
-    const b64 = btoa(String.fromCharCode(...png));
-    const added = await callOp(token, "workItem.attachment.add", {
-      workItemId,
-      filename: "shot.png",
-      contentType: "image/png",
-      bytes: { $bytes: b64 },
-    });
-    expect(added.status).toBe(200);
-    const { result } = await json<{ result: { attachment: { id: string; sizeBytes: number } } }>(
-      added,
-    );
-    expect(result.attachment.sizeBytes).toBe(png.length);
-    const got = await json<{ result: { bytes: { $bytes: string } } }>(
-      await callOp(token, "workItem.attachment.get", { attachmentId: result.attachment.id }),
-    );
-    expect(got.result.bytes).toEqual({ $bytes: b64 });
-    // In a batch too, and bytes that aren't base64 are refused.
-    const batch = await json<{ results: { ok: boolean; result?: { bytes: unknown } }[] }>(
-      await post(
-        "batch",
-        {
-          calls: [{ op: "workItem.attachment.get", input: { attachmentId: result.attachment.id } }],
-        },
-        token,
-      ),
-    );
-    expect(batch.results[0]?.result?.bytes).toEqual({ $bytes: b64 });
-    const bad = await callOp(token, "workItem.attachment.add", {
-      workItemId,
-      filename: "x.png",
-      contentType: "image/png",
-      bytes: { $bytes: "not base64!" },
-    });
-    expect(bad.status).toBe(400);
   });
 
   it("answers update_required to a desktop build below DESKTOP_MIN_PROTOCOL (spec 40 M4, ADR 0393)", async () => {
@@ -693,7 +400,7 @@ describe("the desktop app's client door (/client/v1)", () => {
       worker.fetch(
         new Request(`https://sf-engine.example/client/v1/${path}`, {
           method,
-          ...(method === "POST" ? { body: JSON.stringify({ op: "inbox.list", input: {} }) } : {}),
+          ...(method === "POST" ? { body: JSON.stringify({ op: "org.list", input: {} }) } : {}),
           headers: {
             "content-type": "application/json",
             ...(auth ? { authorization: `Bearer ${auth}` } : {}),
@@ -718,7 +425,6 @@ describe("the desktop app's client door (/client/v1)", () => {
     expect((await at("1", undefined, "batch")).status).toBe(426);
     expect((await at("1", undefined, "ops", token, "GET")).status).toBe(426);
     expect((await at("1", undefined, "live", token, "GET")).status).toBe(426);
-    expect((await at("1", undefined, "terminal/wi_x/run_y", token, "GET")).status).toBe(426);
     // Sign-in is refused too, before it mints anything.
     expect((await at("1", undefined, "desktop/start", null)).status).toBe(426);
     // No token is no desktop: the route answers 401 as before.
@@ -733,8 +439,7 @@ describe("the desktop app's client door (/client/v1)", () => {
   it("caps waiting sign-ins and prunes old requests and challenges", async () => {
     const w = await world();
     const { token, device } = await signIn(w);
-    const workItemId = await newItem(w, token);
-    await prove(token, device, "spec.approve", { workItemId });
+    await prove(token, device, "mobile.pairOffer", {});
     // Age everything past a day after expiry: the cron's prune removes it.
     const old = new Date(Date.now() - 3 * 24 * 3_600_000).toISOString();
     await env.DB.prepare("UPDATE core_desktop_auth_requests SET expires_at = ?").bind(old).run();

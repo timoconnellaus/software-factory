@@ -6,8 +6,8 @@
 //          --settings <runDir>/claude-settings.json --strict-mcp-config [--model <model>] [--effort <level>]
 //
 // No user settings source, so the owner's personal Claude config (their own default mode, hooks,
-// plugins) never applies to a run. No MCP servers, except a planning session's own planning server
-// and a flow job's own HTTP servers (`--mcp-config`); a planning session starts (`--session-id`) or resumes (`--resume`) a known conversation. The prompt is not an argument: the adapter sends
+// plugins) never applies to a run. No MCP servers, except the job's own HTTP servers
+// (`--mcp-config`). The prompt is not an argument: the adapter sends
 // it once the launch is verified, so nothing runs before the check passes.
 //
 // After launch, `inspectLaunch` reads the pid the launch script recorded, the live process's
@@ -18,15 +18,13 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { HarnessProfile, Job, JobStage } from "@software-factory/runner-contract";
-import type { PlanningLaunch } from "./planning/project.ts";
+import type { Job, JobStage } from "@software-factory/runner-contract";
 import {
-  type Isolation,
   type PermissionMode,
-  permissionStage,
+  RUN_MODES,
   RUN_SETTINGS_FILE,
+  runKind,
   SETTINGS_FILE,
-  stageMode,
 } from "./settings.ts";
 
 /** The setting sources a run loads: the repo's and the projected local file, never the user's. */
@@ -42,8 +40,6 @@ export interface LaunchRecord {
   jobId: string;
   stage: JobStage;
   mode: PermissionMode;
-  /** Where the run is confined (ADR 0430); absent in records from before it (the sandbox). */
-  isolation?: Isolation;
   /** The exact argv, `argv[0]` included. */
   argv: string[];
   /** sha256 of the projected settings (both copies have the same bytes). */
@@ -51,16 +47,9 @@ export interface LaunchRecord {
   settingsPaths: string[];
   pidFile: string;
   worktree: string;
-  /**
-   * A stream-json session (ADR 0450): its conversation id, for `claude --resume`. Absent for a
-   * terminal (TUI) session.
-   */
-  stream?: {
-    sessionId: string;
-    /** `<runDir>/resume.sh`: the takeover's script, the launch's environment and account. */
-    resumeScript?: string;
-  };
-  /** The variables the launch script unsets (for the takeover command, ADR 0450). */
+  /** A stream-json session (ADR 0450): its conversation id. Absent for a terminal (TUI) session. */
+  stream?: { sessionId: string };
+  /** The variables the launch script unsets. */
   unset?: string[];
   /**
    * The Claude account the run uses (ADR 0410), and its config dir (absent for `default`). Names and
@@ -71,7 +60,7 @@ export interface LaunchRecord {
 }
 
 /**
- * The flags that make a run a two-way stream-json session (ADR 0450): print mode, JSON lines in
+ * The flags that make a run a stream-json session (ADR 0450): print mode, JSON lines in
  * and out, and no permission prompts (anything that would prompt is denied; the mode and allow
  * rules decide the rest, so nothing waits on an answer no one gives).
  */
@@ -94,124 +83,32 @@ const isEffort = (value: string | undefined): value is (typeof CLAUDE_EFFORTS)[n
 
 /** The exact argv for a run's Claude. */
 export function claudeArgv(
-  job: Pick<Job, "stage" | "harness"> & Partial<Pick<Job, "repo" | "branch">>,
+  job: Pick<Job, "harness"> & Partial<Pick<Job, "repo" | "branch">>,
   options: {
     settingsPath: string;
     claudeBin?: string;
-    profile?: HarnessProfile;
-    /** A planning session (ADR 0350): its MCP server, and the conversation to start or resume. */
-    planning?: PlanningLaunch;
-    /**
-     * A stream-json session (ADR 0450). A non-planning one starts its own conversation with
-     * `sessionId`; a planning one keeps the planning session's.
-     */
+    /** A stream-json session (ADR 0450), started with its own conversation id. */
     stream?: { sessionId?: string };
-    /** A container per job changes the stage's default mode (ADR 0430). */
-    isolation?: Isolation;
-    /** A flow job's MCP config (spec 70 milestone 2), when the job names MCP servers. */
+    /** The job's MCP config (spec 70 milestone 2), when the job names MCP servers. */
     mcpConfigPath?: string;
   },
 ): string[] {
-  const planning = options.planning;
   const stream = options.stream;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
-    stageMode(permissionStage(job), options.profile ?? job.harness.profile, options.isolation),
+    RUN_MODES[runKind(job)],
     "--setting-sources",
     SETTING_SOURCES,
     "--settings",
     options.settingsPath,
     "--strict-mcp-config",
-    ...(planning
-      ? [
-          "--mcp-config",
-          planning.mcpConfigPath,
-          planning.resume ? "--resume" : "--session-id",
-          planning.sessionRef,
-        ]
-      : options.mcpConfigPath
-        ? ["--mcp-config", options.mcpConfigPath]
-        : []),
-    ...(stream && !planning && stream.sessionId ? ["--session-id", stream.sessionId] : []),
+    ...(options.mcpConfigPath ? ["--mcp-config", options.mcpConfigPath] : []),
+    ...(stream?.sessionId ? ["--session-id", stream.sessionId] : []),
     ...(job.harness.model ? ["--model", job.harness.model] : []),
-    ...(job.stage === "flow" && isEffort(job.harness.effort)
-      ? ["--effort", job.harness.effort]
-      : []),
+    ...(isEffort(job.harness.effort) ? ["--effort", job.harness.effort] : []),
     ...(stream ? STREAM_FLAGS : []),
   ];
-}
-
-/**
- * The interactive command that resumes a stream session's conversation in a terminal (ADR 0450):
- * the launch's argv without the stream flags and without its own `--session-id`/`--resume`, then
- * `--resume <sessionId>`. The same settings, setting sources, permission mode, MCP config and model
- * as the run.
- */
-export function resumeArgv(record: Pick<LaunchRecord, "argv">, sessionId: string): string[] {
-  const out: string[] = [];
-  const argv = record.argv;
-  const withValue = new Set([
-    "--session-id",
-    "--resume",
-    "--input-format",
-    "--output-format",
-    "--permission-prompts",
-  ]);
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i] as string;
-    if (withValue.has(a)) {
-      i++;
-      continue;
-    }
-    if (a === "-p" || a === "--verbose") continue;
-    out.push(a);
-  }
-  return [...out, "--resume", sessionId];
-}
-
-/**
- * `resumeArgv` as one shell line, run in the worktree with the launch script's variables unset:
- * `cd <worktree> && env -u … claude … --resume <id>`.
- */
-export function resumeCommand(
-  record: Pick<LaunchRecord, "argv" | "worktree" | "unset" | "stream" | "account" | "configDir">,
-  sessionId: string,
-): string {
-  const unset = (record.unset ?? []).flatMap((k) => ["-u", k]);
-  const words = [...(unset.length ? ["env", ...unset] : []), ...resumeArgv(record, sessionId)];
-  const line = `cd ${shellQuote(record.worktree)} && ${words.map(shellQuote).join(" ")}`;
-  // With its resume script (the launch's environment and Claude account, ADR 0410), run that;
-  // the second line says what it runs.
-  const script = record.stream?.resumeScript;
-  if (!script) return line;
-  const account =
-    record.account && record.configDir ? `, on Claude account "${record.account}"` : "";
-  return `sh ${shellQuote(script)}\n# runs${account}: ${line}`;
-}
-
-export const RESUME_SCRIPT = "resume.sh";
-
-/**
- * The takeover's script (ADR 0450): the launch script's environment, unsets and account, then the
- * interactive `claude --resume <id>` in the worktree. No pid file: the runner never checks it.
- */
-export function resumeScript(
-  record: Pick<LaunchRecord, "argv" | "worktree" | "jobId" | "stream">,
-  unset: readonly string[],
-  account: readonly string[] = [],
-): string {
-  const sessionId = record.stream?.sessionId ?? "";
-  return [
-    "#!/bin/sh",
-    `# Written by the software factory runner for job ${record.jobId}: resumes its stream session`,
-    "# in this terminal after a takeover (ADR 0450). Quitting it hands the run back.",
-    ...(unset.length ? [`unset ${unset.map(shellQuote).join(" ")}`] : []),
-    ...account,
-    `cd ${shellQuote(record.worktree)} || exit 97`,
-    `exec ${resumeArgv(record, sessionId).map(shellQuote).join(" ")}`,
-    "",
-  ].join("\n");
 }
 
 /** Quotes one word for `/bin/sh`. */

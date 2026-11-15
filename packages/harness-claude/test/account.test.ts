@@ -1,19 +1,17 @@
 // The Claude account a run uses (ADR 0410, spec 32): one model credential reaches Claude, the token
 // is in no file the harness writes, and the ADR 0270 check still holds.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Job } from "@software-factory/runner-contract";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   accountConfigDir,
-  carryConversation,
   type HarnessAccount,
   isUsageLimitText,
   MODEL_CREDENTIAL_ENV,
   parseStatusLines,
-  projectDirName,
   projectHarness,
   psCommand,
   STATUS_HOOK_SCRIPT,
@@ -39,7 +37,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-const job = (stage: Job["stage"] = "build") => ({
+const job = (stage: Job["stage"] = "flow") => ({
   jobId: "job_acc",
   stage,
   harness: { id: "claude-code" as const, role: "implement" as const, prompt: "p" },
@@ -219,23 +217,6 @@ describe("a run's Claude account (ADR 0410)", () => {
     expect(accountConfigDir({ name: "default" }, { CLAUDE_CONFIG_DIR: "/c", HOME: "/h" })).toBe(
       "/c",
     );
-  });
-
-  it("carries a planning conversation into the account it resumes on", async () => {
-    const old = await temp("sf-acc-old-");
-    const now = await temp("sf-acc-new-");
-    const cwd = "/w/sf-plan-ps_1";
-    const project = join(old, "projects", projectDirName(cwd));
-    await mkdir(project, { recursive: true });
-    await writeFile(join(project, "sess-1.jsonl"), '{"type":"user"}\n');
-    const from = await carryConversation({ cwd, sessionId: "sess-1", to: now, from: [now, old] });
-    expect(from).toBe(join(project, "sess-1.jsonl"));
-    const copied = join(now, "projects", projectDirName(cwd), "sess-1.jsonl");
-    expect(await readFile(copied, "utf8")).toBe('{"type":"user"}\n');
-    // Already there, or found nowhere: nothing to do.
-    expect(await carryConversation({ cwd, sessionId: "sess-1", to: now, from: [old] })).toBeNull();
-    expect(await carryConversation({ cwd, sessionId: "nope", to: now, from: [old] })).toBeNull();
-    expect((await stat(copied)).isFile()).toBe(true);
   });
 });
 

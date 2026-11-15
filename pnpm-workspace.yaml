@@ -3,8 +3,6 @@ packages:
   - apps/*
   - packages/*
   - local/*
-  - presets
-  - evals
 
 # Build scripts we allow to run on install.
 onlyBuiltDependencies:

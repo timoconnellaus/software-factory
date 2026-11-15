@@ -15,7 +15,7 @@ describe("runner paths", () => {
   for (const env of [{ HOME }, { HOME, XDG_STATE_HOME: join(HOME, ".local/state") }]) {
     const dirs = paths(env);
     it(`the agent's own dirs are readable (${Object.keys(env).join(",")})`, () => {
-      for (const readable of [dirs.worktreesDir, dirs.attachmentsDir]) {
+      for (const readable of [dirs.worktreesDir]) {
         expect(denied.filter((d) => under(readable, d))).toEqual([]);
       }
     });

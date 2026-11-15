@@ -1,5 +1,5 @@
-// The stream-json session mode's harness side (spec 37, ADR 0450): the launch argv, the takeover
-// command, and output lines turned into bounded contract events.
+// The stream-json session mode's harness side (spec 37, ADR 0450): the launch argv and output
+// lines turned into bounded contract events.
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,11 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   claudeArgv,
   denyPermissionLine,
-  interruptLine,
-  type LaunchRecord,
   projectHarness,
-  resumeArgv,
-  resumeCommand,
   STREAM_FLAGS,
   streamLineEvents,
   userMessageLine,
@@ -28,9 +24,12 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
+/** A flow job in a worktree of its repository. */
 const job = {
-  stage: "build" as const,
+  stage: "flow" as const,
   harness: { id: "claude-code" as const, role: "implement" as const, prompt: "p", model: "m-1" },
+  repo: { url: "https://github.com/o/r.git", owner: "o", name: "r", baseRef: "main" },
+  branch: "factory/flow-acm-1",
 };
 
 describe("the stream-json launch (ADR 0450)", () => {
@@ -67,57 +66,6 @@ describe("the stream-json launch (ADR 0450)", () => {
     const script = await readFile(projected.scriptPath, "utf8");
     expect(script).toContain("--input-format stream-json");
     expect(script).toContain(`--session-id ${sid}`);
-    // The takeover's script: the same unsets, interactive, resumed; no pid file.
-    const resume = projected.launch.stream?.resumeScript as string;
-    expect(resume).toBe(join(root, "run", "resume.sh"));
-    const body = await readFile(resume, "utf8");
-    expect(body).toContain("unset ");
-    expect(body).toContain(`--resume ${sid}`);
-    expect(body).not.toContain("stream-json");
-    expect(body).not.toContain("claude.pid");
-    expect(resumeCommand(projected.launch, sid).split("\n")).toEqual([
-      `sh ${resume}`,
-      expect.stringMatching(
-        new RegExp(`^# runs: cd ${join(root, "wt")} && env -u .* --resume ${sid}$`),
-      ),
-    ]);
-  });
-
-  it("builds the takeover command: interactive, same settings, the session resumed", () => {
-    const record: Pick<LaunchRecord, "argv" | "worktree" | "unset"> = {
-      argv: claudeArgv(job, { settingsPath: "/r/it's.json", stream: { sessionId: "sid-1" } }),
-      worktree: "/w/a b",
-      unset: ["GH_TOKEN", "CLAUDE_CODE_PLUGIN_DIRS"],
-    };
-    expect(resumeArgv(record, "sid-1")).toEqual([
-      "claude",
-      "--permission-mode",
-      "bypassPermissions",
-      "--setting-sources",
-      "project,local",
-      "--settings",
-      "/r/it's.json",
-      "--strict-mcp-config",
-      "--model",
-      "m-1",
-      "--resume",
-      "sid-1",
-    ]);
-    expect(resumeCommand(record, "sid-1")).toBe(
-      "cd '/w/a b' && env -u GH_TOKEN -u CLAUDE_CODE_PLUGIN_DIRS claude --permission-mode bypassPermissions --setting-sources project,local --settings '/r/it'\\''s.json' --strict-mcp-config --model m-1 --resume sid-1",
-    );
-    // A planning launch's own `--resume` is replaced, its MCP config kept.
-    const planning = claudeArgv(
-      { ...job, stage: "planning" },
-      {
-        settingsPath: "/s",
-        planning: { mcpConfigPath: "/r/mcp.json", sessionRef: "ref-1", resume: true },
-        stream: {},
-      },
-    );
-    expect(resumeArgv({ argv: planning }, "ref-1").join(" ")).toBe(
-      "claude --permission-mode dontAsk --setting-sources project,local --settings /s --strict-mcp-config --mcp-config /r/mcp.json --model m-1 --resume ref-1",
-    );
   });
 });
 
@@ -234,11 +182,6 @@ describe("stream-json output → events (ADR 0450)", () => {
       session_id: "s",
     });
     expect(userMessageLine("hi").endsWith("\n")).toBe(true);
-    expect(JSON.parse(interruptLine("r1"))).toEqual({
-      type: "control_request",
-      request_id: "r1",
-      request: { subtype: "interrupt" },
-    });
     expect(JSON.parse(denyPermissionLine("r2")).response.response.behavior).toBe("deny");
   });
 });

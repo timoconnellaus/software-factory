@@ -26,11 +26,14 @@ export function clearAccountData(client: QueryClient) {
   });
 }
 
-/** localStorage keys that hold one account's view of its work: its items' ids and drafts. */
+/**
+ * localStorage keys that hold one account's view: its view state, and the canvases and drafts older
+ * builds kept (still forgotten with the account they belong to).
+ */
 const ACCOUNT_KEYS = (k: string) =>
   k === VIEW_STATE_KEY || k.startsWith("sf-canvas-") || k.startsWith("sf-mentions-");
 
-/** sessionStorage keys of one account: which full diffs it opened (components/review-parts.tsx). */
+/** sessionStorage keys of one account: which full diffs it opened (an older build's review screen). */
 export const OPENED_DIFF_PREFIX = "sf:opened-diff:";
 
 /** localStorage: the login this Mac's kept account state belongs to. Never cleared with it. */
@@ -60,10 +63,9 @@ function removeKeys(store: KeyedStorage | undefined, which: (k: string) => boole
 }
 
 /**
- * Forgets what this Mac kept for the previous account: the view state (open tabs, pinned items,
- * the chosen org), each item's planning canvas layout and mention drafts, which full diffs it
- * opened. What isn't the account's (the panel width, developer switches)
- * stays.
+ * Forgets what this Mac kept for the previous account: the view state (open tabs, the chosen org),
+ * and the canvases, drafts and opened diffs older builds kept. What isn't the account's (the panel
+ * width, developer switches) stays.
  */
 export function clearAccountLocal(storage?: KeyedStorage, session?: KeyedStorage) {
   let local = storage;

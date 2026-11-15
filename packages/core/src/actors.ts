@@ -1,25 +1,12 @@
-// Who is calling (ADR 0004). The surface sets the actor, never the caller: the app sets `human` from
-// the signed-in session, the runner channel sets `runner` from the verified signature, the Workflow
-// sets `agent` (the foreman), connectors set `intake`.
-
-// `scheduler` is the factory's own pull (ADR 0491): it only starts work a person (or a policy
-// that lets agents) already released, so it reads and writes but can do nothing else.
-export const ACTOR_TYPES = [
-  "human",
-  "agent",
-  "runner",
-  "intake",
-  "self-improve",
-  "scheduler",
-  // Work the factory starts on its own (ADR 0514): it files work and never ships it. Merge, deploy,
-  // check-merge and self-modify are denied to it in code, whatever a policy or override says.
-  "autopilot",
-] as const;
+// Who is calling (ADR 0004). The surface sets the actor, never the caller: the website and the
+// client door set `human` from the session or token, the runner channel sets `runner` from the
+// verified signature, the GitHub webhook sets `intake`.
+export const ACTOR_TYPES = ["human", "runner", "intake"] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
 
 export interface Actor {
   type: ActorType;
-  /** A user id (human), an agent role such as `foreman`, a runner id, an intake source. */
+  /** A user id (human), a runner id (or a device login's fixed id), an intake source. */
   id: string;
 }
 
@@ -29,10 +16,7 @@ export const SURFACES = [
   "desktop",
   // The phone app (ADR 0541): a `mobile` token's kind sets it, nothing in a request does.
   "mobile",
-  "mcp",
   "runner-channel",
-  "workflow",
-  "cron",
   "connector",
   "test",
 ] as const;
@@ -45,8 +29,6 @@ export const isDeviceSurface = (s: Surface): s is DeviceSurface =>
 
 export interface Origin {
   surface: Surface;
-  workflowId?: string;
-  step?: string;
   /** Free-form request id from the surface, for correlating logs. */
   requestId?: string;
   /**
@@ -68,19 +50,8 @@ export interface Origin {
   presence?: { op: string; inputDigest: string; challengeId: string };
   /**
    * The runner channel's verified signing time (unix seconds) of a heartbeat or claim, which are not
-   * kept in the channel's idempotency store: a heartbeat not newer than the runner's last changes
-   * none of the runner's state (it only renews leases), and a claim signed before it gets an empty
-   * answer (ADR 0590). Set by the channel, never the caller.
+   * kept in the channel's idempotency store: one not newer than the runner's last changes none of
+   * the runner's state (ADR 0590). Set by the channel, never the caller.
    */
   signedAt?: number;
 }
-
-export const FOREMAN: Actor = { type: "agent", id: "foreman" };
-/** The pull (ADR 0491): starts released work under the active limit. Never reviewable by default. */
-export const SCHEDULER: Actor = { type: "scheduler", id: "pull" };
-/**
- * The babysitter's deliverer (spec 53, ADR 0580): engine code, no model, that lands approved merges
- * per repository. It acts with the item Workflow's actor type, so a merge approval's checks
- * (operation, actor type, work item, used once) hold for it unchanged.
- */
-export const BABYSITTER: Actor = { type: "agent", id: "babysitter" };

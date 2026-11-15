@@ -19,8 +19,8 @@ import {
 } from "../src/mainview/lib/account.ts";
 import { DRAG } from "../src/mainview/lib/title-bar.ts";
 import {
+  chooseOrg,
   getViewState,
-  togglePin,
   updateViewState,
   VIEW_STATE_KEY,
 } from "../src/mainview/lib/view-state.ts";
@@ -46,14 +46,14 @@ describe("clearAccountData", () => {
   it("leaves nothing the previous account read, only the app's session and update status", () => {
     const client = new QueryClient();
     client.setQueryData(["me"], { userId: "u_owner" });
-    client.setQueryData(["inbox"], { gates: [{ id: "g_owner" }] });
-    client.setQueryData(["workItem", "wi_owner"], { item: { title: "owner's item" } });
+    client.setQueryData(["inbox"], { items: [{ id: "fitm_owner" }] });
+    client.setQueryData(["flow", "item", "fitm_owner"], { item: { title: "owner's item" } });
     client.setQueryData(["session"], { signedIn: true, login: "other" });
     client.setQueryData(["update"], { required: false });
     clearAccountData(client);
     expect(client.getQueryData(["me"])).toBeUndefined();
     expect(client.getQueryData(["inbox"])).toBeUndefined();
-    expect(client.getQueryData(["workItem", "wi_owner"])).toBeUndefined();
+    expect(client.getQueryData(["flow", "item", "fitm_owner"])).toBeUndefined();
     expect(client.getQueryData(["session"])).toEqual({ signedIn: true, login: "other" });
     expect(client.getQueryData(["update"])).toEqual({ required: false });
   });
@@ -112,7 +112,7 @@ describe("switching accounts while signed in", () => {
   it("never renders a frame of the previous account's routes, and its data is gone", () => {
     const client = new QueryClient();
     client.setQueryData(["me"], { login: "owner" });
-    client.setQueryData(["workItem", "wi_owner"], { item: { title: "owner's item" } });
+    client.setQueryData(["flow", "item", "fitm_owner"], { item: { title: "owner's item" } });
     const run = drive(client, [A, B]);
     run.settle(B);
     // A's routes show only while A is the account rendered.
@@ -124,7 +124,7 @@ describe("switching accounts while signed in", () => {
     // Shown for B only under a new key, after the reload, and with B's data only.
     const shownB = run.frames.filter((f) => f.account === B && f.shown !== null);
     expect(shownB).toEqual([{ account: B, shown: 1, me: { login: B } }]);
-    expect(client.getQueryData(["workItem", "wi_owner"])).toBeUndefined();
+    expect(client.getQueryData(["flow", "item", "fitm_owner"])).toBeUndefined();
   });
 
   it("a reload that settles after yet another switch shows nothing for the stale one", () => {
@@ -150,10 +150,10 @@ describe("switching accounts while signed in", () => {
     expect(shownFor(gateLoaded(back.gate, 2), A)).toBe(2);
   });
 
-  it("forgets this Mac's state for the previous account: tabs, pins, org, drafts", () => {
-    updateViewState((s) => ({ ...togglePin(s, "wi_owner"), orgId: "org_owner" }));
+  it("forgets this Mac's state for the previous account: tabs, org, drafts", () => {
+    updateViewState((s) => chooseOrg(s, "org_owner"));
     const storage = memoryStorage({
-      [VIEW_STATE_KEY]: JSON.stringify({ pins: ["wi_owner"] }),
+      [VIEW_STATE_KEY]: JSON.stringify({ orgId: "org_owner" }),
       "sf-canvas-wi_owner": "{}",
       "sf-mentions-ed_1": "@owner",
       "sf-panel-width": "420",
@@ -166,7 +166,7 @@ describe("switching accounts while signed in", () => {
     clearAccountLocal(storage, session);
     expect(storage.keys()).toEqual(["sf-mockups", "sf-panel-width"]);
     expect(session.keys()).toEqual(["sf-other"]);
-    expect(getViewState()).toMatchObject({ pins: [], orgId: undefined });
+    expect(getViewState()).toMatchObject({ orgId: undefined });
     expect(getViewState().tabs.map((t) => t.path)).toEqual(["/"]);
   });
 });
@@ -196,32 +196,32 @@ describe("a signed-out refusal on the error screen", () => {
 describe("this Mac's account state belongs to one login", () => {
   const kept = () =>
     memoryStorage({
-      [VIEW_STATE_KEY]: JSON.stringify({ pins: ["wi_a"] }),
+      [VIEW_STATE_KEY]: JSON.stringify({ orgId: "org_a" }),
       "sf-canvas-wi_a": "{}",
     });
 
-  it("signing out and back in as the same login keeps tabs, pins and canvases", () => {
+  it("signing out and back in as the same login keeps tabs and the chosen org", () => {
     const storage = kept();
     const session = memoryStorage({ [openedDiffKey("u_a", "wi_a", "abc")]: "1" });
     expect(accountLogin("in:alice:dev_1")).toBe("alice");
     expect(accountLogin("out")).toBeNull();
     expect(claimAccountLocal("alice", storage, session)).toBe(false);
-    updateViewState((s) => togglePin(s, "wi_a"));
+    updateViewState((s) => chooseOrg(s, "org_a"));
     // Out, then in again: a new device id (signing out revokes the old one), the same login.
     expect(claimAccountLocal(accountLogin("in:alice:dev_2") ?? "", storage, session)).toBe(false);
     expect(storage.keys()).toEqual(["sf-account-owner", "sf-canvas-wi_a", VIEW_STATE_KEY].sort());
     expect(session.keys()).toHaveLength(1);
-    expect(getViewState().pins).toContain("wi_a");
+    expect(getViewState().orgId).toBe("org_a");
   });
 
   it("another login forgets them, and the diffs the first opened", () => {
     const storage = kept();
     const session = memoryStorage({ [openedDiffKey("u_a", "wi_a", "abc")]: "1" });
     claimAccountLocal("alice", storage, session);
-    updateViewState((s) => togglePin(s, "wi_a"));
+    updateViewState((s) => chooseOrg(s, "org_a"));
     expect(claimAccountLocal("bob", storage, session)).toBe(true);
     expect(storage.keys()).toEqual(["sf-account-owner"]);
     expect(session.keys()).toEqual([]);
-    expect(getViewState().pins).toEqual([]);
+    expect(getViewState().orgId).toBeUndefined();
   });
 });

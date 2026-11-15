@@ -1,23 +1,14 @@
-// How much the machine-frequency calls write (ADR 0590): an idle runner, a running job and an open
-// Planning tab, each for one of its cycles, measured in D1 rows written and audit rows, with the
-// changes-only audit on (now) and off (before). The ADR's per-day figures come from this test's log.
+// How much the machine-frequency calls write (ADR 0590): an idle runner's heartbeat and claim, for
+// one of its cycles, measured in D1 rows written and audit rows, with the changes-only audit on (now)
+// and off (before). A flow run's own calls never write the audit (packages/store).
 import { env } from "cloudflare:workers";
-import { getOperation, invoke } from "@software-factory/core";
+import { getOperation } from "@software-factory/core";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { invokeDeps } from "../src/deps.ts";
 import worker from "../src/index.ts";
-import { MANIFEST, ok, uid, type World, world } from "./helpers.ts";
+import { MANIFEST, uid, type World, world } from "./helpers.ts";
 
-const CHANGES_ONLY = [
-  "runner.heartbeat",
-  "job.claim",
-  "run.takeSteers",
-  "planning.presence",
-  "planning.wait",
-  "planning.news",
-  "run.reportEvents",
-];
+const CHANGES_ONLY = ["runner.heartbeat", "runner.claim"];
 
 /** A D1 binding that adds up `rows_written` from every statement and batch (D1's billed unit). */
 function meteredEnv(meter: { rows: number }): Env {
@@ -77,8 +68,6 @@ async function auditBytes(after: number): Promise<{ now: number; before: number 
 }
 
 let w: World;
-let seq = 0;
-let job: { jobId: string; fencingToken: number; workItemId: string };
 
 async function channel(e: Env) {
   return httpControlPlane({
@@ -102,52 +91,15 @@ const CYCLES: { name: string; seconds: number; run: (e: Env) => Promise<unknown>
       const c = await channel(e);
       await c.heartbeat({
         manifest: MANIFEST,
-        capacity: { max: 2, inUse: 1, accepting: true },
-        activeJobs: [{ jobId: job.jobId, fencingToken: job.fencingToken }],
+        capacity: { max: 2, inUse: 0, accepting: true },
+        activeJobs: [],
       });
       await c.claim({
         claimId: uid("claim-"),
         manifest: MANIFEST,
-        capacity: { max: 2, inUse: 1, accepting: true },
+        capacity: { max: 2, inUse: 0, accepting: true },
       });
     },
-  },
-  {
-    // runner-host: the held steer call, re-armed every 25 s per running job (3 takes per hold:
-    // the first read, the read after taking the hub's sequence, the read after the wait).
-    name: "running job (steer hold)",
-    seconds: 25,
-    run: async (e) =>
-      (await channel(e)).steers?.(job.jobId, { fencingToken: job.fencingToken, waitMs: 30 }),
-  },
-  {
-    // runner-host: a batch of logs every 3 s while the agent works (50 lines, ~120 bytes each).
-    name: "running job (log batch)",
-    seconds: 3,
-    run: async (e) =>
-      (await channel(e)).events(job.jobId, {
-        fencingToken: job.fencingToken,
-        events: Array.from({ length: 50 }, () => ({
-          type: "log" as const,
-          stream: "terminal" as const,
-          text: "x".repeat(120),
-          jobId: job.jobId,
-          seq: ++seq,
-          at: new Date().toISOString(),
-        })),
-      }),
-  },
-  {
-    // The app: planning.presence every 20 s while a Planning tab is open.
-    name: "open Planning tab",
-    seconds: 20,
-    run: (e) =>
-      invoke(
-        invokeDeps(e),
-        "planning.presence",
-        { workItemId: job.workItemId, open: true },
-        { actor: w.human, origin: { surface: "test" } },
-      ),
   },
 ];
 
@@ -178,28 +130,7 @@ function changesOnly(on: boolean) {
 describe("audit volume of machine-frequency calls (ADR 0590)", () => {
   beforeAll(async () => {
     w = await world();
-    const item = await ok<{ workItemId: string }>(
-      "workItem.create",
-      { state: "queued", projectId: w.projectId, title: "Volume" },
-      w.human,
-    );
-    const c = await channel(env);
-    for (let i = 0; i < 100 && !job; i++) {
-      const claimed = await c.claim({
-        claimId: uid("claim-"),
-        manifest: { ...MANIFEST, capabilities: [...MANIFEST.capabilities, "steer"] },
-        capacity: { max: 4, inUse: 0, accepting: true },
-      });
-      if (claimed.job) {
-        job = {
-          jobId: claimed.job.jobId,
-          fencingToken: claimed.job.lease.fencingToken,
-          workItemId: item.workItemId,
-        };
-      } else await new Promise((r) => setTimeout(r, 50));
-    }
-    if (!job) throw new Error("no job");
-    // A person's first arrival is a change; the steady state is what repeats.
+    // The first report is a change; the steady state is what repeats.
     for (const cycle of CYCLES) await cycle.run(env);
   });
   afterAll(() => changesOnly(true));
@@ -236,8 +167,8 @@ describe("audit volume of machine-frequency calls (ADR 0590)", () => {
     const beat = async (accepting: boolean) =>
       (await channel(env)).heartbeat({
         manifest: MANIFEST,
-        capacity: { max: 2, inUse: 1, accepting },
-        activeJobs: [{ jobId: job.jobId, fencingToken: job.fencingToken }],
+        capacity: { max: 2, inUse: 0, accepting },
+        activeJobs: [],
       });
     const before = await count();
     await beat(false);

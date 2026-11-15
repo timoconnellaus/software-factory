@@ -28,7 +28,7 @@ vi.mock("../src/bun/keychain.ts", () => ({
 }));
 
 const TAG = "com.software-factory.desktop.device-key";
-const MESSAGE = 'n0nce\nreview.merge\nabc\nMerge 3f2a91c into main of acme/widgets: "Fix"';
+const MESSAGE = "n0nce\nmobile.pairOffer\nabc\nAdd a phone to your account";
 
 /** A helper process the test finishes by hand. */
 function fakeProcess() {
@@ -74,11 +74,11 @@ describe("the key helper from the app", () => {
       { waiting: (s) => waiting.push(s) },
     );
     const sig = helper.sign(TAG, MESSAGE);
-    expect(helper.waitingFor).toBe('Merge 3f2a91c into main of acme/widgets: "Fix"');
+    expect(helper.waitingFor).toBe("Add a phone to your account");
     p.finish(0, "c2ln\n");
     expect(await sig).toBe("c2ln");
     expect(spawned).toEqual([["sign", TAG, Buffer.from(MESSAGE).toString("base64")]]);
-    expect(waiting).toEqual(['Merge 3f2a91c into main of acme/widgets: "Fix"', null]);
+    expect(waiting).toEqual(["Add a phone to your account", null]);
     expect(helper.waitingFor).toBeNull();
   });
 

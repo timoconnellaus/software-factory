@@ -1,18 +1,15 @@
-// Migrations that move data, run against a real D1 database that holds rows from before them.
+// Migrations that move or drop data, run against a real D1 database that holds rows from before them.
 import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const before = (n: number) => env.TEST_MIGRATIONS.filter((m) => Number.parseInt(m.name, 10) < n);
 const db = env.UPGRADE_DB;
-const NOW = "2026-11-12T00:00:00.000Z";
-const hex = (c: string) => c.repeat(32);
+const NOW = "2026-11-15T00:00:00.000Z";
 
-describe("migration 0260: a project is not a repository (ADR 0490)", () => {
+describe("migration 0438: the cutover drops the old pipeline's tables", () => {
   beforeAll(async () => {
-    await applyD1Migrations(db, before(260));
-    const P1 = `prj_${hex("a")}`;
-    const P2 = `prj_${hex("b")}`;
+    await applyD1Migrations(db, before(438));
     await db.batch([
       db
         .prepare(
@@ -22,6 +19,21 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
       db
         .prepare(
           "INSERT INTO core_organization (id, name, slug, created_at) VALUES ('o1', 'Personal', 'o1', ?)",
+        )
+        .bind(NOW),
+      db
+        .prepare(
+          "INSERT INTO core_member (id, organization_id, user_id, role, created_at) VALUES ('m1', 'o1', 'u1', 'owner', ?)",
+        )
+        .bind(NOW),
+      db
+        .prepare(
+          "INSERT INTO core_runners (id, owner_user_id, name, key_version, created_at) VALUES ('r_1', 'u1', 'M5', 1, ?)",
+        )
+        .bind(NOW),
+      db
+        .prepare(
+          "INSERT INTO core_runner_shares (runner_id, scope, scope_id, created_at) VALUES ('r_1', 'org', 'o1', ?)",
         )
         .bind(NOW),
       db
@@ -36,219 +48,46 @@ describe("migration 0260: a project is not a repository (ADR 0490)", () => {
         .bind(NOW),
       db
         .prepare(
-          `INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, default_branch,
-           github_installation_id, installation_record_id, github_repo_id, policy_pr_url, policy_sha, next_number, created_at, created_by)
-         VALUES (?, 'o1', 'fac_1', 'Factory', 'factory', 'acme', 'factory', 'trunk', '42', 'ghi_1', 7, 'https://x/pr/1', 'v2', 4, ?, 'u1')`,
+          "INSERT INTO core_outbox (id, at, kind, payload, next_at) VALUES ('ob_1', ?, 'workflow.create', '{}', ?), ('ob_2', ?, 'notify', '{}', ?)",
         )
-        .bind(P1, NOW),
+        .bind(NOW, NOW, NOW, NOW),
       db
         .prepare(
-          `INSERT INTO core_projects (id, org_id, factory_id, name, slug, repo_owner, repo_name, policy_sha, created_at, created_by)
-         VALUES (?, 'o1', 'fac_1', 'Site', 'site', 'acme', 'site', 'v1', ?, 'u1')`,
-        )
-        .bind(P2, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_project_policies (project_id, sha, ref, raw, valid, received_at, version, source) VALUES (?, 'v2', 'app', '{}', 1, ?, 2, 'app')",
-        )
-        .bind(P1, NOW),
-      db
-        .prepare(
-          `INSERT INTO core_project_policies (project_id, sha, ref, raw, valid, received_at, version, source)
-           VALUES (?, 'v1', 'app', '{"version":1,"workflows":[{"name":"Ship","slots":{}}]}', 1, ?, 1, 'app')`,
-        )
-        .bind(P2, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_project_protection (project_id, state, problems, warnings, trigger, checked_at, changed_at) VALUES (?, 'ok', '[]', '[]', 'daily', ?, ?)",
-        )
-        .bind(P1, NOW, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_config_trials (id, project_id, base_sha, candidate_sha, kind, summary, target_items, created_by, created_at) VALUES ('trl_1', ?, 'v1', 'v2', 'practice', 's', 3, 'u1', ?)",
-        )
-        .bind(P1, NOW),
-      db
-        .prepare(
-          `INSERT INTO core_work_items (id, org_id, project_id, workflow_id, number, slug, title, requester_user_id, source, branch, created_at, updated_at)
-         VALUES ('wi_1', 'o1', ?, 'wi_1', 3, 'x', 'Fix it', 'u1', 'app', 'factory/3-x', ?, ?)`,
-        )
-        .bind(P1, NOW, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_stages (id, work_item_id, stage, attempt, status, started_at) VALUES ('stg_1', 'wi_1', 'intake', 1, 'done', ?)",
+          `INSERT INTO core_audit (id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input)
+           VALUES ('au_1', ?, 'runner.register', 'write', 'human', 'u1', '{}', 'allow', 'ok', '{}')`,
         )
         .bind(NOW),
-      db
-        .prepare(
-          "INSERT INTO core_merge_queue (id, project_id, work_item_id, approved_sha, head_sha, enqueued_at, updated_at) VALUES ('mq_1', ?, 'wi_1', 'abc', 'abc', ?, ?)",
-        )
-        .bind(P1, NOW, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_verify_checks (project_id, head_sha, work_item_id, status, title, updated_at) VALUES (?, 'abc', 'wi_1', 'queued', 't', ?)",
-        )
-        .bind(P1, NOW),
-      db
-        .prepare(
-          "INSERT INTO core_attachments (id, work_item_id, org_id, project_id, filename, content_type, size_bytes, sha256, blob_key, uploader_type, uploader_id, created_at) VALUES ('att_1', 'wi_1', 'o1', ?, 'a.png', 'image/png', 1, 'x', 'k', 'human', 'u1', ?)",
-        )
-        .bind(P1, NOW),
     ]);
     await applyD1Migrations(db, env.TEST_MIGRATIONS);
   });
 
-  it("gives each project exactly one repository with its repo fields", async () => {
-    const { results } = await db
-      .prepare("SELECT * FROM core_repositories ORDER BY name")
-      .all<Record<string, unknown>>();
-    expect(results).toEqual([
-      expect.objectContaining({
-        id: `repo_${hex("a")}`,
-        org_id: "o1",
-        project_id: `prj_${hex("a")}`,
-        owner: "acme",
-        name: "factory",
-        default_branch: "trunk",
-        github_installation_id: "42",
-        installation_record_id: "ghi_1",
-        github_repo_id: 7,
-        policy_pr_url: "https://x/pr/1",
-      }),
-      expect.objectContaining({
-        id: `repo_${hex("b")}`,
-        project_id: `prj_${hex("b")}`,
-        name: "site",
-        default_branch: "main",
-        github_installation_id: null,
-      }),
-    ]);
+  it("keeps the platform's rows: people, orgs, runners and their shares, installations, the journal", async () => {
+    const count = async (table: string) =>
+      (await db.prepare(`SELECT count(*) AS n FROM ${table}`).first<number>("n")) as number;
+    for (const table of [
+      "core_user",
+      "core_organization",
+      "core_member",
+      "core_runners",
+      "core_runner_shares",
+      "core_github_installations",
+      "core_audit",
+    ]) {
+      expect(await count(table), table).toBe(1);
+    }
   });
 
-  it("keeps project ids, numbers and config versions (the repo columns stay until a later drop)", async () => {
-    const project = await db
+  it("drops the old tables and the outbox rows nothing delivers any more", async () => {
+    const gone = await db
       .prepare(
-        "SELECT id, name, slug, policy_sha, next_number, repo_owner FROM core_projects WHERE id = ?",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('core_projects', 'core_factories', 'core_work_items', 'core_jobs', 'core_audit_archives')",
       )
-      .bind(`prj_${hex("a")}`)
-      .first<Record<string, unknown>>();
-    expect(project).toEqual({
-      id: `prj_${hex("a")}`,
-      name: "Factory",
-      slug: "factory",
-      policy_sha: "v2",
-      next_number: 4,
-      repo_owner: "acme",
-    });
-  });
-
-  it("keeps every row that references projects, with no dangling foreign key", async () => {
-    const count = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n;
-    expect(await count("SELECT count(*) AS n FROM core_project_policies")).toBe(3);
-    expect(await count("SELECT count(*) AS n FROM core_project_protection")).toBe(1);
-    expect(await count("SELECT count(*) AS n FROM core_stages")).toBe(1);
-    expect(await count("SELECT count(*) AS n FROM core_config_trials")).toBe(1);
-    expect(await count("SELECT count(*) AS n FROM core_merge_queue")).toBe(1);
-    expect(await count("SELECT count(*) AS n FROM core_verify_checks")).toBe(1);
-    expect(await count("SELECT count(*) AS n FROM core_attachments")).toBe(1);
+      .all();
+    expect(gone.results).toEqual([]);
+    const outbox = await db.prepare("SELECT id FROM core_outbox ORDER BY id").all<{ id: string }>();
+    expect(outbox.results.map((r) => r.id)).toEqual(["ob_2"]);
     expect(
-      await count("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'core_0260_%'"),
-    ).toBe(0);
-    expect(await count("SELECT count(*) AS n FROM core_repositories")).toBe(2);
-    // Every foreign key holds after the migrations (a deferred check can't hide an orphan).
-    expect((await db.prepare("PRAGMA foreign_key_check").all()).results).toEqual([]);
-  });
-
-  it("points every work item and verify check at its project's repository", async () => {
-    const check = await db
-      .prepare("SELECT repository_id FROM core_verify_checks WHERE head_sha = 'abc'")
-      .first();
-    expect(check).toEqual({ repository_id: `repo_${hex("a")}` });
-    const item = await db
-      .prepare("SELECT project_id, repository_id FROM core_work_items WHERE id = 'wi_1'")
-      .first();
-    expect(item).toEqual({ project_id: `prj_${hex("a")}`, repository_id: `repo_${hex("a")}` });
-  });
-
-  it("enforces one project per GitHub repository and the projects foreign key", async () => {
-    await expect(
-      db
-        .prepare(
-          "INSERT INTO core_repositories (id, org_id, project_id, owner, name, created_at, created_by) VALUES ('repo_x', 'o1', ?, 'acme', 'factory', ?, 'u1')",
-        )
-        .bind(`prj_${hex("b")}`, NOW)
-        .run(),
-    ).rejects.toThrow(/UNIQUE/);
-    await expect(
-      db
-        .prepare(
-          "INSERT INTO core_repositories (id, org_id, project_id, owner, name, created_at, created_by) VALUES ('repo_y', 'o1', 'prj_nope', 'acme', 'other', ?, 'u1')",
-        )
-        .bind(NOW)
-        .run(),
-    ).rejects.toThrow(/FOREIGN KEY/);
-  });
-});
-
-describe("migration 0261: backlog, ready, queued (ADR 0491)", () => {
-  it("names a project's only workflow in a new config version, and leaves the others (ADR 0492)", async () => {
-    const site = await db
-      .prepare(
-        "SELECT p.policy_sha, pp.raw, pp.source, pp.parent_version FROM core_projects p JOIN core_project_policies pp ON pp.project_id = p.id AND pp.sha = p.policy_sha WHERE p.id = ?",
-      )
-      .bind(`prj_${hex("b")}`)
-      .first<{ policy_sha: string; raw: string; source: string; parent_version: number }>();
-    expect(site).toMatchObject({ policy_sha: "v2", source: "migrated", parent_version: 1 });
-    expect(JSON.parse(site?.raw ?? "{}")).toMatchObject({ workflow: "Ship" });
-    // A config with no workflows is left as it was.
-    const factory = await db
-      .prepare("SELECT policy_sha FROM core_projects WHERE id = ?")
-      .bind(`prj_${hex("a")}`)
-      .first<{ policy_sha: string }>();
-    expect(factory?.policy_sha).toBe("v2");
-    expect(
-      (
-        await db
-          .prepare("SELECT count(*) AS n FROM core_project_policies WHERE project_id = ?")
-          .bind(`prj_${hex("a")}`)
-          .first<{ n: number }>()
-      )?.n,
-    ).toBe(1);
-  });
-
-  it("keeps every item, its merge-queue entry and attachments, and adds the new states", async () => {
-    // UPGRADE_DB was migrated to the latest in the 0210 block above, with rows from before 0210.
-    const item = await db
-      .prepare(
-        "SELECT status, priority, rank, repository_id, pulled_at FROM core_work_items WHERE id = 'wi_1'",
-      )
-      .first();
-    expect(item).toEqual({
-      status: "running",
-      priority: 2,
-      rank: 0,
-      repository_id: `repo_${hex("a")}`,
-      pulled_at: null,
-    });
-    expect(
-      (await db.prepare("SELECT count(*) AS n FROM core_merge_queue").first<{ n: number }>())?.n,
-    ).toBe(1);
-    expect(
-      (await db.prepare("SELECT count(*) AS n FROM core_attachments").first<{ n: number }>())?.n,
-    ).toBe(1);
-    await db.prepare("UPDATE core_work_items SET status = 'backlog' WHERE id = 'wi_1'").run();
-    await expect(
-      db.prepare("UPDATE core_work_items SET status = 'someday' WHERE id = 'wi_1'").run(),
-    ).rejects.toThrow(/CHECK/);
-    // Stages are the workflow's, not the schema's: a workflow-defined stage needs no migration.
-    await db.prepare("UPDATE core_work_items SET stage = 'review' WHERE id = 'wi_1'").run();
-    await expect(
-      db
-        .prepare(
-          "INSERT INTO core_work_item_links (work_item_id, waits_for_id, created_at, created_by) VALUES ('wi_1', 'wi_1', ?, 'u1')",
-        )
-        .bind(NOW)
-        .run(),
-    ).rejects.toThrow(/CHECK/);
+      await db.prepare("SELECT value FROM core_meta WHERE key = 'schema_version'").first("value"),
+    ).toBe("438");
   });
 });

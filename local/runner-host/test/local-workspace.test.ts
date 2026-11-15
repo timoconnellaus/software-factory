@@ -4,10 +4,9 @@
 // host's clone, made once and kept. Incident 2026-11-11 (#5) was a second registration per job.
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_POINTER, readLaunchRecord } from "@software-factory/harness-claude";
 import { RESULT_FILE, type RepoJob } from "@software-factory/runner-contract";
 import {
@@ -117,12 +116,12 @@ describe("workspace resolution (ADR 0260, amended)", { timeout: 30_000 }, () => 
     const before = ownerState(owner);
 
     for (let n = 1; n <= 3; n++) {
-      const j = job({ jobId: `job_${n}`, runNo: n, branch: `factory/7-add-a-line-run-${n}` });
+      const j = job({ jobId: `job_${n}`, runNo: n, branch: `factory/flow-acm-${n}` });
       const { existing, checkout, ws } = await cycle(w, j);
       expect(existing).toBe(owner);
       expect(checkout).toBe(owner);
       expect(ws.path.startsWith(owner)).toBe(false); // its own worktree, not the owner's checkout
-      expect(ws.baseSha).toBe(git(w.bare, "rev-parse", "factory/7-add-a-line"));
+      expect(ws.baseSha).toBe(git(w.bare, "rev-parse", "main"));
       // Released: the worktree and run branch are gone.
       expect(existsSync(ws.path)).toBe(false);
       expect(git(owner, "branch", "--list", j.branch)).toBe("");
@@ -133,8 +132,8 @@ describe("workspace resolution (ADR 0260, amended)", { timeout: 30_000 }, () => 
     // config; no FETCH_HEAD.
     expect(ownerState(owner)).toEqual(before);
     // The item branch landed in the host's own namespace only.
-    expect(git(owner, "rev-parse", `${FETCH_NAMESPACE}/factory/7-add-a-line`)).toBe(
-      git(w.bare, "rev-parse", "factory/7-add-a-line"),
+    expect(git(owner, "rev-parse", `${FETCH_NAMESPACE}/main`)).toBe(
+      git(w.bare, "rev-parse", "main"),
     );
     // The job token never lands in the checkout's git dir.
     for (const file of await gitFiles(join(owner, ".git"))) {
@@ -145,7 +144,7 @@ describe("workspace resolution (ADR 0260, amended)", { timeout: 30_000 }, () => 
   it("with no checkout for the remote: clones once and keeps it", async () => {
     const w = await world({ ownerCheckout: false });
     for (let n = 1; n <= 3; n++) {
-      const j = job({ jobId: `job_${n}`, runNo: n, branch: `factory/7-add-a-line-run-${n}` });
+      const j = job({ jobId: `job_${n}`, runNo: n, branch: `factory/flow-acm-${n}` });
       const { existing, checkout, ws } = await cycle(w, j);
       expect(existing).toBeNull(); // the host's clone is never a "checkout" match
       expect(checkout).toBe(w.host.clonePath(j));
@@ -156,7 +155,7 @@ describe("workspace resolution (ADR 0260, amended)", { timeout: 30_000 }, () => 
     expect(config).not.toContain(TOKEN);
   });
 
-  it("runJob end to end: builds in the owner's checkout and pushes only the run branch", async () => {
+  it("runJob end to end: works in the owner's checkout and pushes only the item's branch", async () => {
     const w = await world({
       tmux: {
         onPrompt: (s, append) => {
@@ -204,12 +203,12 @@ describe("a stream-json session through runJob (spec 37, ADR 0450)", { timeout: 
       { mode: 0o755 },
     );
     const w = await world({
-      local: { session: "stream-json", claudeBin, turnGraceMs: 200, waitingInputTimeoutMs: 20_000 },
+      local: { session: "stream-json", claudeBin, waitingInputTimeoutMs: 20_000 },
     });
     return { ...w, stdinLog };
   }
 
-  it("builds end to end: the prompt as JSON, events from the stream, the run branch pushed", async () => {
+  it("runs end to end: the prompt as JSON, events from the stream, the item's branch pushed", async () => {
     const w = await streamWorld();
     const cloud = fakeCloud();
     const cp = await controlPlane(cloud);
@@ -227,46 +226,6 @@ describe("a stream-json session through runJob (spec 37, ADR 0450)", { timeout: 
     const first = JSON.parse((await readFile(w.stdinLog, "utf8")).split("\n")[0] ?? "{}");
     expect(first).toMatchObject({ type: "user", message: { content: PROMPT_POINTER } });
     expect(w.tmux.calls.some((c) => c.includes("new-session"))).toBe(false);
-  });
-
-  it("takes the session over when the dashboard asks, and hands back when the terminal session ends", async () => {
-    const w = await streamWorld({ firstTurnMs: 10_000 });
-    const cloud = fakeCloud();
-    const cp = await controlPlane(cloud);
-    const j = job();
-    cloud.claims.set("c", j);
-    const running = runJob({ adapter: w.adapter, cp, git: w.host, job: j, flushMs: 5 });
-    // Once the session is up, the owner asks for a takeover (run.takeover's row).
-    const seen = async (type: string) => {
-      for (let i = 0; i < 500; i++) {
-        const found = (cloud.events.get(j.jobId) ?? []).find((e) => e.type === type);
-        if (found) return found;
-        await sleep(20);
-      }
-      throw new Error(`no ${type} event`);
-    };
-    await seen("tool");
-    cloud.steers.set(j.jobId, [
-      { id: "st_t", text: "", at: new Date().toISOString(), kind: "takeover" },
-    ]);
-    const handed = (await seen("takeover")) as { hint: string; sessionId: string };
-    expect(handed.hint).toContain(`--resume ${handed.sessionId}`);
-    // The person resumes it in the worktree, commits, and quits: the projected status hook
-    // reports the session.
-    const worktree = /# runs: cd (\S+) && /.exec(handed.hint)?.[1] as string;
-    expect(existsSync(worktree)).toBe(true);
-    await appendFile(join(worktree, "README.md"), "by hand\n");
-    git(worktree, "-c", "user.name=p", "-c", "user.email=p@x.invalid", "commit", "-qam", "by hand");
-    const statusFile = join(w.root, "runs", j.jobId, "status.jsonl");
-    await appendFile(
-      statusFile,
-      `${JSON.stringify({ event: "SessionStart", time: Date.now() })}\n`,
-    );
-    await appendFile(statusFile, `${JSON.stringify({ event: "SessionEnd", time: Date.now() })}\n`);
-    const report = await running;
-    expect(report.outcome).toBe("completed");
-    expect(report.handedBack).toBe(true);
-    expect(report.headSha).toBe(git(w.bare, "rev-parse", j.branch));
   });
 });
 

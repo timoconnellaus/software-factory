@@ -12,8 +12,8 @@ Today that is:
 
 | Worker | Folder | Public | Notes |
 | --- | --- | --- | --- |
-| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). The Worker Loader binding `LOADER` (plugins as Dynamic Workers; Workers Paid plan; see "The new core's plugins" below). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `FLOW_GATEWAY_KEY` |
-| `sf-app` | `apps/app` | `software-factory.zerobsai.com` | Dashboard (TanStack Start, built with `vite build` before `wrangler deploy`), GitHub sign-in. D1 `software-factory` (Better Auth tables), service binding `ENGINE` → `sf-engine#EngineApi`. Secrets `BETTER_AUTH_SECRET`, `GH_APP_CLIENT_SECRET`; var `ALLOWED_GITHUB_LOGINS` |
+| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel, client door, `/health`) | Every operation (RPC for `sf-app`), the runner channel, the client door, the GitHub webhook, the new core's MCP server and plugin triggers, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The Durable Object `ClientHub`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). The Worker Loader binding `LOADER` (plugins as Dynamic Workers; Workers Paid plan; see "The new core's plugins" below). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `GH_APP_WEBHOOK_SECRET`, `FLOW_GATEWAY_KEY` |
+| `sf-app` | `apps/app` | `software-factory.zerobsai.com` | GitHub sign-in, the device connect pages and the GitHub App's setup redirect (TanStack Start, built with `vite build` before `wrangler deploy`). D1 `software-factory` (Better Auth tables), service binding `ENGINE` → `sf-engine#EngineApi`. Secrets `BETTER_AUTH_SECRET`, `GH_APP_CLIENT_SECRET`; var `ALLOWED_GITHUB_LOGINS` |
 
 A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
 deploys. Workers deploy in dependency order: a Worker that another binds to with a service
@@ -183,9 +183,8 @@ Webhook URL `https://software-factory.zerobsai.com/webhooks/github` (a Workers r
 front of sf-app's domain; the deploy token needs Zone → Workers Routes: Edit), secret
 `GH_APP_WEBHOOK_SECRET` (synced to sf-engine). Permissions: contents and pull requests (write),
 checks (write), administration (**read only**: write would let the App delete repositories, ADR
-0280), metadata (read). Events: pull request, check suite, check run, push, installation,
-installation repositories, repository ruleset, branch protection rule (`APP_REQUIREMENTS` in
-`packages/connector-github`).
+0280), metadata (read). Events: the engine reads installation and installation repositories
+(`apps/engine/src/webhooks.ts`); it acknowledges and ignores every other event.
 
 ## The desktop app's releases
 `.github/workflows/desktop-release.yml` (spec 40 M4) builds, signs, notarizes and uploads the macOS
@@ -292,6 +291,6 @@ node scripts/deploy/deploy.ts                # provision + migrate + deploy ever
   PR a URL, but a preview version uses the production bindings, so it would read and write the
   production D1. It waits for separate preview resources.
 - **Secrets on the Workers** are synced by the deploy job from repo secrets with
-  `wrangler secret bulk`: `sf-app` gets the Better Auth and GitHub App secrets; `sf-engine` gets
-  `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` and `FLOW_GATEWAY_KEY`. Unset ones are skipped, and the engine degrades
+  `wrangler secret bulk`: `sf-app` gets `BETTER_AUTH_SECRET` and `GH_APP_CLIENT_SECRET`; `sf-engine` gets
+  `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `GH_APP_WEBHOOK_SECRET` and `FLOW_GATEWAY_KEY`. Unset ones are skipped, and the engine degrades
   (the runner channel answers 503) instead of failing to deploy.

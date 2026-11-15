@@ -3,15 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Operations registry, the invoke() pipeline and gate, autonomy policy + floor, model roles, the work-item model.",
+  "description": "The platform operations (sign-in doors, devices and presence proofs, runners, orgs, the GitHub connection), the operations registry and the invoke() pipeline.",
   "exports": {
     ".": "./src/index.ts",
-    "./attachments": "./src/attachments.ts",
-    "./attachment-rules": "./src/attachment-rules.ts",
-    "./audit-chain": "./src/audit-chain.ts",
-    "./policy-gate": "./src/policy/gate.ts",
-    "./proof": "./src/verify/proof.ts",
-    "./stages": "./src/stages/index.ts",
     "./testing": "./src/testing/index.ts"
   },
   "scripts": {

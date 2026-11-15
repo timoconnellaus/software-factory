@@ -162,18 +162,6 @@ export function parseTranscript(jsonl: string): TranscriptSummary {
   };
 }
 
-const CHECK = /\b(test|tests|vitest|jest|lint|biome|eslint|typecheck|tsc|check)\b/;
-
-/** The check commands (tests, lint, typecheck) and their output, as one log. */
-export function checkOutputLog(summary: TranscriptSummary, maxChars = 200_000): string | null {
-  const runs = summary.commands.filter((c) => CHECK.test(c.command));
-  if (runs.length === 0) return null;
-  const body = runs
-    .map((r) => `$ ${r.command}${r.isError ? "   [exit ≠ 0]" : ""}\n${r.output.trim()}\n`)
-    .join("\n");
-  return body.length > maxChars ? `…${body.slice(-maxChars)}` : body;
-}
-
 export async function readTranscript(path: string): Promise<TranscriptSummary> {
   return parseTranscript(await readFile(path, "utf8"));
 }

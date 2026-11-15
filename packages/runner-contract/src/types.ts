@@ -13,9 +13,7 @@
 // Runtime-neutral: no Node APIs, so the cloud (Workers) and the host (Node) share it. Wire shapes are
 // zod schemas in ./wire.ts; the types here that cross the wire are inferred from them.
 import type { z } from "zod";
-import type { TerminalSize } from "./terminal.ts";
 import type {
-  AttachmentMeta,
   artifactSchema,
   capabilityManifestSchema,
   capacitySchema,
@@ -55,29 +53,18 @@ export const CONTRACT_VERSION = "1" as const;
 export const RUNNER_COMPAT = 1;
 
 /**
- * Optional things a runner can do beyond the core lifecycle (names from CONTEXT.md, Capability).
- * - `browser`: can open a URL in a browser it controls and take screenshots (visual evidence).
- * - `ui-takeover`: a person can attach to the live session in the runner's own UI and steer it.
- * - `auto-register`: sessions the runner starts outside the factory join it automatically.
- * - `hooks`: the harness session runs with the factory's hooks (claim-before-write, heartbeat).
- * - `headless`: runs with no desktop UI (a server, CI, a dev box).
- * - `own-hardware`: the runner is a machine its owner controls (client repos may require it).
- * - `work-item-attachments`: fetches the work item's attachments over the channel into the run's
- *   workspace, outside the git tree, and tells the agent where they are (ADR 0310). A runner
- *   without it still runs every job; its agent just sees no attachments.
- * - `steer`: a person can send a message into the live session from the dashboard (ADR 0400). The
- *   host keeps the channel's `steer` call open while the session runs and calls `adapter.steer`.
- * - `interrupt`: with `steer`, the adapter can stop the agent's current step and submit a line
- *   (`adapter.interrupt`: Escape, then the line), for a person's interrupt in planning (ADR 0470).
- * - `chat`: sessions run as a structured two-way stream (Claude Code's stream-json, ADR 0450): the
- *   events carry tool results and turn ends, the dashboard shows the run as a chat, and the owner
- *   can take a session over in a terminal by resuming it (`run.takeover`, `adapter.takeover`).
- * - `container-isolation`: each job's harness runs in its own container: only the job's repo
- *   mounted, no host credentials, an egress allowlist (ADR 0430). Planning sessions still run on
- *   the host, so a policy should require it for the other stages only.
- * - `terminal`: the live session's terminal can be bridged to the dashboard's web terminal
- *   (ADR 0440). The host keeps the channel's `terminal` call open while the session runs and, when
- *   someone watches, relays `adapter.openTerminal` over a WebSocket to the job's relay.
+ * Capability names a runner may declare. What this code declares (names from CONTEXT.md, Capability):
+ * - `hooks`: the harness session runs with the factory's hooks (status from Claude Code's hooks).
+ * - `ui-takeover`: a person can attach to the live session on the runner's own machine (tmux).
+ * - `own-hardware`: the runner is a machine its owner controls.
+ * - `chat`: sessions run as a structured stream (Claude Code's stream-json, ADR 0450): the events
+ *   carry tool results and turn ends (the run view's steps and token counts).
+ * - `flow`: the runner host runs a `flow` job, the new core's run (spec 70). A flow run is offered
+ *   only to a runner that declares it.
+ *
+ * The others were the old pipeline's (spec 70 milestone 5 removed it). They stay in the list only
+ * so that a runner still on older code, which declares them, is not refused by the engine's schema
+ * before it has updated itself (ADR 0520: an enum may only grow). Nothing acts on them.
  */
 export const CAPABILITIES = [
   "browser",
@@ -92,30 +79,10 @@ export const CAPABILITIES = [
   "container-isolation",
   "interrupt",
   "terminal",
-  /**
-   * The runner host runs the project's checks a job carries and reports them on the hand-back
-   * (ADR 0501). A job with checks is placed only on a runner that declares it (ADR 0520's
-   * compatibility rule): an older runner would drop the field and hand back with none.
-   */
   "checks",
   "cloud-sandbox",
-  /**
-   * The runner host runs a `babysit` job (spec 53 §4, ADR 0620): it prepares, merges the default
-   * branch into and pushes a conflict job's run branch (`pushesRunBranch`). A babysit job is placed
-   * only on a runner that declares it: an older host would read the stage as unknown.
-   */
   "babysit",
-  /**
-   * The runner host keeps one hibernatable WebSocket per running job to the job's relay, the job
-   * line (spec 44 part B, ADR 0592), and makes its steer, terminal and planning calls when the line
-   * says so instead of holding them. Used only when the engine's heartbeat also declares it.
-   */
   "job-line",
-  /**
-   * The runner host runs a `flow` job, the new core's run (spec 70): no repository, no branch, a
-   * plain folder. A flow run is offered only to a runner that declares it: an older host would
-   * read the stage as unknown and try to clone.
-   */
   "flow",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
@@ -129,56 +96,21 @@ export const MODEL_ROLES = ["triage", "implement", "review", "summarise"] as con
 export type ModelRole = (typeof MODEL_ROLES)[number];
 
 /**
- * Stages that run on a runner. `spec` is V1's one-shot spec run (Workflow v1–v4); `planning` is the
- * live, resumable planning session (ADR 0300, Workflow v5).
+ * The one stage that runs on a runner: `flow` (spec 70, ADR 0660), an agent-owned status in the new
+ * core. It may have no repository (writing, research): no repo, branch, token or push; the session
+ * works in a plain directory. Either way it hands back `flowResultSchema`.
  */
-/** `babysit` (spec 53, ADR 0583): the babysitter's judgement job, woken by the deliverer. */
-/**
- * `flow` (spec 70, ADR 0660): an agent-owned status in the new core. It may have no repository
- * (writing, research, triage): no repo, branch, token, push or checks; the session works in a
- * plain directory and hands back `flowResultSchema`.
- */
-export const JOB_STAGES = [
-  "triage",
-  "spec",
-  "planning",
-  "build",
-  "verify",
-  "babysit",
-  "flow",
-] as const;
+export const JOB_STAGES = ["flow"] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
-
-/** Runner capacity pools (ADR 0301): heavy runs the test suite, light mostly reads and waits. */
-export const POOLS = ["heavy", "light"] as const;
-export type Pool = (typeof POOLS)[number];
-
-/** The pool a stage's job takes a slot in (ADR 0301). */
-export function stagePool(stage: JobStage): Pool {
-  return stage === "build" || stage === "verify" ? "heavy" : "light";
-}
-
-/**
- * Permission modes a project may give a stage's harness (ADR 0270). No mode that prompts a person
- * (`default`/`manual`) and no `auto` (a model classifier decides, not the project's rules).
- * `bypassPermissions` only ever runs inside the harness's OS sandbox.
- */
-export const HARNESS_PERMISSION_MODES = [
-  "dontAsk",
-  "acceptEdits",
-  "bypassPermissions",
-  "plan",
-] as const;
-export type HarnessPermissionMode = (typeof HARNESS_PERMISSION_MODES)[number];
 
 export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
 export type CapacityPaused = NonNullable<Capacity["paused"]>;
 export type Job = z.infer<typeof jobSchema>;
-/** A job with a repository and its run branch: every job but a `flow` job that has none. */
+/** A `flow` job with a repository and its item's branch. */
 export type RepoJob = Job & { repo: NonNullable<Job["repo"]>; branch: string };
 
-/** Whether the job works in a repository (every stage but a `flow` job without one). */
+/** Whether the job works in a repository. */
 export function hasRepo(job: Job): job is RepoJob {
   return job.repo !== undefined && job.branch !== undefined;
 }
@@ -187,36 +119,12 @@ export type Artifact = z.infer<typeof artifactSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;
 export type Handback = z.infer<typeof handbackSchema>;
 
-/** A work item attachment the host fetched for a run (ADR 0310). Untrusted data. */
-export interface AttachmentFile {
-  meta: AttachmentMeta;
-  bytes: Uint8Array;
-}
-
-/**
- * The runner host's local relay for a planning job (ADR 0350): the harness's planning MCP server
- * and hooks call it with the bearer token, and the host signs the call onto the channel with the
- * job's id and fencing token. The runner key never leaves the host.
- */
-export interface PlanningRelay {
-  /** `http://127.0.0.1:<port>`. */
-  url: string;
-  /** Per-job secret; grants that job's planning operations and nothing else. */
-  token: string;
-}
-
-/** What the host gives an adapter beyond the job itself. */
-export interface PrepareOptions {
-  /** For a `planning` job: where its harness reaches the planning operations. */
-  planningRelay?: PlanningRelay;
-}
-
 /** What an adapter returns from prepareWorkspace. Adapters may extend it with private fields. */
 export interface WorkspaceHandle {
   jobId: string;
   /** Absolute path of the checkout on the runner host. */
   path: string;
-  /** The branch actually checked out. Must equal `job.branch`: one branch per run (ADR 0035). */
+  /** The branch actually checked out. Must equal `job.branch` (empty for a job without a repo). */
   branch: string;
   /** The commit the workspace started from; diffs are taken against it. */
   baseSha: string;
@@ -224,7 +132,7 @@ export interface WorkspaceHandle {
 
 /**
  * How a session runs (ADR 0450): `terminal`, an interactive TUI in a terminal (tmux); `stream`, a
- * structured two-way stream (stream-json) the dashboard shows as a chat.
+ * structured stream (stream-json) whose events carry tool results and token counts.
  */
 export const SESSION_MODES = ["terminal", "stream"] as const;
 export type SessionMode = (typeof SESSION_MODES)[number];
@@ -286,8 +194,6 @@ export type AdapterEvent =
       usage?: TurnUsage;
       error?: string;
     }
-  /** A stream session stopped so a person can resume it in a terminal (ADR 0450). */
-  | { type: "takeover"; sessionId: string; hint: string }
   | { type: "session.ended"; outcome: SessionOutcome; summary?: string };
 
 /**
@@ -314,7 +220,7 @@ export interface RunnerAdapter<
    * `resolveCheckout` named, or the host's clone when there was none. It never registers a second
    * checkout for a repo the runner already has, and never touches the checkout's own working tree.
    */
-  prepareWorkspace(job: Job, signal: AbortSignal, options?: PrepareOptions): Promise<W>;
+  prepareWorkspace(job: Job, signal: AbortSignal): Promise<W>;
   startSession(job: Job, workspace: W, signal: AbortSignal): Promise<S>;
   /** Yields until the session ends; the last event is `session.ended`. */
   events(job: Job, session: S, signal: AbortSignal): AsyncIterable<AdapterEvent>;
@@ -326,114 +232,6 @@ export interface RunnerAdapter<
    * host then doesn't report the job released.
    */
   release(job: Job, workspace: W | undefined, session: S | undefined): Promise<void>;
-  /**
-   * Optional, with the `work-item-attachments` capability (ADR 0310): put the work item's files
-   * into the run, outside the git tree, and return the text to add to the prompt (labelled
-   * untrusted data). Called after prepareWorkspace and before startSession.
-   */
-  attachFiles?(job: Job, workspace: W, files: AttachmentFile[]): Promise<string>;
-  /**
-   * Optional: send a person's message into the live session (ADR 0400). `text` is already
-   * sanitised and one line (`steerText`). Declare the `steer` capability to get steers.
-   */
-  steer?(session: S, text: string): Promise<void>;
-  /**
-   * Optional (ADR 0501): run one check command under the job's isolation (in a container, for a
-   * containerised runner) and return its exit code and combined output. `dir` is a clean copy of
-   * the commit being checked, made by the host (no ignored files, no git dir): the command runs
-   * there, never in the session's workspace. Without `exec` the host runs checks only under its
-   * own OS sandbox, and where it has none it reports them not run. Must honour `timeoutMs` and
-   * `signal` (exitCode null, timedOut true on a timeout).
-   */
-  exec?(
-    job: Job,
-    workspace: W,
-    command: { run: string; timeoutMs: number; dir: string },
-    signal: AbortSignal,
-  ): Promise<ExecResult>;
-  /**
-   * Optional (ADR 0501): the adapter's own tamper check of the workspace's git dir, run by the host
-   * before any host git command that follows code the job ran (the checks, a fix round). Returns
-   * what it found (empty when untouched); anything found fails the job without a push.
-   */
-  checkWorkspace?(job: Job, workspace: W): Promise<string[]>;
-  /**
-   * Optional (ADR 0501): after `session.ended`, give the same session another turn with `text`
-   * (a failing check's command, exit code and log tail) and report that turn, ending with its own
-   * `session.ended`. Only for an adapter whose session is still alive after its turn; without it
-   * the host hands a failing check to a person.
-   */
-  continueSession?(
-    job: Job,
-    session: S,
-    text: string,
-    signal: AbortSignal,
-  ): AsyncIterable<AdapterEvent>;
-  /**
-   * Optional, with the `interrupt` capability (ADR 0470): stop the agent's current step (Claude
-   * Code's Escape), then submit `text` as `steer` does. The text is the factory's own fixed line,
-   * never a person's words.
-   */
-  interrupt?(session: S, text: string): Promise<void>;
-  /**
-   * Optional, with the `chat` capability (ADR 0450): stop the live stream session cleanly so a
-   * person can resume it in a terminal. `events()` then yields a `takeover` event with the command
-   * and follows the resumed session until it ends; the job keeps its workspace meanwhile.
-   */
-  takeover?(session: S): Promise<void>;
-  /**
-   * Optional, with the `terminal` capability (ADR 0440): bridge the live session's terminal while
-   * someone watches it from the dashboard. Output is the terminal's raw bytes; `write` types
-   * whatever the person typed (the relay only forwards it from the runner's owner); `resize` sets
-   * the terminal's size (only asked for by the owner: a bridge nobody resized leaves it as it is);
-   * `redraw` sends the current screen as output, in order with the stream. `onExit` fires once,
-   * when the session or the bridge ends. `close` must be safe to call twice.
-   */
-  openTerminal?(session: S, options: OpenTerminalOptions): Promise<TerminalBridge>;
-}
-
-/** What `exec` returns. */
-export interface ExecResult {
-  exitCode: number | null;
-  timedOut: boolean;
-  /** stdout and stderr interleaved; the host keeps only the tail. */
-  output: string;
-  /**
-   * Set when the command was not run at all, with why (a job with no container, a sandbox that
-   * could not start). Reported "not run": never a pass, and never sent to a fix round (ADR 0501).
-   */
-  notRun?: string;
-  /**
-   * Set when the check failed on one of the runner's own limits, read from outside what it runs
-   * (the Docker daemon's OOMKilled, the host's measure of its dir), never from its output: "the
-   * check hit the runner's memory limit (4 GB). The code under check may be the cause; raise the
-   * limit in the runner's config or fix the code". A failure (the code under check can cause it),
-   * not a check not run: no fix round, a person decides (ADR 0501, amended 2026-11-13).
-   */
-  limit?: string;
-  /**
-   * Where it ran (ADR 0501, fourth review): a check container, the OS sandbox, or the weaker OS
-   * sandbox of a Mac runner whose owner opted in. Reported with the check; the gate names the last.
-   */
-  isolation?: "container" | "sandbox" | "weaker-sandbox";
-}
-
-/** What the host hands `openTerminal` (ADR 0440). */
-export interface OpenTerminalOptions {
-  /** The size to start at, when the runner's owner is watching; null leaves the terminal's own. */
-  size: TerminalSize | null;
-  onOutput: (bytes: Uint8Array) => void;
-  /** The terminal's actual size, at start and whenever it changes. */
-  onSize: (size: TerminalSize) => void;
-  onExit: (reason: string) => void;
-}
-
-/** A live bridge to a session's terminal (ADR 0440). */
-export interface TerminalBridge {
-  write(data: string): Promise<void>;
-  resize(size: TerminalSize): Promise<void>;
-  redraw(): Promise<void>;
-  close(): Promise<void>;
 }
 
 /**
@@ -484,51 +282,13 @@ export function canRun(
 }
 
 /**
- * Whether the runner host commits and pushes the job's branch at the end of the job: a build, a
- * `babysit` job sent to resolve a conflict (spec 53 §4: it merges the default branch in on its run
- * branch, never a rebase or force push), and a `flow` job with a repository (spec 70: it pushes its
- * item's branch, `factory/flow-<key>-<n>`; no default-branch merge and no checks).
- */
-export function pushesRunBranch(job: {
-  stage: JobStage;
-  context?: Record<string, unknown> | undefined;
-  repo?: unknown;
-  branch?: string | undefined;
-}): boolean {
-  if (job.stage === "build") return true;
-  if (job.stage === "flow") return job.repo !== undefined && job.branch !== undefined;
-  if (job.stage !== "babysit") return false;
-  const reason = job.context?.reason as { kind?: unknown } | undefined;
-  return reason?.kind === "conflict";
-}
-
-/**
  * A `flow` job with a repository (spec 70) works on, and pushes, its item's branch:
- * `factory/flow-<lower-cased project key>-<item number>`, one branch for every run on the item. Not
- * `factory/<digits>-…`, which the old core's webhook reads as its own work items, and one level
- * under `factory/`: GitHub's ruleset pattern `refs/heads/factory/**` matches a single level only
- * (a push to `factory/flow/sf-1` was refused on 2026-11-15).
+ * `factory/flow-<lower-cased project key>-<item number>`, one branch for every run on the item, one
+ * level under `factory/`: GitHub's ruleset pattern `refs/heads/factory/**` matches a single level
+ * only (a push to `factory/flow/sf-1` was refused on 2026-11-15).
  */
 export function isFlowBranch(branch: string): boolean {
   return /^factory\/flow-[a-z0-9][a-z0-9-]*-[0-9]+$/.test(branch);
-}
-
-/** Whether the job is a `flow` job with a repository: it pushes its item's branch. */
-export function isFlowRepoJob(job: { stage: JobStage; repo?: unknown; branch?: string }): boolean {
-  return job.stage === "flow" && job.repo !== undefined && job.branch !== undefined;
-}
-
-/**
- * The run branch for run `runNo` of a work item whose branch is `itemBranch` (ADR 0035):
- * `factory/<n>-<slug>` → `factory/<n>-<slug>-run-<k>`.
- */
-export function runBranch(itemBranch: string, runNo: number): string {
-  return `${itemBranch}-run-${runNo}`;
-}
-
-/** Whether a branch is one the factory owns (`factory/*`). Runners push nowhere else. */
-export function isFactoryBranch(branch: string): boolean {
-  return /^factory\/[0-9]+-[a-z0-9-]+$/.test(branch);
 }
 
 /**

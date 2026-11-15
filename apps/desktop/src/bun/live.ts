@@ -1,5 +1,5 @@
-// The live connection to the person's ClientHub on sf-engine (spec 40 M2b): a push the moment a
-// gate opens, so the badge and the notification don't wait for the next poll. Reconnects with
+// The live connection to the person's ClientHub on sf-engine (spec 40 M2b): a push the moment
+// something waits on you, so the badge and the notification don't wait for the next poll. Reconnects with
 // backoff; every (re)connect re-reads the inbox, so a push missed while offline is caught up.
 // Bun's WebSocket takes headers, so the token goes in Authorization, never in the URL.
 // A refused upgrade (the engine's 426 `update_required`, ADR 0393) isn't retried: the WebSocket
@@ -9,11 +9,9 @@ import { nextRestart } from "./backoff.ts";
 import { PROTOCOL_HEADERS } from "./protocol.ts";
 
 export interface LiveEvent {
-  /** `planning.changed`: a Planning view this person has open changed (spec 26). */
-  type: "hello" | "notify" | "planning.changed";
+  type: "hello" | "notify";
   event?: string;
   title?: string;
-  workItemId?: string | null;
 }
 
 export function liveUrl(engineUrl: string): string {

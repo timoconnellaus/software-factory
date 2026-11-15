@@ -3,8 +3,7 @@
 // - `vendor/sf-runner.mjs`, one ESM file the app's in-app runner runs today (spec 40 M2). It goes
 //   with the app's `runner/` copy in spec 45's last build PR.
 // - `vendor/runner-bundle/*.cjs`, the sealed scripts of SF Runner.app (spec 45 §1): the guard and
-//   self-test (`service.cjs`), the runner (`sf-runner.cjs`) and the check child
-//   (`check-sandbox-child.cjs`, the sandbox runtime bundled in). Each is one self-contained
+//   self-test (`service.cjs`) and the runner (`sf-runner.cjs`). Each is one self-contained
 //   CommonJS file that loads nothing but `node:` built-ins, because Node resolves any other
 //   specifier through `node_modules` folders above the bundle that the seal doesn't cover, and
 //   because the launcher hands each to Node on a pipe (`/dev/fd/4`), from which Node reads an ES
@@ -22,7 +21,6 @@ const host = join(desktop, "..", "..", "local", "runner-host", "src");
 export const SEALED = {
   "service.cjs": join(host, "service-guard.ts"),
   "sf-runner.cjs": join(host, "cli.ts"),
-  "check-sandbox-child.cjs": join(host, "check-sandbox-child.mjs"),
 };
 
 /**
@@ -37,7 +35,7 @@ const metaBanner = (name) =>
 
 const builtins = new Set(builtinModules.filter((m) => !m.startsWith("_")));
 
-/** Rewrites every built-in to its `node:` form, stubs the one module that resolves a package. */
+/** Rewrites every built-in to its `node:` form. */
 const sealPlugin = {
   name: "seal",
   setup(b) {
@@ -47,10 +45,6 @@ const sealPlugin = {
         return { path: `node:${bare}`, external: true };
       return undefined;
     });
-    b.onLoad({ filter: /[\\/]srt-vendor\.ts$/ }, () => ({
-      contents: "export const SRT_VENDOR = null;",
-      loader: "ts",
-    }));
   },
 };
 

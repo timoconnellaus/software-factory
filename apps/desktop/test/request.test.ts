@@ -23,11 +23,11 @@ describe("the view's request handle", () => {
     const raw = electrobunStyle(fn);
     // `call` resolves to Function.prototype.call: the method arrives as the params object.
     // biome-ignore lint/suspicious/noExplicitAny: calling the built-in on purpose, to show the bug.
-    await (raw.call as any)({ op: "inbox.list", input: {} });
+    await (raw.call as any)({ op: "org.list", input: {} });
     expect(typeof seen[0]).not.toBe("string");
 
     const bun = bunRequests((method, params) => raw(method, params));
-    await bun.call({ op: "inbox.list", input: {} });
+    await bun.call({ op: "org.list", input: {} });
     await bun.batch({ calls: [] });
     await bun.session({});
     expect(seen.slice(1)).toEqual(["call", "batch", "session"]);

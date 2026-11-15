@@ -50,6 +50,7 @@ import {
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { randomToken, sha256Hex } from "../tokens.ts";
 import {
   DESKTOP_PENDING_LIMIT,
   deviceName,
@@ -59,7 +60,6 @@ import {
   pkceChallenge,
 } from "./desktop.ts";
 import { attestationSummary, parseAttestation } from "./device.ts";
-import { randomToken, sha256Hex } from "./onboarding.ts";
 
 /** The actor the client door uses for the phone's three unsigned sign-in calls. */
 export const MOBILE_DEVICE_ACTOR: Actor = { type: "runner", id: "mobile-device-login" };

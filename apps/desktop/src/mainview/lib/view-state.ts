@@ -1,5 +1,4 @@
-// This Mac's view state (ADR 0460): the open tabs, pinned work items, the chosen org and whether the
-// sidebar shows. It lives in the view (memory, mirrored to localStorage) and never reaches the
+// This Mac's view state (ADR 0460): the open tabs, the chosen org and whether the sidebar shows. It lives in the view (memory, mirrored to localStorage) and never reaches the
 // factory. The reducers are pure, so the tests drive them without a DOM.
 import { useSyncExternalStore } from "react";
 
@@ -12,16 +11,9 @@ export interface Tab {
 export interface ViewState {
   tabs: Tab[];
   activeTab: string;
-  /** Work item ids, in the order they were pinned. */
-  pins: string[];
   /** The chosen org, or null for All. Undefined until the shell picks a default. */
   orgId: string | null | undefined;
   sidebar: boolean;
-  /**
-   * The work item whose planning has the whole window (focus mode, spec 41), or null. Not kept
-   * across launches: the window opens in the normal layout.
-   */
-  focus: string | null;
 }
 
 /** Where it is kept: one account's (lib/account.ts forgets it when the account changes). */
@@ -35,10 +27,8 @@ export function initialState(): ViewState {
   return {
     tabs: [{ id, path: "/" }],
     activeTab: id,
-    pins: [],
     orgId: undefined,
     sidebar: true,
-    focus: null,
   };
 }
 
@@ -86,17 +76,9 @@ export function activateTab(
   return { state: { ...s, activeTab: id }, navigate: tab.path };
 }
 
-// ---- Pins, org, sidebar -------------------------------------------------------------------------
-
-export function togglePin(s: ViewState, workItemId: string): ViewState {
-  return s.pins.includes(workItemId)
-    ? { ...s, pins: s.pins.filter((p) => p !== workItemId) }
-    : { ...s, pins: [...s.pins, workItemId] };
-}
+// ---- Org, sidebar -------------------------------------------------------------------------------
 
 export const chooseOrg = (s: ViewState, orgId: string | null): ViewState => ({ ...s, orgId });
-export const setFocus = (s: ViewState, workItemId: string | null): ViewState =>
-  s.focus === workItemId ? s : { ...s, focus: workItemId };
 export const toggleSidebar = (s: ViewState): ViewState => ({ ...s, sidebar: !s.sidebar });
 
 // ---- Persistence --------------------------------------------------------------------------------
@@ -113,17 +95,14 @@ export function parseStored(raw: string | null): ViewState {
             !!t && typeof t.id === "string" && typeof t.path === "string" && t.path.startsWith("/"),
         )
       : [];
-    const pins = Array.isArray(v.pins) ? v.pins.filter((p) => typeof p === "string") : [];
     const activeTab = tabs.some((t) => t.id === v.activeTab)
       ? (v.activeTab as string)
       : tabs[0]?.id;
     return {
       tabs: tabs.length && activeTab ? tabs : base.tabs,
       activeTab: tabs.length && activeTab ? activeTab : base.activeTab,
-      pins,
       orgId: typeof v.orgId === "string" || v.orgId === null ? v.orgId : undefined,
       sidebar: v.sidebar !== false,
-      focus: null,
     };
   } catch {
     return base;

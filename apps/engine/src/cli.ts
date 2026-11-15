@@ -3,19 +3,16 @@
 // - `device/start` and `device/poll` are the CLI's unsigned device login (as CLI_DEVICE_ACTOR).
 // - `desktop/start` and `desktop/exchange` are the desktop app's unsigned sign-in (as
 //   DESKTOP_DEVICE_ACTOR).
-// - `call` runs one operation as the person behind the bearer token. The token's kind sets the
-//   surface (`cli` or `desktop`); nothing in the request does. A `read` CLI token reaches only
-//   `read`-risk operations. A desktop call may carry a presence proof, which the door redeems
-//   (presence.redeem) before it runs the call with `origin.presence` set to exactly that decision.
+// - `call` runs one operation as the person behind the bearer token: a platform operation
+//   (packages/core) or the new core's `flow.*` (packages/ops). The token's kind sets the surface
+//   (`cli` or `desktop`); nothing in the request does. A `read` CLI token reaches only `read`-risk
+//   operations. A desktop call may carry a presence proof, which the door redeems (presence.redeem)
+//   before it runs the call with `origin.presence` set to exactly that call.
 // - `batch` runs up to 20 `read`-risk calls in parallel (the desktop app's page loads).
-// - Bytes travel as `{ "$bytes": "<base64>" }` in `call` and `batch` (wire-bytes.ts): an attachment
-//   upload's input, an attachment's output.
 // - `mobile/nonce`, `mobile/start` and `mobile/exchange` are the phone app's unsigned sign-in (as
 //   MOBILE_DEVICE_ACTOR, ADR 0541); a `mobile` token's calls run on the `mobile` surface, and a
 //   phone below MOBILE_MIN_PROTOCOL gets 426 (mobile.ts).
 // - `live` (GET, WebSocket) is the desktop app's live connection, held by the person's ClientHub.
-// - `terminal/<workItemId>/<runId>` (GET, WebSocket) is a run's web terminal for the desktop app
-//   (spec 42, ADR 0530): the same attach as sf-app's socket route, then the relay's viewer socket.
 // - `ops` lists the operations (the registry's own descriptions), for `sf ops`.
 // - The version handshake (spec 40 M4, ADR 0393): the desktop app sends `x-sf-client-protocol`. A
 //   desktop sign-in or a desktop token's request below DESKTOP_MIN_PROTOCOL gets 426
@@ -23,7 +20,6 @@
 //   It is checked once, in `versionGate` at the top of `handleCli`, so every route and socket a
 //   desktop token can reach gets it, including routes added later. A client opening a WebSocket
 //   must send the protocol headers on the upgrade request too.
-// MCP is meant to come through the same door.
 import {
   type Actor,
   CLI_DEVICE_ACTOR,
@@ -58,12 +54,8 @@ import {
   mobileTooOld,
   mobileUpdateRequired,
 } from "./mobile.ts";
-import { attachTerminal, openViewerSocket } from "./terminal-attach.ts";
-import { decodeBytes, encodeBytes } from "./wire-bytes.ts";
 
 export const CLI_PREFIX = "/cli/v1/";
-/** The desktop app's terminal socket: `terminal/<workItemId>/<runId>` under the door. */
-const TERMINAL_ROUTE = /^terminal\/(wi_[0-9a-f]{32})\/(run_[0-9a-f]{32})$/;
 export const CLIENT_PREFIX = "/client/v1/";
 /** The most calls one `batch` may carry. */
 export const BATCH_LIMIT = 20;
@@ -169,12 +161,6 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     if (who.kind !== "cli") headers.set(DEVICE_HEADER, who.deviceId);
     return clientHub(env, who.userId).fetch(new Request(request, { headers }));
   }
-  const terminal = TERMINAL_ROUTE.exec(path);
-  if (terminal?.[1] && terminal[2] && request.method === "GET") {
-    const who = await authenticate(request, env);
-    if (!who) return unauthenticated();
-    return openTerminal(env, who, terminal[1], terminal[2], request);
-  }
   if (request.method !== "POST") return reply({ error: "not found", code: "not_found" }, 404);
   let body: Record<string, unknown>;
   try {
@@ -209,9 +195,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
       }
       // A refusal after the nonce was found commits (the nonce spent, a typed code counted), then
       // is answered as an error.
-      const out = r.pending
-        ? null
-        : (r.output as { status?: string; code?: string; error?: string });
+      const out = r.output as { status?: string; code?: string; error?: string };
       if (out?.status === "refused") {
         const code = out.code === "denied" || out.code === "unavailable" ? out.code : "forbidden";
         throw new OperationError(code, out.error ?? "refused", out);
@@ -275,7 +259,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
         try {
           return {
             ok: true,
-            result: encodeBytes((await callAs(env, who, name, input ?? {})).output),
+            result: (await callAs(env, who, name, input ?? {})).output,
           };
         } catch (error) {
           if (error instanceof OperationError)
@@ -287,42 +271,6 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
     return reply({ results });
   }
   return reply({ error: "not found", code: "not_found" }, 404);
-}
-
-/**
- * A run's web terminal through the door (spec 42, ADR 0530): desktop tokens only. Refusals are plain
- * door replies before any upgrade; the attach decides `type` or `watch` and is recorded with the
- * device, exactly as sf-app's route records the browser's.
- */
-async function openTerminal(
-  env: Env,
-  who: Caller,
-  workItemId: string,
-  runId: string,
-  request: Request,
-): Promise<Response> {
-  if (who.kind !== "desktop") {
-    return reply(
-      { error: "the web terminal opens in the desktop app or the website", code: "forbidden" },
-      STATUS.forbidden,
-    );
-  }
-  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-    return reply({ error: "expected a WebSocket upgrade", code: "invalid_input" }, 426);
-  }
-  const attached = await attachTerminal(env, workItemId, runId, {
-    actor: { type: "human", id: who.userId },
-    origin: { surface: "desktop", deviceId: who.deviceId, requestId: crypto.randomUUID() },
-    // The relay re-checks the token (and the device) while the socket is open (ADR 0530).
-    tokenId: who.tokenId,
-  });
-  if (!attached.ok) {
-    return reply(
-      { error: attached.error.message, code: attached.error.code },
-      STATUS[attached.error.code],
-    );
-  }
-  return openViewerSocket(env, attached.jobId, attached.path);
 }
 
 /** One token lookup per request: the version gate and the route share it. */
@@ -382,7 +330,7 @@ async function callAs(
         `${name} changes things (risk ${op.risk}); this CLI token is read-only. Run \`sf login --write\` for a token that can.`,
       );
     }
-    return run(env, name, decodeBytes(input), actor, { surface: "cli" }, idempotencyKey);
+    return run(env, name, input, actor, { surface: "cli" }, idempotencyKey);
   }
   // The token's kind sets the surface; nothing in the request does (ADR 0391, 0541).
   const origin: Origin = { surface: who.kind, deviceId: who.deviceId };
@@ -408,8 +356,7 @@ async function callAs(
     );
     origin.presence = { op: name, inputDigest: digest, challengeId: String(proof.challengeId) };
   }
-  // The proof covers the input as sent; the operation gets its bytes decoded.
-  return run(env, name, decodeBytes(input), actor, origin, idempotencyKey);
+  return run(env, name, input, actor, origin, idempotencyKey);
 }
 
 async function run(
@@ -425,21 +372,13 @@ async function run(
     origin: { ...origin, requestId: crypto.randomUUID() },
     ...(idempotencyKey ? { idempotencyKey } : {}),
   });
-  return result.status === "pending"
-    ? { pending: true as const, pendingActionId: result.pendingActionId }
-    : { pending: false as const, output: result.output };
+  return { output: result.output };
 }
 
-async function respond(
-  call: () => Promise<
-    { pending: true; pendingActionId: string } | { pending: false; output: unknown }
-  >,
-  bare = false,
-): Promise<Response> {
+async function respond(call: () => Promise<{ output: unknown }>, bare = false): Promise<Response> {
   try {
     const r = await call();
-    if (r.pending) return reply({ pending: true, pendingActionId: r.pendingActionId }, 202);
-    return reply(bare ? r.output : { result: encodeBytes(r.output) });
+    return reply(bare ? r.output : { result: r.output });
   } catch (error) {
     if (error instanceof OperationError) {
       return reply(

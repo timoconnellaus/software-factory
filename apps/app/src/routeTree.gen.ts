@@ -12,22 +12,12 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as AppAttachRouteImport } from './routes/_app/attach'
-import { Route as AppNewRouteImport } from './routes/_app/new'
-import { Route as AppSetupRouteImport } from './routes/_app/setup'
 import { Route as MobileCallbackRouteImport } from './routes/mobile.callback'
 import { Route as MobilePairRouteImport } from './routes/mobile.pair'
-import { Route as OpenSplatRouteImport } from './routes/open.$'
 import { Route as AppCliConnectRouteImport } from './routes/_app/cli.connect'
 import { Route as AppDesktopConnectRouteImport } from './routes/_app/desktop.connect'
 import { Route as AppMobileConnectRouteImport } from './routes/_app/mobile.connect'
 import { Route as AppRunnersConnectRouteImport } from './routes/_app/runners.connect'
-import { Route as AppSettingsDevicesRouteImport } from './routes/_app/settings.devices'
-import { Route as AppWorkIndexRouteImport } from './routes/_app/work.index'
-import { Route as AppProjectsProjectIdSettingsRouteImport } from './routes/_app/projects.$projectId.settings'
-import { Route as AppProjectsProjectIdWorkflowsRouteImport } from './routes/_app/projects.$projectId.workflows'
-import { Route as AppWorkIdIndexRouteImport } from './routes/_app/work.$id.index'
-import { Route as AppWorkIdReviewRouteImport } from './routes/_app/work.$id.review'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -43,21 +33,6 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppAttachRoute = AppAttachRouteImport.update({
-  id: '/attach',
-  path: '/attach',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppNewRoute = AppNewRouteImport.update({
-  id: '/new',
-  path: '/new',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppSetupRoute = AppSetupRouteImport.update({
-  id: '/setup',
-  path: '/setup',
-  getParentRoute: () => AppRoute,
-} as any)
 const MobileCallbackRoute = MobileCallbackRouteImport.update({
   id: '/mobile/callback',
   path: '/mobile/callback',
@@ -66,11 +41,6 @@ const MobileCallbackRoute = MobileCallbackRouteImport.update({
 const MobilePairRoute = MobilePairRouteImport.update({
   id: '/mobile/pair',
   path: '/mobile/pair',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OpenSplatRoute = OpenSplatRouteImport.update({
-  id: '/open/$',
-  path: '/open/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppCliConnectRoute = AppCliConnectRouteImport.update({
@@ -93,163 +63,71 @@ const AppRunnersConnectRoute = AppRunnersConnectRouteImport.update({
   path: '/runners/connect',
   getParentRoute: () => AppRoute,
 } as any)
-const AppSettingsDevicesRoute = AppSettingsDevicesRouteImport.update({
-  id: '/settings/devices',
-  path: '/settings/devices',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppWorkIndexRoute = AppWorkIndexRouteImport.update({
-  id: '/work/',
-  path: '/work/',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppProjectsProjectIdSettingsRoute =
-  AppProjectsProjectIdSettingsRouteImport.update({
-    id: '/projects/$projectId/settings',
-    path: '/projects/$projectId/settings',
-    getParentRoute: () => AppRoute,
-  } as any)
-const AppProjectsProjectIdWorkflowsRoute =
-  AppProjectsProjectIdWorkflowsRouteImport.update({
-    id: '/projects/$projectId/workflows',
-    path: '/projects/$projectId/workflows',
-    getParentRoute: () => AppRoute,
-  } as any)
-const AppWorkIdIndexRoute = AppWorkIdIndexRouteImport.update({
-  id: '/work/$id/',
-  path: '/work/$id/',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppWorkIdReviewRoute = AppWorkIdReviewRouteImport.update({
-  id: '/work/$id/review',
-  path: '/work/$id/review',
-  getParentRoute: () => AppRoute,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/sign-in': typeof SignInRoute
-  '/attach': typeof AppAttachRoute
-  '/new': typeof AppNewRoute
-  '/setup': typeof AppSetupRoute
   '/mobile/callback': typeof MobileCallbackRoute
   '/mobile/pair': typeof MobilePairRoute
-  '/open/$': typeof OpenSplatRoute
   '/cli/connect': typeof AppCliConnectRoute
   '/desktop/connect': typeof AppDesktopConnectRoute
   '/mobile/connect': typeof AppMobileConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
-  '/settings/devices': typeof AppSettingsDevicesRoute
-  '/work/': typeof AppWorkIndexRoute
-  '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
-  '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
-  '/work/$id/review': typeof AppWorkIdReviewRoute
-  '/work/$id/': typeof AppWorkIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
-  '/attach': typeof AppAttachRoute
-  '/new': typeof AppNewRoute
-  '/setup': typeof AppSetupRoute
   '/mobile/callback': typeof MobileCallbackRoute
   '/mobile/pair': typeof MobilePairRoute
-  '/open/$': typeof OpenSplatRoute
   '/': typeof AppIndexRoute
   '/cli/connect': typeof AppCliConnectRoute
   '/desktop/connect': typeof AppDesktopConnectRoute
   '/mobile/connect': typeof AppMobileConnectRoute
   '/runners/connect': typeof AppRunnersConnectRoute
-  '/settings/devices': typeof AppSettingsDevicesRoute
-  '/work': typeof AppWorkIndexRoute
-  '/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
-  '/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
-  '/work/$id/review': typeof AppWorkIdReviewRoute
-  '/work/$id': typeof AppWorkIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/sign-in': typeof SignInRoute
-  '/_app/attach': typeof AppAttachRoute
-  '/_app/new': typeof AppNewRoute
-  '/_app/setup': typeof AppSetupRoute
   '/mobile/callback': typeof MobileCallbackRoute
   '/mobile/pair': typeof MobilePairRoute
-  '/open/$': typeof OpenSplatRoute
   '/_app/': typeof AppIndexRoute
   '/_app/cli/connect': typeof AppCliConnectRoute
   '/_app/desktop/connect': typeof AppDesktopConnectRoute
   '/_app/mobile/connect': typeof AppMobileConnectRoute
   '/_app/runners/connect': typeof AppRunnersConnectRoute
-  '/_app/settings/devices': typeof AppSettingsDevicesRoute
-  '/_app/work/': typeof AppWorkIndexRoute
-  '/_app/projects/$projectId/settings': typeof AppProjectsProjectIdSettingsRoute
-  '/_app/projects/$projectId/workflows': typeof AppProjectsProjectIdWorkflowsRoute
-  '/_app/work/$id/review': typeof AppWorkIdReviewRoute
-  '/_app/work/$id/': typeof AppWorkIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/sign-in'
-    | '/attach'
-    | '/new'
-    | '/setup'
     | '/mobile/callback'
     | '/mobile/pair'
-    | '/open/$'
     | '/cli/connect'
     | '/desktop/connect'
     | '/mobile/connect'
     | '/runners/connect'
-    | '/settings/devices'
-    | '/work/'
-    | '/projects/$projectId/settings'
-    | '/projects/$projectId/workflows'
-    | '/work/$id/review'
-    | '/work/$id/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/sign-in'
-    | '/attach'
-    | '/new'
-    | '/setup'
     | '/mobile/callback'
     | '/mobile/pair'
-    | '/open/$'
     | '/'
     | '/cli/connect'
     | '/desktop/connect'
     | '/mobile/connect'
     | '/runners/connect'
-    | '/settings/devices'
-    | '/work'
-    | '/projects/$projectId/settings'
-    | '/projects/$projectId/workflows'
-    | '/work/$id/review'
-    | '/work/$id'
   id:
     | '__root__'
     | '/_app'
     | '/sign-in'
-    | '/_app/attach'
-    | '/_app/new'
-    | '/_app/setup'
     | '/mobile/callback'
     | '/mobile/pair'
-    | '/open/$'
     | '/_app/'
     | '/_app/cli/connect'
     | '/_app/desktop/connect'
     | '/_app/mobile/connect'
     | '/_app/runners/connect'
-    | '/_app/settings/devices'
-    | '/_app/work/'
-    | '/_app/projects/$projectId/settings'
-    | '/_app/projects/$projectId/workflows'
-    | '/_app/work/$id/review'
-    | '/_app/work/$id/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -257,7 +135,6 @@ export interface RootRouteChildren {
   SignInRoute: typeof SignInRoute
   MobileCallbackRoute: typeof MobileCallbackRoute
   MobilePairRoute: typeof MobilePairRoute
-  OpenSplatRoute: typeof OpenSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -283,27 +160,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/attach': {
-      id: '/_app/attach'
-      path: '/attach'
-      fullPath: '/attach'
-      preLoaderRoute: typeof AppAttachRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/new': {
-      id: '/_app/new'
-      path: '/new'
-      fullPath: '/new'
-      preLoaderRoute: typeof AppNewRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/setup': {
-      id: '/_app/setup'
-      path: '/setup'
-      fullPath: '/setup'
-      preLoaderRoute: typeof AppSetupRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/mobile/callback': {
       id: '/mobile/callback'
       path: '/mobile/callback'
@@ -316,13 +172,6 @@ declare module '@tanstack/react-router' {
       path: '/mobile/pair'
       fullPath: '/mobile/pair'
       preLoaderRoute: typeof MobilePairRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/open/$': {
-      id: '/open/$'
-      path: '/open/$'
-      fullPath: '/open/$'
-      preLoaderRoute: typeof OpenSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/cli/connect': {
@@ -353,83 +202,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppRunnersConnectRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/settings/devices': {
-      id: '/_app/settings/devices'
-      path: '/settings/devices'
-      fullPath: '/settings/devices'
-      preLoaderRoute: typeof AppSettingsDevicesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/work/': {
-      id: '/_app/work/'
-      path: '/work'
-      fullPath: '/work/'
-      preLoaderRoute: typeof AppWorkIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$projectId/settings': {
-      id: '/_app/projects/$projectId/settings'
-      path: '/projects/$projectId/settings'
-      fullPath: '/projects/$projectId/settings'
-      preLoaderRoute: typeof AppProjectsProjectIdSettingsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/projects/$projectId/workflows': {
-      id: '/_app/projects/$projectId/workflows'
-      path: '/projects/$projectId/workflows'
-      fullPath: '/projects/$projectId/workflows'
-      preLoaderRoute: typeof AppProjectsProjectIdWorkflowsRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/work/$id/': {
-      id: '/_app/work/$id/'
-      path: '/work/$id'
-      fullPath: '/work/$id/'
-      preLoaderRoute: typeof AppWorkIdIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/work/$id/review': {
-      id: '/_app/work/$id/review'
-      path: '/work/$id/review'
-      fullPath: '/work/$id/review'
-      preLoaderRoute: typeof AppWorkIdReviewRouteImport
-      parentRoute: typeof AppRoute
-    }
   }
 }
 
 interface AppRouteChildren {
-  AppAttachRoute: typeof AppAttachRoute
-  AppNewRoute: typeof AppNewRoute
-  AppSetupRoute: typeof AppSetupRoute
   AppIndexRoute: typeof AppIndexRoute
   AppCliConnectRoute: typeof AppCliConnectRoute
   AppDesktopConnectRoute: typeof AppDesktopConnectRoute
   AppMobileConnectRoute: typeof AppMobileConnectRoute
   AppRunnersConnectRoute: typeof AppRunnersConnectRoute
-  AppSettingsDevicesRoute: typeof AppSettingsDevicesRoute
-  AppWorkIndexRoute: typeof AppWorkIndexRoute
-  AppProjectsProjectIdSettingsRoute: typeof AppProjectsProjectIdSettingsRoute
-  AppProjectsProjectIdWorkflowsRoute: typeof AppProjectsProjectIdWorkflowsRoute
-  AppWorkIdReviewRoute: typeof AppWorkIdReviewRoute
-  AppWorkIdIndexRoute: typeof AppWorkIdIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
-  AppAttachRoute: AppAttachRoute,
-  AppNewRoute: AppNewRoute,
-  AppSetupRoute: AppSetupRoute,
   AppIndexRoute: AppIndexRoute,
   AppCliConnectRoute: AppCliConnectRoute,
   AppDesktopConnectRoute: AppDesktopConnectRoute,
   AppMobileConnectRoute: AppMobileConnectRoute,
   AppRunnersConnectRoute: AppRunnersConnectRoute,
-  AppSettingsDevicesRoute: AppSettingsDevicesRoute,
-  AppWorkIndexRoute: AppWorkIndexRoute,
-  AppProjectsProjectIdSettingsRoute: AppProjectsProjectIdSettingsRoute,
-  AppProjectsProjectIdWorkflowsRoute: AppProjectsProjectIdWorkflowsRoute,
-  AppWorkIdReviewRoute: AppWorkIdReviewRoute,
-  AppWorkIdIndexRoute: AppWorkIdIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
@@ -439,7 +228,6 @@ const rootRouteChildren: RootRouteChildren = {
   SignInRoute: SignInRoute,
   MobileCallbackRoute: MobileCallbackRoute,
   MobilePairRoute: MobilePairRoute,
-  OpenSplatRoute: OpenSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -12,7 +12,7 @@ import {
 } from "../src/index.ts";
 
 const INTERNAL = /^(sqlite_|_cf_|d1_)/;
-/** The new core's tables (packages/store, ADR 0660) sit beside the old core's. */
+/** The new core's tables (packages/store, ADR 0660) sit beside the platform's. */
 const FLOW_TABLE_PREFIX = "flow_";
 
 describe("core schema", () => {
@@ -38,28 +38,6 @@ describe("core schema", () => {
     expect(Number(row?.value)).toBe(SCHEMA_VERSION);
     const highest = Math.max(...env.TEST_MIGRATIONS.map((m) => Number.parseInt(m.name, 10)));
     expect(highest).toBe(SCHEMA_VERSION);
-  });
-
-  it("allows one version number per plan: core_specs' own UNIQUE, from migration 0020 (review of #85)", async () => {
-    const { results } = await env.DB.prepare("PRAGMA index_list('core_specs')").all<{
-      name: string;
-      unique: number;
-    }>();
-    const unique = await Promise.all(
-      results
-        .filter((r) => r.unique === 1)
-        .map(async (r) =>
-          (
-            await env.DB.prepare(`PRAGMA index_info('${r.name}')`).all<{ name: string }>()
-          ).results.map((c) => c.name),
-        ),
-    );
-    expect(unique).toContainEqual(["work_item_id", "version"]);
-    // No migration rebuilt the table without it.
-    const rebuilt = env.TEST_MIGRATIONS.filter((m) =>
-      m.queries.some((q) => /CREATE TABLE core_specs\b|RENAME TO core_specs\b/i.test(q)),
-    ).map((m) => m.name);
-    expect(rebuilt).toEqual(["0020_work.sql"]);
   });
 
   it("keeps the audit journal append-only", async () => {
@@ -97,183 +75,48 @@ describe("core schema", () => {
     expect(row).toEqual({ actor_type: "human" });
   });
 
-  it("refuses every way of replacing an audit or archive row, recursive triggers on or off (0366)", async () => {
-    const audit = (verb: string, id: string, rowid: number | null, actor: string) =>
-      env.DB.prepare(
-        `${verb} INTO core_audit (${rowid === null ? "" : "rowid, "}id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input)
-         VALUES (${rowid === null ? "" : `${rowid}, `}?, '2026-01-02T00:00:00Z', 'spec.approve', 'approve', ?, 'x', '{}', 'allow', 'ok', '{}')`,
-      )
-        .bind(id, actor)
-        .run();
-    await audit("INSERT", "au_keep", null, "human");
-    const rowid = (await env.DB.prepare(
-      "SELECT rowid AS r FROM core_audit WHERE id = 'au_keep'",
-    ).first<number>("r")) as number;
-    await env.DB.batch([
-      env.DB.prepare(
-        "INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-02-01', 0, 0, 'r', 'p', 'x')",
-      ),
-      env.DB.prepare(
-        `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
-         VALUES ('2025-02-01', 1, 'k', 'a', 'a', 'b', 'b', 1, 1, 's', 'p', 'h', 'x')`,
-      ),
-      env.DB.prepare(
-        "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-02-01', 1, 1)",
-      ),
-    ]);
-    const rid = async (table: string) =>
-      (await env.DB.prepare(`SELECT max(rowid) AS r FROM ${table}`).first<number>("r")) as number;
-    for (const recursive of ["OFF", "ON"]) {
-      await env.DB.prepare(`PRAGMA recursive_triggers = ${recursive}`).run();
-      for (const verb of ["INSERT OR REPLACE", "REPLACE"]) {
-        // By key, and by an explicit rowid with a new key.
-        await expect(audit(verb, "au_keep", null, "runner"), verb).rejects.toThrow(
-          /UNIQUE constraint failed/,
-        );
-        await expect(audit(verb, "au_new1", rowid, "runner"), verb).rejects.toThrow(
-          /UNIQUE constraint failed/,
-        );
-        const forged = [
-          [
-            `${verb} INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-02-01', 0, 0, 'forged', 'p', 'x')`,
-          ],
-          [
-            `${verb} INTO core_audit_archives (rowid, day, chunks, rows, root, prev_root, archived_at) VALUES (${await rid("core_audit_archives")}, '2025-02-09', 0, 0, 'forged', 'p', 'x')`,
-          ],
-          [
-            `${verb} INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at) VALUES ('2025-02-01', 1, 'forged', 'a', 'a', 'z', 'z', 1, 1, 's', 'p', 'h', 'x')`,
-          ],
-          [
-            `${verb} INTO core_audit_archive_chunks (rowid, day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at) VALUES (${await rid("core_audit_archive_chunks")}, '2025-02-09', 9, 'forged', 'a', 'a', 'z', 'z', 1, 1, 's', 'p', 'h', 'x')`,
-          ],
-          [
-            `${verb} INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-02-01', 1, 9)`,
-          ],
-          [
-            `${verb} INTO core_audit_archive_items (rowid, work_item_id, day, seq, rows) VALUES (${await rid("core_audit_archive_items")}, 'wi2', '2025-02-09', 9, 9)`,
-          ],
-        ];
-        for (const [sql] of forged) {
-          await expect(env.DB.prepare(sql as string).run(), sql).rejects.toThrow(/append-only/);
-        }
-      }
-    }
-    await env.DB.prepare("PRAGMA recursive_triggers = OFF").run();
-    expect(
-      await env.DB.prepare("SELECT actor_type FROM core_audit WHERE id = 'au_keep'").first(),
-    ).toEqual({
-      actor_type: "human",
-    });
-    expect(
-      await env.DB.prepare("SELECT root FROM core_audit_archives WHERE day = '2025-02-01'").first(),
-    ).toEqual({
-      root: "r",
-    });
-  });
-
-  it("keeps the archive's records append-only (migration 0366)", async () => {
+  it("is append-only with no exception once the archive is gone (migration 0438)", async () => {
     await env.DB.prepare(
-      `INSERT INTO core_audit_archives (day, chunks, rows, root, prev_root, archived_at) VALUES ('2025-01-01', 0, 0, 'r', 'p', 'x')`,
+      `INSERT INTO core_audit (id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input)
+       VALUES ('au_old', '2020-01-01T00:00:00Z', 'runner.heartbeat', 'write', 'runner', 'r', '{}', 'allow', 'ok', '{}')`,
     ).run();
-    await env.DB.prepare(
-      `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
-       VALUES ('2025-01-01', 1, 'k', 'a', 'a', 'b', 'b', 1, 1, 's', 'p', 'h', 'x')`,
-    ).run();
-    await env.DB.prepare(
-      "INSERT INTO core_audit_archive_items (work_item_id, day, seq, rows) VALUES ('wi', '2025-01-01', 1, 1)",
-    ).run();
-    for (const sql of [
-      "UPDATE core_audit_archives SET root = 'forged'",
-      "DELETE FROM core_audit_archives",
-      "UPDATE core_audit_archive_chunks SET last_hash = 'forged'",
-      "DELETE FROM core_audit_archive_chunks",
-      "UPDATE core_audit_archive_items SET rows = 9",
-      "DELETE FROM core_audit_archive_items",
-    ]) {
-      await expect(env.DB.prepare(sql).run(), sql).rejects.toThrow(/append-only/);
-    }
-  });
-
-  it("deletes only archived machine rows at least 90 days old (migration 0366)", async () => {
-    const old = new Date(Date.now() - 100 * 86_400_000).toISOString();
-    const day = old.slice(0, 10);
-    const recent = new Date(Date.now() - 10 * 86_400_000).toISOString();
-    const row = (
-      id: string,
-      at: string,
-      over: {
-        op?: string;
-        actor?: string;
-        actorId?: string;
-        outcome?: string;
-        decision?: string;
-        pa?: string | null;
-      } = {},
-    ) =>
-      env.DB.prepare(
-        `INSERT INTO core_audit (id, at, operation, risk, actor_type, actor_id, origin, decision, outcome, input, pending_action_id)
-         VALUES (?, ?, ?, 'write', ?, ?, '{}', ?, ?, '{}', ?)`,
-      )
-        .bind(
-          id,
-          at,
-          over.op ?? "runner.heartbeat",
-          over.actor ?? "runner",
-          over.actorId ?? "rnr_1",
-          over.decision ?? "allow",
-          over.outcome ?? "ok",
-          over.pa ?? null,
-        )
-        .run();
-    await row("au_m1", old);
-    await row("au_m2", old, { op: "workItem.enterStage", actor: "agent", actorId: "foreman" });
-    await row("au_h", old, { actor: "human", actorId: "usr_1" });
-    await row("au_agent", old, { op: "workItem.enterStage", actor: "agent", actorId: "builder" });
-    await row("au_merge", old, { op: "pr.merge", actor: "agent", actorId: "foreman" });
-    await row("au_refused", old, { outcome: "fenced" });
-    await row("au_gate", old, {
-      op: "workItem.enterStage",
-      actor: "agent",
-      actorId: "foreman",
-      decision: "review",
-      outcome: "review",
-      pa: "pa_1",
-    });
-    await row("au_late", old.replace(/T.*/, "T23:59:59.999Z"));
-    await row("au_new", recent);
-    // Nothing is covered yet: even a machine row is refused.
-    await expect(env.DB.prepare("DELETE FROM core_audit WHERE id = 'au_m1'").run()).rejects.toThrow(
-      /append-only/,
-    );
-    // A chunk covering every old row of the day except the last.
-    await env.DB.prepare(
-      `INSERT INTO core_audit_archive_chunks (day, seq, r2_key, first_at, first_id, last_at, last_id, rows, bytes, sha256, prev_hash, last_hash, archived_at)
-       VALUES (?, 1, 'k', ?, 'au_', ?, 'au_z', 2, 1, 's', 'p', 'h', ?)`,
-    )
-      .bind(day, `${day}T00:00:00.000Z`, old, old)
-      .run();
-    await env.DB.prepare("DELETE FROM core_audit WHERE id IN ('au_m1', 'au_m2')").run();
-    for (const id of [
-      "au_h",
-      "au_agent",
-      "au_merge",
-      "au_refused",
-      "au_gate",
-      "au_late",
-      "au_new",
-    ]) {
-      await expect(
-        env.DB.prepare("DELETE FROM core_audit WHERE id = ?").bind(id).run(),
-        id,
-      ).rejects.toThrow(/append-only/);
-    }
-    const left = await env.DB.prepare(
-      "SELECT id FROM core_audit WHERE id IN ('au_m1', 'au_m2')",
-    ).all();
-    expect(left.results).toEqual([]);
+    // A machine row years old was the archive's to delete; nothing deletes it now.
     await expect(
-      env.DB.prepare("UPDATE core_audit SET reason = 'x' WHERE id = 'au_h'").run(),
+      env.DB.prepare("DELETE FROM core_audit WHERE id = 'au_old'").run(),
     ).rejects.toThrow(/append-only/);
+  });
+
+  it("keeps only the platform's core tables (migration 0438)", async () => {
+    const { results } = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 5) = 'core_' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(results.map((r) => r.name)).toEqual([
+      "core_account",
+      "core_audit",
+      "core_batch_guard",
+      "core_channel_requests",
+      "core_cli_device_codes",
+      "core_cli_tokens",
+      "core_desktop_auth_requests",
+      "core_desktop_devices",
+      "core_github_connect_states",
+      "core_github_installations",
+      "core_invitation",
+      "core_member",
+      "core_meta",
+      "core_mobile_nonces",
+      "core_organization",
+      "core_outbox",
+      "core_pair_code_tries",
+      "core_pair_offers",
+      "core_presence_challenges",
+      "core_runner_device_codes",
+      "core_runner_shares",
+      "core_runners",
+      "core_session",
+      "core_user",
+      "core_verification",
+    ]);
   });
 });
 

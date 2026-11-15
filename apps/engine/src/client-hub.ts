@@ -2,19 +2,11 @@
 // connections of their desktop apps. The outbox delivers each `notify` here, and the hub pushes it
 // to every open socket, so the app updates its inbox count and shows a notification at once. A
 // device's socket is tagged with its id, and revoking the device closes it at once (ADR 0541). It
-// keeps no state: a socket that reconnects re-reads `inbox.list`, so nothing is lost but the push.
+// keeps no state: a socket that reconnects re-reads the inbox, so nothing is lost but the push.
 // Hibernatable WebSockets: an idle hub costs nothing.
 import { DurableObject } from "cloudflare:workers";
 
-export type ClientEvent =
-  | {
-      type: "notify";
-      event: string;
-      title: string;
-      workItemId: string | null;
-    }
-  /** A work item's planning changed, for the person who has its Planning view open (spec 26). */
-  | { type: "planning.changed"; workItemId: string };
+export type ClientEvent = { type: "notify"; event: string; title: string };
 
 /** The device behind a live socket, set by the door from the token (never by the client). */
 export const DEVICE_HEADER = "x-sf-device";

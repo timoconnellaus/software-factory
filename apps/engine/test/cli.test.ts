@@ -59,29 +59,27 @@ describe("the sf CLI door (/cli/v1)", () => {
   it("logs in by device code, and a read token reads but can't write (criteria 1, 2, 4)", async () => {
     const w = await world();
     const { token } = await login(w, "read", "write"); // asked for write, granted read
-    const inbox = await callOp(token, "inbox.list", {});
-    expect(inbox.status).toBe(200);
-    expect(await json(inbox)).toHaveProperty("result");
-    const projects = await callOp(token, "project.list", { orgId: w.orgId });
-    expect(projects.status).toBe(200);
+    const runners = await callOp(token, "runner.list", {});
+    expect(runners.status).toBe(200);
+    expect(await json(runners)).toHaveProperty("result");
     const orgs = await json<{ result: { orgs: { id: string; role: string }[] } }>(
       await callOp(token, "org.list", {}),
     );
     expect(orgs.result.orgs).toEqual([expect.objectContaining({ id: w.orgId, role: "owner" })]);
 
-    const create = await callOp(token, "workItem.create", {
-      state: "queued",
-      projectId: w.projectId,
-      title: "From the terminal",
-      body: "x",
-      source: "cli",
-      eventId: "e1",
+    const write = await callOp(token, "github.connectStart", { orgId: w.orgId });
+    expect(write.status).toBe(403);
+    expect(await json(write)).toMatchObject({ code: "forbidden" });
+    // The new core's writes too.
+    const flowWrite = await callOp(token, "flow.agent.create", {
+      orgId: w.orgId,
+      name: "Writer",
+      instructions: "Write.",
     });
-    expect(create.status).toBe(403);
-    expect(await json(create)).toMatchObject({ code: "forbidden" });
+    expect(flowWrite.status).toBe(403);
   });
 
-  it("a write token acts but can never decide a gate (criterion 3)", async () => {
+  it("a write token acts but can never approve a device or register a runner (criterion 3)", async () => {
     const w = await world();
     const { token } = await login(w, "write");
     const ops = await worker.fetch(
@@ -91,61 +89,36 @@ describe("the sf CLI door (/cli/v1)", () => {
       env,
     );
     const listed = await json<{ operations: { name: string; browserOnly: unknown }[] }>(ops);
-    expect(listed.operations.find((o) => o.name === "review.merge")?.browserOnly).toBe(true);
+    expect(listed.operations.find((o) => o.name === "cli.approveDevice")?.browserOnly).toBe(true);
+    expect(listed.operations.some((o) => o.name === "flow.item.create")).toBe(true);
 
-    const created = await callOp(token, "workItem.create", {
-      state: "queued",
-      projectId: w.projectId,
-      title: "From the terminal",
-      source: "app",
-      eventId: crypto.randomUUID(),
-    });
-    expect(created.status).toBe(200);
-    const { result } = await json<{ result: { workItemId: string } }>(created);
-    const found = await json<{ result: { items: { id: string }[] } }>(
-      await callOp(token, "workItem.list", { projectId: w.projectId, number: 1 }),
-    );
-    expect(found.result.items.map((i) => i.id)).toEqual([result.workItemId]);
+    const started = await callOp(token, "github.connectStart", { orgId: w.orgId });
+    expect(started.status).toBe(200);
     // Audited as the person, on the cli surface (criterion 4).
     const audited = await first<{ origin: string; actor_type: string; actor_id: string }>(
-      "SELECT origin, actor_type, actor_id FROM core_audit WHERE operation = 'workItem.create' AND work_item_id = ?",
-      result.workItemId,
+      "SELECT origin, actor_type, actor_id FROM core_audit WHERE operation = 'github.connectStart' AND org_id = ? ORDER BY at DESC LIMIT 1",
+      w.orgId,
     );
     expect(JSON.parse(String(audited?.origin)).surface).toBe("cli");
     expect(audited).toMatchObject({ actor_type: "human", actor_id: w.userId });
 
     for (const [op, input] of [
-      ["review.merge", { workItemId: result.workItemId, openedFullDiff: true }],
-      ["spec.approve", { workItemId: result.workItemId }],
       ["cli.approveDevice", { userCode: "BCDF-GHJK", scope: "write" }],
-      ["killSwitch.set", { scope: "project", id: w.projectId, on: false }],
+      ["runner.register", { name: "M5" }],
+      ["desktop.approveDevice", { requestId: `dar_${"a".repeat(32)}`, name: "Mac" }],
     ] as const) {
       const res = await callOp(token, op, input);
       const body = await json<{ code: string; error: string }>(res);
       expect([op, res.status, body.code]).toEqual([op, 403, "forbidden"]);
       expect(body.error).toMatch(/in the app/);
     }
-    // Stopping things from a terminal is fine.
-    const on = await callOp(token, "killSwitch.set", {
-      scope: "project",
-      id: w.projectId,
-      on: true,
-    });
-    expect(on.status).toBe(200);
-    await ok("killSwitch.set", { scope: "project", id: w.projectId, on: false, epoch: 1 }, w.human);
-
-    const cancelled = await callOp(token, "workItem.cancel", {
-      workItemId: result.workItemId,
-      reason: "from the terminal",
-    });
-    expect(cancelled.status).toBe(200);
   });
 
   it("refuses unknown, revoked and other people's tokens (criterion 5)", async () => {
     const w = await world();
     const { token, tokenId } = await login(w, "read");
-    expect((await callOp("sfc_nope", "inbox.list", {})).status).toBe(401);
-    expect((await post("call", { op: "inbox.list", input: {} })).status).toBe(401);
+    expect((await callOp("sfc_nope", "org.list", {})).status).toBe(401);
+    expect((await post("call", { op: "org.list", input: {} })).status).toBe(401);
 
     const other = await world();
     const otherLogin = await login(other, "write");
@@ -155,7 +128,7 @@ describe("the sf CLI door (/cli/v1)", () => {
     const listed = await ok<{ tokens: { id: string }[] }>("cliToken.list", {}, w.human);
     expect(listed.tokens.map((t) => t.id)).toContain(tokenId);
     await ok("cliToken.revoke", { tokenId }, w.human);
-    expect((await callOp(token, "inbox.list", {})).status).toBe(401);
+    expect((await callOp(token, "org.list", {})).status).toBe(401);
     // The token itself is never stored.
     const rows = await all<{ token_hash: string }>(
       "SELECT token_hash FROM core_cli_tokens WHERE id = ?",
@@ -176,28 +149,19 @@ describe("the sf CLI door (/cli/v1)", () => {
     expect(polled.status).toBe("denied");
   });
 
-  it("marks every decision a person makes at a gate as browser-only", () => {
+  it("marks every approval of a device and every new runner key as browser-only", () => {
     for (const name of [
-      "spec.approve",
-      "spec.requestChanges",
-      "review.merge",
-      "review.sendBack",
-      "approval.decide",
-      "question.answer",
-      "question.acceptDefaults",
       "runner.approveDevice",
       "runner.register",
       "runner.rotateKey",
       "cli.approveDevice",
+      "desktop.approveDevice",
+      "mobile.approveDevice",
     ]) {
       expect(getOperation(name)?.browserOnly, name).toBe(true);
     }
-    // Any human-only operation that decides a pending action must be marked too.
     const unmarked = describeOperations().filter(
-      (o) =>
-        /^(spec|review|approval|question)\.(approve|requestChanges|merge|sendBack|decide|answer|acceptDefaults)$/.test(
-          o.name,
-        ) && o.browserOnly !== true,
+      (o) => /\.approveDevice$/.test(o.name) && o.browserOnly !== true,
     );
     expect(unmarked).toEqual([]);
   });

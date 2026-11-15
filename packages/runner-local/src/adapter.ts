@@ -11,9 +11,6 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   accountConfigDir,
-  attachmentsPrompt,
-  carryConversation,
-  checkOutputLog,
   DEFAULT_HARNESS_ACCOUNT,
   findTranscript,
   HARNESS_CONFIG_MISMATCH,
@@ -38,7 +35,6 @@ import {
   shellQuote,
   usageLimitOf,
   verifyLaunch,
-  writeAttachments,
 } from "@software-factory/harness-claude";
 import {
   type AdapterEvent,
@@ -55,7 +51,6 @@ import {
   type RepoJob,
   type RunnerAdapter,
   type SessionHandle,
-  steerText,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import {
@@ -77,22 +72,17 @@ import {
   stopHarness,
 } from "./procs.ts";
 import {
-  interruptStream,
   killStream,
   type LocalSessionMode,
   type StreamOptions,
   type StreamState,
   startStreamSession,
-  steerStream,
   streamAlive,
   streamEvents,
-  takeOverStream,
 } from "./stream.ts";
-import { openTmuxTerminal } from "./terminal.ts";
 import {
   attachCommand,
   type PaneState,
-  SESSION_PREFIX,
   sessionName,
   type TmuxOptions,
   TmuxUnavailable,
@@ -112,17 +102,8 @@ export interface LocalWorkspace extends WorkspaceHandle {
   launchScript: string;
   /** Where the status hook appends its lines. */
   statusFile: string;
-  /** Where this run's attachments go: outside the worktree and the protected run dirs. */
-  attachmentsDir: string;
   /** The Claude account the run uses (ADR 0410), taken when the workspace was prepared. */
   account: HarnessAccount;
-  /**
-   * How the live harness's command line is read, when `ps` on the host can't see it (a container
-   * job reads it with `docker exec`, ADR 0430). Default: the adapter's `readCommand`.
-   */
-  readCommand?: ReadCommand;
-  /** More checks before the prompt (a container job's own configuration, ADR 0430). */
-  launchChecks?: () => Promise<string[]>;
   /**
    * This workspace created `branch` in the checkout (ADR 0551): release deletes exactly that
    * branch, whatever its name, when no worktree has it checked out.
@@ -133,11 +114,6 @@ export interface LocalWorkspace extends WorkspaceHandle {
    * worktree; there is no checkout, branch or base commit. Release removes the directory.
    */
   plain?: boolean;
-  /**
-   * Writes a file the session reads (the prompt) where the session runs, when that isn't this
-   * machine (a sprite, ADR 0480). The host's copy is written as well.
-   */
-  writeRunFile?: (path: string, content: string) => Promise<void>;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -159,14 +135,8 @@ export interface LocalSession extends SessionHandle {
   /**
    * The run's settings path (`<runDir>/claude-settings.json`), on its Claude's command line for as
    * long as it runs: how the runner finds, stops and checks its processes on the host (ADR 0550).
-   * Absent when they aren't the host's to see (a container job, ADR 0430).
    */
   settingsPath?: string;
-  /**
-   * When the last steer was typed (its Enter), in tmux mode: a Stop before the turn that answers
-   * it doesn't end the job (spec 43).
-   */
-  steeredAt?: number;
 }
 
 export interface LocalRunnerConfig {
@@ -186,11 +156,6 @@ export interface LocalRunnerConfig {
   startPoint?: (job: RepoJob, checkout: string) => Promise<string> | string;
   /** Per-run private directories (git config, empty tool dirs, the status file) go under here. */
   runsDir: string;
-  /**
-   * Each run's attachments go under here, in `<jobId>/` (ADR 0310). Outside every worktree, and
-   * not in `protectPaths`, so the harness can read them. Default: `attachments` next to `runsDir`.
-   */
-  attachmentsDir?: string;
   /** Absolute paths the harness must not read (the runner's key, the repo cache's .git). */
   protectPaths?: string[];
   /** Commit identity for the harness. */
@@ -199,11 +164,6 @@ export interface LocalRunnerConfig {
   claudeBin?: string;
   /** The absolute Node that runs the status hook (default: this process's). */
   node?: string;
-  /**
-   * The Node that runs a planning session's MCP server and hooks (default: `node`, else this
-   * process's).
-   */
-  nodeBin?: string;
   /** How long Claude may take to come up in its session before the job fails. */
   startTimeoutMs?: number;
   /** How long the prompt may take to be submitted (the hook's `UserPromptSubmit`). */
@@ -219,14 +179,9 @@ export interface LocalRunnerConfig {
   capabilities?: Capability[];
   /**
    * How sessions run (ADR 0450): `tmux` (the TUI in tmux, the default) or `stream-json` (Claude
-   * headless as a two-way stream, shown as a chat; declares `chat`).
+   * headless as a stream whose events carry tool results and token counts; declares `chat`).
    */
   session?: LocalSessionMode;
-  /**
-   * How long to wait for a steer's turn after a result (stream) or a Stop (tmux) before the job
-   * ends anyway (Claude may fold it into the turn that ended). Default 15 s.
-   */
-  turnGraceMs?: number;
   /** Stream mode: the session's environment (default: the host's, credentials dropped). */
   streamEnv?: Record<string, string>;
   exec?: Exec;
@@ -247,46 +202,16 @@ export interface LocalRunnerConfig {
    */
   account?: (job: Job) => Promise<HarnessAccount> | HarnessAccount;
   /**
-   * The config dirs of every account on the host, where a planning session resumed on another
-   * account than it started on finds its conversation.
-   */
-  accountConfigDirs?: () => Promise<string[]> | string[];
-  /**
    * A run ended: with the usage-limit message Claude gave, or null when it ended without one
    * (ADR 0410: the host surfaces it per account; nothing switches on its own).
    */
   onAccountUsage?: (account: string, usageLimit: string | null) => void;
 }
 
-export const DEFAULT_CAPABILITIES: Capability[] = [
-  "hooks",
-  "ui-takeover",
-  "own-hardware",
-  "work-item-attachments",
-  "steer",
-  "interrupt",
-  "terminal",
-];
+export const DEFAULT_CAPABILITIES: Capability[] = ["hooks", "ui-takeover", "own-hardware"];
 
-/** A factory run branch (`factory/<n>-<slug>-run-<k>`, ADR 0035): the only kind the adapter deletes. */
-export function isRunBranch(branch: string): boolean {
-  return /^factory\/[0-9]+-[a-z0-9-]+-run-[0-9]+$/.test(branch);
-}
-
-/** The file in a job worktree's private git dir that names the job (a planning worktree's name doesn't). */
+/** The file in a job worktree's private git dir that names the job. */
 export const WORKTREE_JOB_FILE = "sf-job";
-
-/**
- * A job's worktree directory name. A planning job's is its session's (ADR 0350): every job of the
- * session gets the same path, so `claude --resume` finds the conversation, which Claude keeps by
- * working directory. Its tmux session is still `sf-<jobId>`.
- */
-export function worktreeName(jobId: string, planningSessionId?: string): string {
-  if (planningSessionId) {
-    return `${SESSION_PREFIX}plan-${planningSessionId.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}`;
-  }
-  return sessionName(jobId);
-}
 
 /** A job failed because its live harness isn't configured as the factory set it (ADR 0270). */
 export class HarnessConfigMismatch extends Error {
@@ -308,11 +233,6 @@ export async function checkRunningHarness(
   if (!record) return null;
   return { record, problems: await verifyLaunch(record, readCommand) };
 }
-
-/** How many characters of a steer go in one `send-keys -l`. */
-const STEER_CHUNK = 200;
-/** Claude Code's Rewind menu (a double Escape), as its screen shows it. */
-const REWIND_MENU = /Rewind\s*\n.*Restore the code and\/or conversation/;
 
 /** Claude's first-run folder trust dialog (a plain terminal doesn't pre-trust the worktree). */
 const TRUST_DIALOG = /trust this folder/i;
@@ -340,26 +260,6 @@ export function createLocalRunner(
 ): RunnerAdapter<LocalWorkspace, LocalSession> {
   const exec = config.exec ?? nodeExec;
   const tmux = tmuxCli({ ...config.tmux, exec });
-  /** Types one sanitised line into a session and submits it (a steer, or an interrupt's line). */
-  const typeLine = async (name: string, text: string, session?: LocalSession) => {
-    const line = steerText(text);
-    if (!line) return;
-    for (let i = 0; i < line.length; i += STEER_CHUNK) {
-      try {
-        await tmux.sendText(name, line.slice(i, i + STEER_CHUNK));
-      } catch (err) {
-        // Pieces typed already would sit in the input box and run with the next message: clear
-        // the line (Ctrl-U, best effort; spec 43), then report the steer failed.
-        if (i > 0) await tmux.sendKeys(name, "C-u").catch(() => {});
-        throw err;
-      }
-      if (i + STEER_CHUNK < line.length) await sleep(30);
-    }
-    await sleep(200);
-    // A steer is owed a turn from here (spec 43): a Stop before it doesn't end the job.
-    if (session) session.steeredAt = Date.now();
-    await tmux.sendKeys(name, "Enter");
-  };
   const pollMs = config.pollMs ?? 1000;
   const waitingInputTimeoutMs = config.waitingInputTimeoutMs ?? 15 * 60_000;
   const startTimeoutMs = config.startTimeoutMs ?? 90_000;
@@ -368,10 +268,7 @@ export function createLocalRunner(
   const streamMode = config.session === "stream-json";
   // `chat` follows the session mode, whatever else is configured.
   const capabilities = [
-    // A stream session has no terminal to share (ADR 0440): its takeover is by resume.
-    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter(
-      (c) => c !== "chat" && !(streamMode && c === "terminal"),
-    ),
+    ...(config.capabilities ?? DEFAULT_CAPABILITIES).filter((c) => c !== "chat"),
     ...(streamMode ? (["chat"] as Capability[]) : []),
   ];
   /** Live stream sessions, for capacity (tmux counts its own sessions). */
@@ -380,13 +277,11 @@ export function createLocalRunner(
   const started = new Set<string>();
   const procs = config.procs ?? hostProcs(exec);
   const goneGraceMs = config.goneGraceMs ?? 30_000;
-  const turnGraceMs = config.turnGraceMs ?? 15_000;
   const streamOptions = (): StreamOptions => ({
     ...(config.readCommand ? { readCommand: config.readCommand } : {}),
     startTimeoutMs,
     pollMs,
     waitingInputTimeoutMs,
-    ...(config.turnGraceMs !== undefined ? { turnGraceMs: config.turnGraceMs } : {}),
     ...(config.streamEnv ? { env: config.streamEnv } : {}),
   });
   const search = {
@@ -448,10 +343,6 @@ export function createLocalRunner(
     await mkdir(config.worktreesDir, { recursive: true });
     const path = join(await realpath(config.worktreesDir), name);
     const runDir = join(config.runsDir, job.jobId);
-    const attachmentsDir = join(
-      config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
-      job.jobId,
-    );
     // A crashed run of this same job may have left its Claude running (ADR 0550), and its dir.
     await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), {
       ...config.stop,
@@ -471,7 +362,6 @@ export function createLocalRunner(
       launch: {} as LaunchRecord,
       launchScript: "",
       statusFile: join(runDir, STATUS_FILE),
-      attachmentsDir,
       account: DEFAULT_HARNESS_ACCOUNT,
       plain: true,
     };
@@ -483,7 +373,6 @@ export function createLocalRunner(
         worktree: path,
         runDir,
         protectPaths: [...(config.protectPaths ?? [])],
-        ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
         ...(streamMode ? { session: "stream" as const } : {}),
         statusHook: config.node ? { node: config.node } : true,
         ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
@@ -501,10 +390,9 @@ export function createLocalRunner(
     }
   }
 
-  /** The run's settings path, when its processes are the host's to see (not a container's). */
+  /** The run's settings path: how its processes are found on the host (ADR 0550). */
   const settingsPathOf = (workspace?: LocalWorkspace, session?: LocalSession) =>
-    session?.settingsPath ??
-    (workspace && !workspace.readCommand ? join(workspace.runDir, RUN_SETTINGS_FILE) : undefined);
+    session?.settingsPath ?? (workspace ? join(workspace.runDir, RUN_SETTINGS_FILE) : undefined);
 
   /**
    * Jobs whose processes survived their release (ADR 0550): tried again on every capacity read and
@@ -619,17 +507,16 @@ export function createLocalRunner(
       await attempt("remove directory", () => removePlainDir(workspace.path));
     } else if (workspace) {
       await attempt("remove worktree", () => removeWorktree(workspace.checkout, workspace.path));
-      // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
-      // Only the branch this workspace created (ADR 0551), or a factory run branch from before the
-      // marker, and only when no worktree has it checked out: the checkout may be the owner's own.
+      // The local branch always goes: the pushed branch (or the diff artifact) is the record.
+      // Only the branch this workspace created (ADR 0551), and only when no worktree has it checked
+      // out: the checkout may be the owner's own.
       await attempt("delete branch", async () => {
-        if (!workspace.createdBranch && !isRunBranch(workspace.branch)) return;
+        if (!workspace.createdBranch) return;
         await deleteRunBranch(workspace.checkout, workspace.branch, exec);
       });
     }
     if (workspace) {
       await attempt("remove run dir", () => removeRunDir(workspace.runDir, workspace.runTmp));
-      await attempt("remove attachments", () => removeRunDir(workspace.attachmentsDir));
     }
     if (survived) {
       const e = survived as HarnessStillRunning;
@@ -697,23 +584,15 @@ export function createLocalRunner(
       return (await findCheckout(job, search))?.path ?? null;
     },
 
-    async prepareWorkspace(job, _signal, options): Promise<LocalWorkspace> {
-      const planning = job.stage === "planning";
-      if (planning && !options?.planningRelay) {
-        throw new Error(`planning job ${job.jobId} came without its relay`);
-      }
+    async prepareWorkspace(job): Promise<LocalWorkspace> {
       if (!hasRepo(job)) return preparePlainDir(job);
       // ADR 0260 (amended): the owner's checkout of the job's remote, else the host's clone.
       const checkout = await checkoutFor(job);
       const name = sessionName(job.jobId);
       await mkdir(config.worktreesDir, { recursive: true });
       const worktreesDir = await realpath(config.worktreesDir);
-      const path = join(worktreesDir, worktreeName(job.jobId, job.planning?.sessionId));
+      const path = join(worktreesDir, name);
       const runDir = join(config.runsDir, job.jobId);
-      const attachmentsDir = join(
-        config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
-        job.jobId,
-      );
       // A crashed run of this same job may have left its Claude running (ADR 0550): stop it first.
       await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), {
         ...config.stop,
@@ -721,17 +600,14 @@ export function createLocalRunner(
       });
       // A worktree left by a crashed run of this same job goes first.
       if (await exists(path)) await removeWorktree(checkout, path);
-      // So does a local copy of the run branch: `job.branch` is this run's alone (ADR 0035, one
-      // branch per run), whatever its name (an attached PR's runs are `<pr-branch>-run-<k>`), so a
-      // copy no worktree has checked out is stale (ADR 0551). It is deleted only when that loses
+      // So does a local copy of the branch: `job.branch` is this run's while it runs, so a copy no
+      // worktree has checked out is stale (ADR 0551). It is deleted only when that loses
       // nothing (the factory's marker, or the pushed run branch, has its tip); otherwise it is moved
       // aside, so the owner's commits are kept and the run still gets its name. Checked out
       // anywhere: refuse.
       const holder = (await checkedOutBranches(checkout, exec)).get(job.branch);
       if (holder) {
-        throw new Error(
-          `the run branch ${job.branch} is checked out at ${holder}; not taking it over`,
-        );
+        throw new Error(`the branch ${job.branch} is checked out at ${holder}; not taking it over`);
       }
       if (await branchExists(checkout, job.branch, exec)) {
         if (await runBranchDisposable(checkout, job.branch, exec)) {
@@ -771,7 +647,6 @@ export function createLocalRunner(
         launch: {} as LaunchRecord,
         launchScript: "",
         statusFile: join(runDir, STATUS_FILE),
-        attachmentsDir,
         account: DEFAULT_HARNESS_ACCOUNT,
         createdBranch: true,
       };
@@ -780,7 +655,7 @@ export function createLocalRunner(
         await markRunBranch(checkout, job.branch, exec);
         const baseSha = (await run(exec, "git", ["rev-parse", "HEAD"], { cwd: path })).trim();
         await excludePrivateFiles(path);
-        // Which job this worktree is, for reaping: a planning worktree's name is its session's.
+        // Which job this worktree is, for reaping.
         const ownGitDir = (
           await run(exec, "git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
             cwd: path,
@@ -802,16 +677,6 @@ export function createLocalRunner(
         // The host's active account, now: the job keeps it to the end (ADR 0410).
         const account = (await config.account?.(job)) ?? DEFAULT_HARNESS_ACCOUNT;
         partial.account = account;
-        // A planning session resumed after the owner switched accounts: its conversation is in
-        // the old account's config dir, and `claude --resume` looks in the new one.
-        if (planning && job.planning?.resume && config.accountConfigDirs) {
-          await carryConversation({
-            cwd: path,
-            sessionId: job.planning.sessionRef,
-            to: accountConfigDir(account),
-            from: await config.accountConfigDirs(),
-          });
-        }
         const projected = await projectHarness(job, {
           account,
           worktree: path,
@@ -820,22 +685,11 @@ export function createLocalRunner(
           // main checkout (its .env files, other branches' work).
           protectPaths: [...new Set([...(config.protectPaths ?? []), checkout])],
           ...(commonDir && gitDir ? { git: { commonDir, gitDir } } : {}),
-          ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
           ...(streamMode ? { session: "stream" as const } : {}),
           // The factory's status hook: agent status from Claude Code's hooks (ADR 0380).
           statusHook: config.node ? { node: config.node } : true,
           ...(config.identity ? { identity: config.identity } : {}),
           ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
-          ...(planning && options?.planningRelay
-            ? {
-                planning: {
-                  relay: options.planningRelay,
-                  ...((config.nodeBin ?? config.node)
-                    ? { nodeBin: config.nodeBin ?? config.node }
-                    : {}),
-                },
-              }
-            : {}),
         });
         return {
           ...partial,
@@ -849,12 +703,6 @@ export function createLocalRunner(
         await release(job, partial, undefined).catch(() => {});
         throw err;
       }
-    },
-
-    async attachFiles(_job, workspace, files): Promise<string> {
-      if (!capabilities.includes("work-item-attachments")) return "";
-      const written = await writeAttachments(workspace.attachmentsDir, files);
-      return attachmentsPrompt(written, new Map(files.map((f) => [f.meta.id, f.bytes])));
     },
 
     async startSession(job, workspace, signal): Promise<LocalSession> {
@@ -971,22 +819,12 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = [
-        ...(await verifyLaunch(workspace.launch, workspace.readCommand ?? config.readCommand)),
-        ...((await workspace.launchChecks?.()) ?? []),
-      ];
+      const problems = await verifyLaunch(workspace.launch, config.readCommand);
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste
       // into the Claude terminal arrives truncated (incident 2026-11-11 #8).
       await writeFile(join(workspace.path, PROMPT_FILE), job.harness.prompt, { mode: 0o600 });
-      if (workspace.writeRunFile) {
-        await workspace
-          .writeRunFile(join(workspace.path, PROMPT_FILE), job.harness.prompt)
-          .catch((err) =>
-            fail(new Error(`writing the prompt: ${err instanceof Error ? err.message : err}`)),
-          );
-      }
       session.startedAt = Date.now();
       session.promptSentAt = session.startedAt;
       try {
@@ -1023,44 +861,23 @@ export function createLocalRunner(
       return session;
     },
 
-    async *events(job, session, signal): AsyncIterable<AdapterEvent> {
+    async *events(_job, session, signal): AsyncIterable<AdapterEvent> {
       if (session.stream) {
-        yield* streamEvents(job, session, signal, streamOptions());
+        yield* streamEvents(session, signal, streamOptions());
         return;
       }
-      // A planning session (ADR 0300) idles in its Stop hook between turns: Stop and waiting are
-      // normal there. It ends when the host stops it (a yield, the gate decided) or Claude exits.
-      const planning = job.stage === "planning";
       let offset = 0;
       let emittedHistory = 0;
       let lastScreen = "";
       let lastScreenAt = 0;
       let status: AgentStatus | undefined;
       let submitted = false;
-      /** The latest submitted turn's time (the prompt's, or a steer's). */
-      let lastSubmitAt = 0;
-      /** Since when a Stop came while a steer's turn was still owed. */
-      let steerOwedSince: number | null = null;
-      /** That Stop's own time. */
-      let owedStopAt = 0;
-      /**
-       * The steered turn is under way: any sign of work after the Stop (a hook line, a transcript
-       * message, new terminal lines) counts, not only its UserPromptSubmit, which a hook under load
-       * can deliver late or not at all. The job then ends at that turn's Stop.
-       */
-      const steerTaken = () => {
-        if (steerOwedSince === null) return;
-        lastSubmitAt = Math.max(lastSubmitAt, session.steeredAt ?? 0);
-        steerOwedSince = null;
-      };
       let waitingSince: number | null = null;
       let transcript: string | null = null;
-      // The transcript is tailed for what the agent says (ADR 0400). A resumed planning
-      // conversation's file holds earlier turns: only messages from this session are sent.
+      // The transcript is tailed for what the agent says (ADR 0400): only what was said in this
+      // session.
       let tailing: string | null = null;
       let transcriptOffset = 0;
-      // A second call after a steer (the host sending a failing check back, ADR 0501) reports the
-      // turn that steer started: only what was said since it was typed.
       const since = Math.max(session.startedAt, session.promptSentAt) - 5_000;
       /** What the agent said, not yet yielded, oldest first. */
       const said: { at: number | null; event: AdapterEvent }[] = [];
@@ -1075,7 +892,6 @@ export function createLocalRunner(
         transcriptOffset = read.offset;
         for (const m of read.messages) {
           if (m.at !== null && m.at < since) continue;
-          if (m.at !== null && m.at > owedStopAt) steerTaken();
           said.push({
             at: m.at,
             event: { type: "message", role: m.role, text: clip(m.text, MESSAGE_MAX - 1) },
@@ -1229,15 +1045,9 @@ export function createLocalRunner(
         await readSaid();
         for (const line of read.lines) {
           yield* saidUpTo(line.time);
-          // Work after an owed Stop (later in the file than it): the steered turn is under way.
-          if (line.event === "PreToolUse" || line.event === "PostToolUse") steerTaken();
           switch (line.event) {
             case "UserPromptSubmit":
-              if (line.time >= session.promptSentAt) {
-                submitted = true;
-                lastSubmitAt = Math.max(lastSubmitAt, line.time);
-                steerOwedSince = null;
-              }
+              if (line.time >= session.promptSentAt) submitted = true;
               yield* setStatus("working");
               break;
             case "PreToolUse":
@@ -1266,9 +1076,7 @@ export function createLocalRunner(
               usageLimit = limit;
               status = "error";
               yield limitEvent(limit);
-              // A planning session waits for the owner (it may switch and steer); a job has
-              // nothing left to do on this account: it fails now instead of idling to a timeout.
-              if (planning) break;
+              // Nothing left to do on this account: it fails now instead of idling to a timeout.
               yield* await finalLogs();
               reportUsage("failed");
               yield {
@@ -1281,21 +1089,6 @@ export function createLocalRunner(
             case "Stop":
               // A Stop from before the prompt was submitted (nothing asked yet) is not the end.
               if (!submitted) break;
-              if (planning) {
-                yield* setStatus("idle");
-                break;
-              }
-              // A steer typed after the last submitted turn is queued by Claude and runs after
-              // this Stop (spec 43): the job ends at the Stop of the turn that answers it, or
-              // after a grace period if Claude folded it into this one.
-              if ((session.steeredAt ?? 0) > lastSubmitAt) {
-                yield* setStatus("idle");
-                if (steerOwedSince === null) {
-                  steerOwedSince = Date.now();
-                  owedStopAt = line.time;
-                }
-                break;
-              }
               yield* endAtStop();
               return;
             case "SessionEnd":
@@ -1306,12 +1099,6 @@ export function createLocalRunner(
         }
         // Said after the last hook line: nothing later has been reported yet.
         yield* saidUpTo();
-
-        // The steered turn never came: Claude took the steer into the turn that stopped.
-        if (steerOwedSince !== null && Date.now() - steerOwedSince > turnGraceMs) {
-          yield* endAtStop();
-          return;
-        }
 
         // Ended only once its Claude is confirmed gone from the process table (unknown is alive).
         const mayBeAlive = () =>
@@ -1346,11 +1133,7 @@ export function createLocalRunner(
         } else {
           goneSince = null;
         }
-        if (
-          !planning &&
-          waitingSince !== null &&
-          Date.now() - waitingSince > waitingInputTimeoutMs
-        ) {
+        if (waitingSince !== null && Date.now() - waitingSince > waitingInputTimeoutMs) {
           yield {
             type: "session.ended",
             outcome: "failed",
@@ -1380,8 +1163,6 @@ export function createLocalRunner(
           }).catch(() => null));
         if (transcript) {
           const summary = await readTranscript(transcript).catch(() => null);
-          const checks = summary ? checkOutputLog(summary) : null;
-          if (checks) artifacts.push({ kind: "log", name: "check-output", text: checks });
           if (summary?.lastAssistantText) {
             artifacts.push({
               kind: "log",
@@ -1406,80 +1187,5 @@ export function createLocalRunner(
     },
 
     release,
-
-    /**
-     * Another turn in the same session (ADR 0501): Claude is still alive after its turn (in its tmux
-     * pane, or as the stream-json process), so the text goes in like a steer and `events()` follows
-     * that turn to its own end.
-     */
-    async *continueSession(job, session, text, signal) {
-      // Off for stream-json sessions until it is tested against a real one (PR #73 review): the
-      // failing check goes to a person instead.
-      if (session.stream) {
-        throw new Error("a stream-json session can't take a fix round yet");
-      }
-      // Between turns (after `session.ended`), so this text starts a turn of its own: the next
-      // `events()` call waits for its submit and Stop, not the ones before (ADR 0501). A steer typed
-      // mid-turn is #87's `steeredAt`, which this leaves alone.
-      if (steerText(text)) session.promptSentAt = Date.now();
-      await this.steer?.(session, text);
-      yield* this.events(job, session, signal);
-    },
-    /**
-     * A person's message (ADR 0400): one sanitised line, typed in short pieces so the TUI doesn't
-     * take it as a paste (a long paste arrives truncated, incident 2026-11-11 #8), then Enter. Claude
-     * Code queues a message typed while it works and reads it at its next step.
-     */
-    async steer(session, text) {
-      if (session.stream) return steerStream(session, text);
-      await typeLine(session.name, text, session);
-    },
-    // Spec 26, ADR 0470: stop the current step, then submit the factory's fixed line as a steer.
-    // A tmux session gets Claude Code's Escape; a stream session its interrupt control line.
-    async interrupt(session, text) {
-      if (session.stream) return interruptStream(session, text);
-      await tmux.sendKeys(session.name, "Escape");
-      await sleep(500);
-      // A second Escape within a second opens Claude Code's Rewind menu, which would swallow the
-      // line (and Enter there could rewind the conversation). Close it before typing.
-      // Only the bottom of the screen, where the menu renders: text the agent printed higher up
-      // can't trigger this (review of #71, D).
-      const bottom = ((await tmux.capture(session.name)) ?? "").trimEnd().split("\n").slice(-14);
-      if (
-        REWIND_MENU.test(bottom.join("\n")) &&
-        /Enter to continue · Esc to cancel/.test(bottom.join("\n"))
-      ) {
-        await tmux.sendKeys(session.name, "Escape");
-        await sleep(300);
-      }
-      await typeLine(session.name, text, session);
-    },
-
-    /**
-     * Hands a stream session to a person (ADR 0450): stops it cleanly; `events()` then reports the
-     * `claude --resume` command and follows the resumed session. A tmux session is taken over by
-     * attaching, so there is nothing to stop.
-     */
-    async takeover(session) {
-      if (!session.stream) throw new Error("attach to the tmux session to take it over");
-      await takeOverStream(session);
-    },
-
-    /**
-     * The web terminal (ADR 0440): a tmux control-mode client on the job's session, started while
-     * someone watches from the dashboard and closed when they leave. A stream session (ADR 0450)
-     * has no terminal: it is taken over by resume instead.
-     */
-    openTerminal(session, options) {
-      if (session.stream) {
-        return Promise.reject(new Error("a stream-json session has no terminal: take it over"));
-      }
-      return openTmuxTerminal({
-        ...options,
-        session: session.name,
-        socket: tmux.socket,
-        ...(config.tmux?.bin ? { bin: config.tmux.bin } : {}),
-      });
-    },
   };
 }

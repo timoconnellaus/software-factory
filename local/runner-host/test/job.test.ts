@@ -43,7 +43,7 @@ const edit = (line: string) => async (wt: string) => {
 };
 
 describe("runJob", () => {
-  it("builds: pushes only the run branch with the job token and hands back its head", async () => {
+  it("pushes only the item's branch with the job token and hands back its head", async () => {
     const { repo, cloud, cp, fetchSpy } = await world();
     const j = job();
     cloud.claims.set("c", j);
@@ -63,8 +63,7 @@ describe("runJob", () => {
     expect(report.headSha).toBe(pushed);
     // nothing else moved on "GitHub"
     expect(git(repo.bare, "for-each-ref", "--format=%(refname)").split("\n").sort()).toEqual([
-      "refs/heads/factory/7-add-a-line",
-      "refs/heads/factory/7-add-a-line-run-1",
+      "refs/heads/factory/flow-acm-7",
       "refs/heads/main",
     ]);
     const handback = cloud.handbacks.get(j.jobId);
@@ -93,7 +92,6 @@ describe("runJob", () => {
     const { repo: _repo, branch: _branch, ...rest } = job();
     const j: Job = {
       ...rest,
-      stage: "flow",
       harness: { id: "claude-code", role: "implement", prompt: "write the post" },
     };
     cloud.claims.set("c", j);
@@ -171,95 +169,6 @@ describe("runJob", () => {
     expect(calls).toEqual([]);
   });
 
-  it("fetches the work item's attachments for an adapter that declares the capability", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });
-    cloud.claims.set("c", j);
-    const meta = {
-      id: "att_1",
-      filename: "notes.txt",
-      contentType: "text/plain",
-      sizeBytes: 5,
-      sha256: "0".repeat(64),
-      createdAt: new Date().toISOString(),
-    };
-    cloud.attachments.set(j.jobId, [{ meta, base64: btoa("hello") }]);
-    const triage = async (wt: string) => {
-      await writeFile(join(wt, RESULT_FILE), JSON.stringify({ size: "small", reason: "r" }));
-      return [{ type: "session.ended" as const, outcome: "completed" as const }];
-    };
-    const base = fakeAdapter((x) => repo.host.clonePath(x), triage);
-    const got: string[] = [];
-    const adapter = {
-      ...base,
-      async manifest() {
-        const m = await base.manifest();
-        return { ...m, capabilities: [...m.capabilities, "work-item-attachments" as const] };
-      },
-      async attachFiles(
-        _j: unknown,
-        _w: unknown,
-        files: { meta: { id: string }; bytes: Uint8Array }[],
-      ) {
-        for (const f of files) got.push(`${f.meta.id}:${new TextDecoder().decode(f.bytes)}`);
-        return '\n## Attachments\n<untrusted-data label="attachment 1">…</untrusted-data>';
-      },
-    };
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("completed");
-    expect(got).toEqual(["att_1:hello"]);
-    expect(base.prompts[0]).toContain("## Attachments");
-
-    // A runner that doesn't declare the capability runs the same job and never asks.
-    const k = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });
-    cloud.claims.set("d", k);
-    cloud.attachments.set(k.jobId, [{ meta, base64: btoa("hello") }]);
-    const calls = cloud.attachmentCalls;
-    const plain = fakeAdapter((x) => repo.host.clonePath(x), triage);
-    const plainReport = await runJob({ adapter: plain, cp, git: repo.host, job: k });
-    expect(plainReport.outcome).toBe("completed");
-    expect(plainReport.handedBack).toBe(true);
-    expect(cloud.attachmentCalls).toBe(calls);
-    expect(plain.prompts[0]).toBe("t");
-  });
-
-  it("triage: pushes nothing and passes the result through", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job({ stage: "triage", harness: { id: "claude-code", role: "triage", prompt: "t" } });
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async (wt) => {
-        await writeFile(
-          join(wt, RESULT_FILE),
-          JSON.stringify({ size: "small", reason: "one line" }),
-        );
-        return [{ type: "session.ended", outcome: "completed" }];
-      },
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("completed");
-    expect(report.headSha).toBeUndefined();
-    expect(() => git(repo.bare, "rev-parse", "--verify", j.branch)).toThrow();
-    expect(cloud.handbacks.get(j.jobId)).toMatchObject({
-      branch: j.branch,
-      result: { size: "small", reason: "one line" },
-    });
-  });
-
-  it("fails a build that made no commits", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job();
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async () => [{ type: "session.ended", outcome: "completed" }],
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("failed");
-    expect(cloud.handbacks.get(j.jobId)?.summary).toContain("no commits");
-  });
-
   it("commits what the session left uncommitted", async () => {
     const { repo, cloud, cp } = await world();
     const j = job();
@@ -316,122 +225,6 @@ describe("runJob", () => {
     expect(adapter.calls).toContain("release");
   });
 
-  it("types the dashboard's steers into the live session, sanitised, while it runs (ADR 0400)", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job();
-    cloud.claims.set("c", j);
-    cloud.steers.set(j.jobId, [
-      { id: "st_1", text: "also\nthank the reviewer\u0007", at: new Date().toISOString() },
-    ]);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async (wt, _j, signal) => {
-        // The session runs until the message arrives (or a generous timeout).
-        for (let i = 0; i < 200 && adapter.steered.length === 0 && !signal.aborted; i++) {
-          await sleep(10);
-        }
-        return edit("x")(wt);
-      },
-      { steer: true },
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
-    expect(report.outcome).toBe("completed");
-    expect(adapter.steered).toEqual(["also thank the reviewer"]);
-    expect(cloud.steerCalls).toBeGreaterThan(0);
-  });
-
-  it("interrupts the agent for a planning interrupt, and types an interrupt as a steer when the adapter can't (ADR 0470)", async () => {
-    for (const canInterrupt of [true, false]) {
-      const { repo, cloud, cp } = await world();
-      const j = job();
-      cloud.claims.set("c", j);
-      cloud.steers.set(j.jobId, [
-        { id: "st_1", text: "read your news", at: new Date().toISOString(), interrupt: true },
-      ]);
-      const adapter = fakeAdapter(
-        (x) => repo.host.clonePath(x),
-        async (wt, _j, signal) => {
-          for (
-            let i = 0;
-            i < 200 && adapter.steered.length + adapter.interrupted.length === 0 && !signal.aborted;
-            i++
-          ) {
-            await sleep(10);
-          }
-          return edit("x")(wt);
-        },
-        { steer: true, interrupt: canInterrupt },
-      );
-      await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
-      expect(adapter.interrupted).toEqual(canInterrupt ? ["read your news"] : []);
-      expect(adapter.steered).toEqual(canInterrupt ? [] : ["read your news"]);
-    }
-  });
-
-  it("logs a takeover an adapter can't do, never types it, and the run goes on (ADR 0450)", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job();
-    cloud.claims.set("c", j);
-    cloud.steers.set(j.jobId, [
-      { id: "st_t", text: "", at: new Date().toISOString(), kind: "takeover" },
-      { id: "st_2", text: "after it", at: new Date().toISOString() },
-    ]);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async (wt, _j, signal) => {
-        for (let i = 0; i < 200 && adapter.steered.length === 0 && !signal.aborted; i++) {
-          await sleep(10);
-        }
-        return edit("x")(wt);
-      },
-      { steer: true },
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
-    expect(report.outcome).toBe("completed");
-    expect(adapter.steered).toEqual(["after it"]);
-    const events = cloud.events.get(j.jobId) ?? [];
-    expect(
-      events.some(
-        (e) => e.type === "log" && e.stream === "stderr" && /could not be handed over/.test(e.text),
-      ),
-    ).toBe(true);
-  });
-
-  it("stops asking for steers when the engine doesn't know the call, and the run goes on", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job();
-    cloud.claims.set("c", j);
-    cloud.noSteerCall = true;
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async (wt) => {
-        await sleep(100);
-        return edit("x")(wt);
-      },
-      { steer: true },
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
-    expect(report.outcome).toBe("completed");
-    expect(report.handedBack).toBe(true);
-    expect(cloud.steerCalls).toBe(1);
-  });
-
-  it("never asks for steers for an adapter without the capability", async () => {
-    const { repo, cloud, cp } = await world();
-    const j = job();
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter((x) => repo.host.clonePath(x), edit("x"));
-    await runJob({ adapter, cp, git: repo.host, job: j, flushMs: 5 });
-    expect(cloud.steerCalls).toBe(0);
-  });
-
-  it("refuses any branch but the job's own run branch", () => {
-    expect(() => assertPushable(job({ branch: "main" }))).toThrow();
-    expect(() => assertPushable(job({ branch: "factory/7-add-a-line-run-2" }))).toThrow();
-    expect(() => assertPushable(job(), "factory/8-other-run-1")).toThrow();
-    expect(() => assertPushable(job(), "factory/7-add-a-line-run-1")).not.toThrow();
-  });
-
   it("lets a flow job push only its own item branch factory/flow-<key>-<n>", () => {
     const flow = (branch: string) => ({ ...flowJob(), branch });
     expect(() => assertPushable(flow("factory/flow-acm-7"))).not.toThrow();
@@ -443,20 +236,16 @@ describe("runJob", () => {
     expect(() => assertPushable(flow("factory/flow-ACM-7"))).toThrow();
     expect(() => assertPushable(flow("main"))).toThrow();
     expect(() => assertPushable(flow("factory/flow-acm-7/x"))).toThrow();
-    // A build may not push a flow branch.
-    expect(() => assertPushable(job({ branch: "factory/flow-acm-7" }))).toThrow();
+    expect(() => assertPushable(flow("factory/7-add-a-line-run-1"))).toThrow();
   });
 });
 
 /** A flow job on a project with a repository (spec 70): its item's branch, from `baseRef`. */
 function flowJob(baseRef = "main"): RepoJob {
   return job({
-    stage: "flow",
     branch: "factory/flow-acm-7",
     repo: { ...job().repo, baseRef, defaultBranch: "main" },
     harness: { id: "claude-code", role: "implement", prompt: "change the code" },
-    // Checks on a flow job are never run (the old project checks step is for the old stages).
-    checks: { commands: [{ name: "tests", run: "echo ran", timeoutMs: 30_000 }], fixRounds: 1 },
   });
 }
 
@@ -487,8 +276,6 @@ describe("runJob: a flow job with a repository (spec 70)", () => {
       outcome: "completed",
       result: { outcome: "done", summary: "one" },
     });
-    // No checks ran, though the job named some.
-    expect(cloud.handbacks.get(first.jobId)?.checks).toBeUndefined();
     // The agent's commit and the leftover, committed by the host; never the result file.
     expect(git(repo.bare, "show", "factory/flow-acm-7:one.txt")).toBe("left over");
     expect(git(repo.bare, "ls-tree", "-r", "--name-only", "factory/flow-acm-7")).not.toContain(
@@ -496,7 +283,6 @@ describe("runJob: a flow job with a repository (spec 70)", () => {
     );
     // Only the item's branch moved on "GitHub".
     expect(git(repo.bare, "for-each-ref", "--format=%(refname)").split("\n").sort()).toEqual([
-      "refs/heads/factory/7-add-a-line",
       "refs/heads/factory/flow-acm-7",
       "refs/heads/main",
     ]);
@@ -562,96 +348,6 @@ async function land(
   git(wt, "-c", "user.name=o", "-c", "user.email=o@x.invalid", "commit", "-qm", `land ${path}`);
   git(wt, "push", "-q", "origin", branch);
 }
-
-describe("runJob: the default branch is merged before a build (ADR 0320)", () => {
-  it("merges the default branch in, so the run branch stays mergeable", async () => {
-    const { repo, cloud, cp } = await world();
-    await land(repo, "main", "other.txt", "landed meanwhile\n");
-    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter((x) => repo.host.clonePath(x), edit("hello"));
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("completed");
-    expect(git(repo.bare, "show", `${j.branch}:other.txt`)).toBe("landed meanwhile");
-    // main is an ancestor of the pushed head: the PR merges cleanly
-    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
-    // the diff artifact shows the session's change, not main's
-    const diff = [...cloud.artifacts.values()].find((a) => a.kind === "diff");
-    expect(diff?.kind === "diff" && diff.patch).toContain("+hello");
-    expect(diff?.kind === "diff" && diff.patch).not.toContain("landed meanwhile");
-  });
-
-  it("leaves a conflict for the session, and pushes the merge once it is resolved", async () => {
-    const { repo, cloud, cp } = await world();
-    await land(repo, "factory/7-add-a-line", "README.md", "# scratch\nours\n");
-    await land(repo, "main", "README.md", "# scratch\ntheirs\n");
-    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
-    cloud.claims.set("c", j);
-    let seen = "";
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async (wt) => {
-        seen = git(wt, "status", "--porcelain");
-        await writeFile(join(wt, "README.md"), "# scratch\nours\ntheirs\n");
-        git(wt, "add", "README.md");
-        git(wt, "-c", "user.name=a", "-c", "user.email=a@x.invalid", "commit", "-q", "--no-edit");
-        return [{ type: "session.ended", outcome: "completed" }];
-      },
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(seen).toContain("UU README.md");
-    expect(report.outcome).toBe("completed");
-    expect(git(repo.bare, "show", `${j.branch}:README.md`)).toBe("# scratch\nours\ntheirs");
-    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
-    const events = cloud.events.get(j.jobId) ?? [];
-    expect(JSON.stringify(events)).toContain("merging main conflicts in 1 file(s)");
-  });
-
-  it("fails a build that leaves the merge unresolved, and pushes nothing", async () => {
-    const { repo, cloud, cp } = await world();
-    await land(repo, "factory/7-add-a-line", "README.md", "# scratch\nours\n");
-    await land(repo, "main", "README.md", "# scratch\ntheirs\n");
-    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async () => [{ type: "session.ended", outcome: "completed" }],
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("failed");
-    expect(cloud.handbacks.get(j.jobId)?.summary).toContain("left unresolved in: README.md");
-    expect(() => git(repo.bare, "rev-parse", "--verify", j.branch)).toThrow();
-  });
-
-  it("a clean merge alone is not a build when the branch has no work of its own", async () => {
-    const { repo, cloud, cp } = await world();
-    await land(repo, "main", "other.txt", "x\n");
-    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async () => [{ type: "session.ended", outcome: "completed" }],
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("failed");
-    expect(cloud.handbacks.get(j.jobId)?.summary).toContain("no commits");
-  });
-
-  it("a clean merge alone is a build on a retry, when the branch already has work", async () => {
-    const { repo, cloud, cp } = await world();
-    await land(repo, "factory/7-add-a-line", "mine.txt", "mine\n");
-    await land(repo, "main", "other.txt", "x\n");
-    const j = job({ repo: { ...job().repo, defaultBranch: "main" } });
-    cloud.claims.set("c", j);
-    const adapter = fakeAdapter(
-      (x) => repo.host.clonePath(x),
-      async () => [{ type: "session.ended", outcome: "completed" }],
-    );
-    const report = await runJob({ adapter, cp, git: repo.host, job: j });
-    expect(report.outcome).toBe("completed");
-    git(repo.bare, "merge-base", "--is-ancestor", "main", j.branch);
-  });
-});
 
 describe("RunnerHost", () => {
   it("heartbeats, claims, runs, and frees its slot", async () => {

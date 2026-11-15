@@ -1,23 +1,13 @@
-// Typed refusals. `code` is stable and is what callers (the app, the Workflow, the runner channel)
-// branch on. Every refusal past input validation is audited.
+// Typed refusals. `code` is stable and is what callers (the website, the client door, the runner
+// channel) branch on. Every refusal past input validation is audited.
 
 export const REFUSAL_CODES = [
   "unknown_operation",
   "invalid_input",
   /** The actor type may not call this operation at all, or a human lacks the permission. */
   "forbidden",
-  /** The gate check said deny (including a missing or malformed policy: fail closed). */
+  /** A sign-in a person denied (the phone's sign-in answers it as a refusal, ADR 0541). */
   "denied",
-  /**
-   * The work item's pinned workflow version can't be read (#185): agents and runners on it may only
-   * read, ask a person, wait and end it; a v17 Workflow parks on this and asks.
-   */
-  "workflow_unreadable",
-  /** A kill switch covers the work item; non-human writes are refused (ADR 0044). */
-  "killed",
-  /** The write carried a stale fencing token (ADR 0035). */
-  "fenced",
-  "bad_approval",
   "conflict",
   "not_found",
   /** Something the operation depends on (a secret, the GitHub App) isn't configured. */
@@ -39,7 +29,7 @@ export class OperationError extends Error {
 export const isOperationError = (error: unknown): error is OperationError =>
   error instanceof OperationError;
 
-/** The JSON shape of a refusal on any wire (RPC, HTTP, the Workflow's step results). */
+/** The JSON shape of a refusal on any wire (RPC, HTTP). */
 export interface Refusal {
   code: RefusalCode;
   message: string;

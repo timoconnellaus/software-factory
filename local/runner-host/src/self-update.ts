@@ -518,7 +518,7 @@ export async function createSelfUpdater(options: SelfUpdaterOptions): Promise<Se
           true,
         );
       }
-      // What it claims, for the engine (ADR 0520): on `none` it asks idle planning sessions to yield.
+      // What it claims, for the engine (ADR 0520).
       state = {
         ...state,
         claims: decision === "claim" ? "all" : decision === "light" ? "light" : "none",

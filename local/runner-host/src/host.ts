@@ -1,10 +1,10 @@
 // The runner host daemon (ADR 0014, 0016, 0100). Outbound only: every ~20 s it heartbeats (manifest,
 // capacity, the jobs it holds with their fencing tokens, which renews their leases), applies the
 // commands that come back (cancel, drain, account.use: ADR 0410), and claims jobs while it has
-// room. Each job runs concurrently through `runJob`, which also takes the dashboard's steers for its
-// session on a held channel call (ADR 0400). Nothing here knows which runner adapter it drives.
-import { setTimeout as sleep } from "node:timers/promises";
+// room. Each job runs concurrently through `runJob`. Nothing here knows which runner adapter it
+// drives.
 import {
+  type CapabilityManifest,
   type CapacityPaused,
   ChannelCallError,
   type ControlPlaneClient,
@@ -14,65 +14,41 @@ import {
   type RunnerAdapter,
   type RunnerEvent,
   type SessionHandle,
-  stagePool,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
-import { hostManifest } from "./checks.ts";
 import type { HostGit } from "./git.ts";
-import { type JobReport, type RunJobOptions, runJob } from "./job.ts";
+import { type JobReport, runJob } from "./job.ts";
 import { writeLiveJobs } from "./live-jobs.ts";
 import type { SelfUpdate, UpdateDecision } from "./self-update.ts";
+
+/**
+ * The adapter's manifest with what this host adds itself: `flow` (spec 70), the one stage it runs,
+ * whatever the adapter.
+ */
+function hostManifest(manifest: CapabilityManifest): CapabilityManifest {
+  return manifest.capabilities.includes("flow")
+    ? manifest
+    : { ...manifest, capabilities: [...manifest.capabilities, "flow"] };
+}
 
 export interface HostOptions<W extends WorkspaceHandle, S extends SessionHandle> {
   adapter: RunnerAdapter<W, S>;
   cp: ControlPlaneClient;
   git: HostGit;
-  /** Concurrent heavy jobs (build, verify). The adapter's own `capacity().max` caps it too. */
-  maxConcurrent: number;
   /**
-   * Concurrent light jobs (triage, spec, planning), ADR 0301. An idle planning session holds one.
-   * Default 6.
+   * The heavy pool's size, as reported (ADR 0301). No job uses it now; the adapter's own
+   * `capacity().max` caps it too.
    */
+  maxConcurrent: number;
+  /** Concurrent jobs: the light pool, where every flow job runs (ADR 0301). Default 6. */
   maxLight?: number;
   heartbeatMs?: number;
   log?: (message: string) => void;
   onEvent?: (e: RunnerEvent) => void;
   onJobDone?: (report: JobReport) => void;
   fetch?: typeof fetch;
-  /**
-   * The OS-sandboxed exec for the project's checks when the adapter has none (ADR 0501,
-   * ./check-sandbox.ts). Absent or null: checks are reported not run.
-   */
-  checkSandbox?: RunJobOptions<W, S>["checkSandbox"];
-  /** Where the jobs' check trees go (the runner's `paths().checksDir`, which harnesses deny). */
-  checksDir?: string;
-  /**
-   * Whether this host declares `checks` (ADR 0501, fifth review): a `sandbox` runner always does,
-   * even when no check can run right now (each comes back not run with the reason); so does any
-   * runner whose adapter has an `exec` of its own. Absent: when `checkSandbox` is set.
-   */
-  declareChecks?: boolean;
-  /** The one line on where checks run here, or why not (doctor's), sent with the manifest. */
-  checksNote?: () => Promise<string>;
-  /**
-   * At most this many of the project's checks run at once on this runner (fifth review; default 1).
-   * Each counts as a heavy job while it runs, and one waits to start while the load backoff has
-   * stopped heavy work (for up to `checkLoadWaitMs`, default 10 min, then it runs anyway).
-   */
-  maxChecks?: number;
-  checkLoadWaitMs?: number;
-  /** How often a waiting check looks again (default 5 s; tests shorten it). */
-  checkPollMs?: number;
-  /** The disk bound for a check's tree carried to the next check (runner.json `checks.maxTreeGb`). */
-  maxTreeBytes?: number;
   /** Tidies up after a crash: jobs this adapter still holds that the host isn't running. */
   reapOrphans?: (running: Set<string>) => Promise<string[]>;
-  /**
-   * A sweep while the host runs (a sprites runner's: sandboxes no live job holds, or past their
-   * lifetime, ADR 0480), every `sweepMs` (default 10 min). Failures are logged loudly, not hidden.
-   */
-  sweep?: (running: Set<string>) => Promise<string[]>;
-  sweepMs?: number;
   /** Runs once at start, after `reapOrphans` and before the first claim (the repo migration). */
   onStart?: () => Promise<void>;
   /** Where the host records the jobs it is running, for `sf-runner status` and `doctor`. */
@@ -116,12 +92,9 @@ interface Running {
 
 export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private readonly running = new Map<string, Running>();
-  /** The project's checks running now, across jobs (fifth review). */
-  private checksRunning = 0;
   private draining = false;
   private stopped = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private sweeper: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
   /** A claim whose answer never arrived is retried with the same id (same job back). */
   private pendingClaimId: string | null = null;
@@ -130,8 +103,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private confirmed = false;
   /** A pending update has waited past its first cap: report the heavy pool full (ADR 0520). */
   private heavyClosed = false;
-  /** What the engine's last heartbeat said it supports beyond the contract (spec 44 part B). */
-  private engineCapabilities: string[] = [];
   /** Whether it has logged claiming nothing for the engine's `minRunnerCompat` (once per spell). */
   private loggedIncompatible = false;
   readonly log: (message: string) => void;
@@ -152,25 +123,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         return [];
       });
       if (reaped.length) this.log(`cleaned up after a previous run: ${reaped.join(", ")}`);
-    }
-    if (this.options.sweep) {
-      const sweep = this.options.sweep;
-      this.sweeper = setInterval(
-        () => {
-          void sweep(new Set(this.running.keys())).then(
-            (swept) => {
-              if (swept.length) this.log(`sweep: removed ${swept.join(", ")}`);
-            },
-            (err) => {
-              this.log(
-                `SWEEP FAILED, sandboxes may still be running and billed: ${err instanceof Error ? err.message : err}`,
-              );
-            },
-          );
-        },
-        this.options.sweepMs ?? 10 * 60_000,
-      );
-      this.sweeper.unref?.();
     }
     await this.recordLive();
     await this.options.onStart?.().catch((err) => {
@@ -196,13 +148,7 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private async turn(): Promise<void> {
     const every = this.options.heartbeatMs ?? 20_000;
     try {
-      // The host runs the project's checks itself (ADR 0501): a `sandbox` runner, or one whose
-      // adapter has its own exec, declares `checks`; the note says where they run, or why not.
-      const manifest = hostManifest(
-        await this.options.adapter.manifest(),
-        !!this.options.adapter.exec || (this.options.declareChecks ?? !!this.options.checkSandbox),
-        await this.options.checksNote?.().catch(() => undefined),
-      );
+      const manifest = hostManifest(await this.options.adapter.manifest());
       const capacity = await this.capacity();
       const selfUpdate = this.options.selfUpdate;
       // A registry that can't be read is reported as nothing rather than failing the heartbeat.
@@ -210,8 +156,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
         this.log(`accounts: ${err instanceof Error ? err.message : err}`);
         return undefined;
       });
-      const { commands, leases, desiredVersion, minRunnerCompat, engine } =
-        await this.options.cp.heartbeat({
+      const { commands, leases, desiredVersion, minRunnerCompat } = await this.options.cp.heartbeat(
+        {
           manifest,
           capacity,
           activeJobs: [...this.running.values()]
@@ -224,9 +170,8 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
           ...(selfUpdate ? { version: selfUpdate.report() } : {}),
           ...(accounts ? { accounts } : {}),
           compat: this.compat,
-        });
-      // What the engine supports (spec 44 part B): the job line is used only when it says so.
-      this.engineCapabilities = engine?.capabilities ?? [];
+        },
+      );
       this.failures = 0;
       if (selfUpdate && !this.confirmed) {
         this.confirmed = true;
@@ -324,7 +269,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   private async stopForUpdate() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    if (this.sweeper) clearInterval(this.sweeper);
     this.log("updated: stopping so the new code starts");
     await this.recordLive();
     // After this turn has finished, so `stop()` from the callback doesn't wait on it.
@@ -336,48 +280,15 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   }
 
   /**
-   * A slot for one check (fifth review): waits while `maxChecks` are running, and while the load
-   * backoff has stopped heavy work (up to `checkLoadWaitMs`, then it runs anyway, so a check can't
-   * wait forever on load the factory doesn't cause). Returns the release.
-   */
-  private async checkSlot(jobId: string, signal: AbortSignal): Promise<() => void> {
-    const max = this.options.maxChecks ?? 1;
-    const loadUntil = Date.now() + (this.options.checkLoadWaitMs ?? 10 * 60_000);
-    let said = "";
-    for (;;) {
-      signal.throwIfAborted();
-      const full = this.checksRunning >= max;
-      const loaded =
-        !full &&
-        Date.now() < loadUntil &&
-        (this.options.load?.check()?.pools.includes("heavy") ?? false);
-      if (!full && !loaded) break;
-      const why = full ? `${this.checksRunning} check(s) running` : "the machine is overloaded";
-      if (why !== said) this.log(`${jobId}: a check waits to start (${why})`);
-      said = why;
-      await sleep(this.options.checkPollMs ?? 5_000, undefined, { signal });
-    }
-    this.checksRunning++;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.checksRunning--;
-    };
-  }
-
-  /**
-   * Both pools (ADR 0301): `max`/`inUse` are the heavy pool, `light` the light one. While a pending
-   * update takes light jobs only (ADR 0520), the heavy pool reports full, so the engine sends none.
+   * Both pools (ADR 0301): `max`/`inUse` are the heavy pool, `light` the light one, where every
+   * flow job runs. While a pending update takes light jobs only (ADR 0520), the heavy pool reports
+   * full.
    */
   private async capacity() {
     const reported = await this.options.adapter.capacity().catch(() => null);
-    const running = [...this.running.values()];
-    const lightInUse = running.filter((r) => stagePool(r.job.stage) === "light").length;
-    // A running check is heavy work of its own (2 CPUs, 4 GB by default): it counts as a heavy job.
-    const heavyInUse = running.length - lightInUse + this.checksRunning;
+    const lightInUse = this.running.size;
     // The adapter may see workspaces the host doesn't run (a crashed run): count them as heavy.
-    const inUse = Math.max(heavyInUse, (reported?.inUse ?? 0) - lightInUse);
+    const inUse = Math.max(0, (reported?.inUse ?? 0) - lightInUse);
     const open = Math.min(this.options.maxConcurrent, reported?.max ?? this.options.maxConcurrent);
     // Why it takes nothing new (ADR 0552): a drain first, then the adapter's own pause (its tmux
     // not answering), else the load's.
@@ -423,11 +334,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
       },
       ...(this.options.onEvent ? { onEvent: this.options.onEvent } : {}),
       ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
-      ...(this.options.checkSandbox ? { checkSandbox: this.options.checkSandbox } : {}),
-      ...(this.options.checksDir ? { checksDir: this.options.checksDir } : {}),
-      checkSlot: (signal) => this.checkSlot(job.jobId, signal),
-      engineHasLine: () => this.engineCapabilities.includes("job-line"),
-      ...(this.options.maxTreeBytes ? { maxTreeBytes: this.options.maxTreeBytes } : {}),
     })
       .then((report) => {
         this.log(
@@ -478,7 +384,6 @@ export class RunnerHost<W extends WorkspaceHandle, S extends SessionHandle> {
   async stop(options: { cancel?: boolean; timeoutMs?: number } = {}): Promise<void> {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    if (this.sweeper) clearInterval(this.sweeper);
     if (options.cancel) {
       for (const r of this.running.values())
         r.controller.abort(new Error("the runner is stopping"));

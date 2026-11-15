@@ -10,9 +10,6 @@ export const URL_ = "https://engine.test";
 export const APP = "https://app.test";
 export const NOW = Date.parse("2026-11-12T12:00:00Z");
 
-export const wi = (n: number) => `wi_${String(n).padStart(32, "0")}`;
-export const prj = (n: number) => `prj_${String(n).padStart(32, "0")}`;
-
 export type Handler = (input: Record<string, unknown>) => unknown;
 /** What a handler throws to answer with an error. */
 export class Reply {
@@ -43,7 +40,6 @@ export function engine(
           risk: "read",
           actors: ["human"],
           permission: "member",
-          gateKind: null,
           browserOnly: false,
           ...o,
         })),
@@ -109,36 +105,4 @@ export async function sf(
   };
   const code = await main(argv, io);
   return { code, out, err, opened, stdout: out.join("\n"), stderr: err.join("\n") };
-}
-
-export function item(n: number, extra: Record<string, unknown> = {}) {
-  return {
-    id: wi(n),
-    projectId: prj(1),
-    orgId: "org_1",
-    number: n,
-    title: `Item ${n}`,
-    kind: "change",
-    stage: "build",
-    status: "running",
-    statusReason: null,
-    size: "small",
-    requesterUserId: "u_1",
-    source: "app",
-    branch: `factory/${n}-item`,
-    prUrl: null,
-    createdAt: "2026-11-12T10:00:00Z",
-    updatedAt: "2026-11-12T11:00:00Z",
-    ...extra,
-  };
-}
-
-export function project(n: number, name: string, orgId = "org_1") {
-  return {
-    id: prj(n),
-    orgId,
-    name,
-    slug: name.toLowerCase(),
-    repo: { owner: "o", name: name.toLowerCase(), defaultBranch: "main" },
-  };
 }

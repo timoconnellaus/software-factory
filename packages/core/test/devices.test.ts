@@ -132,14 +132,6 @@ describe("runner device login", () => {
       ),
     );
     expect(byRunner.code).toBe("forbidden");
-    const byAgent = await refusal(
-      call(
-        "runner.approveDevice",
-        { userCode: s.userCode, name: "x" },
-        { type: "agent", id: "foreman" },
-      ),
-    );
-    expect(byAgent.code).toBe("forbidden");
     const byHuman = await refusal(call("runner.deviceStart", {}, w.human));
     expect(byHuman.code).toBe("forbidden");
     const paired = await refusal(

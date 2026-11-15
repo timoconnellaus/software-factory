@@ -185,11 +185,6 @@ export async function accountsReport(p: AccountPaths): Promise<RunnerAccounts> {
   };
 }
 
-/** Every account's config dir, where a resumed planning conversation may be. */
-export async function accountConfigDirs(p: AccountPaths): Promise<string[]> {
-  return (await listAccounts(p)).map((a) => a.configDir);
-}
-
 async function addEntry(
   p: AccountPaths,
   name: string,

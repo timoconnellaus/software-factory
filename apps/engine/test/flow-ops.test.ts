@@ -229,7 +229,7 @@ describe("the new core through the engine", () => {
       (o) => o.name,
     );
     expect(names).toContain("flow.item.create");
-    expect(names).toContain("workItem.create");
+    expect(names).toContain("org.list");
     // p's own runner gets it.
     expect((await claim(p))?.workItem.id).toBe(item.id);
   });

@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@software-factory/client": "workspace:*",
-    "@software-factory/core": "workspace:*",
     "@software-factory/runner-host": "workspace:*",
     "@software-factory/ui": "workspace:*",
     "@tanstack/react-query": "5.105.3",
@@ -31,6 +30,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261104.1",
     "@software-factory/config": "workspace:*",
+    "@software-factory/core": "workspace:*",
     "@tailwindcss/vite": "4.3.4",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",

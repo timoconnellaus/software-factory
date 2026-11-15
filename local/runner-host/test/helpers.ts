@@ -8,7 +8,6 @@ import { join } from "node:path";
 import {
   type AdapterEvent,
   type Artifact,
-  type AttachmentMeta,
   ChannelCallError,
   type ClaimRequest,
   CONTRACT_VERSION,
@@ -19,9 +18,7 @@ import {
   httpControlPlane,
   type Job,
   memoryIdempotencyStore,
-  type OpenTerminalOptions,
   PATHS,
-  type PlanningRelay,
   parseJobPath,
   type RepoJob,
   type RunnerAdapter,
@@ -29,31 +26,12 @@ import {
   type RunnerEvent,
   runnerChannelKey,
   type StoredArtifact,
-  stagePool,
-  type TerminalSize,
   type WorkspaceHandle,
 } from "@software-factory/runner-contract";
 import { nodeExec } from "@software-factory/runner-local";
 import { FETCH_NAMESPACE, hostGit } from "../src/git.ts";
 
 export const RUNNER = "r_hosttest01";
-
-/**
- * True when this machine's git has no `--attr-source` (it came in git 2.40). The host's clean tree
- * export (`exportTree` in src/git.ts) needs it, so a test that exports a tree can't run here. That
- * is the case in a check container: the agent image's git is Debian bookworm's 2.39. Such a test is
- * skipped there, never weakened. Every runner host's own git is 2.40 or later (macOS ships 2.50).
- */
-export const NO_GIT_ATTR_SOURCE = (() => {
-  try {
-    execFileSync("git", ["--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "version"], {
-      stdio: "ignore",
-    });
-    return false;
-  } catch {
-    return true;
-  }
-})();
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
@@ -76,36 +54,17 @@ export interface FakeCloud {
   tokens: number;
   /** Job ids whose next call is refused as fenced. */
   fenced: Set<string>;
-  /** Each job's work item attachments, as the channel serves them (ADR 0310). */
-  attachments: Map<string, { meta: AttachmentMeta; base64: string }[]>;
-  attachmentCalls: number;
-  /** Planning calls the host relayed (ADR 0350), and how the fake cloud answers them. */
-  planningCalls: { jobId: string; op: string; input: Record<string, unknown> }[];
-  planning: (call: { jobId: string; op: string; input: Record<string, unknown> }) => unknown;
   /** What the heartbeat answers as `desiredVersion` (ADR 0360); undefined leaves it out. */
   desiredVersion?: string | null;
   /** What the heartbeat answers as `minRunnerCompat` (ADR 0520); undefined leaves it out. */
   minRunnerCompat?: number;
   /**
-   * Hand out a queued job only when the claim's capacity has room in its pool (ADR 0301), as the
-   * engine does. Off: the next queued job, whatever the capacity says.
+   * Hand out a queued job only when the claim's capacity has room in the light pool (ADR 0301), as
+   * the engine does for a flow job. Off: the next queued job, whatever the capacity says.
    */
   pools?: boolean;
   /** The capacity each claim reported. */
   claimCapacities: ClaimRequest["capacity"][];
-  /** Steers queued per job (ADR 0400); the steer call takes them. */
-  steers: Map<
-    string,
-    { id: string; text: string; at: string; interrupt?: boolean; kind?: "message" | "takeover" }[]
-  >;
-  steerCalls: number;
-  /** Answer the steer call 404, as an engine from before ADR 0400 does. */
-  noSteerCall?: boolean;
-  /** Web terminal socket URLs to hand out, one per terminal call (ADR 0440). */
-  terminalUrls: Map<string, string[]>;
-  terminalCalls: number;
-  /** Answer the terminal call 404, as an engine from before ADR 0440 does. */
-  noTerminalCall?: boolean;
 }
 
 export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
@@ -122,14 +81,6 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
     commands: [],
     tokens: 0,
     fenced: new Set(),
-    attachments: new Map(),
-    attachmentCalls: 0,
-    planningCalls: [],
-    planning: () => ({}),
-    steers: new Map(),
-    steerCalls: 0,
-    terminalUrls: new Map(),
-    terminalCalls: 0,
     fetch: async (input, init) =>
       handleRunnerCall(
         new Request(input, init),
@@ -157,11 +108,8 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
           if (path === PATHS.claim) {
             const { claimId, capacity } = body as ClaimRequest;
             cloud.claimCapacities.push(capacity);
-            const fits = (j: Job) =>
-              !cloud.pools ||
-              (stagePool(j.stage) === "light"
-                ? (capacity.light?.inUse ?? 0) < (capacity.light?.max ?? 0)
-                : capacity.inUse < capacity.max);
+            const fits = () =>
+              !cloud.pools || (capacity.light?.inUse ?? 0) < (capacity.light?.max ?? 0);
             const next = cloud.claims.has(claimId) ? -1 : cloud.queue.findIndex(fits);
             const job =
               cloud.claims.get(claimId) ??
@@ -172,14 +120,6 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
           }
           const parsed = parseJobPath(path);
           if (!parsed) return { status: 404, body: { error: "unknown path" } };
-          if (parsed.call === "steer" && cloud.noSteerCall) {
-            cloud.steerCalls++;
-            return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
-          }
-          if (parsed.call === "terminal" && cloud.noTerminalCall) {
-            cloud.terminalCalls++;
-            return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
-          }
           const { jobId, call } = parsed;
           if (cloud.fenced.has(jobId)) {
             return { status: 409, body: { error: "stale fencing token", code: "fenced" } };
@@ -216,52 +156,6 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
             case "release":
               cloud.released.set(jobId, body as { finalState: string; reason?: string });
               return { body: { released: true } };
-            case "attachments":
-              cloud.attachmentCalls++;
-              return {
-                body: { attachments: (cloud.attachments.get(jobId) ?? []).map((a) => a.meta) },
-              };
-            case "attachment": {
-              cloud.attachmentCalls++;
-              const { attachmentId } = body as { attachmentId: string };
-              const found = cloud.attachments.get(jobId)?.find((a) => a.meta.id === attachmentId);
-              return found
-                ? { body: { attachment: found.meta, base64: found.base64 } }
-                : { status: 404, body: { error: "no attachment", code: "not_found" } };
-            }
-            case "steer": {
-              // Held briefly while nothing is queued (the real engine holds ~25 s).
-              cloud.steerCalls++;
-              const { waitMs = 0 } = body as { waitMs?: number };
-              const until = Date.now() + Math.min(waitMs, 100);
-              for (;;) {
-                const queued = cloud.steers.get(jobId) ?? [];
-                if (queued.length > 0 || Date.now() >= until) {
-                  cloud.steers.set(jobId, []);
-                  return { body: { steers: queued } };
-                }
-                await new Promise((r) => setTimeout(r, 10));
-              }
-            }
-            case "terminal": {
-              cloud.terminalCalls++;
-              const { waitMs = 0 } = body as { waitMs?: number };
-              const until = Date.now() + Math.min(waitMs, 100);
-              for (;;) {
-                const url = cloud.terminalUrls.get(jobId)?.shift();
-                if (url || Date.now() >= until) return { body: { connect: url ? { url } : null } };
-                await new Promise((r) => setTimeout(r, 10));
-              }
-            }
-            case "planning": {
-              const { op, input } = body as { op: string; input: Record<string, unknown> };
-              const call = { jobId, op, input: input ?? {} };
-              cloud.planningCalls.push(call);
-              return { body: cloud.planning(call) as Record<string, unknown> };
-            }
-            case "line":
-              // An engine without the job line (spec 44 part B): the host keeps its held calls.
-              return { status: 404, body: { error: `unknown path ${path}`, code: "not_found" } };
           }
         },
       ),
@@ -278,7 +172,7 @@ export async function controlPlane(cloud: FakeCloud) {
   });
 }
 
-/** A scratch "GitHub": a bare repo with main and the work item branch `factory/7-add-a-line`. */
+/** A scratch "GitHub": a bare repo with `main`. */
 export async function scratchRepo() {
   const root = await mkdtemp(join(tmpdir(), "sf-host-"));
   const seed = join(root, "seed");
@@ -288,7 +182,6 @@ export async function scratchRepo() {
   await writeFile(join(seed, "README.md"), "# scratch\n");
   git(seed, "add", ".");
   git(seed, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init");
-  git(seed, "branch", "factory/7-add-a-line");
   git(root, "clone", "-q", "--bare", seed, bare);
   const host = hostGit({
     exec: nodeExec,
@@ -304,15 +197,16 @@ export function job(overrides: Partial<RepoJob> = {}): RepoJob {
     jobId: `job_${Math.random().toString(36).slice(2, 10)}`,
     runId: "run_1",
     runNo: 1,
-    stage: "build",
+    stage: "flow",
     workItem: { id: "wi_1", number: 7, title: "Add a line" },
     repo: {
       url: "https://github.com/acme/app.git",
       owner: "acme",
       name: "app",
-      baseRef: "factory/7-add-a-line",
+      baseRef: "main",
+      defaultBranch: "main",
     },
-    branch: "factory/7-add-a-line-run-1",
+    branch: "factory/flow-acm-7",
     harness: { id: "claude-code", role: "implement", prompt: "add a line" },
     context: {},
     requires: [],
@@ -320,100 +214,6 @@ export function job(overrides: Partial<RepoJob> = {}): RepoJob {
     lease: { fencingToken: 3, expiresAt: new Date(Date.now() + 600_000).toISOString() },
     ...overrides,
   };
-}
-
-/** A terminal bridge that records what the relay asked of it (ADR 0440). */
-export interface FakeTerminal {
-  opened: OpenTerminalOptions[];
-  writes: string[];
-  resizes: TerminalSize[];
-  redraws: number;
-  closes: number;
-  open(options: OpenTerminalOptions): Promise<{
-    write(data: string): Promise<void>;
-    resize(size: TerminalSize): Promise<void>;
-    redraw(): Promise<void>;
-    close(): Promise<void>;
-  }>;
-}
-
-export function fakeTerminal(): FakeTerminal {
-  const t: FakeTerminal = {
-    opened: [],
-    writes: [],
-    resizes: [],
-    redraws: 0,
-    closes: 0,
-    async open(options) {
-      t.opened.push(options);
-      options.onSize({ cols: 80, rows: 24 });
-      options.onOutput(new TextEncoder().encode("screen"));
-      return {
-        async write(data) {
-          t.writes.push(data);
-        },
-        async resize(size) {
-          t.resizes.push(size);
-          options.onSize(size);
-        },
-        async redraw() {
-          t.redraws++;
-          options.onOutput(new TextEncoder().encode("redrawn"));
-        },
-        async close() {
-          t.closes++;
-        },
-      };
-    },
-  };
-  return t;
-}
-
-/** A WebSocket the test drives: what the host sent, and messages from the "relay". */
-export class FakeSocket {
-  binaryType = "blob";
-  bufferedAmount = 0;
-  readyState = 0;
-  sent: (string | Uint8Array)[] = [];
-  closed: { code?: number; reason?: string } | null = null;
-  private listeners = new Map<string, ((event: { data: unknown }) => void)[]>();
-
-  constructor(readonly url: string) {}
-
-  addEventListener(type: string, listener: (event: { data: unknown }) => void) {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-  }
-
-  send(data: string | Uint8Array) {
-    if (this.closed) throw new Error("closed");
-    this.sent.push(typeof data === "string" ? data : data.slice());
-  }
-
-  close(code?: number, reason?: string) {
-    if (this.closed) return;
-    this.closed = { code, reason };
-    this.readyState = 3;
-    this.emit("close");
-  }
-
-  /** The relay sends a control message. */
-  relay(message: object) {
-    this.emit("message", JSON.stringify(message));
-  }
-
-  emit(type: string, data?: unknown) {
-    for (const l of this.listeners.get(type) ?? []) l({ data });
-  }
-
-  texts(): Record<string, unknown>[] {
-    return this.sent.filter((s) => typeof s === "string").map((s) => JSON.parse(s as string));
-  }
-
-  bytes(): string[] {
-    return this.sent
-      .filter((s): s is Uint8Array => typeof s !== "string")
-      .map((b) => new TextDecoder().decode(b));
-  }
 }
 
 export interface FakeWorkspace extends WorkspaceHandle {
@@ -428,27 +228,13 @@ export interface FakeWorkspace extends WorkspaceHandle {
  */
 export function fakeAdapter(
   clonePath: (job: RepoJob) => string,
-  session: (
-    worktree: string,
-    job: Job,
-    signal: AbortSignal,
-    relay?: PlanningRelay,
-  ) => Promise<AdapterEvent[]>,
-  options: { steer?: boolean; interrupt?: boolean; terminal?: boolean } = {},
+  session: (worktree: string, job: Job, signal: AbortSignal) => Promise<AdapterEvent[]>,
 ): RunnerAdapter<FakeWorkspace> & {
   calls: string[];
   prompts: string[];
-  relays: Map<string, PlanningRelay>;
-  steered: string[];
-  interrupted: string[];
-  terminal: FakeTerminal;
 } {
   const calls: string[] = [];
   const prompts: string[] = [];
-  const relays = new Map<string, PlanningRelay>();
-  const steered: string[] = [];
-  const interrupted: string[] = [];
-  const terminal = fakeTerminal();
   /** Each job's workspace path, as prepareWorkspace made it. */
   const paths = new Map<string, string>();
   const pathOf = (j: Job) =>
@@ -456,51 +242,19 @@ export function fakeAdapter(
   return {
     calls,
     prompts,
-    relays,
-    steered,
-    interrupted,
-    terminal,
     async manifest() {
       return {
         contractVersion: CONTRACT_VERSION,
         runnerKind: "fake",
         harnesses: ["claude-code"],
-        capabilities: [
-          "headless",
-          ...(options.steer ? (["steer"] as const) : []),
-          ...(options.interrupt ? (["interrupt"] as const) : []),
-          ...(options.terminal ? (["terminal"] as const) : []),
-        ],
+        capabilities: ["hooks"],
       };
     },
-    ...(options.terminal
-      ? { openTerminal: (_s: unknown, o: OpenTerminalOptions) => terminal.open(o) }
-      : {}),
-    ...(options.steer
-      ? {
-          async steer(_s: unknown, text: string) {
-            steered.push(text);
-          },
-          // Another turn of the same "session" (ADR 0501): the text goes in, the session runs again.
-          async *continueSession(j: Job, _s: unknown, text: string, signal: AbortSignal) {
-            steered.push(text);
-            for (const e of await session(pathOf(j), j, signal, relays.get(j.jobId))) yield e;
-          },
-        }
-      : {}),
-    ...(options.interrupt
-      ? {
-          async interrupt(_s: unknown, text: string) {
-            interrupted.push(text);
-          },
-        }
-      : {}),
     async capacity() {
       return { max: 2, inUse: 0, accepting: true };
     },
-    async prepareWorkspace(j, _signal, options) {
+    async prepareWorkspace(j) {
       calls.push("prepare");
-      if (options?.planningRelay) relays.set(j.jobId, options.planningRelay);
       if (!hasRepo(j)) {
         const path = await mkdtemp(join(tmpdir(), "sf-fake-flow-"));
         paths.set(j.jobId, path);
@@ -533,7 +287,7 @@ export function fakeAdapter(
     },
     async *events(j, _s, signal) {
       calls.push("events");
-      for (const e of await session(pathOf(j), j, signal, relays.get(j.jobId))) yield e;
+      for (const e of await session(pathOf(j), j, signal)) yield e;
     },
     async collectArtifacts(): Promise<Artifact[]> {
       calls.push("collect");

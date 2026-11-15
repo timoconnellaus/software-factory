@@ -12,7 +12,7 @@ import type { Actor } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId, newRunnerId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
-import { randomToken, sha256Hex } from "./onboarding.ts";
+import { randomToken, sha256Hex } from "../tokens.ts";
 
 /** The actor the runner channel uses for the two unsigned device-login calls. */
 export const DEVICE_LOGIN_ACTOR: Actor = { type: "runner", id: "device-login" };

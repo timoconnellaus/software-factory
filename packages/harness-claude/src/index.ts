@@ -1,19 +1,15 @@
 // @software-factory/harness-claude: the Claude Code harness (ADR 0017). A runner adapter hosts the
-// session (a tmux session, a headless process, later a dev box); this package says how Claude
-// runs there: the per-run settings it projects (permission mode and allowlist per stage, the OS
-// sandbox, deny rules, a credential-free environment), the run's git identity, the exact launch
-// command and the post-launch check (ADR 0270), and how to read a session's transcript or stream.
+// session (a tmux session, a headless process); this package says how Claude runs there: the
+// per-run settings it projects (permission mode and allowlist for a run with or without a
+// repository, the OS sandbox, deny rules, a credential-free environment), the run's git identity,
+// the exact launch command and the post-launch check (ADR 0270), and how to read a session's
+// transcript or stream.
 import type { HarnessId, Job } from "@software-factory/runner-contract";
 import { claudeArgv } from "./launch.ts";
 
 export * from "./account.ts";
-export * from "./attachments.ts";
 export * from "./flow-mcp.ts";
 export * from "./launch.ts";
-export * from "./planning/hooks.ts";
-export * from "./planning/mcp.ts";
-export * from "./planning/project.ts";
-export * from "./planning/relay.ts";
 export * from "./project.ts";
 export * from "./settings.ts";
 export * from "./status.ts";
@@ -29,7 +25,7 @@ export const HARNESS_MANIFEST = {
   projectsSettings: true,
   /** Owns the launch command and verifies the live process against it (ADR 0270). */
   verifiesLaunch: true,
-  /** Reads results from the stage result file, never from chat output. */
+  /** Reads results from the result file, never from chat output. */
   resultFile: true,
 } as const;
 
@@ -38,7 +34,7 @@ export const HARNESS_MANIFEST = {
  * factory flags as an interactive launch (`claudeArgv`, without `argv[0]`), then the prompt.
  */
 export function headlessArgs(
-  job: Pick<Job, "stage" | "harness"> & Partial<Pick<Job, "repo" | "branch">>,
+  job: Pick<Job, "harness"> & Partial<Pick<Job, "repo" | "branch">>,
   options: { settingsPath: string },
 ): string[] {
   return [

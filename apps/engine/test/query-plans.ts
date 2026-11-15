@@ -5,20 +5,11 @@
 
 /** Tables sized by configuration, not by use: a SCAN of one of these is fine. Every other table grows. */
 export const SMALL_TABLES = new Set([
-  // One row per open item the babysitter resolved a conflict for; pruned hourly once it ends.
-  "core_babysit_resolutions",
   "core_organization",
   "core_member",
   "core_user",
-  "core_factories",
-  "core_projects",
-  "core_repositories",
-  // One row per repository (spec 53): sized like core_repositories.
-  "core_main_health",
   "core_github_installations",
   "core_runners",
-  "core_kill_switches",
-  "core_project_protection",
 ]);
 
 export interface Recorded {
@@ -78,68 +69,8 @@ export const SORT_ALLOWED: { match: RegExp; why: string }[] = [
     why: "flow.inbox.get's `done`: groups and sorts the person's newest 100 finish and decide events at most, read in order from flow_events_person_done_idx",
   },
   {
-    match: /FROM core_audit\s+WHERE rowid > \? AND rowid <= \? AND at < \?/,
-    why: "the audit archiver's page: one rowid window of core_audit (AUDIT_ARCHIVE.scanRows, at most maxScanRows), searched by rowid range, sorted to (at, id) for the chain",
-  },
-  {
-    match:
-      /from "core_work_items" where "repository_id" = \? and "head_sha" = \? order by "updated_at"/,
-    why: "the items with one head SHA in one repository (core_work_items_repository_head_idx): one or two",
-  },
-  {
-    match:
-      /FROM core_merge_queue q JOIN core_work_items w ON w\.id = q\.work_item_id\s+WHERE q\.project_id = \?1 AND q\.status = 'queued'/,
-    why: "the deliverer's head: one project's open queue entries (core_merge_queue_project_idx), a handful",
-  },
-  {
     match: /FROM core_outbox WHERE next_at <= \?/,
     why: "due outbox rows only (core_outbox_next_idx); a delivered row is deleted",
-  },
-  {
-    match: /SELECT w\.project_id, MIN\(w\.released_at\) AS oldest/,
-    why: "sorts one row per project with queued work (core_work_items_status_idx)",
-  },
-  {
-    match: /from "core_pending_actions".*"core_pending_actions"\."status" = \?/,
-    why: "pending gates only (core_pending_actions_status_idx)",
-  },
-  {
-    match: /from "core_questions".*"core_questions"\."assignee_user_id" = \?/,
-    why: "the caller's open questions only (core_questions_assignee_idx)",
-  },
-  {
-    match:
-      /from "core_work_items" where "org_id" in .* and "status" in \(\?, \?, \?\) order by "updated_at"/,
-    why: "active items only (core_work_items_org_idx on org and status), capped by the active limit",
-  },
-  {
-    match: /from "core_work_items" where .*"status" in .* order by \+updated_at/,
-    why: "workItem.list with a status filter reads and sorts only that project's rows in those statuses (core_work_items_status_idx). Only the CLI's `sf list` filters by status, on demand, asking for the live statuses (bounded by the active limit); a status that grows (done) would sort them all, and nothing polls with a status",
-  },
-  {
-    match: /^select \* from "core_questions" where "work_item_id" = \? order by "created_at"$/,
-    why: "workItem.get: one item's questions (a few per planning round), by the item's index",
-  },
-  {
-    match:
-      /^select \* from "core_pending_actions" where "work_item_id" = \? order by "created_at"$/,
-    why: "workItem.get: one item's gates (one per gate it reached), by the item's index",
-  },
-  {
-    match:
-      /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" (?:= \?|in \([?, ]+\)) and "q"\."status" = \?/,
-    why: "delivery.status, mergeQueue.list, and the board and list for their items in merge (waiting-on.ts): the open queue entries of those projects (core_merge_queue_project_idx on project and status), a handful each",
-  },
-  {
-    match:
-      /^select \*, CASE WHEN NOT \(core_work_items\.source = 'planning'.* from "core_work_items" where "org_id" = \? and "status" in \([?, ]+\)(?: and "project_id" = \?)? order by "priority", "rank", "released_at", "created_at" limit \?$/s,
-    // Not capped at 500 in what it reads: the LIMIT applies after the sort.
-    why: "workItem.board: every item of the org in the states asked for (core_work_items_org_idx on org and status; by default backlog, ready, queued and active, never done or cancelled) is read and sorted, then 500 are returned. So a poll reads the org's whole open backlog, which grows with it; no index can give this order across an IN list of states. The waitingOn subqueries (waiting-on.ts) run only for running and waiting rows, which the WIP limits keep few",
-  },
-  {
-    match:
-      /from "core_merge_queue" as "q" inner join "core_work_items" as "w".*where "q"\."project_id" = \? and "w"\."repository_id" = \? and "q"\."status" = \?/,
-    why: "workItem.get at the merge stage: one repository's queued merges (the merge queue's depth, a handful)",
   },
 ];
 
@@ -185,7 +116,7 @@ export async function growingScans(db: D1Database, seen: Recorded[]): Promise<Sc
       const m = /^SCAN (\w+)(?: USING (?:COVERING )?INDEX (\w+))?/.exec(detail);
       if (!m || (m[2] && partial.has(m[2]))) continue;
       const table = aliases.get(m[1] as string) ?? (m[1] as string);
-      // The old core's tables and the new core's (packages/store, ADR 0660).
+      // The platform's tables and the new core's (packages/store, ADR 0660).
       if (!/^(?:core|flow)_/.test(table) || SMALL_TABLES.has(table)) continue;
       scans.push({ sql: sql.replace(/\s+/g, " ").trim(), table, detail });
     }

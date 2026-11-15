@@ -1,7 +1,7 @@
 // The screens' operations end to end against a fake client door (spec 40 M3): the view's `read`,
 // `op` and `decide` (src/mainview/lib/op.ts) through the main process's handlers
 // (src/bun/operations.ts) and the door client (src/bun/door.ts). Touch ID can't run in a test, so
-// the device key is a signer that counts its prompts: approving a merge signs exactly once.
+// the device key is a signer that counts its prompts: adding a phone signs exactly once.
 import { beforeEach, describe, expect, it } from "vitest";
 import { inputDigest } from "../src/bun/digest.ts";
 import { Door, type Fetch } from "../src/bun/door.ts";
@@ -18,11 +18,13 @@ let prompts: string[];
 let touchId: "approve" | "cancel";
 let held: boolean;
 
-const SUMMARY = 'Merge 3f2a91c into main of acme/widgets: "Fix the inbox count"';
-const HEAD = "3f2a91c".padEnd(40, "0");
-const PUSHED_OVER = "1".repeat(40);
-const STALE =
-  "A new push withdrew this approval: the merge gate is for 9b1e004 now, not 1111111. Review the new commit.";
+const SUMMARY = "Add a phone to your account";
+const OFFER = {
+  offerId: "pof_1",
+  pairUrl: "https://example/pair#s",
+  code: "ABCDE12345",
+  expiresAt: "2026-11-15T00:05:00Z",
+};
 
 const fakeFetch: Fetch = async (url, init) => {
   const path = url.replace(/^.*\/client\/v1\//, "");
@@ -45,14 +47,11 @@ const fakeFetch: Fetch = async (url, init) => {
     });
   }
   if (held) return reply({ pending: true, pendingActionId: "pa_1" }, 202);
-  if (body.op === "review.merge" || body.op === "review.sendBack") {
+  if (body.op === "mobile.pairOffer") {
     if (!body.presence) return reply({ error: "browser only", code: "forbidden" }, 403);
-    if ((body.input as { headSha?: string }).headSha === PUSHED_OVER) {
-      return reply({ error: STALE, code: "conflict", details: { headSha: null } }, 409);
-    }
-    return reply({ result: { alreadyDecided: false, incidentId: null } });
+    return reply({ result: OFFER });
   }
-  return reply({ result: { workItemId: "wi_1" } });
+  return reply({ result: { ok: true } });
 };
 
 beforeEach(() => {
@@ -75,95 +74,67 @@ beforeEach(() => {
 
 describe("the screens through the client door", () => {
   it("loads a page's reads in one batch", async () => {
-    const [inbox, item] = await Promise.all([
-      read("inbox.list", {}),
-      read("workItem.get", { workItemId: "wi_1" }),
-    ]);
-    expect([inbox, item]).toEqual([{ op: "inbox.list" }, { op: "workItem.get" }]);
+    const [orgs, runners] = await Promise.all([read("org.list", {}), read("runner.list", {})]);
+    expect([orgs, runners]).toEqual([{ op: "org.list" }, { op: "runner.list" }]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.path).toBe("batch");
   });
 
   it("sends a form's idempotency key, and reports a held call as pending", async () => {
-    await op("workItem.cancel", { workItemId: "wi_1" }, { idempotencyKey: "desktop:k1" });
-    expect(seen[0]?.body).toMatchObject({ op: "workItem.cancel", idempotencyKey: "desktop:k1" });
+    await op("device.update", { name: "M5" }, { idempotencyKey: "desktop:k1" });
+    expect(seen[0]?.body).toMatchObject({ op: "device.update", idempotencyKey: "desktop:k1" });
     held = true;
-    await expect(op("workItem.cancel", { workItemId: "wi_1" })).rejects.toMatchObject({
+    await expect(op("device.update", { name: "M5" })).rejects.toMatchObject({
       code: "pending",
     });
   });
 
-  it("approving a merge asks for Touch ID once and sends the proof with the call", async () => {
-    await decide(
-      "review.merge",
-      { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD },
-      { idempotencyKey: "desktop:merge-1" },
-    );
-    // The commit is in the signed input, so the proof is for that commit only.
-    const input = { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD };
-    expect(prompts).toEqual([`n0nce\nreview.merge\n${await inputDigest(input)}\n${SUMMARY}`]);
-    expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge", "review.merge"]);
+  it("adding a phone asks for Touch ID once and sends the proof with the call", async () => {
+    const offer = await decide("mobile.pairOffer", {}, { idempotencyKey: "desktop:pair-1" });
+    expect(offer).toEqual(OFFER);
+    expect(prompts).toEqual([`n0nce\nmobile.pairOffer\n${await inputDigest({})}\n${SUMMARY}`]);
+    expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge", "mobile.pairOffer"]);
     expect(seen[1]?.body).toMatchObject({
-      input,
+      input: {},
       presence: { challengeId: "prc_1", nonce: "n0nce", signature: "c2ln" },
     });
     expect(String(seen[1]?.body.idempotencyKey)).toMatch(/^desktop:/);
   });
 
-  it("a push between opening the gate and approving is refused, and says so", async () => {
-    const refused = decide("review.merge", {
-      workItemId: "wi_1",
-      openedFullDiff: true,
-      headSha: PUSHED_OVER,
-    });
-    await expect(refused).rejects.toBeInstanceOf(OpError);
-    await expect(refused).rejects.toMatchObject({ code: "conflict", message: STALE });
-    expect(seen[1]?.body.input).toMatchObject({ headSha: PUSHED_OVER });
-  });
-
-  it("send back goes through Touch ID too, with its note", async () => {
-    await decide("review.sendBack", {
-      workItemId: "wi_1",
-      note: "Tests fail",
-      openedFullDiff: false,
-    });
+  it("turning a device's approvals on goes through Touch ID, with its input", async () => {
+    await decide("device.update", { deviceId: "dev_m5", decides: true });
     expect(prompts).toHaveLength(1);
-    expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge", "review.sendBack"]);
-    expect(seen[1]?.body.input).toEqual({
-      workItemId: "wi_1",
-      note: "Tests fail",
-      openedFullDiff: false,
-    });
+    expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge", "device.update"]);
+    expect(seen[1]?.body.input).toEqual({ deviceId: "dev_m5", decides: true });
   });
 
-  it("a cancelled Touch ID decides nothing", async () => {
+  it("a cancelled Touch ID calls nothing", async () => {
     touchId = "cancel";
-    await expect(
-      decide("review.merge", { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
-    ).rejects.toMatchObject({ code: "cancelled" });
+    await expect(decide("mobile.pairOffer", {})).rejects.toMatchObject({ code: "cancelled" });
     expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge"]);
   });
 
-  it("never sends a gate decision without a proof", async () => {
+  it("never sends an operation that needs a proof without one", async () => {
     // The view's op() refuses one, and so does the main process's call.
     await expect(
-      // biome-ignore lint/suspicious/noExplicitAny: forcing a decision past op()'s types.
-      op("review.merge" as any, { workItemId: "wi_1", openedFullDiff: true } as any),
+      // biome-ignore lint/suspicious/noExplicitAny: forcing it past op()'s types.
+      op("mobile.pairOffer" as any, {} as any),
     ).rejects.toBeInstanceOf(OpError);
     const handlers = operationHandlers({
       door: () => new Door("https://engine.example", () => "sfd_t", fakeFetch),
       signer: () => null,
       signedOut: () => {},
     });
-    expect(
-      await handlers.call({ op: "spec.approve", input: { workItemId: "wi_1" } }),
-    ).toMatchObject({ ok: false, code: "forbidden" });
-    // decide runs only gate decisions.
-    expect(await handlers.decide({ op: "workItem.cancel", input: {} })).toMatchObject({
+    expect(await handlers.call({ op: "mobile.pairOffer", input: {} })).toMatchObject({
+      ok: false,
+      code: "forbidden",
+    });
+    // decide runs only the operations that take a proof.
+    expect(await handlers.decide({ op: "runner.list", input: {} })).toMatchObject({
       ok: false,
     });
     expect(seen).toHaveLength(0);
-    await expect(decide("spec.approve", { workItemId: "wi_1" })).resolves.toBeDefined();
+    await expect(decide("mobile.pairOffer", {})).resolves.toBeDefined();
     expect(prompts).toHaveLength(1);
   });
 
@@ -177,7 +148,7 @@ describe("the screens through the client door", () => {
       signer: () => null,
       signedOut: () => {},
     });
-    expect(await handlers.call({ op: "inbox.list", input: {} })).toEqual({
+    expect(await handlers.call({ op: "org.list", input: {} })).toEqual({
       ok: false,
       code: "update_required",
       error: "update the app",

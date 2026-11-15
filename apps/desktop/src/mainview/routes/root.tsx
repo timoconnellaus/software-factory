@@ -120,9 +120,8 @@ function Root() {
  * Which signed-in session the routes are shown for (a number that changes with each sign-in), or
  * null while they load again for it. Signed in at launch: shown at once, as the router loads them.
  * Signing in or out, or a sign-in as another login or device while signed in (`account`, from
- * lib/account.ts), empties the cache and closes the open terminals, goes back to the start and
- * reloads the routes; only then are they shown, keyed afresh. This Mac's account state (tabs, pins,
- * the chosen org, canvases, drafts) is kept for the same login and forgotten for another one
+ * lib/account.ts), empties the cache, goes back to the start and reloads the routes; only then are
+ * they shown, keyed afresh. This Mac's account state (tabs, the chosen org) is kept for the same login and forgotten for another one
  * (`claimAccountLocal`), so signing out and back in keeps it. What shows is decided in render
  * against the account rendered (`shownFor`), so not one frame shows the previous account's routes.
  */

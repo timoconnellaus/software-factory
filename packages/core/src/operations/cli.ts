@@ -13,13 +13,13 @@ import type { Actor } from "../actors.ts";
 import { OperationError } from "../errors.ts";
 import { newId } from "../ids.ts";
 import { defineOperation, type HandlerContext } from "../operation.ts";
+import { randomToken, sha256Hex } from "../tokens.ts";
 import {
   DEVICE_CODE_TTL_MS,
   DEVICE_POLL_INTERVAL_S,
   newUserCode,
   normalizeUserCode,
 } from "./devices.ts";
-import { randomToken, sha256Hex } from "./onboarding.ts";
 
 /** The actor /cli/v1 uses for the two unsigned device-login calls. No signed caller can be it. */
 export const CLI_DEVICE_ACTOR: Actor = { type: "runner", id: "cli-device-login" };

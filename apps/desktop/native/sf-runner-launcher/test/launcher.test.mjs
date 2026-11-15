@@ -39,6 +39,8 @@ const APP = process.env.SF_RUNNER_APP;
 const OTHER_TEAM = process.env.SF_RUNNER_APP_OTHER_TEAM;
 const skip = process.platform !== "darwin" || !APP ? "macOS, with SF_RUNNER_APP set" : false;
 const LAUNCHER = "Contents/MacOS/sf-runner";
+/** An entry whose script waits on stdin (for a token never sent): a Node child that stays up. */
+const STDIN_WAITER = ["account", "add", "launcher-test", "--token-stdin", "--no-login"];
 
 // launch-refused.json under the account's home (LauncherCore's stateDir), kept and put back.
 const REFUSED = join(homedir(), ".local/state/software-factory/runner/service/launch-refused.json");
@@ -179,7 +181,7 @@ for (const [name, tamper] of Object.entries(tampers)) {
   test(`the launcher refuses ${name} (78) and Node never starts`, { skip }, () => {
     const app = copy();
     tamper(app);
-    for (const args of [[], ["selftest"], ["runner"], ["check-child"]]) {
+    for (const args of [[], ["selftest"], ["runner"], STDIN_WAITER]) {
       const r = launch(app, args, { input: "" });
       assert.equal(r.status, 78, `${args}: ${r.stderr}`);
       assert.match(r.stderr, /refused: /);
@@ -307,9 +309,8 @@ test("no module planted in a node_modules above the bundle, or in the home folde
   const app = copy(deep);
   try {
     // Each script must actually run (a copy that refused every start would plant nothing too):
-    // the guard (not built yet: 64, with its own message), the self-test, the runner's CLI (an
-    // unknown subcommand after loading everything: its usage, 2) and the check child (no input:
-    // it fails, 1, after loading the sandbox runtime).
+    // the guard (not built yet: 64, with its own message), the self-test, and the runner's CLI (an
+    // unknown subcommand after loading everything: its usage, 2).
     const want = [
       { args: [], status: 64, ran: (r) => /the guard isn't built yet/.test(r.stderr) },
       { args: ["selftest"], status: 0, ran: (r) => JSON.parse(r.stdout).ok === true },
@@ -318,7 +319,6 @@ test("no module planted in a node_modules above the bundle, or in the home folde
         status: 2,
         ran: (r) => /usage: sf-runner/.test(r.stdout),
       },
-      { args: ["check-child"], status: 1, ran: () => true },
     ];
     for (const { args, status, ran } of want) {
       const r = launch(app, args, { input: "" });
@@ -339,14 +339,14 @@ test("no module planted in a node_modules above the bundle, or in the home folde
 });
 
 test("a stop sent while the launcher is still checking reaches Node", { skip }, async () => {
-  // The check child waits on stdin, so only the signal ends it. Sent while the launcher checks the
+  // `account add … --token-stdin` waits on stdin, so only the signal ends it. Sent while the launcher checks the
   // bundle (tens of ms), the signal stays pending (blocked) and is forwarded once Node runs: the
   // launcher exits 143. Neither dropped (a hang) nor ending the launcher itself (killed by the
   // signal, Node never told). A signal can still beat the launcher's first instruction, which ends
   // it by the signal: that attempt is retried, and every attempt ending that way fails the test.
   const outcomes = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    const launcher = spawn(join(APP, LAUNCHER), ["check-child"], {
+    const launcher = spawn(join(APP, LAUNCHER), STDIN_WAITER, {
       stdio: ["pipe", "ignore", "pipe"],
     });
     let stderr = "";
@@ -373,8 +373,9 @@ test("a stop sent while the launcher is still checking reaches Node", { skip }, 
 });
 
 test("SIGUSR1 to the Node child opens no inspector", { skip }, async () => {
-  // The check child waits for its input on stdin, so it stays up long enough to signal.
-  const launcher = spawn(join(APP, LAUNCHER), ["check-child"], {
+  // `account add … --token-stdin` waits for its input on stdin, so it stays up long enough to
+  // signal. Its stdin is never written: no account is added.
+  const launcher = spawn(join(APP, LAUNCHER), STDIN_WAITER, {
     stdio: ["pipe", "ignore", "ignore"],
   });
   const exited = new Promise((r) => launcher.on("exit", r));

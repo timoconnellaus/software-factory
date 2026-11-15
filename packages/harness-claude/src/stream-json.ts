@@ -1,6 +1,6 @@
-// Claude Code as a two-way stream-json session (ADR 0450): `claude -p --input-format stream-json
-// --output-format stream-json --verbose`. What goes in (a user message, an interrupt, a denied
-// permission request) and what comes out (one JSON object per line) turned into the runner
+// Claude Code as a stream-json session (ADR 0450): `claude -p --input-format stream-json
+// --output-format stream-json --verbose`. What goes in (the user message, a denied permission
+// request) and what comes out (one JSON object per line) turned into the runner
 // contract's events, every field bounded. Pure: the adapter (runner-local `stream.ts`) owns the
 // process.
 import {
@@ -183,22 +183,13 @@ export function streamLineEvents(line: string): AdapterEvent[] {
   return line.trim() ? [{ type: "log", stream: "stdout", text: clip(line, 64_000) }] : [];
 }
 
-/** A user message on stdin (the prompt pointer, a steer). */
+/** A user message on stdin (the prompt pointer). */
 export function userMessageLine(text: string, sessionId?: string): string {
   return `${JSON.stringify({
     type: "user",
     message: { role: "user", content: text },
     parent_tool_use_id: null,
     session_id: sessionId ?? "",
-  })}\n`;
-}
-
-/** Asks the session to stop its current turn (a control request), before it is handed over. */
-export function interruptLine(requestId: string): string {
-  return `${JSON.stringify({
-    type: "control_request",
-    request_id: requestId,
-    request: { subtype: "interrupt" },
   })}\n`;
 }
 

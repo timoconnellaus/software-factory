@@ -10,7 +10,7 @@ export function getRouter() {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
-        // Each query in lib/queries.ts sets its own; this covers the rest.
+        // Queries may set their own; this covers the rest.
         staleTime: 30_000,
         refetchOnWindowFocus: true,
         // A refusal (not found, forbidden, invalid) won't change on retry: show it at once.

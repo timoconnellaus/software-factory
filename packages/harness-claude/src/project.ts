@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Job, PlanningRelay } from "@software-factory/runner-contract";
+import type { Job } from "@software-factory/runner-contract";
 import { accountLaunchLines, CREDENTIALS_FILE, type HarnessAccount } from "./account.ts";
 import { flowMcpServers, writeFlowMcpConfig } from "./flow-mcp.ts";
 import {
@@ -14,11 +14,8 @@ import {
   launchPaths,
   launchScript,
   launchUnsets,
-  RESUME_SCRIPT,
-  resumeScript,
   sha256,
 } from "./launch.ts";
-import { mergeHooks, planningHooks, writePlanningFiles } from "./planning/project.ts";
 import {
   type ClaudeSettings,
   defaultTempDirs,
@@ -60,7 +57,7 @@ export async function systemTempDirs(
 
 export async function projectHarness(
   job: Pick<Job, "stage" | "jobId" | "harness"> &
-    Partial<Pick<Job, "planning" | "workItem" | "mcpServers" | "repo" | "branch">>,
+    Partial<Pick<Job, "mcpServers" | "repo" | "branch">>,
   options: Omit<SettingsOptions, "statusHook"> & {
     identity?: { name: string; email: string };
     claudeBin?: string;
@@ -71,13 +68,8 @@ export async function projectHarness(
      */
     statusHook?: boolean | { node?: string };
     /**
-     * A planning job's relay (ADR 0350): the planning MCP server and hooks are projected, and the
-     * conversation started or resumed. `nodeBin` runs them (default: this process's Node).
-     */
-    planning?: { relay: PlanningRelay; nodeBin?: string };
-    /**
-     * `stream`: launch a two-way stream-json session (ADR 0450) instead of the TUI. A non-planning
-     * run gets its own conversation id (`--session-id`), so it can be resumed in a terminal.
+     * `stream`: launch a stream-json session (ADR 0450) instead of the TUI, with its own
+     * conversation id (`--session-id`).
      */
     session?: "terminal" | "stream";
     /**
@@ -103,19 +95,7 @@ export async function projectHarness(
     typeof options.statusHook === "object" && options.statusHook.node
       ? options.statusHook.node
       : process.execPath;
-  const planning =
-    job.stage === "planning" && options.planning && job.planning && job.workItem
-      ? await writePlanningFiles(
-          { jobId: job.jobId, workItem: job.workItem, planning: job.planning },
-          options.runDir,
-          options.planning.relay,
-          options.planning.nodeBin ?? process.execPath,
-        )
-      : null;
-  if (job.stage === "planning" && !planning) {
-    throw new Error(`planning job ${job.jobId} needs its planning session and relay`);
-  }
-  // A flow job's MCP servers (spec 70 milestone 2): their config holds a bearer token, so it lives
+  // The job's MCP servers (spec 70 milestone 2): their config holds a bearer token, so it lives
   // only in the run dir (removed on release) and the Read tool may not open it.
   const mcpServers = flowMcpServers(job);
   const mcpConfigPath = mcpServers.length
@@ -123,13 +103,11 @@ export async function projectHarness(
     : undefined;
   const {
     statusHook: _statusHook,
-    planning: _planning,
     session: _session,
     account: _account,
     ...settingsOptions
   } = options;
-  const streamSessionId =
-    options.session === "stream" ? (planning?.launch.sessionRef ?? randomUUID()) : null;
+  const streamSessionId = options.session === "stream" ? randomUUID() : null;
   // The account's credentials (its token file, a login's credentials file) are the owner's: a run
   // never reads them, whatever else the runner protects (ADR 0410). The config dir itself stays
   // readable, as `~/.claude` always was: Claude's sandboxed shell reads its snapshots from there.
@@ -140,7 +118,6 @@ export async function projectHarness(
   const denyReadFiles = [
     ...(options.denyReadFiles ?? []),
     ...accountSecrets,
-    ...(planning ? [planning.relayFile] : []),
     ...(mcpConfigPath ? [mcpConfigPath] : []),
   ];
   const settings = runSettings(job, {
@@ -151,17 +128,8 @@ export async function projectHarness(
     ...(denyReadFiles.length ? { denyReadFiles } : {}),
     ...(statusFile ? { statusHook: statusHookCommand(node, statusScript, statusFile) } : {}),
     ...(mcpServers.length ? { mcpServers: mcpServers.map((s) => s.name) } : {}),
-    ...(planning
-      ? {
-          hooks: mergeHooks(
-            options.hooks,
-            planningHooks(planning.relayFile, options.planning?.nodeBin ?? process.execPath),
-          ),
-        }
-      : {}),
     runTmp,
     tempDirs: options.tempDirs ?? (await systemTempDirs()),
-    ...(job.harness.profile && !options.profile ? { profile: job.harness.profile } : {}),
   });
   await mkdir(options.runDir, { recursive: true, mode: 0o700 });
   for (const dir of EMPTY_DIRS)
@@ -180,29 +148,18 @@ export async function projectHarness(
     jobId: job.jobId,
     stage: job.stage,
     mode: settings.permissions.defaultMode,
-    ...(options.isolation ? { isolation: options.isolation } : {}),
     argv: claudeArgv(job, {
       settingsPath: paths.runSettings,
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
-      ...(options.profile ? { profile: options.profile } : {}),
-      ...(planning ? { planning: planning.launch } : {}),
       ...(mcpConfigPath ? { mcpConfigPath } : {}),
       ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
-      ...(options.isolation ? { isolation: options.isolation } : {}),
     }),
     settingsHash: sha256(text),
     settingsPaths: [paths.runSettings, paths.localSettings],
     pidFile: paths.pidFile,
     worktree: options.worktree,
     unset: launchUnsets(settings.env),
-    ...(streamSessionId
-      ? {
-          stream: {
-            sessionId: streamSessionId,
-            resumeScript: join(options.runDir, RESUME_SCRIPT),
-          },
-        }
-      : {}),
+    ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),
     ...(options.account
       ? {
           account: options.account.name,
@@ -220,15 +177,6 @@ export async function projectHarness(
   await writeFile(paths.script, launchScript(launch, launch.unset ?? [], accountLines), {
     mode: 0o700,
   });
-  // A stream session's takeover (ADR 0450): the same environment and account, interactive, the
-  // conversation resumed. Run by the person, never by the runner.
-  if (launch.stream?.resumeScript) {
-    await writeFile(
-      launch.stream.resumeScript,
-      resumeScript(launch, launch.unset ?? [], accountLines),
-      { mode: 0o700 },
-    );
-  }
   return {
     settingsPath: paths.runSettings,
     localSettingsPath: paths.localSettings,

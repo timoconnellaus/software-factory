@@ -1,6 +1,7 @@
 // The per-run Claude Code settings (ADR 0017, amended; ADR 0033, 0250, 0270). The harness runs
 // unattended in a workspace it doesn't own, so the runner projects a settings file before Claude
-// starts: a permission mode and allowlist per stage, deny rules for anything that reaches the
+// starts: a permission mode and allowlist (one for a run in a repository, one for a plain
+// directory), deny rules for anything that reaches the
 // owner's credentials, Claude Code's OS sandbox for every Bash command (filesystem writes limited to
 // the worktree and temp, network limited to an allowlist), and an environment that blanks or
 // redirects every credential source a command could inherit from the runner host.
@@ -11,18 +12,11 @@
 // and `.claude/settings.local.json` in the worktree, Claude Code's per-checkout scope, never part of
 // the repo. Claude is launched with `--setting-sources project,local`, so the owner's user settings
 // (their own permission mode, hooks and plugins) never apply to a run.
-import type {
-  HarnessPermissionMode,
-  HarnessProfile,
-  Job,
-  JobStage,
-} from "@software-factory/runner-contract";
+import type { Job } from "@software-factory/runner-contract";
 import { RESULT_FILE } from "@software-factory/runner-contract";
 import { statusHooks } from "./status.ts";
 
 export const SETTINGS_FILE = ".claude/settings.local.json";
-/** The planning MCP server's name in a planning session's MCP config (tools `mcp__planning__*`). */
-export const PLANNING_MCP_SERVER = "planning";
 /** The authoritative copy, in the run's private directory, passed with `--settings`. */
 export const RUN_SETTINGS_FILE = "claude-settings.json";
 
@@ -40,7 +34,7 @@ export const PROMPT_POINTER = `Your instructions for this job are in ${PROMPT_FI
 export const PRIVATE_WORKTREE_FILES = [SETTINGS_FILE, RESULT_FILE, PROMPT_FILE] as const;
 
 /** Claude Code permission modes the factory uses (ADR 0270). */
-export type PermissionMode = HarnessPermissionMode;
+export type PermissionMode = "dontAsk" | "bypassPermissions";
 
 /** Claude Code hooks, as the settings file spells them. */
 export type ClaudeHooks = Record<
@@ -67,15 +61,13 @@ export interface ClaudeSettings {
     deny: string[];
     /** File tools write only inside the working directories, whatever the mode. */
     blockWritesOutsideWorkingDirectories: true;
-    /** Readable directories outside the worktree (the run's attachments); never writable. */
-    additionalDirectories?: string[];
   };
   sandbox: {
-    /** On in every stage, except inside a container, where the container is the floor (ADR 0430). */
-    enabled: boolean;
-    /** Refuse to start rather than run commands unsandboxed (whenever the sandbox is on). */
-    failIfUnavailable: boolean;
-    /** Never: `dangerouslyDisableSandbox` is ignored. The floor; no profile can change it. */
+    /** Always on. */
+    enabled: true;
+    /** Refuse to start rather than run commands unsandboxed. */
+    failIfUnavailable: true;
+    /** Never: `dangerouslyDisableSandbox` is ignored. The floor. */
     allowUnsandboxedCommands: false;
     autoAllowBashIfSandboxed: boolean;
     excludedCommands: string[];
@@ -117,8 +109,6 @@ export interface SettingsOptions {
   git?: { commonDir: string; gitDir: string };
   /** Temp directories sandboxed commands may write (absolute, symlinks resolved). */
   tempDirs?: string[];
-  /** The project's harness settings from its default-branch policy (ADR 0270). */
-  profile?: HarnessProfile;
   /**
    * Hooks the runner adapter needs (status reporting to its UI). Never a hook that can answer a
    * permission decision: those events are refused.
@@ -130,44 +120,30 @@ export interface SettingsOptions {
    * `{}`, so it may run on `PreToolUse`, where a runner's own hooks may not.
    */
   statusHook?: string;
-  /**
-   * Where the run's attachments are written (ADR 0310), outside the worktree: the harness may read
-   * there, never write.
-   */
-  attachmentsDir?: string;
-  /** Files the agent's Read tool may not open (a planning session's relay file, ADR 0350). */
+  /** Files the agent's Read tool may not open (the run's MCP config, an account's credentials). */
   denyReadFiles?: string[];
   /**
-   * A flow job's MCP servers by name (spec 70 milestone 2): each gets `mcp__<name>__*` allowed, and
-   * nothing broader. Ignored for every other stage.
+   * The job's MCP servers by name (spec 70 milestone 2): each gets `mcp__<name>__*` allowed, and
+   * nothing broader.
    */
   mcpServers?: readonly string[];
-  /**
-   * Where the run is confined (ADR 0430): `sandbox` (default) is Claude Code's OS sandbox on the
-   * host (ADR 0270); `container` is a container per job, which is the floor instead. Claude's own
-   * sandbox is off there, and every stage defaults to `bypassPermissions`.
-   */
-  isolation?: Isolation;
   /** The platform the run's on, for its credential stores and temp dirs (default: this one). */
   platform?: NodeJS.Platform;
 }
 
-/** How a run is confined: Claude Code's OS sandbox on the host, or a container per job (ADR 0430). */
-export type Isolation = "sandbox" | "container";
-
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
 export const DECISION_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "Elicitation"] as const;
 
-/** Read-only exploration every stage gets. `WebFetch` is added per allowed domain. */
+/** Read-only exploration every run gets. `WebFetch` is added per allowed domain. */
 const READ_TOOLS = ["Read", "Glob", "Grep", "LS", "TodoWrite", "Task", "WebSearch"];
 
 /**
- * Shell commands the read-only stages (triage, spec, planning) may run without a prompt. None of them
+ * Shell commands a run in a plain directory may run without a prompt. None of them
  * may start another program: `find -exec`/`-execdir`/`-ok`, `xargs`, `sort --compress-program`,
  * `git grep -O` (open in a pager), `rg --pre`/`--hostname-bin`, `env`, `nice`, `time`, `awk system()`, `sed e`, `tar
  * --to-command` all can, so they are left out (the Glob and Grep tools cover finding and searching),
  * and `test/allowlist.test.ts` keeps them out. This is a convenience list, not the
- * boundary: verify and build run the project's toolchain (`node`, `pnpm`, …), which runs anything,
+ * boundary: a run in a repository runs the project's toolchain (`node`, `pnpm`, …), which runs anything,
  * so for them the OS sandbox (filesystem `denyRead`/`denyWrite`, network allowlist) is the only
  * floor, and on a Mac that floor does not stop a process reaching securityd for a keychain item
  * whose access list trusts a binary the run can execute (ADR 0270 amendment, 2026-11-12).
@@ -220,7 +196,7 @@ const GIT_WRITE = [
   "git checkout --",
   "git switch",
 ];
-/** Project tooling: running checks needs these, building needs them more. */
+/** Project tooling, for a run in a repository. */
 const TOOLCHAIN = ["pnpm", "npm", "npx", "node", "tsc", "biome", "vitest", "turbo", "corepack"];
 
 const bash = (commands: readonly string[]) => commands.map((c) => `Bash(${c}:*)`);
@@ -277,7 +253,7 @@ export const DENY_COMMANDS = [
 ];
 
 /**
- * Home paths no stage may read or write on any platform: credentials, Claude Code's own login file
+ * Home paths no run may read or write on any platform: credentials, Claude Code's own login file
  * (where Linux keeps it; macOS keeps it in the keychain), the runner's own files. Each platform adds
  * its own credential stores ({@link denyHome}).
  */
@@ -318,7 +294,7 @@ export function defaultTempDirs(platform: NodeJS.Platform = process.platform): s
 }
 
 /**
- * Hosts sandboxed commands may reach in every stage: the npm registry (npm, pnpm, corepack),
+ * Hosts sandboxed commands may reach in every run: the npm registry (npm, pnpm, corepack),
  * GitHub (dependencies from git; the harness has no token for it), and the Cloudflare API.
  */
 export const DEFAULT_ALLOWED_DOMAINS = [
@@ -401,134 +377,66 @@ export const EMPTY_FILES = ["npmrc", "aws-config", "aws-credentials"];
 export const TMP_DIRS = ["wrangler", "xdg-config", "xdg-cache", "npm-cache", "corepack"];
 
 /**
- * The default permission mode per stage. Build runs in `bypassPermissions` inside the sandbox (its
- * edits and commands are confined by the OS, not by an allowlist it would outgrow); the rest stay
- * on `dontAsk` with a stage allowlist, which refuses anything else instead of stalling on a prompt.
+ * What a run works in: `repo`, a worktree of its project's repository (the item's branch), or
+ * `plain`, an empty directory (spec 70).
  */
-export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
-  triage: "dontAsk",
-  spec: "dontAsk",
-  planning: "dontAsk",
-  build: "bypassPermissions",
-  verify: "dontAsk",
-  // The babysitter resolves conflicts and reads CI logs (spec 53): a build's sandboxed mode.
-  babysit: "bypassPermissions",
-  // A flow job (spec 70) is like triage and spec: an allowlist, writes only in its own directory.
-  flow: "dontAsk",
-};
+export type RunKind = "repo" | "plain";
 
-/**
- * The default mode per stage inside a container (ADR 0430): the container confines the whole
- * process, so every stage runs with permissions off.
- */
-export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
-  triage: "bypassPermissions",
-  spec: "bypassPermissions",
-  planning: "bypassPermissions",
-  build: "bypassPermissions",
-  verify: "bypassPermissions",
-  babysit: "bypassPermissions",
-  flow: "bypassPermissions",
-};
-
-/** The permission mode a stage runs in: the project's choice, else the isolation's default. */
-export function stageMode(
-  stage: JobStage,
-  profile?: HarnessProfile,
-  isolation: Isolation = "sandbox",
-): PermissionMode {
-  return (
-    profile?.permissionMode?.[stage] ??
-    (isolation === "container" ? CONTAINER_MODES : DEFAULT_MODES)[stage]
-  );
-}
-
-/** The hosts sandboxed commands may reach: the defaults plus the project's additions. */
-export function allowedDomains(profile?: HarnessProfile): string[] {
-  return [...new Set([...DEFAULT_ALLOWED_DOMAINS, ...(profile?.allowedDomains ?? [])])];
+/** A job with a repository and a branch works in a worktree; any other in a plain directory. */
+export function runKind(job: Partial<Pick<Job, "repo" | "branch">>): RunKind {
+  return job.repo !== undefined && job.branch !== undefined ? "repo" : "plain";
 }
 
 /**
- * What each stage may do. Triage and spec only read and write the result; verify also runs checks.
- * A planning session (spec 20) only reads, and acts through its planning MCP server's tools. A flow
- * job (spec 70) may have no repository: it reads, and writes only inside its own directory (the
- * result file included), with no git.
+ * The permission mode per kind of run. A run in a repository works in `bypassPermissions` inside
+ * the sandbox (its edits and commands are confined by the OS, not by an allowlist it would
+ * outgrow); a run in a plain directory stays on `dontAsk` with an allowlist, which refuses anything
+ * else instead of stalling on a prompt.
  */
-export function stageAllow(
-  stage: JobStage,
+export const RUN_MODES: Record<RunKind, PermissionMode> = {
+  repo: "bypassPermissions",
+  plain: "dontAsk",
+};
+
+/**
+ * What a run may do. In a plain directory: read, and write only inside that directory (the result
+ * file included), with no git. In a repository: edit, the shell, git add and commit, the toolchain.
+ * The host pushes; the agent never can.
+ */
+export function runAllow(
+  kind: RunKind,
   worktree: string,
   domains: readonly string[] = DEFAULT_ALLOWED_DOMAINS,
 ): string[] {
-  const result = `${abs(worktree)}/${RESULT_FILE}`;
-  const writeResult = [`Write(${result})`, `Edit(${result})`];
-  const read = [
-    ...READ_TOOLS,
-    ...domains.map((d) => `WebFetch(domain:${d})`),
-    ...bash(SHELL_READ),
-    ...bash(GIT_READ),
-  ];
-  switch (stage) {
-    case "triage":
-    case "spec":
-      return [...read, ...writeResult];
-    case "planning":
-      return [...read, `mcp__${PLANNING_MCP_SERVER}`];
-    case "flow": {
-      const dir = `${abs(worktree)}/**`;
-      return [
-        ...READ_TOOLS,
-        ...domains.map((d) => `WebFetch(domain:${d})`),
-        ...bash(SHELL_READ),
-        `Write(${dir})`,
-        `Edit(${dir})`,
-      ];
-    }
-    case "verify":
-      return [...read, ...writeResult, ...bash(TOOLCHAIN)];
-    case "build":
-    case "babysit":
-      return [
-        ...read,
-        "Edit",
-        "Write",
-        "MultiEdit",
-        "NotebookEdit",
-        ...bash(SHELL_WRITE),
-        ...bash(GIT_WRITE),
-        ...bash(TOOLCHAIN),
-      ];
+  const read = [...READ_TOOLS, ...domains.map((d) => `WebFetch(domain:${d})`), ...bash(SHELL_READ)];
+  if (kind === "plain") {
+    const dir = `${abs(worktree)}/**`;
+    return [...read, `Write(${dir})`, `Edit(${dir})`];
   }
+  return [
+    ...read,
+    ...bash(GIT_READ),
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
+    ...bash(SHELL_WRITE),
+    ...bash(GIT_WRITE),
+    ...bash(TOOLCHAIN),
+  ];
 }
 
 /** `//abs/path`: an absolute path in a permission rule (a single `/` is relative to the settings). */
 const abs = (path: string) => `//${path.replace(/^\/+/, "")}`;
 
-/**
- * The stage whose permissions a job runs with: its own, except that a `flow` job with a repository
- * (spec 70) works like a build in its checkout (editing, the shell, git add and commit, the
- * toolchain, the build's mode). The host pushes; the agent never can.
- */
-export function permissionStage(
-  job: Pick<Job, "stage"> & Partial<Pick<Job, "repo" | "branch">>,
-): JobStage {
-  return job.stage === "flow" && job.repo !== undefined && job.branch !== undefined
-    ? "build"
-    : job.stage;
-}
-
 /** The settings for one run. Pure: `projectHarness` writes it. */
 export function runSettings(
-  job: Pick<Job, "stage"> & Partial<Pick<Job, "repo" | "branch">>,
+  job: Partial<Pick<Job, "repo" | "branch">>,
   options: SettingsOptions,
 ): ClaudeSettings {
-  const profile = options.profile;
-  const isolation = options.isolation ?? "sandbox";
-  const stage = permissionStage(job);
-  const mode = stageMode(stage, profile, isolation);
-  // Inside a container the container is the floor: Claude's own sandbox can't run nested there
-  // (bubblewrap needs user namespaces Docker's seccomp profile blocks), ADR 0430.
-  const osSandbox = isolation === "sandbox";
-  const domains = allowedDomains(profile);
+  const kind = runKind(job);
+  const mode = RUN_MODES[kind];
+  const domains = DEFAULT_ALLOWED_DOMAINS;
   const runTmp = options.runTmp ?? `${options.runDir}/tmp`;
   for (const event of DECISION_HOOK_EVENTS) {
     if (options.hooks?.[event]) {
@@ -547,12 +455,8 @@ export function runSettings(
   // Edit denies into the sandbox's denyWrite, which would also block the run's git from writing
   // objects into the checkout's git dir.
   const writeDeny = [...homeRules, `${abs(configDir)}`, `${abs(configDir)}/**`];
-  const allow = [...stageAllow(stage, options.worktree, domains)];
-  for (const rule of profile?.allow?.[stage] ?? []) if (!allow.includes(rule)) allow.push(rule);
-  if (options.attachmentsDir) allow.push(`Read(${abs(options.attachmentsDir)}/**)`);
-  if (job.stage === "flow") {
-    for (const name of options.mcpServers ?? []) allow.push(`mcp__${name}__*`);
-  }
+  const allow = [...runAllow(kind, options.worktree, domains)];
+  for (const name of options.mcpServers ?? []) allow.push(`mcp__${name}__*`);
   const deny = [
     ...bash(DENY_COMMANDS),
     ...readDeny.map((p) => `Read(${p})`),
@@ -565,9 +469,6 @@ export function runSettings(
     // Bypass mode allows every tool: WebFetch isn't sandboxed, so it can't be held to the host
     // allowlist there. Builds fetch through sandboxed commands (to the allowlist) instead.
     ...(mode === "bypassPermissions" ? ["WebFetch"] : []),
-    // The attachments are the requester's, read only (additionalDirectories would otherwise make
-    // them writable for the file tools).
-    ...(options.attachmentsDir ? [`Edit(${abs(options.attachmentsDir)}/**)`] : []),
   ];
   const git = options.git;
   const gitWrite = git
@@ -586,13 +487,12 @@ export function runSettings(
       allow,
       deny,
       blockWritesOutsideWorkingDirectories: true,
-      ...(options.attachmentsDir ? { additionalDirectories: [options.attachmentsDir] } : {}),
     },
     sandbox: {
-      enabled: osSandbox,
-      failIfUnavailable: osSandbox,
+      enabled: true,
+      failIfUnavailable: true,
       allowUnsandboxedCommands: false,
-      // Only where the mode lets everything through anyway; elsewhere the stage allowlist decides.
+      // Only where the mode lets everything through anyway; elsewhere the allowlist decides.
       autoAllowBashIfSandboxed: mode === "bypassPermissions",
       excludedCommands: [],
       network: { allowedDomains: domains, strictAllowlist: true, allowLocalBinding: true },
