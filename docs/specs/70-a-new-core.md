@@ -176,6 +176,33 @@ curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=
   them; its Triggers tab lists each plugin that defines a trigger with a
   copyable URL (`flow.plugin.list` gives `triggerPath` for those).
 
+### Software: as built (2026-11-15)
+The plain version of "software development is one plugin" (`docs/design/base-and-plugins.md`,
+example 3). None of the old core's software flow (merge queue, babysitter, review packets,
+`factory/verify`) is used; only its plumbing: the GitHub App client, the org's installations
+(`core_github_installations`) and the runner's clone, worktree and push.
+- **A project can have a repository** (migration 0436): `flow.github.repos` lists what the org's
+  active installations reach (at most 200; GitHub calls, never polled), and
+  `flow.project.setRepository` stores one (owner, name, default branch, installation) after
+  checking it is reachable. The desktop app's project Settings tab picks it.
+- **A run on such a project works in a checkout.** The item's branch is
+  `factory/flow/<key>-<number>` (key lower-cased), set by the item's first such claim and reused by
+  every later run. The job carries `repo` and `branch`; `baseRef` is the item's branch when its
+  `head_sha` is set (a run that ended `done` pushed it), the default branch for the item's first
+  run, and otherwise the item's branch only if GitHub says it exists (asked once, at that claim).
+  The `token` call mints a one-repository token (`contents: write`, never cached) with the item's
+  branch as `pushBranch`. The runner host commits leftovers and pushes that branch (no default-branch
+  merge, no checks step); the harness gives the session the build stage's rules. The hand-back's
+  branch and head are kept on the run, and the head is copied to the item when the run is done.
+- **Plugins use GitHub** through the built-in `github` gateway (packages/plugins, gateway.ts): the
+  REST API under `/repos/<owner>/<name>` of the item's project, with a one-repository token
+  (contents and pull requests write, checks read) the engine mints and keeps in the isolate.
+  `ctx.item` has `branch`, `headSha` and `repo`; `runEnded`'s run has `branch` and `headSha`;
+  `entered` and `leaving` also get `fromName` and `toName`.
+- **The software plugin** is an example in the repo (`plugins/software/plugin.js`), installed like
+  any plugin: it opens a pull request when a run pushes, holds a "review" status while checks fail
+  or run, and merges on "Merged" or "Shipped".
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the

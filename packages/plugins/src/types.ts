@@ -1,6 +1,6 @@
 // The plugin contract's shapes on the host's side: what the engine gives the host, the hooks, the
 // payloads, a card, and the ways a dispatch can end.
-import type { Item } from "@software-factory/store";
+import type { Item, ProjectRepo } from "@software-factory/store";
 import { z } from "zod";
 
 /** What the host needs from the engine's Env. */
@@ -10,7 +10,46 @@ export interface PluginHostEnv {
   LOADER?: WorkerLoader;
   /** The engine secret gateway secrets are sealed with (docs/deploying.md). */
   FLOW_GATEWAY_KEY?: string;
+  /**
+   * The engine's GitHub App, for the built-in `github` gateway and the repository picker. Injected
+   * by the engine (this package never imports it); without it neither is there.
+   */
+  github?: FlowGitHub;
 }
+
+/** A repository as the GitHub App reaches it: through one installation. */
+export interface GitHubRepoRef {
+  installationId: string;
+  owner: string;
+  name: string;
+}
+
+/** What the engine's GitHub App does for the new core. Every call goes to GitHub. */
+export interface FlowGitHub {
+  /** The repositories an installation reaches (paged by the App; at most a few hundred). */
+  installationRepos(
+    installationId: string,
+  ): Promise<{ owner: string; name: string; defaultBranch: string }[]>;
+  /**
+   * A token for one repository with exactly these permissions. `cache: true` may hand back one
+   * minted earlier that is far from expiring (the built-in gateway); a runner's token never is.
+   */
+  repoToken(
+    repo: GitHubRepoRef,
+    permissions: Record<string, string>,
+    opts?: { cache?: boolean },
+  ): Promise<{ token: string; expiresAt: string }>;
+  /** The branch's head, or null when it doesn't exist. */
+  branchSha(repo: GitHubRepoRef, branch: string): Promise<string | null>;
+}
+
+/** The built-in gateway's name, and what its token may do. */
+export const GITHUB_GATEWAY = "github";
+export const GITHUB_GATEWAY_PERMISSIONS = {
+  contents: "write",
+  pull_requests: "write",
+  checks: "read",
+} as const;
 
 export const HOOKS = ["entered", "leaving", "runEnded", "trigger"] as const;
 export type HookName = (typeof HOOKS)[number];
@@ -23,9 +62,15 @@ export interface PluginItem {
   body: string;
   statusId: string;
   fields: Record<string, unknown>;
+  /** The item's branch on its project's repository, once a run there was claimed; else null. */
+  branch: string | null;
+  /** That branch's head as the last run that ended `done` pushed it; else null. */
+  headSha: string | null;
+  /** The item's project's repository, or null when it has none. */
+  repo: { owner: string; name: string; defaultBranch: string } | null;
 }
 
-export function pluginItem(item: Item): PluginItem {
+export function pluginItem(item: Item, repo: ProjectRepo | null = null): PluginItem {
   return {
     id: item.id,
     number: item.number,
@@ -33,6 +78,9 @@ export function pluginItem(item: Item): PluginItem {
     body: item.body,
     statusId: item.statusId,
     fields: item.fields,
+    branch: item.branch,
+    headSha: item.headSha,
+    repo: repo ? { owner: repo.owner, name: repo.name, defaultBranch: repo.defaultBranch } : null,
   };
 }
 
@@ -43,10 +91,22 @@ export interface PluginRun {
   statusId: string;
   outcome: "done" | "rejected" | "failed";
   summary: string;
+  /** The branch the run worked on, and the head it handed back; null without a repository. */
+  branch: string | null;
+  headSha: string | null;
 }
 
 export type HookPayload =
-  | { hook: "entered" | "leaving"; item: PluginItem; from: string | null; to: string }
+  | {
+      hook: "entered" | "leaving";
+      item: PluginItem;
+      /** Status ids; `from` is null for a new item. */
+      from: string | null;
+      to: string;
+      /** The statuses' names, as the workflow calls them. */
+      fromName: string | null;
+      toName: string;
+    }
   | { hook: "runEnded"; item: PluginItem; run: PluginRun }
   | { hook: "trigger"; name: string; payload: unknown };
 

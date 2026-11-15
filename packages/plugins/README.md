@@ -15,14 +15,15 @@ stops the item with the error, and the item can be retried. That is the whole fa
 export default {
   fields: [{ id: "customer", label: "Customer", type: "text" }], // "text" | "number" | "date"
   on: {
-    entered(ctx, { item, from, to }) {},  // after an item enters a status (from is null for a new item)
-    leaving(ctx, { item, from, to }) {},  // before it leaves one; return { refuse: "why" } to stop the move
-    runEnded(ctx, { item, run }) {},      // after an agent's run ends: { id, agentId, statusId, outcome, summary }
+    entered(ctx, { item, from, to, fromName, toName }) {}, // after an item enters a status (from is null for a new item)
+    leaving(ctx, { item, from, to, fromName, toName }) {}, // before it leaves one; return { refuse: "why" } to stop the move
+    runEnded(ctx, { item, run }) {},      // after an agent's run ends: { id, agentId, statusId, outcome, summary, branch, headSha }
     trigger(ctx, { name, payload }) {},   // an outside event for this plugin
   },
 };
 ```
-`ctx`: `item` (plain data: id, number, title, body, statusId, fields), `comment(text)`,
+`ctx`: `item` (plain data: id, number, title, body, statusId, fields, and for software work
+`branch`, `headSha` and `repo: { owner, name, defaultBranch } | null`), `comment(text)`,
 `card({ kind, title, subtitle?, rows?, checks?, bars?, link? })`, `setField(id, value)`,
 `move(statusId)`, `createItem({ projectId, title, body, fields? })`, and
 `gateway(name).fetch(path, init)`, which returns a `Response`. `PLUGIN_GUIDE` (guide.ts) is the
@@ -60,6 +61,23 @@ same contract written for an agent, with a complete example; the engine's MCP se
   `Authorization: Bearer <secret>` or `<header>: <secret>` from the decrypted secret, makes the
   request from the engine, and returns status, headers and body. A missing gateway is a plain error
   the plugin sees.
+- **The built-in `github` gateway** (gateway.ts, `githubGatewayFetch`). Not a row: it is there for
+  every org with an active GitHub App installation, `flow.gateway.list` shows it read-only, and
+  `github` can't be saved or deleted. `ctx.gateway("github").fetch(path, init)` calls
+  `https://api.github.com/repos/<owner>/<name><path>` for the repository of the item's project
+  (no item, or a project without a repository, is a plain error), with a one-repository
+  installation token carrying contents write, pull requests write and checks read. The engine
+  injects the App as `PluginHostEnv.github` (`FlowGitHub`: list an installation's repositories,
+  mint a token, read a branch); this package never imports the engine or `packages/core`. The
+  engine keeps the gateway's token in the isolate until 5 minutes before it expires.
+
+## Example: the software plugin
+[`plugins/software/plugin.js`](../../plugins/software/plugin.js) is the complete example, also
+quoted at the end of `PLUGIN_GUIDE`. For a project with a repository it opens a pull request from
+the item's branch when an agent's run ends `done` with a head (number in the `pr` field, a card
+with its size and checks), refuses to let the item leave a status named like "review" while a
+check on the head failed or is still running, and merges the pull request when the item enters
+"Merged" or "Shipped". The engine's `test/flow-software.test.ts` walks it against a fake GitHub.
 - **Fields.** A plugin's `fields` are read when it is saved (`describe()`) and stored on its row;
   `declaredFields` (packages/store) unions them across the org's enabled plugins with one query.
   No worker is loaded to read a board or an item.

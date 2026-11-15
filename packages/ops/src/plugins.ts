@@ -1,13 +1,15 @@
 // flow.plugin.* and flow.gateway.*: an org's plugins (code that changes how the org works, live
 // at once) and its gateways (connections to outside systems, used by plugins by name). No approval
 // of edits and no limits (ADR 0660): saving a plugin that loads is enough.
-import { savePluginChecked } from "@software-factory/plugins";
+import { GITHUB_API, GITHUB_GATEWAY, savePluginChecked } from "@software-factory/plugins";
 import {
   deleteGateway,
   deletePlugin,
+  type Gateway,
   getPlugin,
   listGateways,
   listPlugins,
+  orgInstallations,
   type Plugin,
   saveGateway,
   setPluginEnabled,
@@ -113,6 +115,12 @@ const auth = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("header"), header: z.string().regex(/^[A-Za-z0-9-]{1,64}$/) }),
 ]);
 
+const builtIn = () =>
+  new OpError(
+    "conflict",
+    "The gateway \"github\" is built in: it is the org's GitHub connection, on the repository of the item's project, and can't be edited.",
+  );
+
 export const gatewayOps = [
   defineOperation({
     name: "flow.gateway.list",
@@ -120,7 +128,29 @@ export const gatewayOps = [
       "The org's gateways by name: each one's base URL, how it authenticates, and whether it has a secret. Never the secret.",
     risk: "read",
     input: z.object({ orgId }),
-    handler: async (_input, ctx) => ({ gateways: await listGateways(ctx.d1, ctx.orgId) }),
+    handler: async (_input, ctx) => {
+      const gateways: (Gateway & { builtIn?: true; description?: string })[] = await listGateways(
+        ctx.d1,
+        ctx.orgId,
+      );
+      // The built-in `github` gateway: there while the org has an active GitHub App installation.
+      const installations = await orgInstallations(ctx.d1, ctx.orgId);
+      if (installations.length > 0) {
+        gateways.unshift({
+          id: "builtin:github",
+          orgId: ctx.orgId,
+          name: GITHUB_GATEWAY,
+          baseUrl: `${GITHUB_API}/repos/{owner}/{name}`,
+          auth: { kind: "bearer" },
+          hasSecret: true,
+          createdAt: "",
+          updatedAt: "",
+          builtIn: true,
+          description: `GitHub, connected as ${installations.map((i) => i.accountLogin).join(", ")}`,
+        });
+      }
+      return { gateways };
+    },
   }),
   defineOperation({
     name: "flow.gateway.save",
@@ -134,14 +164,16 @@ export const gatewayOps = [
       auth,
       secret: z.string().min(1).max(10_000).nullable().optional(),
     }),
-    handler: (input, ctx) =>
-      saveGateway(ctx.d1, ctx.host.FLOW_GATEWAY_KEY, {
+    handler: (input, ctx) => {
+      if (input.name === GITHUB_GATEWAY) throw builtIn();
+      return saveGateway(ctx.d1, ctx.host.FLOW_GATEWAY_KEY, {
         orgId: ctx.orgId,
         name: input.name,
         baseUrl: input.baseUrl,
         auth: input.auth,
         ...(input.secret !== undefined ? { secret: input.secret } : {}),
-      }),
+      });
+    },
   }),
   defineOperation({
     name: "flow.gateway.delete",
@@ -150,6 +182,7 @@ export const gatewayOps = [
     risk: "write",
     input: z.object({ orgId, name }),
     handler: async (input, ctx) => {
+      if (input.name === GITHUB_GATEWAY) throw builtIn();
       await deleteGateway(ctx.d1, ctx.orgId, input.name);
       return { ok: true };
     },

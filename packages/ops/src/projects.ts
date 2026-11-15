@@ -1,15 +1,54 @@
 // flow.project.* and flow.agent.*: an org's projects (each on a workflow) and its agents.
+import type { FlowGitHub } from "@software-factory/plugins";
 import {
   createAgent,
   createProject,
   getProject,
   listAgents,
   listProjects,
+  orgInstallations,
+  type ProjectRepo,
+  setProjectRepo,
   setProjectWorkflow,
   updateAgent,
 } from "@software-factory/store";
 import { z } from "zod";
-import { defineOperation, id, OpError, orgId } from "./operation.ts";
+import { type Ctx, defineOperation, id, OpError, orgId } from "./operation.ts";
+
+/** The most repositories flow.github.repos lists. */
+export const REPO_LIST_CAP = 200;
+
+function githubOf(ctx: Ctx): FlowGitHub {
+  if (!ctx.host.github) throw new OpError("unavailable", "This engine has no GitHub App set up.");
+  return ctx.host.github;
+}
+
+/**
+ * The repositories the org's active GitHub App installations reach, at most REPO_LIST_CAP. One
+ * GitHub call (paged) per installation: never on a polled path.
+ */
+async function reachableRepos(ctx: Ctx): Promise<{
+  connected: boolean;
+  account: string | null;
+  repos: ProjectRepo[];
+}> {
+  const installations = await orgInstallations(ctx.d1, ctx.orgId);
+  if (installations.length === 0) return { connected: false, account: null, repos: [] };
+  const github = githubOf(ctx);
+  const repos: ProjectRepo[] = [];
+  for (const installation of installations) {
+    if (repos.length >= REPO_LIST_CAP) break;
+    for (const r of await github.installationRepos(installation.installationId)) {
+      repos.push({ ...r, installationId: installation.installationId });
+    }
+  }
+  repos.sort((a, b) => `${a.owner}/${a.name}`.localeCompare(`${b.owner}/${b.name}`));
+  return {
+    connected: true,
+    account: installations.map((i) => i.accountLogin).join(", "),
+    repos: repos.slice(0, REPO_LIST_CAP),
+  };
+}
 
 const project = {
   name: z.string().min(1).max(80),
@@ -62,6 +101,44 @@ export const projectOps = [
     handler: async (_input, ctx) => ({ projects: await listProjects(ctx.d1, ctx.orgId) }),
   }),
   defineOperation({
+    name: "flow.project.setRepository",
+    description:
+      "Give a project a GitHub repository ({ owner, name }), or take it away ({ clear: true }). The repository must be one the org's GitHub connection reaches (flow.github.repos); its default branch is stored with it. An agent's run on an item of a project with a repository works in a checkout of it, on the item's branch factory/flow/<key>-<number>, which the runner pushes; plugins reach it through the built-in `github` gateway.",
+    risk: "write",
+    input: z.union([
+      z.object({
+        orgId,
+        projectId: id,
+        owner: z.string().min(1).max(100),
+        name: z.string().min(1).max(100),
+      }),
+      z.object({ orgId, projectId: id, clear: z.literal(true) }),
+    ]),
+    handler: async (input, ctx) => {
+      if ("clear" in input) {
+        await setProjectRepo(ctx.d1, input.projectId, null);
+      } else {
+        const { connected, repos } = await reachableRepos(ctx);
+        if (!connected) {
+          throw new OpError(
+            "conflict",
+            "The org has no GitHub connection. Connect GitHub first, then pick a repository.",
+          );
+        }
+        const want = `${input.owner}/${input.name}`.toLowerCase();
+        const repo = repos.find((r) => `${r.owner}/${r.name}`.toLowerCase() === want);
+        if (!repo) {
+          throw new OpError(
+            "not_found",
+            `The org's GitHub connection doesn't reach ${input.owner}/${input.name}.`,
+          );
+        }
+        await setProjectRepo(ctx.d1, input.projectId, repo);
+      }
+      return getProject(ctx.d1, input.projectId);
+    },
+  }),
+  defineOperation({
     name: "flow.project.setWorkflow",
     description: "Point a project at another workflow. Its items keep their status ids.",
     risk: "write",
@@ -70,6 +147,17 @@ export const projectOps = [
       await setProjectWorkflow(ctx.d1, input.projectId, input.workflowId);
       return getProject(ctx.d1, input.projectId);
     },
+  }),
+];
+
+export const githubOps = [
+  defineOperation({
+    name: "flow.github.repos",
+    description:
+      "The GitHub repositories the org's GitHub connection reaches (at most 200), for flow.project.setRepository: { connected, account, repos: [{ owner, name, defaultBranch, installationId }] }. `connected` is false when the org hasn't connected GitHub. Asks GitHub, so it is slow.",
+    risk: "read",
+    input: z.object({ orgId }),
+    handler: (_input, ctx) => reachableRepos(ctx),
   }),
 ];
 

@@ -15,10 +15,14 @@ import {
   releaseRequestSchema,
 } from "@software-factory/runner-contract";
 import {
+  type ClaimedRun,
   chatHistory,
   claimRun,
   endChatRun,
+  getItem,
+  getProject,
   getRun,
+  type Pushed,
   type RunResult,
   recentComments,
   renewLease,
@@ -26,6 +30,7 @@ import {
 } from "@software-factory/store";
 import { chatPrompt, PROMPT_CHAT_MESSAGES } from "./chat-prompt.ts";
 import { flowHost } from "./door.ts";
+import { FLOW_JOB_TOKEN_PERMISSIONS, flowGitHub } from "./github.ts";
 import { FACTORY_MCP, issueMcpToken, MCP_PATH } from "./mcp-auth.ts";
 import { flowPrompt, PROMPT_COMMENTS } from "./prompt.ts";
 
@@ -43,7 +48,9 @@ const refuse = (status: number, code: string, error: string): ChannelReply => ({
   body: { error, code },
 });
 
-type Ended = { status: "done"; result: RunResult } | { status: "failed"; error: string };
+type Ended =
+  | { status: "done"; result: RunResult; pushed?: Pushed }
+  | { status: "failed"; error: string; pushed?: Pushed };
 
 /**
  * Ends a run. An item's run goes through the plugin host (`leaving`, the step, `runEnded` and
@@ -56,8 +63,45 @@ async function endFlowRun(
   token: number,
   end: Ended,
 ): Promise<void> {
-  if (run.chatId !== null) await endChatRun(env.DB, run.id, token, end);
-  else await endRunWithHooks(flowHost(env), run.id, token, end);
+  if (run.chatId !== null) {
+    // A chat's run has no repository, so nothing it pushed.
+    await endChatRun(
+      env.DB,
+      run.id,
+      token,
+      end.status === "done"
+        ? { status: "done", result: end.result }
+        : { status: "failed", error: end.error },
+    );
+  } else {
+    await endRunWithHooks(flowHost(env), run.id, token, end);
+  }
+}
+
+/**
+ * Where a run on a project with a repository starts: its item's branch when that already exists on
+ * GitHub (a later run continues the earlier run's work), else the default branch. The item's head
+ * being set (a run that ended `done` pushed it) is the proof that costs nothing; the first run on
+ * the item's branch needs none either. Only a run after one that never handed a head back (it
+ * failed, or was rejected without pushing) asks GitHub, once, at its claim.
+ */
+async function baseRefOf(
+  env: Env,
+  repo: NonNullable<NonNullable<ClaimedRun["project"]>["repo"]>,
+  item: NonNullable<ClaimedRun["item"]> & { branch: string },
+): Promise<string> {
+  if (item.headSha !== null) return item.branch;
+  if (item.firstOnBranch) return repo.defaultBranch;
+  try {
+    const github = flowGitHub(env);
+    const ref = { installationId: repo.installationId, owner: repo.owner, name: repo.name };
+    if (github && (await github.branchSha(ref, item.branch)) !== null) return item.branch;
+  } catch (error) {
+    // GitHub didn't answer: start from the default branch; a push onto an existing branch then
+    // fails the run plainly, and a retry asks again.
+    console.warn(`flow claim: couldn't read ${item.branch}: ${String(error)}`);
+  }
+  return repo.defaultBranch;
 }
 
 /**
@@ -120,11 +164,27 @@ export async function claimFlowJob(
         },
       ]
     : undefined;
+  const repo = run.project?.repo ?? null;
+  const branch = run.item?.branch ?? null;
+  const checkout =
+    repo && run.item && branch
+      ? {
+          repo: {
+            url: `https://github.com/${repo.owner}/${repo.name}.git`,
+            owner: repo.owner,
+            name: repo.name,
+            baseRef: await baseRefOf(env, repo, { ...run.item, branch }),
+            defaultBranch: repo.defaultBranch,
+          },
+          branch,
+        }
+      : null;
   return {
     jobId: run.id,
     runId: run.id,
     runNo: run.stay,
     stage: "flow",
+    ...(checkout ?? {}),
     // A chat's run stands for its chat here: the host only names a work item in its run folder.
     workItem: run.item
       ? { id: run.itemId ?? "", number: run.item.number, title: run.item.title }
@@ -170,11 +230,43 @@ export async function beatFlowJobs(
 }
 
 /**
+ * The `token` call for a claimed flow run on a project with a repository: a fresh installation token
+ * for that one repository, `contents: write` only, never stored, with the item's branch as the one
+ * branch it may push. A run without a repository has no token.
+ */
+async function flowJobToken(
+  env: Env,
+  run: { itemId: string | null; branch: string | null; status: string },
+): Promise<ChannelReply> {
+  const none = refuse(404, "not_found", "a flow job without a repository has no token");
+  if (run.itemId === null || run.branch === null) return none;
+  if (run.status !== "claimed") return refuse(409, "fenced", `the flow run is ${run.status}`);
+  const item = await getItem(env.DB, run.itemId);
+  const repo = item ? (await getProject(env.DB, item.projectId))?.repo : null;
+  if (!repo) return none;
+  const github = flowGitHub(env);
+  if (!github) return refuse(503, "unavailable", "this engine has no GitHub App set up");
+  const minted = await github.repoToken(
+    { installationId: repo.installationId, owner: repo.owner, name: repo.name },
+    FLOW_JOB_TOKEN_PERMISSIONS,
+  );
+  return {
+    body: {
+      token: minted.token,
+      expiresAt: minted.expiresAt,
+      repo: { owner: repo.owner, name: repo.name },
+      pushBranch: run.branch,
+    },
+  };
+}
+
+/**
  * A job-scoped call on a flow job. `handback` finishes the run with the agent's result (an invalid
- * or missing one fails it); `release` after a failure, or with the run still open, fails it;
- * `events` and `artifacts` are accepted and dropped for now; `token` and every other call are
- * refused, since a flow job has no repository, steers, terminal or planning. Each checks the run
- * is this runner's and the fencing token is current: a stale one is 409 `fenced`, so the host stops.
+ * or missing one fails it) and, for a run with a repository, its branch and head; `release` after a
+ * failure, or with the run still open, fails it; `events` and `artifacts` are accepted and dropped
+ * for now; `token` mints a run with a repository its push token (flowJobToken); every other call is
+ * refused, since a flow job has no steers, terminal or planning. Each checks the run is this
+ * runner's and the fencing token is current: a stale one is 409 `fenced`, so the host stops.
  */
 export async function flowJobReply(
   env: Env,
@@ -183,10 +275,7 @@ export async function flowJobReply(
   call: JobCall,
   body: Record<string, unknown>,
 ): Promise<ChannelReply> {
-  if (call === "token") {
-    return refuse(404, "not_found", "a flow job has no repository, so it has no token");
-  }
-  if (!["handback", "release", "events", "artifacts"].includes(call)) {
+  if (!["handback", "release", "events", "artifacts", "token"].includes(call)) {
     return refuse(404, "not_found", `a flow job has no ${call} call`);
   }
   const run = await getRun(env.DB, jobId);
@@ -198,6 +287,7 @@ export async function flowJobReply(
     return refuse(409, "fenced", `fencing token ${String(token)} is stale for ${jobId}`);
   }
   const open = run.status === "claimed";
+  if (call === "token") return flowJobToken(env, run);
   try {
     // Dropped for now. Accepted after the hand-back too: the host flushes its last events then.
     if (call === "events" || call === "artifacts") return { body: { ok: true } };
@@ -218,10 +308,17 @@ export async function flowJobReply(
     if (!parsed.success) return refuse(400, "invalid_input", parsed.error.message);
     if (!open) return refuse(409, "fenced", `the flow run is ${run.status}`);
     const handback = parsed.data;
+    // What a run with a repository pushed (store: only its own branch counts).
+    const pushed: Pushed | undefined =
+      run.branch !== null && handback.branch
+        ? { branch: handback.branch, headSha: handback.headSha ?? null }
+        : undefined;
+    const also = pushed ? { pushed } : {};
     if (handback.outcome !== "completed") {
       await endFlowRun(env, run, token, {
         status: "failed",
         error: handback.summary?.trim() || `The run ${handback.outcome}.`,
+        ...also,
       });
       return { body: { accepted: true } };
     }
@@ -231,10 +328,11 @@ export async function flowJobReply(
         status: "failed",
         error:
           "The agent didn't leave a valid result: it must write { outcome: done | rejected, summary }.",
+        ...also,
       });
       return { body: { accepted: true } };
     }
-    await endFlowRun(env, run, token, { status: "done", result: result.data });
+    await endFlowRun(env, run, token, { status: "done", result: result.data, ...also });
     return { body: { accepted: true } };
   } catch (error) {
     if (error instanceof StoreError) {

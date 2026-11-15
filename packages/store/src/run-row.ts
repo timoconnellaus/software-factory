@@ -28,6 +28,9 @@ export interface Run {
   createdAt: string;
   claimedAt: string | null;
   finishedAt: string | null;
+  /** The branch the run worked on and the head it handed back; null without a repository. */
+  branch: string | null;
+  headSha: string | null;
 }
 
 export function toRun(row: FlowRunsTable): Run {
@@ -49,5 +52,7 @@ export function toRun(row: FlowRunsTable): Run {
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     finishedAt: row.finished_at,
+    branch: row.branch ?? null,
+    headSha: row.head_sha ?? null,
   };
 }

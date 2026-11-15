@@ -21,13 +21,7 @@ import {
   stopItem,
 } from "@software-factory/store";
 import { type DispatchOutcome, dispatch, Session } from "./dispatch.ts";
-import {
-  MOVE_CHAIN_LIMIT,
-  type PluginHostEnv,
-  PluginRefusal,
-  type PluginRun,
-  pluginItem,
-} from "./types.ts";
+import { MOVE_CHAIN_LIMIT, type PluginHostEnv, PluginRefusal, type PluginRun } from "./types.ts";
 
 type Entered = Extract<Effect, { type: "entered" }>;
 type Move = DispatchOutcome["moves"][number];
@@ -41,13 +35,25 @@ function pluginRun(run: Run): PluginRun {
     statusId: run.statusId,
     outcome: run.status === "done" && run.result ? run.result.outcome : "failed",
     summary: run.result?.summary ?? run.error ?? "",
+    branch: run.branch,
+    headSha: run.headSha,
   };
 }
 
-/** The item's workflow's status ids, which `ctx.move` may name. */
-async function statusIdsOf(env: PluginHostEnv, itemId: string): Promise<string[]> {
-  return (await loadItem(env.DB, itemId)).workflow.statuses.map((s) => s.id);
+/** A workflow's statuses: their ids (which `ctx.move` may name) and names. */
+type Statuses = { id: string; name: string }[];
+
+const statusesOf = (workflow: { statuses: { id: string; name: string }[] }): Statuses =>
+  workflow.statuses.map((s) => ({ id: s.id, name: s.name }));
+
+/** The item's workflow's statuses. */
+async function statusesOfItem(env: PluginHostEnv, itemId: string): Promise<Statuses> {
+  return statusesOf((await loadItem(env.DB, itemId)).workflow);
 }
+
+/** A status's name, or its id when the workflow no longer has it. */
+const nameOf = (statuses: Statuses, id: string | null) =>
+  id === null ? null : (statuses.find((s) => s.id === id)?.name ?? id);
 
 /**
  * Asks the org's plugins whether the item may leave its status for `to`. Null when none refuses
@@ -56,15 +62,22 @@ async function statusIdsOf(env: PluginHostEnv, itemId: string): Promise<string[]
 async function askLeaving(
   session: Session,
   item: Item,
-  statusIds: string[],
+  statuses: Statuses,
   from: string,
   to: string,
 ): Promise<DispatchOutcome | null> {
+  const statusIds = statuses.map((s) => s.id);
   const out = await dispatch(
     session.env,
     item.orgId,
     "leaving",
-    { item: pluginItem(item), from, to },
+    {
+      item: await session.item(item),
+      from,
+      to,
+      fromName: nameOf(statuses, from),
+      toName: nameOf(statuses, to) ?? to,
+    },
     { item, statusIds, stop: false, session },
   );
   return out.refusal || out.failure ? out : null;
@@ -75,11 +88,12 @@ async function after(
   session: Session,
   item: Item,
   effects: Effect[],
-  extra: { run?: Run; retried?: boolean; statusIds?: string[] } = {},
+  extra: { run?: Run; retried?: boolean; statuses?: Statuses } = {},
 ): Promise<Item> {
   const plugins = await session.plugins(item.orgId);
   if (plugins.length === 0) return item;
-  const statusIds = extra.statusIds ?? (await statusIdsOf(session.env, item.id));
+  const statuses = extra.statuses ?? (await statusesOfItem(session.env, item.id));
+  const statusIds = statuses.map((s) => s.id);
   const moves: Move[] = [];
   const created: Item[] = [];
   const base = { item, statusIds, session };
@@ -88,7 +102,7 @@ async function after(
       session.env,
       item.orgId,
       "runEnded",
-      { item: pluginItem(item), run: pluginRun(extra.run) },
+      { item: await session.item(item), run: pluginRun(extra.run) },
       base,
     );
     created.push(...out.created);
@@ -103,7 +117,13 @@ async function after(
       session.env,
       item.orgId,
       "entered",
-      { item: pluginItem(item), from: into.from, to: into.to },
+      {
+        item: await session.item(item),
+        from: into.from,
+        to: into.to,
+        fromName: nameOf(statuses, into.from),
+        toName: nameOf(statuses, into.to) ?? into.to,
+      },
       base,
     );
     created.push(...out.created);
@@ -167,8 +187,7 @@ async function step(
     );
     const entered = enteredOf(preview.effects);
     if (entered && entered.from !== null) {
-      const statusIds = workflow.statuses.map((s) => s.id);
-      const said = await askLeaving(session, item, statusIds, entered.from, entered.to);
+      const said = await askLeaving(session, item, statusesOf(workflow), entered.from, entered.to);
       if (said?.refusal) throw new PluginRefusal(said.refusal.plugin, said.refusal.reason);
       if (said?.failure) {
         return stopItem(env.DB, item.id, said.failure.message, {
@@ -181,7 +200,7 @@ async function step(
   const stepped = await applyEventStep(env.DB, itemId, event, actor);
   return after(session, stepped.item, stepped.effects, {
     retried: event.type === "retried",
-    statusIds: loaded.workflow.statuses.map((s) => s.id),
+    statuses: statusesOf(loaded.workflow),
   });
 }
 
@@ -245,8 +264,13 @@ export async function endRunWithHooks(
         if (!(error instanceof FlowError)) throw error;
       }
       if (entered && entered.from !== null) {
-        const statusIds = workflow.statuses.map((s) => s.id);
-        const said = await askLeaving(session, item, statusIds, entered.from, entered.to);
+        const said = await askLeaving(
+          session,
+          item,
+          statusesOf(workflow),
+          entered.from,
+          entered.to,
+        );
         if (said?.refusal) {
           end = {
             ...end,

@@ -2,6 +2,16 @@
 import { readBatch } from "@software-factory/db";
 import { sql } from "kysely";
 import { flowDb, iso, newId, StoreError } from "./db.ts";
+import type { FlowProjectsTable } from "./schema.ts";
+
+/** A project's GitHub repository, reached through one of its org's App installations. */
+export interface ProjectRepo {
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  /** GitHub's id of the installation that reaches it. */
+  installationId: string;
+}
 
 export interface Project {
   id: string;
@@ -11,17 +21,28 @@ export interface Project {
   workflowId: string;
   nextNumber: number;
   createdAt: string;
+  /** Null when the project has no repository. */
+  repo: ProjectRepo | null;
 }
 
-type Row = {
-  id: string;
-  org_id: string;
-  name: string;
-  key: string;
-  workflow_id: string;
-  next_number: number;
-  created_at: string;
-};
+type Row = FlowProjectsTable;
+
+/** The repository columns as a ProjectRepo, or null unless all are set. */
+export function repoOf(row: {
+  repo_owner: string | null;
+  repo_name: string | null;
+  repo_default_branch: string | null;
+  repo_installation_id: string | null;
+}): ProjectRepo | null {
+  const { repo_owner, repo_name, repo_default_branch, repo_installation_id } = row;
+  if (!repo_owner || !repo_name || !repo_default_branch || !repo_installation_id) return null;
+  return {
+    owner: repo_owner,
+    name: repo_name,
+    defaultBranch: repo_default_branch,
+    installationId: repo_installation_id,
+  };
+}
 
 function toProject(row: Row): Project {
   return {
@@ -32,6 +53,7 @@ function toProject(row: Row): Project {
     workflowId: row.workflow_id,
     nextNumber: row.next_number,
     createdAt: row.created_at,
+    repo: repoOf(row),
   };
 }
 
@@ -47,6 +69,10 @@ export async function createProject(
     workflow_id: input.workflowId,
     next_number: 1,
     created_at: iso(),
+    repo_owner: null,
+    repo_name: null,
+    repo_default_branch: null,
+    repo_installation_id: null,
   };
   await flowDb(d1).insertInto("flow_projects").values(row).execute();
   return toProject(row);
@@ -97,4 +123,44 @@ export async function setProjectWorkflow(
     .where("id", "=", projectId)
     .executeTakeFirst();
   if (!result.numUpdatedRows) throw new StoreError("not_found", `No project ${projectId}.`);
+}
+
+/** Sets the project's repository, or clears it with null. */
+export async function setProjectRepo(
+  d1: D1Database,
+  projectId: string,
+  repo: ProjectRepo | null,
+): Promise<void> {
+  const result = await flowDb(d1)
+    .updateTable("flow_projects")
+    .set({
+      repo_owner: repo?.owner ?? null,
+      repo_name: repo?.name ?? null,
+      repo_default_branch: repo?.defaultBranch ?? null,
+      repo_installation_id: repo?.installationId ?? null,
+    })
+    .where("id", "=", projectId)
+    .executeTakeFirst();
+  if (!result.numUpdatedRows) throw new StoreError("not_found", `No project ${projectId}.`);
+}
+
+/** An org's GitHub App installation, as the GitHub connect flow recorded it. */
+export interface OrgInstallation {
+  installationId: string;
+  accountLogin: string;
+}
+
+/**
+ * The org's active GitHub App installations (core_github_installations, written by the GitHub
+ * connect flow and kept current by its webhooks), oldest first. Reads its org index; an org has a
+ * handful at most.
+ */
+export async function orgInstallations(d1: D1Database, orgId: string): Promise<OrgInstallation[]> {
+  const { results } = await d1
+    .prepare(
+      "SELECT installation_id, account_login FROM core_github_installations WHERE org_id = ? AND status = 'active' ORDER BY created_at LIMIT 20",
+    )
+    .bind(orgId)
+    .all<{ installation_id: string; account_login: string }>();
+  return results.map((r) => ({ installationId: r.installation_id, accountLogin: r.account_login }));
 }
