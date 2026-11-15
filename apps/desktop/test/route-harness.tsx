@@ -72,6 +72,7 @@ const SESSION: {
   keyStorage: string;
   signingIn: boolean;
   error: string | null;
+  engineUrl: string;
 } = {
   signedIn: true,
   login: "owner",
@@ -79,6 +80,7 @@ const SESSION: {
   keyStorage: "secure-enclave",
   signingIn: false,
   error: null,
+  engineUrl: "https://sf-engine.example",
 };
 
 /** The page's text, tags stripped and spaces collapsed. */

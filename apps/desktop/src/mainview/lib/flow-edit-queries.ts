@@ -28,10 +28,11 @@ export const flowPluginsQuery = (orgId: string) =>
     staleTime: 10_000,
   });
 
-export const flowPluginQuery = (orgId: string, pluginId: string) =>
+/** One plugin with its code, by name (the server keys plugins by name). */
+export const flowPluginQuery = (orgId: string, name: string) =>
   queryOptions({
-    queryKey: ["flow", orgId, "plugin", pluginId],
-    queryFn: () => read("flow.plugin.get", { orgId, pluginId }),
+    queryKey: ["flow", orgId, "plugin", name],
+    queryFn: () => read("flow.plugin.get", { orgId, name }),
     staleTime: 10_000,
   });
 

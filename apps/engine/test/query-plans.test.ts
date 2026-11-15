@@ -14,7 +14,7 @@ import {
 } from "@software-factory/core";
 import { SOFTWARE } from "@software-factory/core/stages";
 import { createDb } from "@software-factory/db";
-import { call as callFlow } from "@software-factory/ops";
+import { call as callFlow, runDueSchedules } from "@software-factory/ops";
 import { httpControlPlane, runnerChannelKey } from "@software-factory/runner-contract";
 import {
   addDid,
@@ -44,10 +44,12 @@ import {
   listChats,
   listMembers,
   listProjects,
+  listSchedules,
   loadItem,
   recentComments,
   renewLease,
   runForToken,
+  saveSchedule,
   sendMessage,
   timeline,
 } from "@software-factory/store";
@@ -357,6 +359,47 @@ const HOT_PATHS: { name: string; run: (e: Env) => Promise<unknown> }[] = [
       });
       await sendMessage(e.DB, chat.id, "And another.");
       return expireRuns(e.DB, now, 10);
+    },
+  },
+  {
+    // The new core's schedules (the Auto screen), from the minute cron: the due query
+    // (flow_schedules_due_idx), the claim and the record (by primary key), the item it makes; and
+    // the Auto screen's list (flow_schedules_org_idx).
+    name: "the new core: the cron fires due schedules, and the Auto screen lists them",
+    run: async (e) => {
+      const orgId = `org_${crypto.randomUUID()}`;
+      const wf = await createWorkflow(e.DB, orgId, {
+        name: "One",
+        statuses: [{ id: "todo", name: "To do", owner: { kind: "none" } }],
+      });
+      if (!wf.ok) throw new Error("workflow refused");
+      const project = await createProject(e.DB, {
+        orgId,
+        name: "P",
+        key: "P",
+        workflowId: wf.workflow.id,
+      });
+      const now = Date.now();
+      await saveSchedule(
+        e.DB,
+        {
+          orgId,
+          projectId: project.id,
+          name: "Nightly",
+          title: "t",
+          body: "",
+          every: "hour",
+          atMinute: 0,
+          atHour: null,
+          onDay: null,
+          timeZone: "UTC",
+          enabled: true,
+          createdBy: "u_qp",
+        },
+        now - 2 * 3_600_000,
+      );
+      await runDueSchedules({ DB: e.DB }, now);
+      return listSchedules(e.DB, orgId);
     },
   },
   {

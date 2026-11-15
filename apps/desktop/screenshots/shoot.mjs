@@ -41,7 +41,6 @@ export const SCREENS = [
   { name: "flow-item-decision", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
   { name: "flow-item-stopped", path: "/flow/org_personal/p/fprj_api?item=fitm_postgres" },
   { name: "flow-project-empty", path: "/flow/org_personal/p/fprj_launch" },
-  { name: "flow-coming-next", path: "/flow/org_personal/auto" },
   // Chat (chat-build-a-workflow-and-a-plugin.html, chat-fixtures.ts): `--out flow-chat`.
   { name: "flow-chat-new", path: "/flow/org_personal/chat" },
   { name: "flow-chat", path: "/flow/org_personal/chat?chat=fchat_launch" },
@@ -83,6 +82,15 @@ export const SCREENS = [
     clicks: ['[data-testid="connect-system"]'],
   },
   { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  // Auto's schedules (auto-schedules.html): `--out flow-auto`.
+  { name: "flow-auto", path: "/flow/org_personal/auto" },
+  {
+    name: "flow-auto-new",
+    path: "/flow/org_personal/auto",
+    clicks: ['[data-testid="new-schedule"]'],
+  },
+  { name: "flow-auto-empty", path: "/flow/org_client/auto" },
+  { name: "flow-auto-triggers", path: "/flow/org_personal/auto?tab=triggers" },
   // Update required (ADR 0393): full-window, in place of the shell, signed in or not.
   // `query` goes before the hash: a fresh page load the fake door reads (fake-bridge.ts).
   { name: "update-required-ready", path: "/", query: "?update=ready" },

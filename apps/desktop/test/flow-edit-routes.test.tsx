@@ -123,7 +123,7 @@ describe("plugins and gateways", () => {
   it("opens a plugin's code read-only, with Delete", async () => {
     const html = await renderPage(`/flow/${ORG}/plugins?plugin=fplg_slack`, {
       after: async (client) => {
-        await client.prefetchQuery(flowPluginQuery(ORG, "fplg_slack"));
+        await client.prefetchQuery(flowPluginQuery(ORG, "Slack updates"));
       },
     });
     expect(html).toContain('data-testid="plugin-code"');

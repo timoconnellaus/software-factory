@@ -278,7 +278,7 @@ export const TESTS = [
       await p.click("[data-testid=plugin-switch]");
       await sleep(700);
       const set = await p.calls("flow.plugin.setEnabled");
-      expect(set[0]?.input.pluginId, "the first plugin").toBe("fplg_blog");
+      expect(set[0]?.input.name, "the first plugin, by name").toBe("Publish to the blog");
       expect(set[0]?.input.enabled, "off").toBe(false);
       await p.click("[data-testid=open-plugin]");
       await p.waitFor("document.querySelector('[data-testid=plugin-code]')");
@@ -287,7 +287,7 @@ export const TESTS = [
       await p.click("[data-testid=confirm-delete-plugin]");
       await sleep(700);
       const deleted = await p.calls("flow.plugin.delete");
-      expect(deleted[0]?.input.pluginId, "deleted").toBe("fplg_blog");
+      expect(deleted[0]?.input.name, "deleted, by name").toBe("Publish to the blog");
       expect(await p.exists("[data-testid=plugin-panel]"), "closed").toBe(false);
     },
   },
@@ -324,6 +324,15 @@ export const TESTS = [
       const again = await p.calls("flow.gateway.save");
       expect(again[1]?.input.name, "GitHub").toBe("GitHub");
       expect("secret" in (again[1]?.input ?? {}), "no secret sent").toBe(false);
+      // Removing one names it as the server keys gateways: by name.
+      await p.click("[data-testid=gateway-row]:nth-child(1) [data-testid=remove-gateway]");
+      await p.waitFor("document.querySelector('[data-testid=confirm-remove-gateway]')");
+      await p.click("[data-testid=confirm-remove-gateway]");
+      await sleep(700);
+      const removed = await p.calls("flow.gateway.delete");
+      expect(JSON.stringify(removed[0]?.input), "by name").toBe(
+        JSON.stringify({ orgId: "org_personal", name: "GitHub" }),
+      );
     },
   },
   {
@@ -556,6 +565,88 @@ export const TESTS = [
       expect(await p.path(), "the item on its board").toBe(
         "/flow/org_client/p/fprj_site?item=fitm_footer",
       );
+    },
+  },
+  // Auto (.kim/mockups/auto-schedules.html; flow-auto-fixtures.ts).
+  {
+    name: "flow auto: New makes a weekly schedule in the first project, in this Mac's zone",
+    async run(p) {
+      await p.open("/flow/org_personal/auto");
+      await p.waitFor("document.querySelector('[data-testid=new-schedule]')");
+      await p.click("[data-testid=new-schedule]");
+      await p.waitFor("document.querySelector('#schedule-name')");
+      await p.focus("#schedule-name");
+      await p.type("Weekly digest");
+      await p.focus("#schedule-title");
+      await p.type("Write the weekly digest");
+      await p.click("[data-testid=every-week]");
+      await p.waitFor("document.querySelector('[data-testid=schedule-day]')");
+      await p.click("[data-testid=save-schedule]");
+      await sleep(900);
+      const saved = await p.calls("flow.schedule.save");
+      expect(saved.length, "sent once").toBe(1);
+      const input = saved[0]?.input ?? {};
+      expect(input.scheduleId, "a new one").toBe(undefined);
+      expect(input.projectId, "the first project").toBe("fprj_api");
+      expect(
+        `${input.every} ${input.onDay} ${input.atHour}:${input.atMinute}`,
+        "Mondays 09:00",
+      ).toBe("week 1 9:0");
+      expect(input.title, "the item's title").toBe("Write the weekly digest");
+      expect(input.timeZone, "this Mac's zone").toBe(
+        await p.evaluate("Intl.DateTimeFormat().resolvedOptions().timeZone"),
+      );
+      expect(await p.exists("#schedule-name"), "the form closed").toBe(false);
+    },
+  },
+  {
+    name: "flow auto: a row's switch turns it off, and its menu runs it now and removes it",
+    async run(p) {
+      await p.open("/flow/org_personal/auto");
+      await p.waitFor("document.querySelector('[data-testid=schedule-switch]')");
+      await p.click("[data-testid=schedule-switch]");
+      await sleep(700);
+      const set = await p.calls("flow.schedule.save");
+      expect(set[0]?.input.scheduleId, "the first row").toBe("fsch_deps");
+      expect(set[0]?.input.enabled, "off").toBe(false);
+      // Radix opens a menu on pointerdown, not click.
+      const openMenu = () =>
+        p.evaluate(
+          "document.querySelector('[data-testid=schedule-menu]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }))",
+        );
+      await openMenu();
+      await p.waitFor("document.querySelector('[data-testid=run-schedule]')");
+      await p.click("[data-testid=run-schedule]");
+      await sleep(700);
+      const ran = await p.calls("flow.schedule.runNow");
+      expect(ran[0]?.input.scheduleId, "ran").toBe("fsch_deps");
+      await openMenu();
+      await p.waitFor("document.querySelector('[data-testid=remove-schedule]')");
+      await p.click("[data-testid=remove-schedule]");
+      await p.waitFor("document.querySelector('[data-testid=confirm-remove-schedule]')");
+      await p.click("[data-testid=confirm-remove-schedule]");
+      await sleep(700);
+      const removed = await p.calls("flow.schedule.delete");
+      expect(removed[0]?.input.scheduleId, "removed").toBe("fsch_deps");
+    },
+  },
+  {
+    name: "flow auto: Last links to the item a schedule made; Triggers points at Plugins",
+    async run(p) {
+      await p.open("/flow/org_personal/auto");
+      await p.waitFor("document.querySelector('[data-testid=schedule-last] a')");
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=schedule-last] a')].find((a) => a.textContent.includes('API-5')).click()",
+      );
+      await p.waitFor("document.querySelector('[data-testid=item-panel]')");
+      expect(await p.path(), "the item on its board").toBe(
+        "/flow/org_personal/p/fprj_api?item=fitm_usage",
+      );
+      await p.open("/flow/org_personal/auto?tab=triggers");
+      await p.waitFor("document.querySelector('[data-testid=triggers-note] a')");
+      await p.click("[data-testid=triggers-note] a");
+      await p.waitFor("document.querySelector('[data-testid=plugins-page]')");
+      expect(await p.path(), "Plugins").toBe("/flow/org_personal/plugins");
     },
   },
 ];

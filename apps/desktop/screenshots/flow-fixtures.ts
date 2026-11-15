@@ -458,6 +458,8 @@ const PLUGINS: FlowPluginDetail[] = [
     enabled: true,
     lastError: null,
     updatedAt: ago(7 * 24 * 60),
+    hooks: ["trigger"],
+    triggerPath: "/flow/triggers/fplg_customer/<name>?key=5f1c9a0e7b2d4c68a3e1f09b7d6c2a4e8b3f5d1c",
     code: `export default definePlugin({\n  name: "Customers on feedback",\n  fields: [{ id: "customer", label: "Customer", type: "text" }],\n});\n`,
   },
   {
@@ -635,13 +637,22 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return project;
   },
   "flow.plugin.list": () => ({ plugins: PLUGINS.map(({ code: _code, ...p }) => p) }),
-  "flow.plugin.get": (input) => ({
-    plugin: PLUGINS.find((p) => p.id === input.pluginId) ?? (PLUGINS[0] as FlowPluginDetail),
-  }),
-  "flow.plugin.setEnabled": () => ({ ok: true }),
+  "flow.plugin.get": (input) =>
+    PLUGINS.find((p) => p.name === input.name) ?? (PLUGINS[0] as FlowPluginDetail),
+  "flow.plugin.setEnabled": (input) => {
+    const { code: _code, ...found } =
+      PLUGINS.find((p) => p.name === input.name) ?? (PLUGINS[0] as FlowPluginDetail);
+    return { ...found, enabled: input.enabled };
+  },
   "flow.plugin.delete": () => ({ ok: true }),
   "flow.gateway.list": () => ({ gateways: GATEWAYS }),
-  "flow.gateway.save": () => ({ ok: true }),
+  "flow.gateway.save": (input) => ({
+    id: GATEWAYS.find((g) => g.name === input.name)?.id ?? "fgw_new",
+    name: input.name,
+    baseUrl: input.baseUrl,
+    auth: input.auth,
+    hasSecret: input.secret != null || !!GATEWAYS.find((g) => g.name === input.name)?.hasSecret,
+  }),
   "flow.gateway.delete": () => ({ ok: true }),
   // Chat (chat-fixtures.ts).
   ...CHAT_ANSWERS,

@@ -108,7 +108,9 @@ export type ReadOpName =
   | "flow.run.list"
   // Chat's reads (flow-chat-queries.ts).
   | "flow.chat.list"
-  | "flow.chat.get";
+  | "flow.chat.get"
+  // Auto's schedules (flow-auto.ts).
+  | "flow.schedule.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

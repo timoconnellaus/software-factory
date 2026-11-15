@@ -200,7 +200,7 @@ function PluginRow({
     try {
       await op(
         "flow.plugin.setEnabled",
-        { orgId, pluginId: plugin.id, enabled },
+        { orgId, name: plugin.name, enabled },
         { idempotencyKey: submitKey() },
       );
     } catch (error) {
@@ -262,13 +262,17 @@ function PluginPanel({
   pluginId: string;
   onClose: () => void;
 }) {
-  const plugin = useQuery(flowPluginQuery(orgId, pluginId));
+  // The URL names the plugin by id; the server reads and deletes it by name, from the list.
+  const listed = useQuery(flowPluginsQuery(orgId));
+  const name = listed.data?.plugins.find((x) => x.id === pluginId)?.name;
+  const plugin = useQuery({ ...flowPluginQuery(orgId, name ?? ""), enabled: !!name });
   const refresh = useFlowRefresh(orgId);
   const [confirming, setConfirming] = useState(false);
-  const p = plugin.data?.plugin;
+  const p = plugin.data;
   async function remove() {
+    if (!name) return;
     try {
-      await op("flow.plugin.delete", { orgId, pluginId }, { idempotencyKey: submitKey() });
+      await op("flow.plugin.delete", { orgId, name }, { idempotencyKey: submitKey() });
       onClose();
       await refresh();
       toast.success("Plugin deleted");
@@ -372,7 +376,7 @@ function Gateways({
 
   async function remove(g: FlowGateway) {
     try {
-      await op("flow.gateway.delete", { orgId, gatewayId: g.id }, { idempotencyKey: submitKey() });
+      await op("flow.gateway.delete", { orgId, name: g.name }, { idempotencyKey: submitKey() });
       await refresh();
     } catch (error) {
       toast.error(failed(error, "Couldn't remove the connection"));
