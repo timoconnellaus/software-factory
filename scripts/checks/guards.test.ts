@@ -60,3 +60,30 @@ test("core, the runner contract and the apps never import Orca or a runner adapt
   }
   assert.deepEqual(offenders, []);
 });
+
+// The new core stays in small modules (ADR 0660, spec 70 criteria 6 and 7): no source file in its
+// packages is over 400 lines, and none of them imports the old core.
+const NEW_CORE = ["flow", "ops", "store", "plugins", "plugin-editor", "gateways"];
+
+test("no source file in the new core's packages is over 400 lines", () => {
+  const offenders: string[] = [];
+  for (const name of NEW_CORE) {
+    for (const file of sources(join(root, "packages", name, "src"))) {
+      const lines = readFileSync(file, "utf8").split("\n").length;
+      if (lines > 400) offenders.push(`${relative(root, file)} (${lines} lines)`);
+    }
+  }
+  assert.deepEqual(offenders, [], "split these files: the new core's limit is 400 lines");
+});
+
+test("the new core's packages don't import the old core", () => {
+  const offenders: string[] = [];
+  for (const name of NEW_CORE) {
+    for (const file of sources(join(root, "packages", name))) {
+      if (/@software-factory\/core\b/.test(readFileSync(file, "utf8"))) {
+        offenders.push(relative(root, file));
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], "the new core is built beside packages/core, not on it");
+});

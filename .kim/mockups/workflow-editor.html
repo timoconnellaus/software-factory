@@ -1,0 +1,73 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Workflow editor</title>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script><style>
+:root{--bg:#f6f6f5;--surface:#fff;--line:#e7e6e3;--soft:#f0efec;--text:#1b1b1a;--muted:#6f6e6a;--faint:#a3a29d;--accent:#2f5fd0;--accent-soft:#eaf0fd;--need:#b45f06;--need-soft:#fdf1df;--need-line:#f0c078;--ok:#2c8a4b;--bad:#c2372d;--font:"Inter",system-ui,-apple-system,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:13px/1.45 var(--font);color:var(--text);background:var(--bg);display:flex;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+.orgs{width:52px;flex:none;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0}
+.orgs b{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:#e6e5e1;font-size:12px}
+.orgs b.on{background:var(--text);color:#fff}.orgs b.all{background:none;color:var(--muted)}.orgs b.all.on{background:var(--text);color:#fff}
+.orgs b.add{background:none;color:var(--faint);font-weight:400;font-size:18px}
+.side{width:224px;flex:none;padding:12px 8px;display:flex;flex-direction:column;gap:1px}
+.side .org{font-weight:600;font-size:14px;padding:4px 8px 12px;display:flex;align-items:center;gap:4px}
+.side h2{font-size:11px;font-weight:500;color:var(--faint);margin:14px 8px 3px}
+.side a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text);text-decoration:none}
+.side a.on{background:var(--surface);box-shadow:0 0 0 1px var(--line);font-weight:500}.side a.cur{background:#e9e8e4}
+.side a .c{margin-left:auto;color:var(--faint);font-size:11.5px}.side a .c.need{background:var(--need-soft);color:var(--need);border-radius:8px;padding:0 6px;font-weight:600}
+.grow{flex:1}
+.shell{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.top{height:48px;flex:none;border-bottom:1px solid var(--soft);display:flex;align-items:center;gap:12px;padding:0 18px}
+.top b{font-size:14px}
+.tabs{display:flex;gap:2px;height:100%}.tabs span{display:flex;align-items:center;padding:0 10px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span.on{color:var(--text);border-color:var(--text);font-weight:500}
+.pill{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11.5px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.pill.need{border-color:var(--need-line);background:var(--need-soft);color:var(--need)}.pill.work{border-color:transparent;background:var(--accent-soft);color:var(--accent)}
+.body{flex:1;overflow:auto;padding:20px 22px;background:#fbfbfa}
+.av{width:18px;height:18px;border-radius:5px;background:var(--bg);border:1px solid var(--line);display:inline-grid;place-items:center;font-size:9px;font-weight:600;flex:none}.av.p{border-radius:50%}
+.dot{width:9px;height:9px;border-radius:50%;border:2px solid var(--c,#999);flex:none;display:inline-block}.dot.half{background:linear-gradient(90deg,var(--c) 50%,transparent 50%)}.dot.full{background:var(--c)}
+h3{font-size:12px;font-weight:600;margin:0 0 8px;color:var(--muted)}
+.rows{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:22px;max-width:860px}
+.rows>div{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--soft)}.rows>div:last-child{border:0}
+.rows .t{font-weight:500}.rows .m{color:var(--muted);font-size:12px}.rows .r{margin-left:auto;color:var(--faint);font-size:12px;white-space:nowrap}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 12px;font-weight:500}.btn.pri{background:var(--text);border-color:var(--text);color:#fff}
+@media(max-width:800px){.side{display:none}}@media(max-width:500px){.orgs{display:none}.shell{margin:0;border:0;border-radius:0}}
+
+.flow{display:flex;align-items:stretch;gap:0;margin:6px 0 8px;flex-wrap:nowrap;overflow:auto;padding-bottom:26px}
+.st{width:150px;flex:none;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;position:relative}
+.st.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.st .n{font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.st .o{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+.st .g{margin-top:7px}
+.st .bk{position:absolute;left:0;right:0;top:calc(100% + 6px);font-size:11px;color:var(--faint);text-align:center;white-space:nowrap}
+.arr{flex:none;width:30px;display:grid;place-items:center;color:var(--faint)}
+.addst{width:44px;flex:none;border:1px dashed #cfcec9;border-radius:10px;display:grid;place-items:center;color:var(--faint);margin-left:10px}
+.edit{background:var(--surface);border:1px solid var(--line);border-radius:10px;max-width:620px;padding:16px 18px}
+.edit .hd{font-weight:600;font-size:14px;display:flex;align-items:center;gap:7px;margin-bottom:12px}
+.f{display:grid;grid-template-columns:150px 1fr;gap:9px 14px;align-items:center}
+.f label{color:var(--muted)}
+.inp{border:1px solid var(--line);border-radius:7px;padding:6px 10px;display:flex;align-items:center;gap:7px}
+.inp svg{margin-left:auto;color:var(--faint)}
+.inp.area{align-items:flex-start;min-height:54px}
+.sw{display:inline-block;vertical-align:middle;width:30px;height:18px;border-radius:9px;background:var(--text);position:relative;flex:none}.sw::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.sw.off{background:#d6d5d1}.sw.off::after{right:auto;left:2px}
+.plug{display:flex;align-items:center;gap:8px;border:1px solid var(--soft);background:#fbfbfa;border-radius:7px;padding:6px 10px;margin-bottom:5px}
+.plug .m{margin-left:auto;color:var(--faint);font-size:11.5px}
+.save{display:flex;align-items:center;gap:10px;margin-top:14px;color:var(--muted);font-size:12px}
+</style></head><body>
+<div class="orgs" data-name="org strip"><b class="all " data-name="all orgs"><i data-lucide="layout-grid"></i></b><b class="on">A</b><b>C</b><b class="add">+</b></div>
+<nav class="side" data-name="sidebar"><div class="org">Acme <i data-lucide="chevron-down"></i></div><a href="#" class=""><i data-lucide="inbox"></i>Inbox<span class="c need">2</span></a><a href="#" class="on"><i data-lucide="square-check"></i>Work</a><a href="#" class=""><i data-lucide="users"></i>Team</a><a href="#" class=""><i data-lucide="zap"></i>Auto</a><a href="#" class=""><i data-lucide="puzzle"></i>Plugins</a><h2>Projects</h2><a href="#" class="cur"><i data-lucide="folder"></i>API Platform<span class="c">12</span></a><a href="#" class=""><i data-lucide="folder"></i>Autopilots launch<span class="c">9</span></a><a href="#" class=""><i data-lucide="folder"></i>Customer feedback<span class="c">7</span></a><a href="#" class=""><i data-lucide="folder"></i>Mobile app<span class="c">5</span></a><div class="grow"></div><a href="#"><i data-lucide="settings"></i>Settings</a></nav>
+<div class="shell"><div class="top"><b>API Platform</b><div class="tabs" data-name="project tabs"><span>Board</span><span>List</span><span class="on">Workflow</span></div><span class="grow"></span><span class="pill"><i data-lucide="workflow"></i>Ship a feature · used by 2 projects</span></div><div class="body"><div class="flow" data-name="workflow picture"><div class="st " data-name="Spec status"><div class="n"><span class="dot " style="--c:#8b6fd6"></span>Spec</div><div class="o"><span class="av ">L</span>Lead</div></div><div class="arr"><i data-lucide="arrow-right"></i></div><div class="st " data-name="Build status"><div class="n"><span class="dot half" style="--c:#d9822b"></span>Build</div><div class="o"><span class="av ">B</span>Backend</div></div><div class="arr"><i data-lucide="arrow-right"></i></div><div class="st sel" data-name="Review status"><div class="n"><span class="dot half" style="--c:#2f5fd0"></span>Review</div><div class="o"><span class="av ">Q</span>QA</div><div class="bk">↩ sends back to Build</div></div><div class="arr"><i data-lucide="arrow-right"></i></div><div class="st " data-name="Approve status"><div class="n"><span class="dot half" style="--c:#b45f06"></span>Approve</div><div class="o"><span class="av p">MC</span>Mia Chen</div><div class="g"><span class="pill need">Needs a decision</span></div><div class="bk">↩ sends back to Build</div></div><div class="arr"><i data-lucide="arrow-right"></i></div><div class="st " data-name="Shipped status"><div class="n"><span class="dot full" style="--c:#2c8a4b"></span>Shipped</div><div class="o"><span class="av ">–</span>Nobody</div></div><button class="addst" data-name="add status"><i data-lucide="plus"></i></button></div>
+<div class="edit" data-name="status editor"><div class="hd"><span class="dot half" style="--c:#2f5fd0"></span>Review</div>
+<div class="f">
+<label>On entering, hand to</label><div class="inp" data-name="owner"><span class="av">Q</span>QA<i data-lucide="chevron-down"></i></div>
+<label>Brief</label><div class="inp area" data-name="brief">Review the pull request against the plan. Run the tests. Fix small things yourself; send anything larger back.</div>
+<label>When done, move to</label><div class="inp" data-name="when done"><span class="dot half" style="--c:#b45f06"></span>Approve<i data-lucide="chevron-down"></i></div>
+<label>If rejected, send back to</label><div class="inp" data-name="if rejected"><span class="dot half" style="--c:#d9822b"></span>Build<i data-lucide="chevron-down"></i></div>
+<label>Needs a person's decision</label><div><span class="sw off" data-name="decision switch"></span></div>
+<label style="align-self:start;padding-top:6px">From plugins</label><div data-name="plugin steps">
+<div class="plug"><i data-lucide="puzzle"></i>Wait for the pull request's checks to pass<span class="m">Software</span></div>
+<div class="plug"><i data-lucide="puzzle"></i>Post a card with the review notes<span class="m">Software</span></div>
+<button class="btn" style="margin-top:3px"><i data-lucide="plus" style="width:13px;height:13px;vertical-align:-2px"></i> Add a step</button></div>
+</div>
+<div class="save"><button class="btn pri">Save</button>Changes apply to items that enter Review from now on.</div></div></div></div>
+<script>lucide.createIcons()</script></body></html>

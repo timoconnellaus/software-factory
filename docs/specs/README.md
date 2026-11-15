@@ -95,3 +95,7 @@ its "When to start" holds.
 [Spec 53](53-the-babysitter-delivers-approved-work.md): an approval only says a head may merge;
 the babysitter (engine reconciler per repository plus a `babysit` job) merges it, keeps `main` green
 and later follows the deploy ([ADRs 0580–0585](../adr/0580-approval-and-delivery-are-separate.md)).
+
+## A new core
+[Spec 70](70-a-new-core.md): the core rewritten as a small workflow engine with plugins
+([ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)). Specs 50, 52 and 53 are on hold.
