@@ -163,6 +163,16 @@ export const babysitResultSchema = z.object({
   note: z.string().min(1).max(8_000),
 });
 
+/**
+ * `flow` (spec 70, ADR 0660): what an agent-owned status's run hands back. `done` moves the item
+ * on; `rejected` says the agent couldn't or wouldn't do it. The summary is what a person reads.
+ */
+export const flowResultSchema = z.object({
+  outcome: z.enum(["done", "rejected"]),
+  summary: z.string(),
+});
+
+export type FlowResult = z.infer<typeof flowResultSchema>;
 export type BabysitResult = z.infer<typeof babysitResultSchema>;
 export type TriageResult = z.infer<typeof triageResultSchema>;
 export type StepResult = z.infer<typeof stepResultSchema>;

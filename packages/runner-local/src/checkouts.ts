@@ -79,7 +79,8 @@ export async function findCheckout(
   job: Pick<Job, "repo">,
   search: CheckoutSearch,
 ): Promise<Checkout | null> {
-  if (search.dirs.length === 0) return null;
+  // A job without a repo (a `flow` job, spec 70) has no checkout.
+  if (search.dirs.length === 0 || !job.repo) return null;
   return pickCheckout(await scanCheckouts(search), canonicalRepoKey(job.repo));
 }
 

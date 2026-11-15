@@ -5,6 +5,7 @@ import {
   type CapabilityManifest,
   CONTRACT_VERSION,
   type Job,
+  type RepoJob,
 } from "@software-factory/runner-contract";
 import { invokeDeps } from "../src/deps.ts";
 
@@ -38,7 +39,7 @@ export const MANIFEST: CapabilityManifest = {
   harnesses: ["claude-code"],
   // `checks`: the test runner plays a host that runs the project's checks (ADR 0501), and
   // `babysit`: one that runs the babysitter's jobs (ADR 0620).
-  capabilities: ["hooks", "headless", "checks", "babysit"],
+  capabilities: ["hooks", "headless", "checks", "babysit", "flow"],
 };
 
 export const sha40 = (seed: string) =>
@@ -176,9 +177,9 @@ export async function runStage(
   w: World,
   workItemId: string,
   stage: Job["stage"],
-  result: (job: Job) => Promise<StageOut> | StageOut,
+  result: (job: RepoJob) => Promise<StageOut> | StageOut,
   options: { summary?: string } = {},
-): Promise<Job> {
+): Promise<RepoJob> {
   await waitFor(`a queued ${stage} job`, () =>
     first(
       "SELECT id FROM core_jobs WHERE work_item_id = ? AND stage = ? AND status = 'queued'",
@@ -186,7 +187,7 @@ export async function runStage(
       stage,
     ),
   );
-  const claimed = await ok<{ job: Job | null }>(
+  const claimed = await ok<{ job: RepoJob | null }>(
     "job.claim",
     { claimId: uid("claim-"), manifest: MANIFEST, capacity: { max: 4, inUse: 0, accepting: true } },
     w.runnerActor,

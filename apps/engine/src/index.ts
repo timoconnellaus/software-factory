@@ -14,6 +14,7 @@ import {
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
 import { parseTerminalPath } from "@software-factory/runner-contract";
+import { expireRuns } from "@software-factory/store";
 import { archiveAudit } from "./audit-archive.ts";
 import { CHANNEL_PREFIX, handleChannel, pruneChannelStore } from "./channel.ts";
 import { CLI_PREFIX, CLIENT_PREFIX, handleCli } from "./cli.ts";
@@ -56,6 +57,11 @@ export default {
     const now = new Date(controller.scheduledTime);
     await retryOutbox(env, now);
     await expireQuietRuns(env, now);
+    // The new core's runs whose lease lapsed (spec 70): at most 10 a tick, through flow_runs_lease_idx.
+    // Caught, so a failure here never stops the rest of the tick.
+    await expireRuns(env.DB, now.getTime(), 10).catch((error) => {
+      console.error("flow expireRuns failed", error);
+    });
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);
     await pullQueuedWork(env);

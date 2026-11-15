@@ -111,6 +111,12 @@ export const CAPABILITIES = [
    * says so instead of holding them. Used only when the engine's heartbeat also declares it.
    */
   "job-line",
+  /**
+   * The runner host runs a `flow` job, the new core's run (spec 70): no repository, no branch, a
+   * plain folder. A flow run is offered only to a runner that declares it: an older host would
+   * read the stage as unknown and try to clone.
+   */
+  "flow",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
@@ -127,7 +133,20 @@ export type ModelRole = (typeof MODEL_ROLES)[number];
  * live, resumable planning session (ADR 0300, Workflow v5).
  */
 /** `babysit` (spec 53, ADR 0583): the babysitter's judgement job, woken by the deliverer. */
-export const JOB_STAGES = ["triage", "spec", "planning", "build", "verify", "babysit"] as const;
+/**
+ * `flow` (spec 70, ADR 0660): an agent-owned status in the new core. It may have no repository
+ * (writing, research, triage): no repo, branch, token, push or checks; the session works in a
+ * plain directory and hands back `flowResultSchema`.
+ */
+export const JOB_STAGES = [
+  "triage",
+  "spec",
+  "planning",
+  "build",
+  "verify",
+  "babysit",
+  "flow",
+] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
 /** Runner capacity pools (ADR 0301): heavy runs the test suite, light mostly reads and waits. */
@@ -156,6 +175,13 @@ export type CapabilityManifest = z.infer<typeof capabilityManifestSchema>;
 export type Capacity = z.infer<typeof capacitySchema>;
 export type CapacityPaused = NonNullable<Capacity["paused"]>;
 export type Job = z.infer<typeof jobSchema>;
+/** A job with a repository and its run branch: every job but a `flow` job that has none. */
+export type RepoJob = Job & { repo: NonNullable<Job["repo"]>; branch: string };
+
+/** Whether the job works in a repository (every stage but a `flow` job without one). */
+export function hasRepo(job: Job): job is RepoJob {
+  return job.repo !== undefined && job.branch !== undefined;
+}
 export type RunnerEvent = z.infer<typeof runnerEventSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;

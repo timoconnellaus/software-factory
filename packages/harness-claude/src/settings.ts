@@ -408,6 +408,8 @@ export const DEFAULT_MODES: Record<JobStage, PermissionMode> = {
   verify: "dontAsk",
   // The babysitter resolves conflicts and reads CI logs (spec 53): a build's sandboxed mode.
   babysit: "bypassPermissions",
+  // A flow job (spec 70) is like triage and spec: an allowlist, writes only in its own directory.
+  flow: "dontAsk",
 };
 
 /**
@@ -421,6 +423,7 @@ export const CONTAINER_MODES: Record<JobStage, PermissionMode> = {
   build: "bypassPermissions",
   verify: "bypassPermissions",
   babysit: "bypassPermissions",
+  flow: "bypassPermissions",
 };
 
 /** The permission mode a stage runs in: the project's choice, else the isolation's default. */
@@ -442,7 +445,9 @@ export function allowedDomains(profile?: HarnessProfile): string[] {
 
 /**
  * What each stage may do. Triage and spec only read and write the result; verify also runs checks.
- * A planning session (spec 20) only reads, and acts through its planning MCP server's tools.
+ * A planning session (spec 20) only reads, and acts through its planning MCP server's tools. A flow
+ * job (spec 70) may have no repository: it reads, and writes only inside its own directory (the
+ * result file included), with no git.
  */
 export function stageAllow(
   stage: JobStage,
@@ -463,6 +468,16 @@ export function stageAllow(
       return [...read, ...writeResult];
     case "planning":
       return [...read, `mcp__${PLANNING_MCP_SERVER}`];
+    case "flow": {
+      const dir = `${abs(worktree)}/**`;
+      return [
+        ...READ_TOOLS,
+        ...domains.map((d) => `WebFetch(domain:${d})`),
+        ...bash(SHELL_READ),
+        `Write(${dir})`,
+        `Edit(${dir})`,
+      ];
+    }
     case "verify":
       return [...read, ...writeResult, ...bash(TOOLCHAIN)];
     case "build":

@@ -521,7 +521,8 @@ export const jobEnqueue = defineOperation({
   permission: "signed-in",
   input: z.object({
     workItemId,
-    stage: z.enum(JOB_STAGES),
+    // `flow` jobs (spec 70) are the new core's, queued by `packages/store`; this core refuses them.
+    stage: z.enum(JOB_STAGES).exclude(["flow"]),
     role: z.enum(MODEL_ROLES),
     prompt: z.string().min(1).max(200_000),
     context: z.record(z.string(), z.unknown()).default({}),

@@ -43,6 +43,13 @@ import { STATUS } from "./channel.ts";
 import { clientHub, DEVICE_HEADER } from "./client-hub.ts";
 import { invokeDeps } from "./deps.ts";
 import {
+  callFlow,
+  describeFlowOperations,
+  flowRefusal,
+  getFlowOperation,
+  isFlowOp,
+} from "./flow/door.ts";
+import {
   MOBILE_DEVICE_ACTOR,
   mobileCaller,
   mobileNonceLimit,
@@ -146,7 +153,7 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "ops" && request.method === "GET") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
-    return reply({ operations: describeOperations() });
+    return reply({ operations: [...describeOperations(), ...describeFlowOperations()] });
   }
   // The desktop app's live connection (spec 40 M2b): the token says who, the person's ClientHub
   // holds the socket. CLI tokens may listen too; MCP will.
@@ -215,6 +222,11 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
   if (path === "call") {
     const who = await authenticate(request, env);
     if (!who) return unauthenticated();
+    // The new core's operations (spec 70) go to @software-factory/ops, in the same envelope.
+    if (isFlowOp(body.op)) {
+      const out = await callFlow(env, who, body.op, body.input ?? {});
+      return out.ok ? reply({ result: out.result }) : flowRefusal(out.error);
+    }
     const idempotencyKey =
       typeof body.idempotencyKey === "string" && body.idempotencyKey.length <= 200
         ? body.idempotencyKey
@@ -240,6 +252,19 @@ export async function handleCli(request: Request, env: Env): Promise<Response> {
       calls.map(async (c: unknown) => {
         const { op, input } = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
         const name = typeof op === "string" ? op : "";
+        if (isFlowOp(name)) {
+          if (getFlowOperation(name)?.risk !== "read") {
+            return {
+              ok: false,
+              code: "forbidden",
+              error: `batch runs read operations only (${name})`,
+            };
+          }
+          const out = await callFlow(env, who, name, input ?? {});
+          return out.ok
+            ? { ok: true, result: out.result }
+            : { ok: false, code: out.error.code, error: out.error.message };
+        }
         if (getOperation(name)?.risk !== "read") {
           return {
             ok: false,

@@ -4,6 +4,9 @@
 //   → stream events → read the stage result → (build) push the run branch with a fresh job token
 //   → artifacts → hand back { branch, headSha, result } → adapter release → revoke tokens → release
 //
+// A job without a repo (a `flow` job, spec 70) skips every git step: no token, clone, branch,
+// merge, checks, push or diff. The adapter gives it a plain directory; the rest is the same.
+//
 // Any channel call refused with 409 `fenced` or `killed`, or a cancel command from the heartbeat,
 // stops the session at once; a fenced run hands nothing back and pushes nothing (ADR 0035).
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -18,11 +21,13 @@ import {
   type ControlPlaneClient,
   canRun,
   type ExecutedCheck,
+  hasRepo,
   isReleaseIncomplete,
   type Job,
   type JobState,
   pushesRunBranch,
   RESULT_FILE,
+  type RepoJob,
   type RunnerAdapter,
   type RunnerEvent,
   type SessionHandle,
@@ -614,6 +619,22 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
     return note ? { ...j, harness: { ...j.harness, prompt: `${j.harness.prompt}\n${note}` } } : j;
   };
 
+  /** The job with its repository, or null for one without (a `flow` job): every git step skips. */
+  const repoJob = hasRepo(job) ? job : null;
+
+  /** Fetches the base for a job with a repo: its token, then the checkout or the host's clone. */
+  const fetchBase = async (j: RepoJob): Promise<string> => {
+    if (pushesRunBranch(j)) assertPushable(j);
+    await stream.push({ type: "job.state", state: "preparing", detail: "fetching the base" });
+    const token = await freshToken();
+    if (token.pushBranch !== j.branch) {
+      throw new Error(`the job token is for ${token.pushBranch}, not ${j.branch}`);
+    }
+    // The checkout this machine already has for the repo (ADR 0260), else the host's own clone.
+    const existing = adapter.resolveCheckout ? await adapter.resolveCheckout(j) : null;
+    return git.ensureRepo(j, token.token, existing);
+  };
+
   const planning = job.stage === "planning";
   let relay: RunningRelay | undefined;
   let yielded = false;
@@ -629,16 +650,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       const verdict = canRun(await adapter.manifest(), job);
       if (!verdict.ok) throw new Error(`refused: ${verdict.reason}`);
       await stream.push({ type: "job.state", state: "claimed" });
-      if (pushesRunBranch(job)) assertPushable(job);
-
-      await stream.push({ type: "job.state", state: "preparing", detail: "fetching the base" });
-      const token = await freshToken();
-      if (token.pushBranch !== job.branch) {
-        throw new Error(`the job token is for ${token.pushBranch}, not ${job.branch}`);
-      }
-      // The checkout this machine already has for the repo (ADR 0260), else the host's own clone.
-      const existing = adapter.resolveCheckout ? await adapter.resolveCheckout(job) : null;
-      const clone = await git.ensureRepo(job, token.token, existing);
+      const clone = repoJob ? await fetchBase(repoJob) : null;
       if (signal.aborted) throw signal.reason;
       // The job line, when both this host and the engine have it (spec 44 part B, ADR 0592).
       if (options.engineHasLine && cp.line) {
@@ -671,22 +683,24 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         signal,
         relay ? { planningRelay: { url: relay.url, token: relay.token } } : undefined,
       );
-      if (workspace.branch !== job.branch) {
-        throw new Error(`workspace is on ${workspace.branch}, not ${job.branch}`);
+      if (repoJob && workspace.branch !== repoJob.branch) {
+        throw new Error(`workspace is on ${workspace.branch}, not ${repoJob.branch}`);
       }
       startSha = workspace.baseSha;
       await stream.push({
         type: "job.state",
         state: "preparing",
-        detail: `${workspace.path} on ${workspace.branch} @ ${workspace.baseSha.slice(0, 7)} (${clone})`,
+        detail: repoJob
+          ? `${workspace.path} on ${workspace.branch} @ ${workspace.baseSha.slice(0, 7)} (${clone})`
+          : `${workspace.path} (no repo)`,
       });
       // A build starts from the default branch's latest too (ADR 0320): the host merges it in, so
       // the PR stays mergeable while other work lands. A conflict is left for the agent. A babysit
       // job sent to resolve a conflict (spec 53 §4) starts the same way.
-      if (pushesRunBranch(job)) {
-        const merge = await git.mergeDefault(job, workspace.path);
+      if (repoJob && pushesRunBranch(repoJob)) {
+        const merge = await git.mergeDefault(repoJob, workspace.path);
         ahead = merge.ahead;
-        const from = job.repo.defaultBranch;
+        const from = repoJob.repo.defaultBranch;
         if (merge.status === "merged") {
           startSha = merge.sha;
           await stream.push({
@@ -702,11 +716,11 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           });
         }
       }
-      configBefore = await git.sensitiveConfig(workspace.path);
+      if (repoJob) configBefore = await git.sensitiveConfig(workspace.path);
 
       // An attached PR's verify job runs the checks on the PR's head before its reviewer session,
       // so they test what the PR's author pushed, not what the reviewer leaves (spec 51).
-      if (hasChecks(job) && job.stage !== "build") {
+      if (repoJob && hasChecks(job) && job.stage !== "build") {
         const ran = await runHostChecks(workspace, undefined);
         executed = ran.results;
         notes.push(...ran.notes);
@@ -774,11 +788,13 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
       if (signal.aborted && outcome !== "completed") outcome = abortedOutcome();
 
       // The harness must not have rewired git (a remote, a URL rewrite, a credential helper).
-      const configAfter = await git.sensitiveConfig(workspace.path);
-      if (configAfter !== configBefore) {
-        throw new Error(
-          `the session changed the repo's git config; not pushing:\n${configAfter.slice(0, 2_000)}`,
-        );
+      if (repoJob) {
+        const configAfter = await git.sensitiveConfig(workspace.path);
+        if (configAfter !== configBefore) {
+          throw new Error(
+            `the session changed the repo's git config; not pushing:\n${configAfter.slice(0, 2_000)}`,
+          );
+        }
       }
     } catch (err) {
       if (signal.reason instanceof PlanningYielded) {
@@ -844,12 +860,12 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
         }
       }
 
-      if (pushesRunBranch(job) && outcome === "completed" && !error) {
+      if (repoJob && pushesRunBranch(repoJob) && outcome === "completed" && !error) {
         try {
           const merge = await git.mergeState(workspace.path);
           if (merge.unmerged.length > 0) {
             throw new UnresolvedMerge(
-              `the merge of ${job.repo.defaultBranch ?? "the default branch"} was left unresolved in: ${merge.unmerged.slice(0, 20).join(", ")}`,
+              `the merge of ${repoJob.repo.defaultBranch ?? "the default branch"} was left unresolved in: ${merge.unmerged.slice(0, 20).join(", ")}`,
             );
           }
           if (checkedHead) {
@@ -876,11 +892,16 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
             notes.push("the build made no commits");
           } else {
             // A fresh token: the first one may be close to its hour by now.
-            headSha = await git.pushRunBranch(job, workspace.path, await freshToken(), checkedHead);
+            headSha = await git.pushRunBranch(
+              repoJob,
+              workspace.path,
+              await freshToken(),
+              checkedHead,
+            );
             await stream.push({
               type: "job.state",
               state: "collecting",
-              detail: `pushed ${job.branch} @ ${headSha.slice(0, 7)}`,
+              detail: `pushed ${repoJob.branch} @ ${headSha.slice(0, 7)}`,
             });
           }
         } catch (err) {
@@ -894,9 +915,11 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
 
       // Collect even after a failure: a partial diff and the logs are what a person needs.
       const artifacts: Artifact[] = [];
-      if (!planning) {
+      if (!planning && repoJob) {
         try {
-          artifacts.push(await git.diff(workspace.path, startSha ?? workspace.baseSha, job.branch));
+          artifacts.push(
+            await git.diff(workspace.path, startSha ?? workspace.baseSha, repoJob.branch),
+          );
         } catch (err) {
           artifacts.push({ kind: "log", name: "diff-error", text: String(err) });
         }
@@ -923,7 +946,8 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           fencingToken: fence,
           outcome,
           artifactIds: stored.map((a) => a.id),
-          branch: job.branch,
+          // A job without a repo has no branch: the hand-back's is empty.
+          branch: job.branch ?? "",
           ...(summary ? { summary: summary.slice(0, 20_000) } : {}),
           ...(headSha ? { headSha } : {}),
           ...(result !== undefined ? { result } : {}),

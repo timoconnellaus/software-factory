@@ -16,7 +16,9 @@
     "@software-factory/connector-webhook": "workspace:*",
     "@software-factory/core": "workspace:*",
     "@software-factory/db": "workspace:*",
+    "@software-factory/ops": "workspace:*",
     "@software-factory/runner-contract": "workspace:*",
+    "@software-factory/store": "workspace:*",
     "kysely": "0.29.8",
     "zod": "4.6.7"
   },

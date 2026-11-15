@@ -389,15 +389,16 @@ export function hostManifest(
   note?: string,
 ): CapabilityManifest {
   const without = manifest.capabilities.filter(
-    (c) => c !== "checks" && c !== "babysit" && c !== "job-line",
+    (c) => c !== "checks" && c !== "babysit" && c !== "job-line" && c !== "flow",
   );
   // `babysit` (spec 53, ADR 0620): this host's job runner handles the stage, whatever the adapter.
   // `job-line` (spec 44 part B, ADR 0592): this host keeps the job line, whatever the adapter.
+  // `flow` (spec 70): this host's job runner handles a job with no repository.
   return {
     ...manifest,
     capabilities: declare
-      ? [...without, "checks", "babysit", "job-line"]
-      : [...without, "babysit", "job-line"],
+      ? [...without, "checks", "babysit", "job-line", "flow"]
+      : [...without, "babysit", "job-line", "flow"],
     ...(note ? { checksNote: note.slice(0, 300) } : {}),
   };
 }
