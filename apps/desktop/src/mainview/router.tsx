@@ -17,6 +17,18 @@ import { Route as factoryOrg } from "./routes/factory.org.tsx";
 import { Route as factoryPolicy } from "./routes/factory.policy.tsx";
 import { Route as factoryRunners } from "./routes/factory.runners.tsx";
 import { Route as factoryWorkflows } from "./routes/factory.workflows.tsx";
+import { Route as flowAuto } from "./routes/flow.$orgId.auto.tsx";
+import { Route as flowChat } from "./routes/flow.$orgId.chat.tsx";
+import { Route as flowInbox } from "./routes/flow.$orgId.inbox.tsx";
+import { Route as flowItem } from "./routes/flow.$orgId.p.$projectId.i.$itemId.tsx";
+import { Route as flowProject } from "./routes/flow.$orgId.p.$projectId.tsx";
+import { Route as flowPlugins } from "./routes/flow.$orgId.plugins.tsx";
+import { Route as flowSettings } from "./routes/flow.$orgId.settings.tsx";
+import { Route as flowTeam } from "./routes/flow.$orgId.team.tsx";
+import { flowOrg, flowOrgIndex } from "./routes/flow.$orgId.tsx";
+import { Route as flowWork } from "./routes/flow.$orgId.work.tsx";
+import { Route as flowOrgs } from "./routes/flow.orgs.tsx";
+import { flowIndex, flowLayout } from "./routes/flow.tsx";
 import { Route as inbox } from "./routes/index.tsx";
 import { Route as newWork } from "./routes/new.tsx";
 import { rootRoute } from "./routes/root.tsx";
@@ -48,6 +60,23 @@ export const routeTree = rootRoute.addChildren([
       settingsRepositories,
       settingsConnections,
       settingsDevices,
+    ]),
+    // The new core's shell and screens (spec 70); the routes above are the old factory's.
+    flowLayout.addChildren([
+      flowIndex,
+      flowOrgs,
+      flowOrg.addChildren([
+        flowOrgIndex,
+        flowInbox,
+        flowWork,
+        flowChat,
+        flowTeam,
+        flowAuto,
+        flowPlugins,
+        flowSettings,
+        flowProject,
+        flowItem,
+      ]),
     ]),
   ]),
 ]);

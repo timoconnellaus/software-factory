@@ -88,7 +88,16 @@ export type ReadOpName =
   | "orgConfig.previewRollback"
   | "incident.listArchiveMissing"
   | "delivery.status"
-  | "babysit.resolutionPatches";
+  | "babysit.resolutionPatches"
+  // The new core's reads (spec 70): the door's `batch` runs them as it does the old core's.
+  | "flow.project.list"
+  | "flow.workflow.list"
+  | "flow.workflow.get"
+  | "flow.agent.list"
+  | "flow.board.get"
+  | "flow.timeline.get"
+  | "flow.inbox.get"
+  | "flow.item.get";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

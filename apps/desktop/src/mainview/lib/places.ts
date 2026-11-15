@@ -27,6 +27,15 @@ export function tabTitle(
   findProject: (id: string) => string | null = () => null,
 ): string {
   const pathname = path.split("?")[0] ?? "/";
+  // The new core's shell (spec 70): its section, a project's board, an item.
+  const flow = /^\/flow(?:\/[^/]+\/([^/]+)(\/[^/]+\/i\/)?)?/.exec(pathname);
+  if (flow) {
+    if (flow[2]) return "Item";
+    if (flow[1] === "p") return path.includes("item=") ? "Item" : "Board";
+    if (pathname === "/flow/orgs") return "All orgs";
+    const part = flow[1] ?? "work";
+    return part.charAt(0).toUpperCase() + part.slice(1);
+  }
   const item = /^\/work\/([^/]+)(\/review)?$/.exec(pathname);
   if (item?.[1]) {
     const ref = findItem(decodeURIComponent(item[1]));

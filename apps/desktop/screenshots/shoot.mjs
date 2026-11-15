@@ -27,6 +27,21 @@ const tag = flag("--tag");
 
 /** Each screen: its route, what to do before the shot, and its design file. */
 export const SCREENS = [
+  // The new core's board and item (spec 70, .kim/mockups/board-and-item-panel.html,
+  // item-as-a-full-page.html; flow-fixtures.ts). `--out flow-board` writes them there.
+  { name: "flow-board", path: "/flow/org_personal/p/fprj_api" },
+  { name: "flow-board-list", path: "/flow/org_personal/p/fprj_api?view=list" },
+  { name: "flow-item-panel", path: "/flow/org_personal/p/fprj_api?item=fitm_rate" },
+  {
+    name: "flow-item-panel-decision",
+    path: "/flow/org_personal/p/fprj_api?item=fitm_rate",
+    clicks: ['[data-testid="jump-to-decision"]'],
+  },
+  { name: "flow-item-page", path: "/flow/org_personal/p/fprj_api/i/fitm_rate" },
+  { name: "flow-item-decision", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  { name: "flow-item-stopped", path: "/flow/org_personal/p/fprj_api?item=fitm_postgres" },
+  { name: "flow-project-empty", path: "/flow/org_personal/p/fprj_launch" },
+  { name: "flow-coming-next", path: "/flow/org_personal/team" },
   { name: "inbox-merge", path: "/?item=wi_13", design: "InboxMerge.html" },
   { name: "inbox-question", path: "/?item=wi_11", design: "InboxQuestion.html" },
   { name: "inbox-spec", path: "/?item=wi_12", design: "InboxMerge.html" },

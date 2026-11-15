@@ -111,8 +111,75 @@ const checked = (p, label) =>
 /** The router's own error screen, which must never show (the app's is `app-error`). */
 const ROUTER_ERROR = "document.body.textContent.includes('Something went wrong!')";
 
+/** The new core's board (spec 70): an item on the board as `?item=`. */
+const FLOW_BOARD = "/flow/org_personal/p/fprj_api";
+
 /** The tests, in order. Each opens its own fresh view. */
 export const TESTS = [
+  {
+    name: "flow: a fresh window opens on the new shell, and Old factory reaches the old Inbox",
+    async run(p) {
+      await p.cdp.send("Page.navigate", { url: "about:blank" });
+      await p.cdp.send("Page.navigate", { url: p.base });
+      await p.waitFor("document.querySelector('[data-testid=board]')");
+      expect(await p.path(), "the window's place").toContain("/flow/org_personal/p/fprj_api");
+      expect(await p.exists("[data-testid=status-bar]"), "no status bar").toBeFalsy();
+      await p.click("[data-testid=flow-nav-old-factory]");
+      await p.waitFor("document.querySelector('[data-testid=nav-new-app]')");
+      expect(await p.path(), "the old Inbox").toBe("/");
+      await p.click("[data-testid=nav-new-app]");
+      await p.waitFor("document.querySelector('[data-testid=flow-shell]')");
+    },
+  },
+  {
+    name: "flow: a card opens the item panel; Done on the decision card finishes it",
+    async run(p) {
+      await p.open(FLOW_BOARD);
+      await p.click('[data-testid=board-card][href*="fitm_rate"]');
+      await p.waitFor("document.querySelector('[data-testid=decision-card]')");
+      await p.click("[data-testid=jump-to-decision]");
+      await p.click("[data-testid=decision-primary]");
+      await sleep(600);
+      const calls = await p.calls("flow.item.finish");
+      expect(calls.length, "one finish").toBe(1);
+      expect(calls[0].input.outcome, "done").toBe("done");
+      expect(calls[0].input.itemId, "this item").toBe("fitm_rate");
+    },
+  },
+  {
+    name: "flow: Reject on a decision sends flow.item.decide, Retry on a stopped item sends retry",
+    async run(p) {
+      await p.open(`${FLOW_BOARD}?item=fitm_audit`);
+      await p.waitFor("document.querySelector('[data-testid=decision-secondary]')");
+      await p.click("[data-testid=decision-secondary]");
+      await sleep(600);
+      const decide = await p.calls("flow.item.decide");
+      expect(decide[0]?.input.decision, "reject").toBe("reject");
+      await p.open(`${FLOW_BOARD}?item=fitm_postgres`);
+      await p.waitFor("document.querySelector('[data-testid=retry]')");
+      await p.click("[data-testid=retry]");
+      await sleep(600);
+      expect((await p.calls("flow.item.retry")).length, "one retry").toBe(1);
+    },
+  },
+  {
+    name: "flow: + makes an item with its title and body",
+    async run(p) {
+      await p.open(FLOW_BOARD);
+      await p.click("[data-testid=new-item]");
+      await p.waitFor("document.querySelector('#item-title')");
+      await p.focus("#item-title");
+      await p.type("Add a status page");
+      await p.focus("#item-body");
+      await p.type("One page, every service.");
+      await p.click("[data-testid=create-item]");
+      await sleep(700);
+      const made = await p.calls("flow.item.create");
+      expect(made[0]?.input.title, "title").toBe("Add a status page");
+      expect(made[0]?.input.body, "body").toBe("One page, every service.");
+      expect(made[0]?.input.projectId, "project").toBe("fprj_api");
+    },
+  },
   {
     name: "loading: the shell fills the window, its toolbar strip drags it, at the toolbar's height",
     async run(p) {
