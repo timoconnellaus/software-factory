@@ -107,8 +107,8 @@ export class Door {
   }
 
   /**
-   * A gate decision (ADR 0391): a one-time challenge for this op and input, with the engine's
-   * summary of the decision, signed (Touch ID shows the summary), then the call with the proof.
+   * A call with a presence proof (ADR 0391): a one-time challenge for this op and input, with the
+   * engine's summary of the call, signed (Touch ID shows the summary), then the call with the proof.
    */
   async decide(
     op: string,

@@ -17,7 +17,7 @@ function routeOptions(source: string): string {
   return start < 0 ? "" : source.slice(start, end);
 }
 
-/** Query factories (`inboxQuery(`, `workItemQuery(`) a piece of source uses. */
+/** Query factories (`meQuery(`, `orgsQuery(`) a piece of source uses. */
 function queriesIn(source: string): Set<string> {
   const names = [...source.matchAll(/(?<![\w$]\.)\b([a-z]\w*Query)\(/g)].map((m) => m[1] as string);
   if (/\buseProjects\(/.test(source)) names.push("projectsQuery");
@@ -51,8 +51,6 @@ describe("every page's loader asks for everything the page renders", () => {
         ...queriesIn(source.replace(routeOptions(source), "")),
         ...componentSources(source).flatMap((c) => [...queriesIn(c)]),
       ]);
-      // Attachment bytes load when an image scrolls into view, by design.
-      rendered.delete("attachmentBytesQuery");
       const missing = [...rendered].filter((q) => !loaded.has(q));
       expect(missing, "queries rendered but not loaded (they would fetch after render)").toEqual(
         [],

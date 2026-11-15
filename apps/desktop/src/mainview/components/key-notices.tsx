@@ -103,7 +103,7 @@ export function KeyNotices({ session }: { session: Session }) {
     toast(UPGRADE_TEXT, {
       id: UPGRADE,
       duration: Number.POSITIVE_INFINITY,
-      description: "Gate decisions from this Mac need it.",
+      description: "Adding a phone or turning on approvals from this Mac needs it.",
       action: { label: "Sign in again…", onClick: () => setConfirming(true) },
     });
   }, [offer]);

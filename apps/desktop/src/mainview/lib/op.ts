@@ -3,8 +3,9 @@
 // - `op` runs one operation (a form submit passes an idempotency key).
 // - `read` is batched: every read asked for in the same tick (a loader's `Promise.all`, the parent
 //   and child loaders of one navigation) goes in one `batch` call, like sf-app's `read()` (ADR 0241).
-// - `decide` is a gate decision: the main process asks for a presence challenge, then Touch ID,
-//   then calls with the proof (ADR 0381). Gate decisions never go through `op`.
+// - `decide` is a call with a presence proof: the main process asks for a presence challenge, then
+//   Touch ID, then calls with the proof (ADR 0381). An operation that always needs a proof never
+//   goes through `op`.
 import { OpError, type OpInput, type OpName, type OpOutput } from "@software-factory/client/ops";
 import { DECISION_OPS } from "../../shared/decisions.ts";
 import type { AppRPC, CallResult } from "../../shared/rpc.ts";
@@ -31,65 +32,14 @@ function bun(): OpTransport {
 
 export { OpError };
 
-/** The gate decisions, typed: these go through `decide`. */
-export type DecisionOp =
-  | "spec.approve"
-  | "spec.requestChanges"
-  | "review.merge"
-  | "review.sendBack"
-  | "approval.decide"
-  | "question.answer"
-  | "question.acceptDefaults"
-  | "workflow.save"
-  | "workflow.createFromTemplate"
-  | "workflow.archive"
-  | "agent.save"
-  | "orgConfig.rollback"
-  | "override.approve"
-  | "workItem.markRepair";
+/** The operations that always need a presence proof, typed: these go through `decide`. */
+export type DecisionOp = "mobile.pairOffer";
 
 /** Reads: operations the door's `batch` runs (risk `read`). */
 export type ReadOpName =
-  | "inbox.list"
   | "org.list"
-  | "workItem.previewRouting"
-  | "workItem.get"
-  | "workItem.list"
-  | "workItem.timeline"
-  | "workItem.previewAttach"
-  | "github.openPullRequests"
-  | "workItem.attachment.list"
-  | "workItem.attachment.get"
-  | "planning.get"
-  | "artifact.get"
-  | "spec.writeBack"
-  | "project.list"
-  | "github.repos"
-  | "setup.status"
   | "runner.list"
-  | "protection.ruleset"
-  | "desktopDevice.list"
-  | "workItem.board"
-  | "config.get"
-  | "project.workflow"
-  | "mergeQueue.list"
-  | "repository.list"
-  | "cliToken.list"
-  | "config.preview"
-  | "config.trials"
-  | "config.export"
-  | "adjudicator.stats"
-  | "workflow.get"
-  | "workflow.list"
-  | "orgConfig.get"
-  | "stageType.list"
-  | "workflow.preview"
-  | "killSwitch.list"
-  | "orgConfig.previewRollback"
-  | "incident.listArchiveMissing"
-  | "delivery.status"
-  | "babysit.resolutionPatches"
-  // The new core's reads (spec 70): the door's `batch` runs them as it does the old core's.
+  // The new core's reads (spec 70).
   | "flow.project.list"
   | "flow.workflow.list"
   | "flow.workflow.get"
@@ -127,10 +77,15 @@ export async function op<N extends Exclude<OpName, DecisionOp>>(
   return unwrap<N>(await bun().call({ op: name, input, ...options }));
 }
 
-/** A gate decision: Touch ID shows the engine's summary of exactly this call (ADR 0381). */
-export async function decide<
-  N extends DecisionOp | "planning.answer" | "killSwitch.set" | "orgConfig.adoptProjectWorkflows",
->(name: N, input: OpInput<N>, options: { idempotencyKey?: string } = {}): Promise<OpOutput<N>> {
+/**
+ * A call with a presence proof: Touch ID shows the engine's summary of exactly this call (ADR 0381).
+ * `device.update` needs one only to turn a device's approvals on; otherwise it goes through `op`.
+ */
+export async function decide<N extends DecisionOp | "device.update">(
+  name: N,
+  input: OpInput<N>,
+  options: { idempotencyKey?: string } = {},
+): Promise<OpOutput<N>> {
   return unwrap<N>(await bun().decide({ op: name, input, ...options }));
 }
 

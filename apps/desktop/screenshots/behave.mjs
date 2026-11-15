@@ -36,7 +36,7 @@ function page(cdp, base) {
     evaluate,
     /**
      * A fresh view at a path: one tab, nothing remembered, no writes recorded. `query` goes before
-     * the hash (the fake door reads it: `?terminal=fixture`); the hash history then glues it onto
+     * the hash (the fake door reads it: `?key=touch-id`); the hash history then glues it onto
      * the last hash param, so paths that take one end with `&end=1`.
      */
     async open(path, query = "") {

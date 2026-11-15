@@ -95,7 +95,7 @@ Object.assign(window, {
 });
 const SIGNED_OUT: CallResult = { ok: false, code: "unauthenticated", error: "signed out" };
 // A decision waiting for Touch ID, worded as the engine writes it (describeDecision).
-const TOUCH_ID_SUMMARY = 'Approve "Add rate limiting to the public API" in API Platform';
+const TOUCH_ID_SUMMARY = "Add a phone to your account";
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
 /**
@@ -259,7 +259,6 @@ export const bun = {
     calls.push({ op: "openExternal", input: p });
     return { ok: true };
   },
-  saveDownload: async () => ({ ok: true, path: null }),
   updateStatus: async () => updateStatus(),
   updateAction: async () => updateStatus(),
   titleBarDoubleClick: async () => {
@@ -272,7 +271,6 @@ export const bun = {
 
 const none = () => () => undefined;
 
-export const onTerminal = none;
 export const onSession = (l: (s: Session) => void) => {
   sessionListeners.add(l);
   return () => {
@@ -281,7 +279,6 @@ export const onSession = (l: (s: Session) => void) => {
 };
 export const onRunner = none;
 export const onInbox = none;
-export const onPlanningChanged = none;
 export const onNavigate = none;
 export const onUpdate = none;
 export const onTouchId = (l: (summary: string | null) => void) => {

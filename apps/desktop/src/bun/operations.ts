@@ -1,6 +1,7 @@
 // The main process's operation requests from the view (spec 40 M3): `call`, `batch` and `decide`
 // over the client door. Apart from Electrobun so tests drive the same code against a fake door.
-// - A gate decision arriving through `call` is refused: it needs `decide` (ADR 0381).
+// - An operation that always needs a presence proof arriving through `call` is refused: it needs
+//   `decide` (ADR 0381).
 // - `decide` signs with the device key; Touch ID is the key's own prompt (SF Keys.app).
 // - A revoked token turns into "signed out" (`signedOut`), not an error.
 import { DECIDE_OPS, DECISION_OPS, refuseDecisionCall } from "../shared/decisions.ts";
@@ -77,7 +78,7 @@ export function operationHandlers(deps: {
         };
       }
       if (!DECIDE_OPS.has(op)) {
-        return { ok: false, code: "invalid_input", error: `${op} isn't a gate decision` };
+        return { ok: false, code: "invalid_input", error: `${op} doesn't take a presence proof` };
       }
       return guarded(() => deps.door().decide(op, input, sign, idempotencyKey), SIGNED_OUT);
     },

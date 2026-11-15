@@ -1,5 +1,5 @@
 // The key helper's compiled-in list of operations a presence proof decides (spec 40 M4b) is the
-// registry's: a new presence-decidable op that the helper doesn't know would be refused by it.
+// registry's: a new op taking a desktop proof that the helper doesn't know would be refused by it.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { entitlementProblems, expiry } from "../scripts/check-profile.ts";
@@ -10,18 +10,15 @@ import {
 } from "../scripts/presence-ops.ts";
 
 describe("the key helper's presence ops", () => {
-  it("match the registry's desktop presence-decidable operations", () => {
+  it("match the registry's operations that take a desktop presence proof", () => {
     const want = presenceOpsSwift(desktopPresenceOps());
     if (process.env.SF_WRITE_PRESENCE_OPS) writeFileSync(PRESENCE_OPS_SWIFT, want);
     expect(existsSync(PRESENCE_OPS_SWIFT)).toBe(true);
     expect(readFileSync(PRESENCE_OPS_SWIFT, "utf8")).toBe(want);
   });
 
-  it("include the gate decisions and nothing browser-only", () => {
-    const ops = desktopPresenceOps();
-    expect(ops).toContain("review.merge");
-    expect(ops).toContain("spec.approve");
-    expect(ops.length).toBeGreaterThan(3);
+  it("are the operations that take a desktop presence proof", () => {
+    expect(desktopPresenceOps()).toEqual(["device.update", "mobile.pairOffer"]);
   });
 });
 

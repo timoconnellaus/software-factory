@@ -27,9 +27,8 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/bun/keychain.ts`, `cf.ts`, `macos.ts` | Keychain secrets, dock badge and login item over `bun:ffi`. |
 | `src/bun/runner.ts`, `backoff.ts` | `sf-runner run` on the bundled Node 24: restarts, launchd takeover, pairing. |
 | `src/bun/instance.ts` | One app per user, and quitting (with the runner) if the launcher dies. |
-| `src/bun/operations.ts` | The view's `call`, `batch` and `decide`; a gate decision through `call` is refused. |
-| `src/bun/save.ts` | Saving a file the view hands over (a ruleset, an attachment) to ~/Downloads. |
-| `src/shared/decisions.ts` | The gate decisions, which go only through `decide` (Touch ID). |
+| `src/bun/operations.ts` | The view's `call`, `batch` and `decide`; an operation that always needs a presence proof is refused through `call`. |
+| `src/shared/decisions.ts` | The operations that take a desktop presence proof (`mobile.pairOffer` only through `decide`, `device.update` through either). |
 | `src/mainview/` | The SPA (TanStack Router, hash history) on `packages/ui`. It holds no token. |
 | `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries (`flow-queries.ts` for the new core), the session from `org.list`, Team's wording (`team.ts`). |
 | `src/mainview/routes/_app.tsx`, `components/shell-*.tsx` | The window (spec 41, ADR 0460): the toolbar with tabs and ⌘K above the new core's shell, and the keyboard shortcuts. |
@@ -69,6 +68,6 @@ signs only presence messages, and the Touch ID prompt shows their engine-written
 
 ## What isn't proof
 The Keychain doesn't keep the desktop token from other processes of the same user: the spike showed
-any of them can drive the app's own `bun`. So the token is only "this Mac, this user". Gate decisions
-need a presence proof the device key signs after Touch ID (ADR 0391). An unsigned build has no
+any of them can drive the app's own `bun`. So the token is only "this Mac, this user". Adding a phone
+and turning on a device's approvals need a presence proof the device key signs after Touch ID (ADR 0391). An unsigned build has no
 Secure Enclave key; it uses a software key and the website shows that when you approve it.

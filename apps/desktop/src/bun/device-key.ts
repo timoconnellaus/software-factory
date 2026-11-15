@@ -3,7 +3,7 @@
 // process whose signed entitlements reach its keychain access group, and every signature asks for
 // Touch ID. Where that isn't possible (an unsigned dev build, or a release without the helper) the
 // app makes a software P-256 key, keeps it in the keychain and says so (`keyStorage: "software"`),
-// so the website shows it and the engine refuses it for gate decisions.
+// so the website shows it and the engine refuses it where a presence proof is needed.
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { deleteSecret, getSecret, setSecret } from "./keychain.ts";

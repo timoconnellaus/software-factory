@@ -95,16 +95,6 @@ export type CallResult =
   /** `details`: what an `invalid_input` refusal carries beside its message (a workflow's problems). */
   | { ok: false; code: string; error: string; details?: unknown };
 
-/**
- * What a run's web terminal socket did (spec 42, ADR 0530), relayed by the main process: the relay's
- * JSON messages as `text`, the pane's output bytes as base64. The view chose the handle (`id`).
- */
-export type TerminalEvent =
-  | { id: string; kind: "open" }
-  | { id: string; kind: "text"; data: string }
-  | { id: string; kind: "bytes"; base64: string }
-  | { id: string; kind: "close"; code: number; reason: string };
-
 export type AppRPC = {
   bun: {
     requests: {
@@ -121,7 +111,7 @@ export type AppRPC = {
         response: CallResult;
       };
       batch: { params: { calls: { op: string; input: unknown }[] }; response: CallResult[] };
-      /** A gate decision: a presence challenge, Touch ID (showing the engine's summary), then the call (ADR 0391). */
+      /** A call with a presence proof: a challenge, Touch ID (showing the engine's summary), then the call (ADR 0391). */
       decide: {
         params: { op: string; input: unknown; idempotencyKey?: string };
         response: CallResult;
@@ -133,23 +123,10 @@ export type AppRPC = {
       };
       loginItem: { params: { enable?: boolean }; response: { enabled: boolean } };
       openExternal: { params: { url: string }; response: { ok: boolean } };
-      /** Opens a run's web terminal through the client door under the view's handle (spec 42). */
-      terminalOpen: {
-        params: { id: string; workItemId: string; runId: string };
-        response: { ok: boolean; error: string | null };
-      };
-      /** One text frame to the relay (keys or a size, as the shared client writes them). */
-      terminalSend: { params: { id: string; data: string }; response: { ok: boolean } };
-      terminalClose: { params: { id: string }; response: { ok: boolean } };
       /** A double-click on the toolbar's empty space: the system's title-bar action (spec 41). */
       titleBarDoubleClick: {
         params: Record<string, never>;
         response: { action: "zoom" | "minimize" | "none" };
-      };
-      /** Saves a file to ~/Downloads (base64 bytes) and shows it in Finder. */
-      saveDownload: {
-        params: { filename: string; base64: string };
-        response: { ok: boolean; path: string | null };
       };
       updateStatus: { params: Record<string, never>; response: UpdateStatus };
       /**
@@ -183,10 +160,8 @@ export type AppRPC = {
       touchIdChanged: { summary: string | null };
       runnerChanged: RunnerState;
       inboxChanged: { count: number };
-      planningChanged: { workItemId: string };
       navigate: { path: string };
       updateChanged: UpdateStatus;
-      terminalEvent: TerminalEvent;
     };
   };
 };

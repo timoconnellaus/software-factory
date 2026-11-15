@@ -38,8 +38,6 @@ import {
 } from "./restart-update.ts";
 import { Runner } from "./runner.ts";
 import { liveJobs } from "./runner-jobs.ts";
-import { saveTo } from "./save.ts";
-import { Terminals } from "./terminal.ts";
 import { titleBarDoubleClick } from "./title-bar.ts";
 import { bunExec, runningAppPath } from "./update-verify.ts";
 import { type UpdaterLike, Updates } from "./updates.ts";
@@ -106,7 +104,6 @@ const ops = operationHandlers({
   },
   signedOut: () => {
     auth.forget();
-    terminals.closeAll();
     toView("sessionChanged", auth.session());
     refreshTray();
   },
@@ -115,16 +112,6 @@ const guarded = ops.guarded;
 // While a decision waits for Touch ID the view shows "Waiting for Touch ID: <summary>" (the sheet's
 // words) with Cancel (spec 40 M4b).
 helper.watch({ waiting: (summary) => toView("touchIdChanged", { summary }) });
-// Runs' web terminals (spec 42): the door's socket here, its frames to the view over the RPC.
-const terminals = new Terminals(
-  ENGINE_URL,
-  () => auth.currentToken(),
-  (e) => toView("terminalEvent", e),
-  undefined,
-  undefined,
-  // A terminal's upgrade refused as too old shows "Update required", as the live socket does.
-  { updateRequired: () => doorSaysUpdate() },
-);
 
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: 120_000,
@@ -141,7 +128,6 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       signOut: async () => {
         live.stop();
-        terminals.closeAll();
         await auth.signOut();
         setBadge(0);
         return auth.session();
@@ -150,7 +136,6 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         try {
           const url = await auth.signInAgain(() => {
             live.stop();
-            terminals.closeAll();
             setBadge(0);
           });
           Utils.openExternal(url);
@@ -160,13 +145,11 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return auth.session();
       },
       cancelTouchId: () => ({ cancelled: helper.cancel() }),
-      // Operations through the client door; gate decisions only through decide (operations.ts).
+      // Operations through the client door; those that need a presence proof only through decide
+      // (operations.ts).
       call: ops.call,
       batch: ops.batch,
       decide: ops.decide,
-      terminalOpen: (p) => terminals.open(p),
-      terminalSend: (p) => terminals.send(p),
-      terminalClose: (p) => terminals.close(p),
       runnerState: () => runner.state,
       runnerAction: async ({ action }) => {
         if (action === "takeover") await runner.takeOverFromLaunchd();
@@ -200,15 +183,6 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         pushUpdate();
         return updateStatus();
       },
-      saveDownload: ({ filename, base64 }) => {
-        try {
-          const path = saveTo(Utils.paths.downloads, filename, Buffer.from(base64, "base64"));
-          Utils.showItemInFolder(path);
-          return { ok: true, path };
-        } catch {
-          return { ok: false, path: null };
-        }
-      },
     },
     messages: {},
   },
@@ -241,10 +215,7 @@ function openWindow(path?: string) {
     trafficLightOffset: { x: 5, y: 6 },
   });
   // A link that launched the app arrives before the view listens: send it once the page is up.
-  // A (re)load also means no view holds the open terminals' handles any more (a reload, or WebKit
-  // restarting its content process): close them, or each keeps an attach and a relay viewer slot.
   win.webview.on("dom-ready", () => {
-    terminals.closeAll();
     if (pendingPath) toView("navigate", { path: pendingPath });
     pendingPath = null;
   });
@@ -257,7 +228,6 @@ function openWindow(path?: string) {
     // Closed: what was read when it last moved (the window can't be asked any more).
     frames.flush();
     win = null;
-    terminals.closeAll();
   });
 }
 
@@ -487,11 +457,8 @@ async function restartToUpdate(anyway = false) {
         },
         restarting: () => applyStep({ type: "restarting" }),
         liveJobs: () => liveJobs(),
-        // The live socket and every open terminal: an update restarts the app under them.
-        stopLive: () => {
-          live.stop();
-          terminals.closeAll();
-        },
+        // The live socket: an update restarts the app under it.
+        stopLive: () => live.stop(),
         startLive: () => live.start(),
         stopRunner: () => runner.stop(),
         startRunner: () => void runner.start(),
@@ -693,20 +660,12 @@ async function pollInbox(opts: { notify?: boolean } = {}) {
   setBadge(waiting.length);
 }
 
-// The live socket (spec 40 M2b): a gate opening reaches the badge and a notification at once.
+// The live socket (spec 40 M2b): something waiting on you reaches the badge and a notification at
+// once.
 const live = new Live(liveUrl(ENGINE_URL), () => auth.currentToken(), {
-  connected: () => {
-    void pollInbox();
-    // Pushes may have been missed while the socket was down: open Planning views re-read (spec 26).
-    toView("planningChanged", { workItemId: "*" });
-  },
+  connected: () => void pollInbox(),
   updateRequired: () => doorSaysUpdate(),
   event: (e) => {
-    // A Planning view this person has open changed (spec 26): the view re-reads it.
-    if (e.type === "planning.changed" && e.workItemId) {
-      toView("planningChanged", { workItemId: e.workItemId });
-      return;
-    }
     if (e.type !== "notify") return;
     void pollInbox({ notify: false }).then(() => {
       if (e.title) Utils.showNotification({ title: "Software Factory", body: e.title });
@@ -734,7 +693,6 @@ async function quit() {
   // A decision waiting for Touch ID: take the sheet down with the app (spec 40 M4b).
   helper.cancel();
   live.stop();
-  terminals.closeAll();
   await runner.stop();
   Utils.quit();
 }
