@@ -1,6 +1,7 @@
-// The operations the front ends call (sf-app and the desktop app), typed from their zod schemas in
-// packages/core (types only: nothing from core runs in a view). How a call travels is each app's
-// business: sf-app's server functions, or the desktop's main process and the client door.
+// The operations the front ends call (the website and the desktop app), typed from their zod schemas
+// in packages/core (types only: nothing from core runs in a view), and the new core's `flow.*`
+// (flow.ts). How a call travels is each app's business: the website's server functions, or the
+// desktop's main process and the client door.
 import type { operations } from "@software-factory/core";
 import type { z } from "zod";
 import type { FlowOpMap } from "./flow.ts";
@@ -9,71 +10,10 @@ type Def<T> = T extends { input: infer I extends z.ZodType; output: infer O exte
   ? { input: z.input<I>; output: z.output<O> }
   : never;
 
-/** The old core's operations, and the new core's `flow.*` (flow.ts). */
+/** The platform's operations (packages/core), and the new core's `flow.*` (flow.ts). */
 export interface OpMap extends FlowOpMap {
-  "inbox.list": Def<typeof operations.inboxList>;
   "org.list": Def<typeof operations.orgList>;
-  "workItem.create": Def<typeof operations.workItemCreate>;
-  "workItem.previewRouting": Def<typeof operations.workItemPreviewRouting>;
-  "workItem.get": Def<typeof operations.workItemGet>;
-  "workItem.list": Def<typeof operations.workItemList>;
-  "workItem.timeline": Def<typeof operations.workItemTimeline>;
-  "audit.verify": Def<typeof operations.auditVerify>;
-  "workItem.cancel": Def<typeof operations.workItemCancel>;
-  "workItem.setWorkflow": Def<typeof operations.workItemSetWorkflow>;
-  "workItem.attachPr": Def<typeof operations.workItemAttachPr>;
-  "workItem.previewAttach": Def<typeof operations.workItemPreviewAttach>;
-  "github.openPullRequests": Def<typeof operations.githubOpenPullRequests>;
-  "workItem.attachment.list": Def<typeof operations.workItemAttachmentList>;
-  "workItem.attachment.remove": Def<typeof operations.workItemAttachmentRemove>;
-  "workItem.attachment.add": Def<typeof operations.workItemAttachmentAdd>;
-  "workItem.attachment.get": Def<typeof operations.workItemAttachmentGet>;
-  "spec.approve": Def<typeof operations.specApprove>;
-  "spec.requestChanges": Def<typeof operations.specRequestChanges>;
-  "review.merge": Def<typeof operations.reviewMerge>;
-  "delivery.status": Def<typeof operations.deliveryStatus>;
-  "babysit.resolutionPatches": Def<typeof operations.babysitResolutionPatches>;
-  "review.sendBack": Def<typeof operations.reviewSendBack>;
-  "approval.decide": Def<typeof operations.approvalDecide>;
-  "question.answer": Def<typeof operations.questionAnswer>;
-  "question.acceptDefaults": Def<typeof operations.questionAcceptDefaults>;
-  "planning.get": Def<typeof operations.planningGet>;
-  "planning.presence": Def<typeof operations.planningPresence>;
-  "planning.move": Def<typeof operations.planningMove>;
-  "planning.answer": Def<typeof operations.planningAnswer>;
-  "planning.acceptDefaults": Def<typeof operations.planningAcceptDefaults>;
-  "planning.stop": Def<typeof operations.planningStop>;
-  "planning.pause": Def<typeof operations.planningPause>;
-  "planning.resume": Def<typeof operations.planningResume>;
-  "planning.finishAlone": Def<typeof operations.planningFinishAlone>;
-  "spec.edit": Def<typeof operations.specEdit>;
-  "artifact.get": Def<typeof operations.artifactGet>;
-  "spec.writeBack": Def<typeof operations.specWriteBack>;
-  "spec.releaseEdit": Def<typeof operations.specReleaseEdit>;
-  "chat.send": Def<typeof operations.chatSend>;
-  "run.live": Def<typeof operations.runLive>;
-  "run.steer": Def<typeof operations.runSteer>;
-  "run.takeover": Def<typeof operations.runTakeover>;
-  "run.reportArchiveMissing": Def<typeof operations.runReportArchiveMissing>;
-  "incident.listArchiveMissing": Def<typeof operations.incidentListArchiveMissing>;
-  "incident.resolve": Def<typeof operations.incidentResolve>;
-  "project.create": Def<typeof operations.projectCreate>;
-  "project.list": Def<typeof operations.projectList>;
-  "project.update": Def<typeof operations.projectUpdate>;
   "github.connectStart": Def<typeof operations.githubConnectStart>;
-  "github.repos": Def<typeof operations.githubRepos>;
-  "policy.resync": Def<typeof operations.policyResync>;
-  "config.get": Def<typeof operations.configGet>;
-  "config.preview": Def<typeof operations.configPreview>;
-  "config.save": Def<typeof operations.configSave>;
-  "config.rollback": Def<typeof operations.configRollback>;
-  "config.export": Def<typeof operations.configExport>;
-  "config.trials": Def<typeof operations.configTrials>;
-  "config.trial.resolve": Def<typeof operations.configTrialResolve>;
-  "adjudicator.stats": Def<typeof operations.adjudicatorStatsOp>;
-  "setup.status": Def<typeof operations.setupStatus>;
-  "protection.check": Def<typeof operations.protectionCheck>;
-  "protection.ruleset": Def<typeof operations.protectionRuleset>;
   "runner.deviceLookup": Def<typeof operations.runnerDeviceLookup>;
   "runner.approveDevice": Def<typeof operations.runnerApproveDevice>;
   "runner.denyDevice": Def<typeof operations.runnerDenyDevice>;
@@ -84,6 +24,8 @@ export interface OpMap extends FlowOpMap {
   "cli.deviceLookup": Def<typeof operations.cliDeviceLookup>;
   "cli.approveDevice": Def<typeof operations.cliApproveDevice>;
   "cli.denyDevice": Def<typeof operations.cliDenyDevice>;
+  "cliToken.list": Def<typeof operations.cliTokenList>;
+  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
   "desktop.authLookup": Def<typeof operations.desktopAuthLookup>;
   "desktop.approveDevice": Def<typeof operations.desktopApproveDevice>;
   "desktop.denyDevice": Def<typeof operations.desktopDenyDevice>;
@@ -97,40 +39,6 @@ export interface OpMap extends FlowOpMap {
   "mobile.denyDevice": Def<typeof operations.mobileDenyDevice>;
   "mobile.pairOffer": Def<typeof operations.mobilePairOffer>;
   "mobile.pairOfferStatus": Def<typeof operations.mobilePairOfferStatus>;
-  "killSwitch.set": Def<typeof operations.killSwitchSet>;
-  "killSwitch.list": Def<typeof operations.killSwitchList>;
-  // Org workflows (spec 52 PR (b)).
-  "workflow.list": Def<typeof operations.workflowList>;
-  "workflow.get": Def<typeof operations.workflowGet>;
-  "workflow.preview": Def<typeof operations.workflowPreview>;
-  "workflow.save": Def<typeof operations.workflowSave>;
-  "workflow.createFromTemplate": Def<typeof operations.workflowCreateFromTemplate>;
-  "workflow.archive": Def<typeof operations.workflowArchive>;
-  "agent.save": Def<typeof operations.agentSave>;
-  "orgConfig.get": Def<typeof operations.orgConfigGet>;
-  "orgConfig.rollback": Def<typeof operations.orgConfigRollback>;
-  "orgConfig.previewRollback": Def<typeof operations.orgConfigPreviewRollback>;
-  "orgConfig.adoptProjectWorkflows": Def<typeof operations.orgConfigAdoptProjectWorkflows>;
-  "override.approve": Def<typeof operations.overrideApprove>;
-  "workItem.markRepair": Def<typeof operations.workItemMarkRepair>;
-  "stageType.list": Def<typeof operations.stageTypeList>;
-  // The reconciler in shadow (spec 52 PR (c)).
-  "reconcile.report": Def<typeof operations.reconcileReport>;
-  "reconcile.streak": Def<typeof operations.reconcileStreak>;
-  // The work model (spec 50): the backlog, ready and release.
-  "workItem.board": Def<typeof operations.workItemBoard>;
-  "workItem.update": Def<typeof operations.workItemUpdate>;
-  "workItem.move": Def<typeof operations.workItemMove>;
-  "workItem.release": Def<typeof operations.workItemRelease>;
-  "workItem.releaseChoice": Def<typeof operations.workItemReleaseChoice>;
-  "workItem.reorder": Def<typeof operations.workItemReorder>;
-  "workItem.link": Def<typeof operations.workItemLink>;
-  "workItem.unlink": Def<typeof operations.workItemUnlink>;
-  "project.workflow": Def<typeof operations.projectWorkflow>;
-  "mergeQueue.list": Def<typeof operations.mergeQueueList>;
-  "repository.list": Def<typeof operations.repositoryList>;
-  "cliToken.list": Def<typeof operations.cliTokenList>;
-  "cliToken.revoke": Def<typeof operations.cliTokenRevoke>;
 }
 
 export type OpName = keyof OpMap;
@@ -152,18 +60,3 @@ export class OpError extends Error {
     this.name = "OpError";
   }
 }
-
-export type WorkItemDetail = OpOutput<"workItem.get">;
-export type Inbox = OpOutput<"inbox.list">;
-export type Attachment = OpOutput<"workItem.attachment.list">["attachments"][number];
-export type TimelineEntry = OpOutput<"workItem.timeline">["entries"][number];
-export type Project = OpOutput<"project.list">["projects"][number];
-export type SetupStatus = OpOutput<"setup.status">;
-export type RepoChoice = OpOutput<"github.repos">["repos"][number];
-export type OpenPull = OpOutput<"github.openPullRequests">["pulls"][number];
-export type ConfigView = OpOutput<"config.get">;
-export type LiveView = OpOutput<"run.live">;
-export type LiveEvent = LiveView["events"][number];
-export type LiveSteer = LiveView["steers"][number];
-export type BoardItem = OpOutput<"workItem.board">["items"][number];
-export type ProjectWorkflow = OpOutput<"project.workflow">;
