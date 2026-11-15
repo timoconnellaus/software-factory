@@ -86,16 +86,15 @@ jobs:
       - name: Deploy Workers
         run: node scripts/deploy/deploy.ts workers
       - name: Sync sf-app secrets
-        # Pushes the repo secrets the dashboard needs into the Worker. Values never appear in logs.
+        # Pushes the repo secrets the website needs (Better Auth and GitHub sign-in) into the
+        # Worker. Values never appear in logs.
         working-directory: apps/app
         env:
           BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
           GH_APP_CLIENT_SECRET: ${{ secrets.GH_APP_CLIENT_SECRET }}
-          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          GH_APP_WEBHOOK_SECRET: ${{ secrets.GH_APP_WEBHOOK_SECRET }}
         run: |
           node -e '
-            const keys = ["BETTER_AUTH_SECRET","GH_APP_CLIENT_SECRET","GH_APP_PRIVATE_KEY","GH_APP_WEBHOOK_SECRET"];
+            const keys = ["BETTER_AUTH_SECRET","GH_APP_CLIENT_SECRET"];
             const out = {};
             for (const k of keys) if (process.env[k]) out[k] = process.env[k];
             require("fs").writeFileSync("/tmp/sf-app-secrets.json", JSON.stringify(out));
@@ -104,9 +103,10 @@ jobs:
           pnpm exec wrangler secret bulk /tmp/sf-app-secrets.json
           rm -f /tmp/sf-app-secrets.json
       - name: Sync sf-engine secrets
-        # The runner channel's master secret, the GitHub App key (job tokens, branches, PRs,
-        # merges, check runs), its webhook secret, and the key the new core's gateway secrets are
-        # sealed with (spec 70 milestone 2). Values never appear in logs; unset ones are skipped.
+        # The runner channel's master secret, the GitHub App key (installations, a run's token and
+        # the built-in github gateway), its webhook secret, and the key the new core's gateway
+        # secrets are sealed with (spec 70 milestone 2). Values never appear in logs; unset ones
+        # are skipped.
         working-directory: apps/engine
         env:
           RUNNER_CHANNEL_SECRET: ${{ secrets.RUNNER_CHANNEL_SECRET }}
