@@ -8,8 +8,8 @@
 - [0374](../adr/0374-the-adjudicator-earns-approval-in-shadow-mode.md) (adjudicator)
 - the plan [`.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md`](../../.kim/plans/2026-11-11-manage-factory-settings-in-the-ui.md)
 - the review [`docs/reviews/2026-11-12-config-and-workflows-review.md`](../reviews/2026-11-12-config-and-workflows-review.md)
-- the mockups [`.kim/mockups/project-settings.html`](../../.kim/mockups/project-settings.html) and
-  [`project-stages.html`](../../.kim/mockups/project-stages.html) (Workflows)
+- the mockups `.kim/mockups/project-settings.html` and
+  `project-stages.html` (Workflows)
 
 ## Goal
 People manage a project's factory config in the app, and the factory improves that config itself

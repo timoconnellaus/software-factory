@@ -1,250 +1,145 @@
 # Architecture
 
-The full picture is the product plan
-([`.kim/plans/2026-11-10-personal-software-factory-design.md`](../.kim/plans/2026-11-10-personal-software-factory-design.md))
-and the diagram ([`.kim/designs/v1-architecture.d2`](../.kim/designs/v1-architecture.d2), rendered
-as [`v1-architecture.svg`](../.kim/designs/v1-architecture.svg)). This page maps it onto the repo.
-Decisions are in [`adr/`](adr/); words are in [`CONTEXT.md`](../CONTEXT.md).
+What the parts are and how a request moves through them. Words are in
+[`CONTEXT.md`](../CONTEXT.md); the decision is [ADR 0660](adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md).
 
-## Shape
-- **Cloud control plane** on Cloudflare (ADR 0002). `sf-app` serves the dashboard and the MCP
-  surface, and calls operations on `sf-engine` over RPC (ADR 0051). `sf-engine` runs every operation,
-  one Workflow per work item, outbox delivery, the minute cron and the signed runner channel
-  (`sf-engine.zerobsai.com/runner/v1/*`). Both bind one D1 database, `software-factory`: work items,
-  questions, gates, runs, leases, audit journal, outbox and Better Auth, all `core_*` tables
-  (`packages/db/migrations`, ADR 0050). `sf-engine` also binds one private R2 bucket,
-  `sf-attachments` (`ATTACHMENTS`), for work item attachments' bytes. Tables that only grow are
-  pruned by the minute cron in bounded batches (`apps/engine/src/retention.ts`, AGENTS.md "Cloudflare cost").
-- **Operations** (ADR 0003, 0004) are the only way to change state. Every call goes through
-  `invoke()`: validate, gate check (actor × risk class under the project's autonomy policy + floor, from
-  its current config version, and no looser than the version a work item started under), fencing
-  token, permission, handler, then one D1 batch with the audit row and outbox rows (ADR 0035, 0370).
-  A changes-only operation that changed nothing commits no batch and writes no audit row (ADR 0590).
-- **Workflows** own the gates, one per work item; the **foreman** picks a route within them, and
-  its decisions are listed as binding or advisory (ADR 0005, 0006). Gates block in v1 and a waiting
-  item holds no runner slot.
-- **Questions** are the planning object; interview sessions are views over them (ADR 0042).
-- **Planning** is a live agent session on a runner (ADR 0300): the planning agent works through
-  operations over the runner channel (a projected planning MCP server), and kim-style hooks
-  (`PostToolUse`, `UserPromptSubmit`, `Stop`) bring answers and chat back from the planning log. It
-  holds a light slot (ADR 0301). Mockups are kept in D1 by revision and render in sandboxed frames
-  with an opaque origin (ADR 0472); kept artifacts land in `.kim/` with the spec (ADR 0305). Specs 20–25. Wiring (ADR 0350): the planning agent's calls go through one
-  channel path, `/runner/v1/jobs/:id/planning`, scoped by the job and fenced by its lease; the
-  runner host relays them for the harness, so the runner key never leaves it. Every change is a row
-  in the **planning log** (`core_planning_events`, its id the agent's cursor) and a
-  `planning.changed` outbox message, which `sf-engine` sends to the **ClientHub** of everyone with
-  the Planning view open (spec 26). The agent's held `planning.wait` waits in the Worker, polling
-  `planning.peek` every 3 s (spec 44); no Durable Object is held while nothing happens. The scheduler places jobs by pool: light (triage,
-  spec, planning), heavy (build, verify); a resume is pinned to the session's runner.
-- **Connectors** are the only path to GitHub, Linear, Slack and other outside systems (ADR 0010).
-  The GitHub connector mints a per-job, repo-scoped token for each run (ADR 0033). Its webhook
-  (`software-factory.zerobsai.com/webhooks/github`, served by `sf-engine` through a Workers route)
-  checks the signature, dedupes deliveries and maps them to operations: `verify.refresh` on PR and
-  CI events (and on a PR closing, for attached PRs), `push.observe` on pushes (branch confinement; config is no longer read from git, ADR 0370),
-  `github.installation` (ADR 0231), which keeps the org's **installation** records current (ADR
-  0055), and `protection.observe` on `repository_ruleset` / `branch_protection_rule` (ADR 0280).
-- **Onboarding** never asks for an id the factory can fetch (ADR 0055, 0056): Connect GitHub goes
-  through GitHub's install flow back to sf-app's `/integrations/github/setup`
-  (`github.connectInstallation` verifies the single-use state and the installation as the App), a
-  project is picked from the repos an installation reaches (`github.repos`, `project.create`; a
-  project is not a repository: it has zero or more in `core_repositories`, added with
-  `repository.add`, and a work item uses one, ADR 0490), its
-  first config version is imported from the repo's `.factory/policy.json` or created from the
-  template, and a runner connects by device login
-  (`/runner/v1/device/*`, approved at `/runners/connect`). `setup.status` is the Setup checklist.
-- **Backlog and the pull** (ADR 0491, spec 50): a work item starts in `backlog`, may be shaped to
-  `ready`, and is released to `queued` (`workItem.release`, or `workItem.create { state: "queued" }`
-  in one step). Creating an item no longer creates its Workflow: the pull does (`pullQueued` in
-  `operations/backlog.ts`), on release, after an item finishes or is cancelled, and from the minute
-  cron (`queue.pull`), while the project's active items are under `activeLimit`, by priority and
-  rank, skipping items whose "waits for" links (`core_work_item_links`) aren't done. Attached PRs
-  and incident fixes start at once. A project runs one workflow (config `workflow`, ADR 0492).
-  Shaping stages (triage, interview planning) can run before release: `workItem.shape` starts the
-  Workflow while the item is `shaping` (no slot), Workflow v7 waits at `release: wait` once it is
-  ready, and the pull wakes it with `release-<item>` (ADR 0493).
-- **Config** (ADR 0370, spec 09): a project's config is a sequence of versions in D1
-  (`core_project_policies`, keyed `v<N>`), edited on `/projects/<id>/settings` through
-  `config.get` / `config.preview` / `config.save` / `config.rollback` / `config.export`.
-  `policyImpact` classifies each change. A loosening save is `self-modify` and is applied when an
-  approver approves it. Workflows (ADR 0371) fill the skeleton's three slots, and Workflow v6 runs
-  their steps (`workflow.gate`, `workflow.record`). Agents (ADR 0372) carry a role and tier that
-  the runner's claim resolves to a model. Spec 52 is replacing slots with **stage types**:
-  `@software-factory/core/stages` holds the registry (`STAGE_TYPES`), the `WorkflowDefinition`
-  schema, `validateWorkflow` (the S- and F-rules) and the built-in Software, Incident and Attached PR
-  workflows; `compileProjectWorkflow` expresses a project's slot workflow as a stage list. Nothing at
-  run time reads them yet (build plan PR (a)). An **org config** (`core_org_configs`, migration 0280)
-  holds the org's workflows and agents as versions, edited through `workflow.*`, `agent.save` and
-  `orgConfig.*`; a loosening save is `self-modify` for an org admin (the classifier is an
-  allow-list, ADR 0516), and a built-in workflow is never saved looser than the shipped one. A
-  project may name an org workflow by id (`workflow: "wf_…"`) with
-  `workflowOverrides` of the few settings each type lists as `overridable` (spec 52 PR (d)); until
-  the switch-over, today's Workflow runs it through `effectivePolicy` (the scope's `policy`; config
-  operations read `rawPolicy`), under the org config version the item pinned
-  (`core_work_items.org_config_version`, migration 0282). Overrides apply as the stricter of the
-  org's value and the project's, unless an org admin approved that looser value for that org
-  version (`core_override_approvals`, written only by the approve path; carried to a new version only
-  where the org left the value unchanged). The parsed org
-  config is cached per isolate by (org, version). The **reconciler** (ADR 0511) is
-  `reconcile(snapshot)` with each stage type's `next()`; it runs **in shadow**, off the Workflow's
-  path: every five minutes sf-engine's shadow pass reads the work items that reached an end since
-  its cursor (by the partial index `core_work_items_ended_idx`, never the audit table), replays each
-  stage history through the reconciler and writes one verdict row per item (`core_reconcile_items`,
-  migration 0281; `reconcile.report`). An item on an org workflow is compared with the org workflow
-  it pinned (its `org_config_version`), resolved with the project's overrides as the engine ran it. It drives nothing. It compares stage order and skips only;
-  everything else (jobs, gates, send-back targets, retries, slot steps, ends other than Done) counts
-  as a divergence, and `reconcile.streak` says "comparison incomplete" and what is missing until it
-  is compared. Known differences are reported by name and count as divergences until settled: the
-  merge queue's moved head (`queue-head-moved`, settled with spec 53's babysitter). The
-  switch-over is its own PR once 20 ended items in a row agree.
-- **Protect `main`** (ADR 0280): the App has `administration: read` only, so the factory never changes
-  protection. It generates the **default-branch ruleset** as a file (sf-app serves it with
-  `Content-Disposition`), a person imports it on GitHub, and `protection.check` / `protection.observe`
-  compare GitHub's rulesets and the rules in force on the branch with it. Verdicts live in
-  `core_project_protection`; drift (a red after an ok, from a webhook or the daily cron re-check)
-  notifies the org's admins and shows in the inbox. A policy may hold builds while it's red.
-- **Verify** reads CI from GitHub on the head SHA; the review packet passes only with green CI and
-  a complete packet, and backs the `factory/verify` check run the App posts for that SHA (ADR 0037,
-  0231). The packet's **tests-intact** guard reads GitHub's diff for weakened tests, suppressions
-  and gate-file edits; its findings go to a person and block an auto-approved merge, never the
-  verdict (ADR 0500, 0515). The runner host runs the project's declared **checks** itself on the head
-  SHA after a build (through the adapter's `exec`), sends a failure back into the same session, and
-  hands back the results; the verdict uses them, not the agent's report, and a criterion is
-  **Proven** only by a check that passed (Workflow v8, ADR 0501). A PR GitHub can't merge into the default branch (so no CI runs on it) goes back to build
-  to merge it, and CI that never reports asks a person rather than retrying the build (Workflow v3,
-  ADR 0320). An approved merge lands through the project's **merge queue**, one at a time: the
-  head is updated with the default branch (the queue's own merge, `POST /merges`, accepted only as the SHA GitHub returned), CI runs once on that head,
-  and (Workflow v4, ADR 0330) the approval carried over the clean update; no review packet is carried
-  to another head since #190, so an item landing itself goes back to verify the updated head
-  (without a build), and two such trips in a row hold it and ask the owner. From Workflow v11 (spec 53, ADR 0580) an approval only says the head may merge, and the
-  **babysitter** delivers it: the engine's per-repository deliverer (`apps/engine/src/deliver/`, no
-  model, woken by the outbox's `delivery.wake` and the minute cron, one pass per repository at a time,
-  leased in `core_delivery_state` whose `rev` fences every call it makes, ADR 0586) updates, CIs and merges the head with the approval. A person's push to a factory-built item's branch from verify on (the `push` webhook's sender is not the App) withdraws the merge gate or the babysitter's approval for the old head and sends the item back to verify the new head, without a build; a verify run that finishes on a stale head opens no gate (Workflow v14, ADR 0587). What code can't decide (a conflict, a check that is red
-  before the merge) goes to the repository's one **`babysit` job** on a runner (light pool, per-job
-  token, no standing credentials): it hands back a verdict, and the deliverer acts on it through
-  fenced operations (`ci.rerun` once per SHA, `flake.record` into `core_flakes`, `branch.advance` of a
-  resolution, which withdraws the approval; ADR 0620). Designed, not yet built: a red `main`'s
-  attribution and repair (ADR 0584). Sent-back PRs and exhausted retries open **factory incidents** with a root-cause class and
-  a proposed `.factory/` fix plus a regression case in `evals/regressions/`; a check-only fix may
-  auto-merge where policy opts in (ADR 0230, as built today). Accepted, not built: ADR 0230 is
-  superseded by **dark factory mode** (ADR 0515, spec 52 PR (e)): an `autoApprove` setting on the
-  workflow's merge gate, off by default and turned on only by a person, under which the merge gate
-  is *approved* with no person when every condition holds in code (never for paths in the built-in
-  self-modify list); landing the approved merge stays with the merge queue.
-- **Attached PRs** (ADR 0290, spec 05): a PR opened outside the factory fails `factory/verify` with
-  a link to sf-app's `/attach`. `workItem.attachPr` gives it a work item of kind `attached`, whose
-  Workflow takes its own path (`runAttached`, chosen by kind): triage, spec and build skipped, the
-  factory never pushes to the PR's branch, then verify on the PR's head and the merge gate. A push
-  (`verify.refresh`) records the new head, withdraws a pending merge gate and wakes the Workflow
-  (`pr-head-<item>`). Closing the PR without merging cancels the item.
-- **Runners** execute jobs through the runner contract over a signed, outbound-only channel
-  (ADR 0014–0016). A **runner host** on each machine loads **runner adapters** (`runner-local`:
-  a git worktree and a tmux session per job, ADR 0380), which drive **harnesses** (Claude Code
-  first). Agent status comes from the harness's own status hook, and a person takes a run over with
-  `tmux -L software-factory attach -t sf-<jobId>`. The work item page's **Live** tab shows a run as
-  it goes (spec 31, ADR 0400): `run.live` reads its events (what the agent says, from the
-  transcript; its tool calls and status; the terminal), polled every 2 s. The runner's owner can
-  **steer** it: `run.steer` queues the message, and the runner host types it into the session. The
-  host learns of it either through a held `steer` call, which waits in the Worker polling a partial
-  index (spec 44 part A), or, when both sides declare `job-line`, through a push down its **job
-  line**: one hibernatable socket per running job to the job's TerminalRelay, which wakes the host
-  to make its own fenced call (`steer`, `viewer`, `planning`; ADR 0592). A runner can instead run sessions in **stream-json** mode (`runner.json` `session`, ADR
-  0450): Claude Code headless as a two-way JSON stream, the same launch script and check, the
-  prompt pointer and steers as JSON user messages, and events straight from the structured output
-  (tool results and turns with their token counts too). Such a runner declares `chat`, and the Live
-  tab shows its runs in a **Chat** view. Its owner can take a run over with `run.takeover`: the host
-  stops the stream and the run shows the `claude --resume <id>` command; the job keeps its worktree
-  and follows the resumed session by the status hook until it quits. Runners are owner-only unless shared through an
-  session. The Live tab's **Web terminal** (spec 35, ADR 0440) is the job's real tmux pane in the
-  browser: `run.terminal.attach` records the attach and decides the mode (`type` for the runner's
-  owner, `watch` for everyone else), and a **TerminalRelay** Durable Object per job in `sf-engine`
-  relays the bytes. The runner host learns of a viewer over a held `terminal` call on the channel
-  (or a `viewer` push down its job line, ADR 0592),
-  connects outbound to the relay with a one-use ticket, and bridges the pane with a tmux
-  control-mode client while someone watches; viewers connect through `sf-app`, and the relay
-  forwards keys and resizes only from the owner. Runners are owner-only unless shared through an
-  allowlist (ADR 0038), each run pushes its own branch under a fencing token (ADR 0035), and the
-  harness runs without the owner's git or cloud credentials (ADR 0033): the runner host, not the
-  harness, pushes the run branch with the job token (ADR 0250).
-  A runner set to `"isolation": "container"` runs each job's Claude in its own Docker container
-  instead (ADR 0430): a self-contained job repo with only the job's history, no home or host
-  credentials, egress only through the job's allowlist proxy, every stage `bypassPermissions`, and
-  the launch check inside the container. The host still pushes, from the job repo.
-  A runner set to `"isolation": "sprites"` runs each job in a fresh **sprite** on the owner's Sprites
-  account instead (ADR 0480): the host makes it with the owner's Sprites token (kept on the host),
-  provisions the toolchain at the image's pinned Claude Code, sets Sprites' network policy to the
-  job's allowlist, copies the job repo and run files in, and bridges the job's tmux pane to the
-  sprite's terminal, so steering, `tmux attach` and the web terminal work unchanged. The result comes
-  back as a git bundle into the host's job repo, and the host pushes. The factory sees only the
-  capabilities (`cloud-sandbox`).
-  A runner host keeps its own code on the last commit that changed runner code (`RUNNER_SHA`, which
-  the deploy computes next to `DEPLOYED_SHA`, sent in each heartbeat): it keeps claiming while an
-  update waits, updates at its first idle heartbeat (light jobs only after 30 minutes, nothing after
-  60), and rolls back an update that doesn't start (ADR 0360, 0520). Only a heartbeat whose
-  `minRunnerCompat` is above the runner's `RUNNER_COMPAT` stops its claims at once.
-  A host holds one or more **Claude accounts** (ADR 0410): a login in its own config dir or a token
-  in a 0600 file, never sent to the factory. The heartbeat reports their names and the active one;
-  the owner picks the active one with `sf-runner account use` or on Setup (`runner.account.use`,
-  delivered as `account.use` on the heartbeat response). A job launches with the account that was
-  active when its workspace was prepared, and a usage limit it hits is reported against that
-  account. Nothing switches accounts on its own.
-- **The `sf` CLI** (`local/cli`, ADR 0340) is a surface for people and their agent sessions: it
-  calls operations through `sf-engine`'s `/cli/v1` as the person behind a device-login token,
-  `read` or `write` scoped. Gate decisions are `browserOnly` operations, which `invoke()` refuses
-  off the app, so no token (the CLI's, MCP's) can approve anything.
-- **The desktop app** (`apps/desktop`, ADRs 0390–0393 and 0460, specs 40 and 41) is the daily UI on macOS (Electrobun). Its screens are the new core's (spec 70: an org strip, one sidebar, boards, the item panel, Team, Settings, All orgs, on the `flow.*` operations); the old core's screens were removed from it on 2026-11-15, though their operations remain on the server. It
-  supervises this Mac's `sf-runner` and calls operations through the same door (`/client/v1`) with a
-  desktop token bound to a Secure Enclave device key. It may decide spec, merge and question gates,
-  and (ADR 0610) policy decisions (org workflows and agents, org config approvals and rollbacks,
-  adopting projects' workflows, a looser override, a kill switch off), only with a per-call presence
-  proof (Touch ID) the door verifies. The website (`sf-app`) shrinks to sign-in, device approval,
-  Connect GitHub and the `/open/*` trampoline. A `ClientHub` Durable Object per person holds the app's live socket
-  (`/client/v1/live`); the outbox's `notify` messages are pushed through it. The door refuses
-  desktop builds below `DESKTOP_MIN_PROTOCOL` with 426 `update_required` (ADR 0393).
-- **The phone app** (`apps/mobile`, Flutter, ADRs 0540–0543, spec 60) comes through the same door
-  with a `mobile` token on the `mobile` surface. Its device key is an Android Keystore key bound to
-  a fingerprint for every use; `sf-engine` checks the key's attestation at sign-in
-  (`packages/core/src/attestation/`: the chain to Google's pinned roots, the revocation list, the
-  challenge, our package and signing certificate, the boot state). It pairs by the website's
-  `/mobile/connect` or a pairing offer's QR code from Settings → Devices, and decides with the same
-  presence proofs as the desktop; which operations take a proof and which are one tap on each device
-  is `deviceDecidable()` in `invoke()`. The website serves `/.well-known/assetlinks.json` for its App
-  Links.
-- **Local sessions** join the factory through MCP and leases, and nothing they do reaches main
-  without the `factory/verify` check, pinned to the App and bound to the head SHA (ADR 0021, 0022,
-  0037). A session's PR that never joined is attached afterwards (ADR 0290).
-- **Attachments** (ADR 0310): files on a work item. `sf-app` takes uploads at
-  `/api/work/<id>/attachments` and serves files at `/api/attachments/<id>`, both through the
-  `workItem.attachment.*` operations as the signed-in person, with server-chosen, sandboxing headers;
-  the operations hold the limits, content sniffing and authorization (not-found to anyone outside the
-  org). A run lists and fetches its own work item's files over the job channel when its adapter
-  declares `work-item-attachments`, and the agent gets them outside the git tree, described as
-  labelled untrusted data.
-- **Merge** is decided in the app, on the review packet, which links to the GitHub PR (ADR 0041).
-- **Notifications** go from the outbox to web push with deep links; a WIP limit applies
-  backpressure to the scheduler (ADR 0040).
+## The parts
 
-## Repository layout
-| Path | What |
-| --- | --- |
-| `apps/app` | Worker `sf-app`: dashboard (TanStack Start + shadcn/ui): GitHub sign-in (Better Auth), Inbox, New work, work item detail with Planning (layout A: questions | spec | chat with the gate bar, full screen, phone tabs; live from `/api/work/<id>/planning/live`, spec 20) and Live (the run as it goes, and steering, spec 31; the Web terminal over `/api/work/<id>/runs/<run>/terminal`, spec 35; a Chat view for stream-json runs with takeover by resume, spec 37), review packet, Setup (a live checklist), the GitHub App's Setup URL `/integrations/github/setup`, `/runners/connect`. Calls operations on `sf-engine` (ADR 0240, 0055). Pinned next to D1; loaders fetch a page's reads in one batched request (ADR 0241). MCP later |
-| `packages/ui` | shadcn/ui components and the factory theme (zinc, Geist, status dots) |
-| `packages/timeline` | A work item's event log in words: `describeEntry` turns an audit entry into a label, detail, note, actor and dot. Pure, no dependencies; the dashboard's timeline and `sf timeline` both use it (spec wi-4) |
-| `apps/engine` | Worker `sf-engine`: the work-item Workflow, the runner channel, the GitHub App (tokens, check runs) and its webhook, outbox, cron, `EngineApi` RPC, the Durable Objects (ClientHub per person, TerminalRelay per job for the web terminal and the runner host's job line, ADR 0440, 0592; none held awake to wait, spec 44) |
-| `packages/core` | Operations registry and every V1 operation, `invoke()`, the gate, autonomy policy + floor, the config schema and versions (`config.*`, `policyImpact`), model roles, Workflow event names, verify logic (`verify/`: CI, packet assembly, risk flags, the check-only rule, onboarding), incident classes (`incidents/`), a fake GitHub for tests (`/testing`) |
-| `packages/db` | D1 migrations (`core_*`) and typed access (Kysely), batch guards |
-| `packages/sdk` | Types for autonomy policies, project templates, stages and `.factory/` config |
-| `packages/runner-contract` | The runner contract: adapter interface, capability manifest, wire schemas, signed channel, client, stage results |
-| `packages/planning-designs` | The runner's design checks (spec 22 part B): DBML, D2, Mermaid and OpenAPI parsed with their own engines, errors with the line and a fix, layout warnings, and a static SVG preview with every part's box. Used by the planning MCP server, never by the cloud |
-| `packages/harness-claude` | The Claude Code harness: the per-run settings (permission mode and allowlist per stage, the OS sandbox, deny rules, a credential-free environment), the exact launch command and the post-launch check (ADR 0270), the run's Claude account in the launch (ADR 0410), the run's git config, transcript and stream-json parsing |
-| `packages/runner-local` | The local runner adapter (ADR 0380): a git worktree of the machine's checkout on the run branch, the harness's launch script in a tmux session on the factory's own socket (verified before the prompt, ADR 0270), status from the harness's hook file (`status.jsonl`), what the agent says from its transcript, steers typed with `send-keys` (ADR 0400), the web terminal bridge as a tmux control-mode client (ADR 0440), takeover by `tmux attach`, orphan reaping. `src/container/`: a container per job (ADR 0430): the job repo, the Docker runtime, the agent image and egress proxy (`container/`), the container check. `src/sprites/`: a sprite per job (ADR 0480): the Sprites API client and its fake, the pane-to-sprite TTY bridge, the run-file mirror, the result bundle import, sprite reaping. `src/stream.ts`: the stream-json session mode (ADR 0450): the launch script as a child process with JSON in and out, events from the structured output, steers as JSON user messages, takeover by `claude --resume` |
-| `packages/connector-webhook` | Inbound webhook connector, provider-neutral: signature check, delivery naming |
-| `packages/connector-github` | The GitHub App connector: App webhooks → operations |
-| `packages/config` | Shared tsconfig, Biome preset, Vitest preset |
-| `local/runner-host` | The runner host daemon `sf-runner` (Node, on a person's machine): heartbeat, claim, the job lifecycle, fetching into the machine's existing checkout (found under `runner.json` `checkouts`; its own clone only as a fallback, ADR 0260), the run-branch push with the job token (ADR 0250), the service (launchd on macOS, a systemd user service on Linux, ADR 0420), `doctor` (tmux, git, claude, checkouts, orphans; on Linux bubblewrap, socat, user systemd, linger; Docker, the image and the credential on a container runner; the Sprites token, the API and leftover sprites on a sprites runner), the host's Claude accounts (`sf-runner account`, ADR 0410), the owner's Sprites token (`sf-runner sprites login`, ADR 0480) |
-| `presets/` | The shipped autonomy policies, project templates and the floor (directory name kept) |
-| `evals/` | The `.factory/checks/` format, incident regression cases (`evals/regressions/`) and the suite CI runs over both; benchmarks later |
-| `spikes/` | Throwaway spikes. Not in the workspace or Biome |
+```
+ desktop app ──┐ client door /client/v1                       website (sf-app): sign-in only
+ sf CLI ───────┤ cli door    /cli/v1                               │ EngineApi RPC
+               ▼                                                   ▼
+ ┌──────────────────────────── sf-engine (Worker) ─────────────────────────────────┐
+ │  flow.* ──► packages/ops ──► packages/plugins ──► packages/flow (apply)          │
+ │                │                 │  hooks in Dynamic Workers (LOADER)           │
+ │                │                 │  ctx.gateway(name) ──► outside systems       │
+ │                ▼                 ▼                                              │
+ │           packages/store ──► D1 software-factory (flow_* and core_*)            │
+ │  other ops ──► packages/core invoke() (sign-in, orgs, devices, runners, GitHub)  │
+ │  /flow/mcp (factory MCP server)    /flow/triggers/…    minute cron              │
+ │  /runner/v1/* runner channel: heartbeat, claim, token, events, handback, release │
+ └────────────────────────────────────────▲────────────────────────────────────────┘
+                                          │ signed, outbound from the runner
+                     runner host (sf-runner) ──► harness-claude ──► Claude Code
+```
 
-The first adapter, `runner-orca` (Orca's worktrees and terminals), was replaced by `runner-local`
-and deleted (ADR 0380); `spikes/runner-orca` keeps the original spike. Build specs are in
-[`specs/`](specs/).
+| Part | Where | What it does |
+| --- | --- | --- |
+| Kernel | `packages/flow` | The model (zod) and `apply(workflow, state, event)`: an item's next state and the effects to carry out. Pure: no D1, no Cloudflare. |
+| Store | `packages/store` | The `flow_*` tables: items and their timeline, runs and leases, plugins, gateways, chats, schedules. One step of an item is one D1 batch. |
+| Operations | `packages/ops` | The `flow.*` operations: zod input, a handler, `read` or `write`. The one permission rule: the caller is a member of the org and everything named is in it. |
+| Plugin host | `packages/plugins` | Loads plugins as Dynamic Workers, runs their hooks around every item event, serves their `ctx`, makes gateway calls. |
+| Platform | `packages/core` | What the workflow engine stands on: sign-in, orgs, the doors' tokens and devices, runners, the GitHub App connection. Its operations go through `invoke()` and the audit journal. |
+| Engine | `apps/engine` (`sf-engine`) | Routes, the runner channel, the MCP server, triggers, the cron. |
+| Website | `apps/app` (`sf-app`) | GitHub sign-in, the pages that approve device logins, and the GitHub App's Setup URL. Nothing else. |
+| Desktop app | `apps/desktop` | The daily app (macOS): the org strip, sidebar, boards, items, Chat, Team, Auto, Plugins, Settings. It also runs this Mac's runner. |
+| CLI | `local/cli` (`sf`) | `sf login`, `sf ops`, `sf call <op> <json>`. |
+| Runner | `local/runner-host`, `packages/runner-local`, `packages/harness-claude`, `packages/runner-contract` | Claims runs and runs Claude Code on the owner's machine. |
+
+## A request
+1. The desktop app calls `flow.item.move` through the client door with its token. The engine finds
+   the person behind the token and hands any `flow.` call to `call()` in `packages/ops`; other calls
+   go to `invoke()` in `packages/core`.
+2. `call()` validates the input and checks scope (`packages/ops/src/scope.ts`), then runs the
+   handler.
+3. Every item event goes through one function in `packages/plugins/src/steps.ts`: the plugins'
+   `leaving` hooks if the item would leave its status (worked out with the pure kernel first), then
+   the event through `packages/store` (`apply()`, then the new state, the timeline entries and the
+   effects in one batch), then `runEnded` and `entered`, then any moves the plugins asked for, the
+   same way.
+4. An effect `run.start` queues a run for the status's agent; `inbox.add` and `decision.ask` show
+   the item in the inbox. A plugin that throws, times out (10 s) or answers wrongly stops the item
+   with `Plugin "<name>" failed: …`; `flow.item.retry` runs the status again.
+
+## Plugins and gateways
+A plugin is one ES module in `flow_plugins`, loaded through the Worker Loader binding with no
+network of its own (`globalOutbound: null`) and an empty `env`. Its `ctx` (comment, card, setField,
+move, createItem, gateway, item) runs back in the engine. Outside systems are reached only through
+`ctx.gateway(name).fetch(path, init)`: the engine joins the gateway's base URL and the path, adds the
+decrypted secret as a bearer token or a named header, and makes the request. The built-in `github`
+gateway calls the GitHub REST API for the item's project's repository with a one-repository App
+token. A plugin's `trigger` hook runs from `POST /flow/triggers/<pluginId>/<name>?key=<key>`.
+
+Gateways will be rebuilt as one Worker per outside service with typed methods and an OAuth sign-in
+([spec 70, "Next"](specs/70-a-new-core.md#next-gateways-in-the-gatekeeper-shape)).
+
+## Runs and the runner channel
+The runner host calls the engine; the engine never calls it. Every call is signed with the runner's
+key (`/runner/v1/*`).
+- **Heartbeat**, about every 20 s: the runner's manifest and capacity, and the runs it holds with
+  their fencing tokens. It renews each run's 10-minute lease and answers cancel commands and the
+  version the runner should update to.
+- **Claim**: the oldest queued run the runner may serve (of items and chats its owner created, or of
+  any in an org it is shared into), given a lease and a fencing token, as a `flow` job whose id is
+  the run's (`frun_…`).
+- **Token** (only with a repository): a fresh one-repository GitHub App token that may push the
+  item's branch. Never cached.
+- **Events**: what the session did (the agent's text, tool calls, tool results in stream-json mode),
+  stored as the run's steps for the run view.
+- **Handback**: `{ outcome: "done" | "rejected", summary }`, plus the branch and head if it pushed.
+  An item's run steps the item (with `runEnded` and `entered`); a chat's run adds the reply.
+- **Release** ends the job; a release with the run still open fails it. The cron fails runs whose
+  lease lapsed.
+
+**Without a repository** the runner host gives the session an empty directory, removed on release.
+**With one** (a project with a repository) it makes a git worktree of the owner's checkout on the
+item's branch `factory/flow-<key>-<number>`, and after the session commits what is left and pushes
+that branch. The software plugin then opens the pull request.
+
+## Chat
+A chat is with a model the person picks. Each message queues a run with no item, which a runner
+claims like any other. Its prompt (`apps/engine/src/flow/chat-prompt.ts`) is a short fixed text,
+the conversation so far and the new message; it always gets the `factory` MCP server, acting as the
+chat's creator. The reply is the run's summary. Each change the run makes through the MCP server is
+recorded so the chat can show what it made.
+
+## The MCP server
+`POST /flow/mcp`, streamable HTTP, named `factory`. A claimed run whose agent has `"factory"` in
+its `mcp` (and every chat run) gets a bearer token valid while the run is claimed. Tools:
+`flow_ops`, `flow_call` (any `flow.*` operation, as the run's agent in its org), `plugin_guide`,
+`plugin_list`, `plugin_read`, `plugin_save`, `plugin_delete`, `gateway_list`.
+
+## The cron
+Every minute (`apps/engine/src/index.ts`): outbox retries, runs whose lease lapsed (10 a tick),
+run events past retention, due schedules (20 a tick), and the channel store's prune. Hourly:
+expired device codes and GitHub connect states.
+
+## D1 tables
+One database, `software-factory`; migrations in `packages/db/migrations`.
+
+| Group | Tables | Retention |
+| --- | --- | --- |
+| Workflows | `flow_workflows`, `flow_projects`, `flow_agents` | Kept while the org uses them; nothing deletes one yet. |
+| Items | `flow_items`, `flow_events` (the timeline) | Kept as the org's record of its work; nothing prunes them yet. |
+| Runs | `flow_runs` | Kept with its item or chat; nothing prunes runs yet. |
+| | `flow_run_events` | Deleted 30 days after the run finished, by the minute cron (`pruneRunEvents`). |
+| Plugins and gateways | `flow_plugins`, `flow_gateways` | Kept until `flow.plugin.delete` / `flow.gateway.delete`. |
+| Chat | `flow_chats`, `flow_chat_messages` | Kept until `flow.chat.delete`. |
+| Schedules | `flow_schedules` | Kept until `flow.schedule.delete`. |
+| Sign-in and orgs | `core_user`, `core_session`, `core_account`, `core_verification`, `core_organization`, `core_member`, `core_invitation` | Better Auth's own. |
+| Doors and devices | `core_cli_tokens`, `core_desktop_devices` | Kept (a revoke marks the row). |
+| | `core_desktop_auth_requests`, `core_presence_challenges`, `core_mobile_nonces`, `core_pair_offers` | Deleted a day past expiry, every minute. |
+| | `core_pair_code_tries` | Deleted after a day, every minute. |
+| | `core_cli_device_codes` | Deleted a day past expiry, hourly. |
+| Runners | `core_runners`, `core_runner_shares` | Kept. |
+| | `core_runner_device_codes` | Deleted a day past expiry, hourly. |
+| | `core_channel_requests` (the channel's idempotency store) | Deleted after a day. |
+| GitHub | `core_github_installations` | Kept; the App's webhook keeps it current. |
+| | `core_github_connect_states` | Deleted a day past expiry, hourly. |
+| Platform | `core_audit` | Append-only, kept; written only when a platform operation changes state. |
+| | `core_outbox` | A row is deleted once delivered. |
+| | `core_batch_guard` | Empty after every batch. |
+| | `core_meta` | One row: the schema version. |
+
+## Bindings
+| Worker | Binding | For |
+| --- | --- | --- |
+| `sf-engine` | `DB` (D1 `software-factory`) | Everything; applies the migrations. |
+| | `LOADER` (Worker Loader) | Plugins as Dynamic Workers. |
+| | `CLIENT_HUB` (Durable Object `ClientHub`) | One per person: the desktop app's live socket. |
+| | `MOBILE_NONCE_LIMIT` (rate limit) | The phone sign-in's unsigned nonce call. |
+| | cron `* * * * *` | The minute cron above. |
+| `sf-app` | `DB` | Better Auth's tables. |
+| | `ENGINE` (service `sf-engine`, entrypoint `EngineApi`) | Every operation the website calls. |
+
+Secrets and vars are listed in [`deploying.md`](deploying.md).

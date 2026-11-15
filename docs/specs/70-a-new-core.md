@@ -1,7 +1,9 @@
 # Spec 70: A new core
 
-Status: **being built.** Milestones 1 and 2 are built and were proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
-first. This spec is the plan; each milestone gets its own short spec when it starts.
+Status: **built.** Milestones 1 to 5 were built and deployed on 2026-11-15; 1, 2 and 3 were proved
+on the deployed engine and a real runner that day. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
+first. The next milestone is [gateways in the gatekeeper shape](#next-gateways-in-the-gatekeeper-shape).
+The sections below the milestone list record what was built, in order.
 
 ## The goal
 A person defines a workflow as a list of statuses with owners, and an item moves through it, with
@@ -39,8 +41,13 @@ Each has one job, and no source file is over 400 lines.
 and `apps/desktop` stay. The runner contract loses its fixed job stages: a job carries a brief and
 the capabilities it needs.
 
+As built, `packages/plugin-editor` and `packages/gateways` were not made: the plugin editor is the
+engine's `factory` MCP server (`apps/engine/src/flow/mcp.ts`), and gateways are
+`packages/store/src/gateways.ts` with the call in `packages/plugins/src/gateway.ts`. What remains of
+`packages/core` is the platform (sign-in, orgs, the doors, devices, runners, the GitHub connection).
+
 ## Milestones
-Each ends with something that runs.
+Each ends with something that runs. All five are done (2026-11-15).
 
 1. **An item moves through a workflow.** `flow`, `ops`, `store`. Operations for workflows, items
    and the thread. The reconciler assigns a person or queues a run on entering a status, and moves
@@ -261,6 +268,25 @@ example 3). None of the old core's software flow (merge queue, babysitter, revie
   any plugin: it opens a pull request when a run pushes, holds a "review" status while checks fail
   or run, and merges on "Merged" or "Shipped".
 
+### Milestone 4: the desktop app, as built (2026-11-15)
+The desktop app's screens are the new core's, on the `flow.*` operations, from the mockups listed
+under "The design" below: the org strip with All orgs, one sidebar (Inbox, Work, Chat, Team, Auto,
+Plugins, the projects, Settings), a project's board and list with its Workflow and Settings tabs,
+the item panel and page with the timeline of cards, the run view, the workflow editor, Team
+(agents, runners, people), Plugins and Gateways, and Auto (schedules and triggers). The app and the
+server are held to one contract: `packages/client/src/flow-contract.ts`, checked by
+`packages/client/test/flow-contract.test.ts`, `apps/engine/test/flow-contract.test.ts` and
+`apps/desktop/test/flow-fixtures-contract.test.ts`.
+
+### Milestone 5: cutover, as built (2026-11-15)
+The old pipeline was deleted (#231), about 140,000 lines. Migration 0438 dropped 54 tables and
+their data: the owner decided nothing in them was needed, so no data moved and the new core kept
+what milestones 1 to 4 had made. Gone with them: the work-item Workflow, the R2 buckets, the
+`TerminalRelay` Durable Object, the old cron jobs, the packages `planning-designs`,
+`connector-github`, `connector-webhook`, `timeline`, `sdk`, `presets` and `evals`, and the runner's
+container and sprites isolation. `packages/core` keeps the platform only. `AGENTS.md`, `CONTEXT.md`,
+`docs/architecture.md` and `docs/handoff.md` were rewritten afterwards.
+
 ## The design
 Agreed with the owner on 2026-11-15 (plan: `.kim/plans/2026-11-15-the-new-cores-ui-board-item-panel-and-card-timeline.md`).
 [`docs/design/base-and-plugins.md`](../design/base-and-plugins.md) says in plain words what the
@@ -291,7 +317,8 @@ moved to Done. The timeline shows each move and the agent's text. No code names 
 
 Known gaps, left on purpose: a claim whose reply is lost isn't retried cleanly; any org member can
 finish a person's status; a run's events aren't stored, so the run view has nothing to show yet
-(stored since migration 0434: see "the run view, as built" above).
+(stored since migration 0434: see "the run view, as built" above). The gaps still open are under
+"Known gaps" below.
 
 ## Milestone 2, proved (2026-11-15)
 On the deployed engine: an agent "Builder" with the `factory` MCP server, a workflow "Ask, check"
@@ -317,11 +344,45 @@ GitHub's ruleset pattern `factory/**` matches one level only, so branches moved 
 - A plugin that fails stops the item with an error. The item can be retried.
 - The Cloudflare cost rules in `AGENTS.md` apply. Each `flow_` table states its retention, and the
   reconciler's queries go in the query-plan guard.
-- The old core takes fixes only.
+- The old core takes fixes only. (Until the cutover; it is deleted now.)
 
 ## Open questions
 1. How a plugin changes what the app shows (a card's look, a new screen): what it hands the app.
-2. Does the old data move at cutover, or does the new core start empty?
+2. ~~Does the old data move at cutover, or does the new core start empty?~~ Answered at cutover:
+   nothing moved. The old tables and their data were dropped; the new core kept what milestones 1
+   to 4 had made.
+
+## Known gaps (2026-11-15)
+- A chat reply takes as long as starting a Claude session on the runner: there is no long-lived
+  session.
+- A claim whose reply is lost isn't retried cleanly: the run stays claimed until its lease lapses,
+  then fails.
+- Any org member can finish a person's status or decide an item.
+- No run reports a cost (`cost_usd` stays null), and a tmux session, the default, reports no token
+  counts.
+- Desktop notifications can't be clicked through to the item.
+- There is no operation to delete a project; the proofs' test projects are still in the owner's
+  Personal org.
+- Not built from ADR 0660's list: a plugin's screens, tools it gives agents, changes to an agent's
+  brief, and how a card looks. An agent can list gateways (`gateway_list`) but not call one.
+
+## Next: gateways in the gatekeeper shape
+Agreed with the owner on 2026-11-15 as the next milestone.
+
+**What.** Rebuild gateways in the shape [Cloudflare OS](https://github.com/cloudflare/cloudflare-os)
+calls gatekeepers: one Worker per outside service (GitHub, Gmail, Slack, a blog), with typed methods
+(`github.openPullRequest`, `gmail.send`) instead of a raw `fetch` against a base URL, and an account
+connected by signing in to the service (OAuth) instead of pasting a secret. Plugins and agents call
+the methods by gateway name, as today.
+
+**Why.** Today a gateway is a base URL and a stored secret, and every plugin builds raw HTTP calls
+against it: the agent writing the plugin has to know each API, and connecting a service means
+finding and pasting a token. Typed methods make plugins short and checkable, and signing in is how
+people expect to connect an account. The built-in `github` gateway becomes the first such Worker.
+
+**Out of scope.** Grants per resource (which repositories, which mailboxes), approval of actions
+before they run, limits and quotas, and sharing gateways between orgs. None is wanted now; each can
+come later if the owner asks.
 
 ## Acceptance criteria (milestone 1)
 1. A workflow is created, edited and read through operations, and is refused if a status points at

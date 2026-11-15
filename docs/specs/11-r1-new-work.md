@@ -1,7 +1,7 @@
 # Spec 11 (R1): New work
 
-Read first: [`docs/ui-plan.md`](../ui-plan.md), mockup
-[`new-work.html`](../../.kim/mockups/new-work.html), ADRs
+Read first: `docs/ui-plan.md`, mockup
+`new-work.html`, ADRs
 [0023](../adr/0023-runners-owned-by-users-and-requester-routing.md),
 [0015](../adr/0015-scheduler-runtime-pool-and-capabilities.md),
 [0038](../adr/0038-runner-sharing-is-an-owner-allowlist.md),

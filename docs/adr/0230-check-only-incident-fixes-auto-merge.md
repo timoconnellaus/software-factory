@@ -2,7 +2,7 @@
 
 Status: accepted, 2026-11-11 (V1 step 4, verify + connector + incidents). Amends
 [ADR 0008](0008-autonomy-presets-and-floor.md). Answers the open item in
-[`handoff.md`](../handoff.md) and the [V1 scope](../v1-scope.md) ("incident fixes that only add
+[`handoff.md`](../handoff.md) and the V1 scope ("incident fixes that only add
 checks or evals auto-merge once their regression eval passes").
 
 ## Context

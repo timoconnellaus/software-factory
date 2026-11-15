@@ -1,5 +1,8 @@
 # Specs
 
+**Specs before 70 describe the old factory, which was removed on 2026-11-15. They are kept as
+history and do not describe the code.** The current spec is [70](70-a-new-core.md).
+
 Each spec is one buildable slice. Format (borrowed from Relationship OS): **Read first / Goal /
 Scope / Out of scope / Acceptance criteria**. The acceptance criteria are the definition of done,
 and the factory's own planning stage writes specs in this same format.
@@ -63,7 +66,7 @@ and the factory's own planning stage writes specs in this same format.
 
 Specs 01–04 together are the **MVP backend slice**: CLI/chat intake → triage → implement (Claude
 Code via `runner-orca`) → verify (review packet) → PR in one repo. Specs 10–15 are UI release
-**R1** ([`docs/ui-plan.md`](../ui-plan.md)). The MVP's "simple web inbox" is spec 12.
+**R1** (`docs/ui-plan.md`, removed at the cutover). The MVP's "simple web inbox" is spec 12.
 
 ## R1 milestones
 R1 keeps everything planned (orgs, multi-session, decision domains, clarification, shared runners)
@@ -98,4 +101,5 @@ and later follows the deploy ([ADRs 0580–0585](../adr/0580-approval-and-delive
 
 ## A new core
 [Spec 70](70-a-new-core.md): the core rewritten as a small workflow engine with plugins
-([ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)). Specs 50, 52 and 53 are on hold.
+([ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)). Built on
+2026-11-15; specs 50, 52 and 53 were never finished and their code is deleted.

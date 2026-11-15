@@ -4,7 +4,7 @@ Read first:
 - ADRs [0300](../adr/0300-planning-is-a-live-session-on-a-runner.md) and
   [0305](../adr/0305-planning-artifacts-and-the-kim-folder.md);
 - [spec 20](20-planning-loop.md);
-- the mockup [`planning-three-pane.html`](../../.kim/mockups/planning-three-pane.html) (the
+- the mockup `planning-three-pane.html` (the
   Mockups and Canvas tabs);
 - kim's skill, in the "Workspace: plan, diagrams, mockups" section, as the reference for behaviour.
 

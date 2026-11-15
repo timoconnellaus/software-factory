@@ -1,8 +1,11 @@
 # Architecture decision records
 
+**ADRs before 0660 describe the old factory, which was removed on 2026-11-15. They are kept as
+history and do not describe the code.** Start with [ADR 0660](0660-the-core-is-a-small-workflow-engine-with-plugins.md).
+
 Each ADR is `NNNN-slug.md` with Status, Context, Decision and Consequences. ADRs are never deleted: when a decision changes, amend it with a dated note.
 
-Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); 0300–0309 is the planning design; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Claim a block in [`../parallel-work.md`](../parallel-work.md) before adding one.
+Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [review decisions](../reviews/2026-11-11-review-decisions.md)); 0048–0059 is the V1 core + engine build; 0230–0239 is V1 step 4 (verify + connector + incidents); 0300–0309 is the planning design; spikes use 0100–0199 (0100 runner contract and 0110 Workflow and gate are accepted and promoted here; 0120 auth is still proposed under `spikes/`). Blocks are no longer claimed: a new ADR takes the next number after the highest.
 
 | ADR | Title |
 | --- | --- |
@@ -146,4 +149,4 @@ Numbering: 0001–0099 is the scaffold and docs block (0033–0047 record the [r
 | [0641](0641-the-app-controls-the-runner-over-a-unix-socket.md) | Proposed: the app controls the runner over a Unix socket in a 0700 directory in the state dir; no TCP port, no secrets across it |
 | [0642](0642-the-runner-service-updates-itself-from-the-signed-channel.md) | Proposed: the runner service updates itself from the app's signed R2 channel, ordered by a monotonic runner sequence, verified and self-tested, swapped only when idle (ADR 0520), confirmed within a deadline or rolled back, repaired by the app; compat bumps need a release, enforced by the deploy |
 | [0643](0643-the-runner-bundle-checks-its-own-seal-at-every-start.md) | Proposed: `SF Runner.app`'s main executable is a Swift launcher that checks the whole bundle's seal and Team ID at every start, runs only its own scripts, and builds Node's environment from nothing |
-| [0660](0660-the-core-is-a-small-workflow-engine-with-plugins.md) | Proposed: the core is rewritten as a small workflow engine (statuses with owners, a reconciler, small modules) with plugins as Dynamic Workers edited through an MCP server; gates stay in the core; software development becomes the first plugin; supersedes 0510 |
+| [0660](0660-the-core-is-a-small-workflow-engine-with-plugins.md) | Accepted and built (2026-11-15): the core is rewritten as a small workflow engine (statuses with owners, a reconciler, small modules) with plugins as Dynamic Workers edited through an MCP server; software development becomes a plugin; supersedes 0510 |

@@ -26,8 +26,8 @@ After the cutover (migration 0438, spec 70 milestone 5) the `core_*` tables are 
 
 Migration 0438 dropped every table only the old pipeline used (work items, specs, planning, the
 merge queue, verify, runs and jobs, policies, incidents, the audit archive and the rest).
-`SCHEMA_VERSION` equals the highest migration. Parallel builds number their migrations from the
-block they claim in `docs/parallel-work.md`.
+`SCHEMA_VERSION` equals the highest migration. A new migration takes the next number above the
+highest (`docs/parallel-work.md`).
 
 ## Better Auth mapping (for the app session)
 Better Auth 1.7 with the organization plugin. Set `modelName` and map every camelCase field to its

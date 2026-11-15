@@ -3,7 +3,7 @@
 Status: accepted, 2026-11-11 (V1 step 2, the app).
 
 ## Context
-V1 has one user and one project ([`v1-scope.md`](../v1-scope.md)). `sf-app` authenticates the person
+V1 has one user and one project (`v1-scope.md`). `sf-app` authenticates the person
 and calls operations on `sf-engine` over RPC ([ADR 0051](0051-operations-rpc-on-the-engine.md)).
 Approvers in `.factory/policy.json` are named by GitHub login, so the login on `core_user` decides
 who can merge.

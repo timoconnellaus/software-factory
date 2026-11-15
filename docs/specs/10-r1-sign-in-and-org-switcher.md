@@ -1,9 +1,9 @@
 # Spec 10 (R1): Sign-in and the org & account switcher
 
-Read first: [`docs/ui-plan.md`](../ui-plan.md), ADRs [0024](../adr/0024-identity-orgs-and-multi-session.md),
+Read first: `docs/ui-plan.md`, ADRs [0024](../adr/0024-identity-orgs-and-multi-session.md),
 [0031](../adr/0031-dashboard-stack-and-inbox-first.md), [0043](../adr/0043-a-client-is-its-own-org.md);
 spike ADR 0120 (`spikes/auth-multisession/docs/`); mockup
-[`org-switcher.html`](../../.kim/mockups/org-switcher.html); design system
+`org-switcher.html`; design system
 [`.kim/design-system/`](../../.kim/design-system/).
 
 > Amended 2026-11-11 ([review decisions](../reviews/2026-11-11-review-decisions.md)): R1 keeps orgs and multi-session but is built in three

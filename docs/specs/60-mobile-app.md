@@ -3,9 +3,9 @@
 **Read first**:
 - the interview plan [`.kim/plans/2026-11-12-mobile-app-v1-android-flutter.md`](../../.kim/plans/2026-11-12-mobile-app-v1-android-flutter.md).
   Every "Decided" line in it is binding.
-- the phone design [`docs/design/mobile/`](../design/mobile/README.md): 29 screens at 390 × 844,
+- the phone design `docs/design/mobile/`: 29 screens at 390 × 844,
   and the rules that hold on every screen. It supersedes the plan's "not designed yet" list.
-- the desktop design [`docs/design/factory-ui/README.md`](../design/factory-ui/README.md): the model
+- the desktop design `docs/design/factory-ui/README.md`: the model
   and the look.
 - ADRs [0540](../adr/0540-the-phone-app-is-flutter-in-apps-mobile.md) (the app),
   [0541](../adr/0541-phone-devices-keystore-keys-and-fingerprint-proofs.md) (devices, pairing,

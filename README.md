@@ -1,17 +1,19 @@
 # Software Factory
 
-A software factory: work comes in from anywhere (GitHub, Linear, Slack, chat, local Claude sessions), agents take it through triage → planning/spec → build → verify, and people step in only at gates. It has a cloud control plane on Cloudflare and pluggable runners (Orca first).
+A small workflow app. An org defines workflows as lists of statuses, each owned by an agent, a
+person or nobody; items move through them on a board; agents run on the owner's own machines; and
+plugins, built by an agent from plain words, add what the base can't do. The cloud half runs on
+Cloudflare, and the daily app is a macOS desktop app.
 
-Status: scaffolded; building the MVP slice. Start at [`AGENTS.md`](AGENTS.md) and [`docs/handoff.md`](docs/handoff.md).
+Start at [`AGENTS.md`](AGENTS.md), then [`docs/architecture.md`](docs/architecture.md) and
+[`docs/handoff.md`](docs/handoff.md).
 
 ```sh
-pnpm i && pnpm lint && pnpm typecheck && pnpm test
+pnpm i && pnpm lint && pnpm typecheck && pnpm test --concurrency=2
 ```
 
-- Architecture overview: [`docs/architecture.md`](docs/architecture.md) · Glossary: [`CONTEXT.md`](CONTEXT.md)
-- Decisions: [`docs/adr/`](docs/adr/) · Specs: [`docs/specs/`](docs/specs/)
-- Product plan: [`.kim/plans/2026-11-10-personal-software-factory-design.md`](.kim/plans/2026-11-10-personal-software-factory-design.md)
-- Architecture: [`.kim/designs/v1-architecture.d2`](.kim/designs/v1-architecture.d2)
-- UI plan (in progress): [`docs/ui-plan.md`](docs/ui-plan.md)
+- Words: [`CONTEXT.md`](CONTEXT.md)
+- The base and plugins in plain words: [`docs/design/base-and-plugins.md`](docs/design/base-and-plugins.md)
+- Decisions: [`docs/adr/`](docs/adr/) (from 0660) · Specs: [`docs/specs/`](docs/specs/) (from 70)
+- Deploying: [`docs/deploying.md`](docs/deploying.md)
 - Mockups: [`.kim/mockups/`](.kim/mockups/) · Design system: [`.kim/design-system/`](.kim/design-system/)
-- Prior art: [`docs/research/ideas-from-crm-and-cloudflare-os.md`](docs/research/ideas-from-crm-and-cloudflare-os.md)

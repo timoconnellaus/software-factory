@@ -1,6 +1,8 @@
 # ADR 0660: The core is rewritten as a small workflow engine with plugins
 
-Status: proposed, 2026-11-15 (the owner's direction; spec [70](../specs/70-a-new-core.md) says how).
+Status: accepted and built, 2026-11-15 (the owner's direction; spec [70](../specs/70-a-new-core.md)
+says how and records what was built). See the note at the end for where the build departed from
+this text.
 Supersedes [ADR 0510](0510-workflows-are-ordered-stages-of-stage-types.md) and the model in spec 52.
 Amends [ADR 0005](0005-hybrid-coordinator.md), [0006](0006-work-item-workflows.md) and
 [0008](0008-autonomy-presets-and-floor.md).
@@ -84,3 +86,43 @@ the desktop shell, and the Cloudflare cost rules in `AGENTS.md`.
   accepted: the answer is to be careful which agents get it.
 - The policy rules in `AGENTS.md` (gates in code, not AI-configurable; self-modify goes to a
   human) describe the old core. They stop applying at cutover, when `AGENTS.md` is rewritten.
+
+## Note, 2026-11-15: as built
+All five milestones of spec 70 were built and deployed on 2026-11-15, and the old core was
+deleted. Where the build departed from the decision as written:
+- **1.** The kernel, store, operations and plugin host are new packages. What remains of the old
+  code is its platform (sign-in, orgs, the doors, devices, runners, the GitHub App client and
+  installations), left in `packages/core` and `apps/engine`, and the runner side.
+- **3.** The reconciler is `apply(workflow, state, event)` in `packages/flow/src/reconcile.ts`. Its
+  caller is one function in `packages/plugins/src/steps.ts` that runs the plugins' hooks around
+  every item event.
+- **4.** The 400-line limit and the ban on importing `packages/core` are checked by
+  `scripts/checks/guards.test.ts` for `packages/flow`, `store`, `ops` and `plugins`.
+  `apps/engine/src/flow/` is not covered. `packages/plugin-editor` and `packages/gateways` were
+  never made.
+- **5.** Workflow templates are not built.
+- **6.** A plugin can declare fields and use four hooks (`entered`, `leaving`, `runEnded`,
+  `trigger`), and add comments, cards, moves and items. It can't yet add a screen, give agents a
+  tool, change what agents are told, or change how a card looks.
+- **7.** A gateway is a base URL, an auth kind and a sealed secret in `flow_gateways`; plugins call
+  it with `ctx.gateway(name).fetch`. GitHub is the built-in `github` gateway, not a row. Agents can
+  list gateways through the MCP server but not call one. The next milestone rebuilds gateways as
+  one Worker per service with typed methods and OAuth sign-in (spec 70, "Next").
+- **8.** The plugin editor is the engine's own MCP server, `factory`, at `/flow/mcp`
+  (`apps/engine/src/flow/mcp.ts`); it can also call any `flow.*` operation. Chat is with a model the
+  person picks (and an effort level), not with an agent: every chat run gets the `factory` server.
+- **10.** Software development is the example plugin `plugins/software/plugin.js` over the built-in
+  `github` gateway, plus a repository on a project. The base does know that much about git: a run
+  of a project with a repository works in a checkout on the item's branch, which the runner host
+  pushes. Nothing of `factory/verify`, the merge queue or the babysitter was ported; they were
+  deleted. This repo's `main` is protected by a required `ci` check only.
+- **11.** As written. A workflow is edited from its project's Workflow tab or from Settings →
+  Workflows.
+- **12.** Cards come from plugins (`ctx.card`: a kind, a title and optional subtitle, rows, checks,
+  bars and a link); the timeline shows moves and comments as one-line entries and a waiting
+  decision as the last card.
+- **What is kept.** The operations registry and `invoke()` stay for the platform's operations
+  only. The `flow.*` operations use their own small `call()` in `packages/ops`, with one permission
+  rule (the caller is a member of the org) and no audit row. Questions, kill switches and versioned
+  config were deleted with the old core. Code names Claude Code aliases
+  (`packages/ops/src/models.ts`), not model roles.
