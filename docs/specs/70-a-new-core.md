@@ -304,6 +304,13 @@ server, 31 seconds after the claim. When its run ended the item moved to Check, 
 Also on that day: the old app's screens were removed from the desktop app at the owner's request,
 ahead of milestone 5. The old core's server code is still in place.
 
+## Milestone 3, proved (2026-11-15)
+This change itself was made by an agent working in a checkout of this repository on the new core,
+on the branch `factory/flow-sf-2`. The runner pushed the branch and the software plugin opened the
+pull request. A person approved it and the plugin merged it. The first attempt failed because
+GitHub's ruleset pattern `factory/**` matches one level only, so branches moved from
+`factory/flow/<key>-<n>` to `factory/flow-<key>-<n>`.
+
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge
   cases until the owner asks for one.
