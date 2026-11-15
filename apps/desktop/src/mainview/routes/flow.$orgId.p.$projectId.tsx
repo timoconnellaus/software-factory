@@ -5,7 +5,7 @@ import { flowBoardQuery, flowProjectsQuery, flowWorkflowQuery } from "../lib/flo
 import { flowOrg } from "./flow.$orgId.tsx";
 
 interface Search {
-  view?: "list" | "workflow";
+  view?: "list" | "workflow" | "settings";
   item?: string;
 }
 
@@ -13,7 +13,9 @@ export const Route = createRoute({
   getParentRoute: () => flowOrg,
   path: "p/$projectId",
   validateSearch: (s: Record<string, unknown>): Search => ({
-    ...(s.view === "list" || s.view === "workflow" ? { view: s.view } : {}),
+    ...(s.view === "list" || s.view === "workflow" || s.view === "settings"
+      ? { view: s.view }
+      : {}),
     ...(typeof s.item === "string" && s.item ? { item: s.item } : {}),
   }),
   // The item panel loads inside itself (its skeleton): opening an item never waits on its reads.

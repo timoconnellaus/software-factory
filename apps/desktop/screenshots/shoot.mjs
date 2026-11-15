@@ -82,6 +82,15 @@ export const SCREENS = [
     clicks: ['[data-testid="connect-system"]'],
   },
   { name: "flow-fields", path: "/flow/org_personal/p/fprj_api?item=fitm_audit" },
+  // A project's Settings and its repository: `--out flow-project-settings`.
+  { name: "flow-project-settings", path: "/flow/org_personal/p/fprj_api?view=settings" },
+  {
+    name: "flow-project-settings-picker",
+    path: "/flow/org_personal/p/fprj_launch?view=settings",
+    pointerdowns: ['[data-testid="repo-picker"]'],
+  },
+  { name: "flow-project-settings-connect", path: "/flow/org_client/p/fprj_site?view=settings" },
+  { name: "flow-gateways-github", path: "/flow/org_personal/plugins?tab=gateways" },
   // Auto's schedules (auto-schedules.html): `--out flow-auto`.
   { name: "flow-auto", path: "/flow/org_personal/auto" },
   {
@@ -141,7 +150,7 @@ const valued = new Set(["--out", "--size", "--tag"]);
 const only = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
 const screens = only.length ? SCREENS.filter((s) => only.includes(s.name)) : SCREENS;
 
-async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
+async function shoot(cdp, url, file, theme, keys = [], clicks = [], pointerdowns = []) {
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: theme }],
   });
@@ -159,6 +168,13 @@ async function shoot(cdp, url, file, theme, keys = [], clicks = []) {
   for (const selector of clicks) {
     await cdp.send("Runtime.evaluate", {
       expression: `document.querySelector(${JSON.stringify(selector)})?.click()`,
+    });
+    await sleep(500);
+  }
+  // Radix opens a select or a menu on pointerdown, not click.
+  for (const selector of pointerdowns) {
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(selector)})?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }))`,
     });
     await sleep(500);
   }
@@ -214,7 +230,15 @@ try {
       await sleep(300);
       await cdp.send("Runtime.evaluate", { expression: "localStorage.clear()" });
       const file = resolve(out, `${s.name}-${theme}${tag ? `-${tag}` : ""}.png`);
-      await shoot(cdp, `${base}${s.query ?? ""}#${s.path}`, file, theme, s.keys, s.clicks);
+      await shoot(
+        cdp,
+        `${base}${s.query ?? ""}#${s.path}`,
+        file,
+        theme,
+        s.keys,
+        s.clicks,
+        s.pointerdowns,
+      );
     }
   }
   cdp.close();

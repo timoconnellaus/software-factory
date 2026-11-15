@@ -36,7 +36,7 @@ import { Textarea } from "@software-factory/ui/components/textarea";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { PlusIcon, WorkflowIcon } from "lucide-react";
+import { FolderGit2Icon, PlusIcon, WorkflowIcon } from "lucide-react";
 import { useState } from "react";
 import {
   flowBoardQuery,
@@ -49,15 +49,24 @@ import { OpError, op, submitKey } from "../../lib/op.ts";
 import { useSession } from "../../lib/session.ts";
 import { ItemPanel } from "./item.tsx";
 import { ChipPill, OwnerMark, PageHeader, Pill, StatusMark } from "./parts.tsx";
+import { ProjectSettings } from "./project-settings.tsx";
 import { WorkflowEditor } from "./workflow.tsx";
 
-export type BoardView = "board" | "list" | "workflow";
+export type BoardView = "board" | "list" | "workflow" | "settings";
 
-const TAB: Record<BoardView, string> = { board: "Board", list: "List", workflow: "Workflow" };
-const VIEW: Record<string, "list" | "workflow" | undefined> = {
+const TAB: Record<BoardView, string> = {
+  board: "Board",
+  list: "List",
+  workflow: "Workflow",
+  settings: "Settings",
+};
+const VIEW: Record<string, "list" | "workflow" | "settings" | undefined> = {
   List: "list",
   Workflow: "workflow",
+  Settings: "settings",
 };
+/** The tabs that show items: an item panel stays open only on these. */
+const withItems = (view: BoardView) => view === "board" || view === "list";
 
 export function ProjectPage({
   orgId,
@@ -93,7 +102,7 @@ export function ProjectPage({
     <main className="flex min-w-0 flex-1 flex-col" data-testid="project-page">
       <PageHeader
         title={project?.name ?? ""}
-        tabs={["Board", "List", "Workflow"]}
+        tabs={["Board", "List", "Workflow", "Settings"]}
         tab={TAB[view]}
         onTab={(t) =>
           void navigate({
@@ -102,7 +111,7 @@ export function ProjectPage({
             search: (s) => ({
               ...s,
               view: VIEW[t],
-              item: t === "Workflow" ? undefined : s.item,
+              item: t === "Workflow" || t === "Settings" ? undefined : s.item,
             }),
           })
         }
@@ -112,6 +121,12 @@ export function ProjectPage({
             <WorkflowIcon />
             {workflow.data.workflow.name}
             {sharedBy > 1 && <span className="text-ink-faint">· used by {sharedBy} projects</span>}
+          </Pill>
+        )}
+        {project?.repo && (
+          <Pill data-testid="project-repo" title="The project's repository">
+            <FolderGit2Icon />
+            {project.repo.owner}/{project.repo.name}
           </Pill>
         )}
         {view === "workflow" && (
@@ -143,7 +158,15 @@ export function ProjectPage({
           <PlusIcon />
         </Button>
       </PageHeader>
-      {view === "workflow" ? (
+      {view === "settings" ? (
+        project ? (
+          <ProjectSettings orgId={orgId} project={project} />
+        ) : projects.error ? (
+          <p className="p-6 text-bad">Couldn't load the project. {projects.error.message}</p>
+        ) : (
+          <BoardSkeleton />
+        )
+      ) : view === "workflow" ? (
         project && workflow.data ? (
           <WorkflowEditor
             key={workflow.data.id}
@@ -173,9 +196,7 @@ export function ProjectPage({
       ) : (
         <Board board={board.data} project={project} names={names} me={me} selected={itemId} />
       )}
-      {itemId && view !== "workflow" && (
-        <ItemPanel orgId={orgId} itemId={itemId} project={project} />
-      )}
+      {itemId && withItems(view) && <ItemPanel orgId={orgId} itemId={itemId} project={project} />}
       <NewItemDialog
         orgId={orgId}
         projectId={projectId}

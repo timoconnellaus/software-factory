@@ -58,10 +58,37 @@ export interface FlowProject {
   key: string;
   workflowId: string;
   nextNumber: number;
+  /**
+   * The GitHub repository its runs work in, or null. Optional: an engine before it sends none.
+   */
+  repo?: FlowRepo | null;
   /** Its items not yet in the workflow's last status (the server is adding it). */
   openCount?: number;
   createdAt: string;
 }
+
+/** A project's repository: where its runs check out and push the item's branch. */
+export interface FlowRepo {
+  owner: string;
+  name: string;
+  defaultBranch: string;
+}
+
+/** A repository the org's GitHub connection reaches (`flow.github.repos`). */
+export interface FlowGithubRepo extends FlowRepo {
+  installationId: string;
+}
+
+/** `flow.github.repos`: whether the org has a GitHub connection, and what it reaches. */
+export interface FlowGithubRepos {
+  connected: boolean;
+  /** The GitHub account it is connected as, when connected. */
+  account: string | null;
+  repos: FlowGithubRepo[];
+}
+
+/** "acme/api". */
+export const repoName = (repo: Pick<FlowRepo, "owner" | "name">) => `${repo.owner}/${repo.name}`;
 
 export interface FlowAgent {
   id: string;
@@ -165,6 +192,14 @@ export interface FlowOpMap extends FlowEditOpMap, FlowAutoOpMap, FlowChatOpMap {
     input: Org & { name: string; key: string; workflowId: string };
     output: FlowProject;
   };
+  "flow.project.get": { input: Org & { projectId: string }; output: FlowProject };
+  "flow.project.setRepository": {
+    input:
+      | (Org & { projectId: string; owner: string; name: string })
+      | (Org & { projectId: string; clear: true });
+    output: FlowProject;
+  };
+  "flow.github.repos": { input: Org; output: FlowGithubRepos };
   "flow.workflow.list": { input: Org; output: { workflows: FlowWorkflow[] } };
   "flow.workflow.get": { input: Org & { workflowId: string }; output: FlowWorkflow };
   "flow.agent.list": { input: Org; output: { agents: FlowAgent[] } };

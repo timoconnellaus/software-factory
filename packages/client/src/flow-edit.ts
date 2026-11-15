@@ -53,6 +53,10 @@ export interface FlowGateway {
   auth: FlowGatewayAuth;
   /** A secret is saved. It is never sent back. */
   hasSecret: boolean;
+  /** Built in (the org's GitHub connection): not a row, so it can't be changed or removed. */
+  builtIn?: boolean;
+  /** What a built-in gateway is, in words ("GitHub, connected as acme"). */
+  description?: string;
 }
 
 /** A workflow refused: each problem names the status it is about, or none. */

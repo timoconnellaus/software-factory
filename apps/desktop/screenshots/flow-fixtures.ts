@@ -6,6 +6,7 @@
 import type {
   FlowActor,
   FlowAgent,
+  FlowGithubRepo,
   FlowInboxAllItem,
   FlowItem,
   FlowOpMap,
@@ -122,6 +123,7 @@ const PROJECTS: FlowProject[] = [
     key: "API",
     workflowId: "fwf_ship",
     nextNumber: 13,
+    repo: { owner: "acme", name: "api", defaultBranch: "main" },
     createdAt: ago(9000),
   },
   {
@@ -474,6 +476,24 @@ const PLUGINS: FlowPluginDetail[] = [
   },
 ];
 
+/** What the personal org's GitHub connection reaches; the client org has none. */
+const GITHUB_REPOS: FlowGithubRepo[] = [
+  { owner: "acme", name: "api", defaultBranch: "main", installationId: "4100" },
+  { owner: "acme", name: "launch-site", defaultBranch: "main", installationId: "4100" },
+  { owner: "acme", name: "mobile", defaultBranch: "develop", installationId: "4100" },
+];
+
+/** The built-in `github` gateway an org with a GitHub connection has: listed, never edited. */
+const BUILTIN_GITHUB: FlowGateway = {
+  id: "builtin:github",
+  name: "github",
+  baseUrl: "https://api.github.com/repos/{owner}/{name}",
+  auth: { kind: "bearer" },
+  hasSecret: true,
+  builtIn: true,
+  description: "GitHub, connected as acme",
+};
+
 const GATEWAYS: FlowGateway[] = [
   {
     id: "fgw_github",
@@ -645,7 +665,30 @@ export const FLOW_ANSWERS: FlowAnswers = {
     return { ...found, enabled: input.enabled };
   },
   "flow.plugin.delete": () => ({ ok: true }),
-  "flow.gateway.list": () => ({ gateways: GATEWAYS }),
+  "flow.gateway.list": (input) => ({
+    gateways: input.orgId === FLOW_ORG ? [...GATEWAYS, BUILTIN_GITHUB] : GATEWAYS,
+  }),
+  "flow.github.repos": (input) =>
+    input.orgId === FLOW_ORG
+      ? { connected: true, account: "acme", repos: GITHUB_REPOS }
+      : { connected: false, account: null, repos: [] },
+  "flow.project.get": (input) =>
+    PROJECTS.find((p) => p.id === input.projectId) ?? (PROJECTS[0] as FlowProject),
+  // Not kept: the screens re-read the fixture's projects as they were.
+  "flow.project.setRepository": (input) => {
+    const project = PROJECTS.find((p) => p.id === input.projectId) ?? (PROJECTS[0] as FlowProject);
+    if ("clear" in input) return { ...project, repo: null };
+    const found = GITHUB_REPOS.find((r) => r.owner === input.owner && r.name === input.name);
+    if (!found)
+      throw new Refusal(
+        "not_found",
+        `The org's GitHub connection doesn't reach ${input.owner}/${input.name}.`,
+      );
+    return {
+      ...project,
+      repo: { owner: found.owner, name: found.name, defaultBranch: found.defaultBranch },
+    };
+  },
   "flow.gateway.save": (input) => ({
     id: GATEWAYS.find((g) => g.name === input.name)?.id ?? "fgw_new",
     name: input.name,

@@ -110,7 +110,9 @@ export type ReadOpName =
   | "flow.chat.list"
   | "flow.chat.get"
   // Auto's schedules (flow-auto.ts).
-  | "flow.schedule.list";
+  | "flow.schedule.list"
+  // A project's Settings: the repositories the org's GitHub connection reaches.
+  | "flow.github.repos";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

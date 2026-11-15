@@ -115,6 +115,12 @@ export const ANSWERS: Answers = {
     ],
   }),
   "runner.list": () => ({ runners: RUNNERS }),
+  // A project's Settings, for an org with no GitHub connection: the website's connect flow.
+  "github.connectStart": () => ({
+    url: "https://github.com/apps/software-factory/installations/new?state=fixture",
+    state: "fixture",
+    expiresAt: new Date(now + 15 * 60_000).toISOString(),
+  }),
   // Only the runners' health is read from the old inbox (Team > Runners).
   "inbox.list": () => ({
     gates: [],
