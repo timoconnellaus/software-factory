@@ -402,6 +402,7 @@ export async function runJob<W extends WorkspaceHandle, S extends SessionHandle>
           // A job without a repo has no branch: the hand-back's is empty.
           branch: job.branch ?? "",
           ...(summary ? { summary: summary.slice(0, 20_000) } : {}),
+          ...(error ? { error: error.slice(0, 2_000) } : {}),
           ...(headSha ? { headSha } : {}),
           ...(result !== undefined ? { result } : {}),
         }),
