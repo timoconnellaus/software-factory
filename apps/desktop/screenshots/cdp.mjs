@@ -1,5 +1,5 @@
 // A minimal Chrome DevTools Protocol client over the browser's page websocket, for the screenshot
-// harness (shoot.mjs) and the behaviour tests (behave.mjs).
+// harness (shoot.mjs), the behaviour tests (behave.mjs) and the live harness (live.mjs).
 import { setTimeout as sleep } from "node:timers/promises";
 
 /** A minimal CDP client over the browser's page websocket. */
@@ -16,8 +16,10 @@ export async function connect(port) {
         });
         let id = 0;
         const waiting = new Map();
+        const listeners = new Map();
         ws.onmessage = (m) => {
           const msg = JSON.parse(String(m.data));
+          if (msg.method) for (const l of listeners.get(msg.method) ?? []) l(msg.params);
           const w = waiting.get(msg.id);
           if (w) {
             waiting.delete(msg.id);
@@ -32,6 +34,11 @@ export async function connect(port) {
               waiting.set(n, { resolve, reject });
               ws.send(JSON.stringify({ id: n, method, params }));
             }),
+          /** Every event of one kind (`Runtime.exceptionThrown`), for the live harness's report. */
+          on: (method, listener) => {
+            if (!listeners.has(method)) listeners.set(method, []);
+            listeners.get(method).push(listener);
+          },
           close: () => ws.close(),
         };
       }

@@ -116,6 +116,8 @@ Each rule is checkable in review. Code comments cite them by number, so keep the
 - Tests run in workerd via `@cloudflare/vitest-plugin`, except where they drive the machine or the
   window: `local/*`, `packages/runner-local`, `packages/harness-claude` and `apps/desktop` run on
   Node. Prefer integration tests against real bindings over mocks.
+- To see the desktop app's screens with real data, `node apps/desktop/screenshots/live.mjs shots`
+  (or `run <script>`): read-only unless `--write`, images outside the repo (`apps/desktop/README.md`).
 - TypeScript strict. No `any` without a comment saying why.
 - Generate Worker `Env` types with `pnpm types` (`wrangler types`). Don't hand-write them.
 - `spikes/` is outside the workspace and Biome. Spikes are throwaway.

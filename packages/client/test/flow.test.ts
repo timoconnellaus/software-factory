@@ -8,6 +8,7 @@ import {
   type FlowItem,
   type FlowStatus,
   type FlowTimelineEntry,
+  foldedError,
   type Names,
 } from "../src/flow.ts";
 
@@ -183,5 +184,21 @@ describe("a card's chip", () => {
     expect(chipOf(item({ waiting: { on: "decision" } }), ME)).toBe("needs-you");
     expect(chipOf(item({ waiting: { on: "person", userId: "usr_other" } }), ME)).toBe(null);
     expect(chipOf(item({ error: "boom" }), ME)).toBe("stopped");
+  });
+});
+
+// Found by live.mjs on a real stopped item: its error's paragraph break used the fourth folded line
+// for nothing but the ellipsis.
+describe("foldedError", () => {
+  it("drops blank lines, so four folded lines are four lines of text", () => {
+    const error =
+      "I added the section and committed it.\n\nThe new section sits before Rules.\n  \n\npush: exited 1\nremote: rejected\n";
+    expect(foldedError(error)).toBe(
+      "I added the section and committed it.\nThe new section sits before Rules.\npush: exited 1\nremote: rejected",
+    );
+  });
+
+  it("leaves a one-paragraph error as it is", () => {
+    expect(foldedError("ENOSPC: no space left on device")).toBe("ENOSPC: no space left on device");
   });
 });

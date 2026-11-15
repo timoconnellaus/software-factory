@@ -36,6 +36,37 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/mainview/lib/view-state.ts` | This Mac's view state: tabs and the chosen org. Never sent to the factory. |
 | `screenshots/` | The screenshot harness: the view over a fixture door, shot by Chrome over CDP (`node apps/desktop/screenshots/shoot.mjs --out <dir> [screen ...]`), and the behaviour tests (`behave.mjs`). |
 
+## Looking at real screens (`live.mjs`)
+The screenshot harness and the behaviour tests only ever see fixtures, and the installed app's
+window can't be driven by an agent. `screenshots/live.mjs` serves the same view in headless Chrome
+with the live bridge (`screenshots/live-bridge.ts`): everything about this Mac (the device key, the
+updater, the runner card) is the fixture's, but every operation goes to the real engine as the
+person the `sf` CLI is signed in as (`sf login`; it reads `~/.config/software-factory/cli.json`,
+or `SF_TOKEN` / `SF_URL`). The view posts to the script's own dev server, which forwards to
+`/cli/v1/call` and `/cli/v1/batch` and adds the token there: the token never reaches the browser,
+the output or a file.
+
+```sh
+node apps/desktop/screenshots/live.mjs shots [--out <dir>] [--dark] [route ...]   # PNG of each screen
+node apps/desktop/screenshots/live.mjs run <script.mjs>                            # click through a flow
+```
+
+- `shots` with no routes walks the org: all orgs, the inbox, each project's board, list, workflow
+  and settings, the first items as a panel and a page, the newest run, Chat, Team, Auto, Plugins and
+  Settings. Each screen is shot once it settles (no request in flight, no skeleton; 15 s at most).
+- `run` calls the script's default export with `go(path)`, `click(testIdOrText)`,
+  `type(field, text)`, `press(key)`, `waitForText(text)`, `text(target)`, `shot(name)` and
+  `evaluate(js)`: `export default async ({ go, click, shot }) => { await go("/flow/orgs"); … }`.
+- **Read-only by default**: a call to any operation the engine's listing (`/cli/v1/ops`) doesn't
+  mark `read` is refused before it leaves the script, and reported. `--write` allows writes; this is
+  the owner's real data.
+- For every route it prints console errors, failed requests and failed operations (name and
+  message), and exits 1 if there were any: a screen can render while an operation behind it fails.
+- **The images hold real data and the repo is public**: they go to a new directory in the OS temp
+  dir (printed). `--out` picks another; one inside the repo must be git-ignored. Never commit them.
+- `SF_LIVE_PORT` moves its server off 5781. It's a manual tool (it needs a signed-in CLI and the
+  engine), never a CI job.
+
 ## Releases (M4)
 Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to
 `main` that touches the app or what it bundles; stable is off until the owner locks the `release`

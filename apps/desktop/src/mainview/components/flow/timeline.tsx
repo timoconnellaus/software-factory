@@ -6,6 +6,7 @@ import {
   type Decision,
   type FlowCard,
   type FlowRun,
+  foldedError,
   type TimelineRow,
   when,
 } from "@software-factory/client/flow";
@@ -265,7 +266,7 @@ function Stopped({ error, busy, onRetry }: { error: string; busy: boolean; onRet
         className={cn("mt-0.5 mb-[9px] whitespace-pre-wrap break-words", !all && "line-clamp-4")}
         data-testid="stopped-error"
       >
-        {error}
+        {all ? error : foldedError(error)}
       </p>
       <div className="flex items-center gap-1.5">
         <Button size="md" disabled={busy} onClick={onRetry} data-testid="retry">
