@@ -19,8 +19,8 @@ onTitleBarDoubleClick(document, titleBarDoubleClick);
 const early = window as { __sfEarlyDoubleClick?: number; __sfStopEarlyDoubleClick?: () => void };
 early.__sfStopEarlyDoubleClick?.();
 if (takeEarlyDoubleClick(early, Date.now())) titleBarDoubleClick();
-// The window opens on the new core's shell (spec 70); the old screens are behind its Old factory.
-// Only a fresh window (no hash): a link or a tab that names a place still goes there.
+// The window opens on the new core's shell (spec 70). Only a fresh window (no hash): a link or a
+// tab that names a place still goes there.
 if (location.hash === "") history.replaceState(null, "", "#/flow");
 const { router, queryClient } = makeRouter();
 

@@ -1,20 +1,8 @@
 // The window's keyboard shortcuts (spec 41): one table, matched from a key event, so the shell and
 // the tests agree. None fires while you type in a field, except the ones that make sense there
-// (search, New item, close the tab).
+// (search, close the tab).
 
-export type ShortcutAction =
-  | "search"
-  | "new-item"
-  | "inbox"
-  | "work"
-  | "settings"
-  | "back"
-  | "forward"
-  | "sidebar"
-  | "new-tab"
-  | "close-tab"
-  | "list-next"
-  | "list-prev";
+export type ShortcutAction = "search" | "back" | "forward" | "new-tab" | "close-tab";
 
 export interface KeyLike {
   key: string;
@@ -37,18 +25,10 @@ interface Shortcut {
 
 export const SHORTCUTS: Shortcut[] = [
   { action: "search", key: "k", meta: true, inFields: true, label: "⌘K" },
-  { action: "new-item", key: "n", meta: true, inFields: true, label: "⌘N" },
-  { action: "new-item", key: "n", label: "N" },
-  { action: "inbox", key: "1", meta: true, label: "⌘1" },
-  { action: "work", key: "2", meta: true, label: "⌘2" },
-  { action: "settings", key: ",", meta: true, label: "⌘," },
   { action: "back", key: "[", meta: true, label: "⌘[" },
   { action: "forward", key: "]", meta: true, label: "⌘]" },
-  { action: "sidebar", key: "s", meta: true, ctrl: true, label: "⌃⌘S" },
   { action: "new-tab", key: "t", meta: true, label: "⌘T" },
   { action: "close-tab", key: "w", meta: true, inFields: true, label: "⌘W" },
-  { action: "list-next", key: "ArrowDown", label: "↓" },
-  { action: "list-prev", key: "ArrowUp", label: "↑" },
 ];
 
 export function shortcutLabel(action: ShortcutAction): string {

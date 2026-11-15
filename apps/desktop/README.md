@@ -31,12 +31,11 @@ itself to `~/.hutch` and adds a PATH line to your shell profile the first time.
 | `src/bun/save.ts` | Saving a file the view hands over (a ruleset, an attachment) to ~/Downloads. |
 | `src/shared/decisions.ts` | The gate decisions, which go only through `decide` (Touch ID). |
 | `src/mainview/` | The SPA (TanStack Router, hash history) on `packages/ui`. It holds no token. |
-| `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries, the session from `org.list`, decisions, attachments over the door. |
-| `src/mainview/routes/`, `components/` | The screens (spec 40 M3, restyled for spec 41): Inbox, Work, New work, attach, the work item (Overview, Plan, Runs, Review, Activity), Setup, This Mac. Pure logic is in `packages/client`. |
-| `src/mainview/routes/_app.tsx`, `components/shell-*.tsx` | The window shell (spec 41, ADR 0460): toolbar with tabs and ⌘K, org rail, sidebar, the content panel, status bar, keyboard shortcuts, focus mode. Sections (`_work.tsx`, `_settings.tsx`) are layout routes with their nested list. |
-| `src/mainview/routes/flow*.tsx`, `components/flow/` | The new core's shell and screens (spec 70, `.kim/mockups/board-and-item-panel.html`): the org strip and one sidebar, a project's board and list, the item panel and page with its timeline, on the `flow.*` operations. A fresh window opens here; the old screens are behind Old factory. Inbox, Chat, Team, Auto, Plugins, Settings and All orgs are placeholders, one route file each. `packages/ui` `desktop.css` gives it the mockups' tokens under `data-look="flow"`. |
-| `src/mainview/lib/view-state.ts` | This Mac's view state: tabs, pins, the chosen org, the sidebar, focus. Never sent to the factory. |
-| `screenshots/` | The screenshot harness: the view over a fixture door, shot by Chrome over CDP. `node apps/desktop/screenshots/shoot.mjs --design` writes `docs/screenshots/desktop-shell/`. |
+| `src/mainview/lib/` | `op` / `read` (one `batch` per tick) / `decide`, the queries (`flow-queries.ts` for the new core), the session from `org.list`, Team's wording (`team.ts`). |
+| `src/mainview/routes/_app.tsx`, `components/shell-*.tsx` | The window (spec 41, ADR 0460): the toolbar with tabs and ⌘K above the new core's shell, and the keyboard shortcuts. |
+| `src/mainview/routes/flow*.tsx`, `components/flow/` | The app (spec 70, `.kim/mockups/`): the org strip and one sidebar; a project's board and list, the item panel and page with its timeline; Team (agents, runners, people); Settings (This Mac, Members); All orgs. On the `flow.*` operations; `/` goes here. Inbox, Chat, Auto and Plugins are placeholders, one route file each. `packages/ui` `desktop.css` gives it the mockups' tokens under `data-look="flow"`. |
+| `src/mainview/lib/view-state.ts` | This Mac's view state: tabs and the chosen org. Never sent to the factory. |
+| `screenshots/` | The screenshot harness: the view over a fixture door, shot by Chrome over CDP (`node apps/desktop/screenshots/shoot.mjs --out <dir> [screen ...]`), and the behaviour tests (`behave.mjs`). |
 
 ## Releases (M4)
 Signed, notarized builds come from `.github/workflows/desktop-release.yml`: canary on every merge to

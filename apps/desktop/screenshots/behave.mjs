@@ -105,8 +105,9 @@ function expect(actual, label) {
   };
 }
 
-const checked = (p, label) =>
-  p.evaluate(`document.querySelector('[aria-label="${label}"]')?.getAttribute("data-state")`);
+/** A switch's state ("checked", "unchecked"), by its test id. */
+const checked = (p, testId) =>
+  p.evaluate(`document.querySelector('[data-testid="${testId}"]')?.dataset.state`);
 
 /** The router's own error screen, which must never show (the app's is `app-error`). */
 const ROUTER_ERROR = "document.body.textContent.includes('Something went wrong!')";
@@ -117,18 +118,21 @@ const FLOW_BOARD = "/flow/org_personal/p/fprj_api";
 /** The tests, in order. Each opens its own fresh view. */
 export const TESTS = [
   {
-    name: "flow: a fresh window opens on the new shell, and Old factory reaches the old Inbox",
+    name: "app: a fresh window opens on the new shell, with no way into the old screens",
     async run(p) {
       await p.cdp.send("Page.navigate", { url: "about:blank" });
       await p.cdp.send("Page.navigate", { url: p.base });
       await p.waitFor("document.querySelector('[data-testid=board]')");
       expect(await p.path(), "the window's place").toContain("/flow/org_personal/p/fprj_api");
       expect(await p.exists("[data-testid=status-bar]"), "no status bar").toBeFalsy();
-      await p.click("[data-testid=flow-nav-old-factory]");
-      await p.waitFor("document.querySelector('[data-testid=nav-new-app]')");
-      expect(await p.path(), "the old Inbox").toBe("/");
-      await p.click("[data-testid=nav-new-app]");
-      await p.waitFor("document.querySelector('[data-testid=flow-shell]')");
+      expect(await p.exists("[data-testid=flow-nav-old-factory]"), "no Old factory").toBeFalsy();
+      // The old screens' paths land on the new shell.
+      for (const old of ["/work", "/factory", "/settings/repositories", "/setup", "/work/wi_13"]) {
+        await p.evaluate(`location.hash = '#${old}'`);
+        await sleep(500);
+        expect(await p.evaluate(ROUTER_ERROR), `no router error at ${old}`).toBeFalsy();
+        expect(await p.exists("[data-testid=flow-shell]"), `the shell at ${old}`).toBeTruthy();
+      }
     },
   },
   {
@@ -359,12 +363,12 @@ export const TESTS = [
   {
     name: "sign-in: completing it with a route mounted shows the app, not an error screen",
     async run(p) {
-      await p.open("/work", "?session=out");
+      await p.open(FLOW_BOARD, "?session=out");
       expect(await p.exists("[data-testid=sign-in]"), "the sign-in screen").toBeTruthy();
       expect(await p.evaluate(ROUTER_ERROR), "no router error while signed out").toBeFalsy();
       await p.evaluate("window.__sfSignIn()");
       await p.waitFor("document.querySelector('[data-testid=toolbar]')");
-      await p.waitFor("document.querySelector('[data-testid=work-board], [data-nested-list]')");
+      await p.waitFor("document.querySelector('[data-testid=board]')");
       expect(await p.evaluate(ROUTER_ERROR), "no router error after signing in").toBeFalsy();
       expect(
         await p.exists("[data-testid=app-error]"),
@@ -375,11 +379,11 @@ export const TESTS = [
   {
     name: "sign-in: the token ending mid-session (device replaced) leads to sign-in, then back",
     async run(p) {
-      await p.open("/work");
+      await p.open(FLOW_BOARD);
       await p.waitFor("document.querySelector('[data-testid=toolbar]')");
       await p.evaluate("window.__sfRevoke()");
       // A read refused as signed out on the way, as the old token's next call would be.
-      await p.evaluate("location.hash = '#/settings'");
+      await p.evaluate("location.hash = '#/flow/org_personal/team'");
       await p.waitFor("document.querySelector('[data-testid=sign-in]')");
       await sleep(300);
       expect(await p.evaluate(ROUTER_ERROR), "no router error once signed out").toBeFalsy();
@@ -410,245 +414,98 @@ export const TESTS = [
     },
   },
   {
-    name: "bulk release: every refusal is reported and the refused item stays selected",
+    name: "team: editing an agent's instructions saves them with its name and tools",
     async run(p) {
-      await p.open("/work?view=backlog");
-      await p.click('[aria-label="Select every item"]');
-      await p.click('[data-testid="release-selected"]');
-      await p.waitFor(
-        "(window.__sfCalls ?? []).filter((c) => c.op === 'workItem.release').length === 5",
+      await p.open("/flow/org_personal/team?agent=fagt_lead");
+      await p.waitFor("document.querySelector('[data-testid=agent-instructions]')");
+      await p.focus("[data-testid=agent-instructions]");
+      await p.evaluate(
+        "(() => { const t = document.querySelector('[data-testid=agent-instructions]'); t.setSelectionRange(t.value.length, t.value.length); })()",
       );
-      await p.waitFor("document.querySelector('[data-sonner-toast]') !== null");
-      const toasts = (await p.toasts()).join(" | ");
-      expect(toasts, "the report").toContain("Released 4 items to the factory.");
-      expect(toasts, "the report").toContain("Not released: work item #20 needs a repository");
-      expect(await checked(p, "Select #20"), "#20, refused").toBe("checked");
-      expect(await checked(p, "Select #21"), "#21, released").toBe("unchecked");
+      await p.type(" Keep it short.");
+      await p.waitFor("document.querySelector('[data-testid=save-instructions]')");
+      await p.click("[data-testid=save-instructions]");
+      await sleep(700);
+      const saved = await p.calls("flow.agent.update");
+      expect(saved.length, "one update").toBe(1);
+      expect(saved[0].input.agentId, "this agent").toBe("fagt_lead");
+      expect(saved[0].input.name, "its name kept").toBe("Lead");
+      expect(saved[0].input.instructions, "the new instructions").toContain("Keep it short.");
+      expect(JSON.stringify(saved[0].input.mcp), "its tools kept").toBe("[]");
     },
   },
   {
-    name: "bulk actions: a double click sends one set of calls",
+    name: "team: the Plugin editor switch sends mcp factory, and off sends none",
     async run(p) {
-      await p.open("/work?view=backlog");
-      await p.click('[aria-label="Select #21"]');
-      await p.doubleClick('[data-testid="mark-ready-selected"]');
-      await sleep(600);
-      expect((await p.calls("workItem.move")).length, "moves sent").toBe(1);
-      await p.click('[aria-label="Select #21"]');
-      await p.click('[aria-label="Select #22"]');
-      await p.doubleClick('[data-testid="release-selected"]');
-      await sleep(1200);
-      // One release per selected item, once: a second click would send four.
-      expect((await p.calls("workItem.release")).length, "releases sent").toBe(2);
+      await p.open("/flow/org_personal/team?agent=fagt_qa");
+      await p.waitFor("document.querySelector('[data-testid=plugin-editor]')");
+      expect(await checked(p, "plugin-editor"), "off at first").toBe("unchecked");
+      await p.click("[data-testid=plugin-editor]");
+      await sleep(700);
+      let sent = await p.calls("flow.agent.update");
+      expect(JSON.stringify(sent[0]?.input.mcp), "on").toBe('["factory"]');
+      expect(sent[0]?.input.instructions, "instructions kept").toContain("Check the change");
+      await p.open("/flow/org_personal/team?agent=fagt_backend");
+      await p.waitFor("document.querySelector('[data-testid=plugin-editor]')");
+      expect(await checked(p, "plugin-editor"), "Backend has it").toBe("checked");
+      await p.click("[data-testid=plugin-editor]");
+      await sleep(700);
+      sent = await p.calls("flow.agent.update");
+      expect(JSON.stringify(sent[0]?.input.mcp), "off").toBe("[]");
     },
   },
   {
-    name: "quick add: read-only while adding, and Enter twice adds once",
+    name: "team: New agent makes one with its name and instructions",
     async run(p) {
-      await p.open("/work?view=backlog");
-      await p.focus('[data-testid="quick-add"]');
-      await p.type("One more thing");
-      await p.key("Enter");
-      expect(
-        await p.evaluate("document.querySelector('[data-testid=quick-add]').readOnly"),
-        "read-only while adding",
-      ).toBe(true);
-      await p.key("Enter");
-      await sleep(600);
-      expect((await p.calls("workItem.create")).length, "creates sent").toBe(1);
-      expect(
-        await p.evaluate("document.querySelector('[data-testid=quick-add]').value"),
-        "cleared once added",
-      ).toBe("");
+      await p.open("/flow/org_personal/team");
+      await p.click("[data-testid=new-agent]");
+      await p.waitFor("document.querySelector('#agent-name')");
+      await p.focus("#agent-name");
+      await p.type("Docs");
+      await p.focus("#new-agent-instructions");
+      await p.type("Write the docs.");
+      await p.click("[data-testid=create-agent]");
+      await sleep(700);
+      const made = await p.calls("flow.agent.create");
+      expect(made[0]?.input.name, "name").toBe("Docs");
+      expect(made[0]?.input.instructions, "instructions").toBe("Write the docs.");
+      expect(await p.path(), "shows the new agent").toContain("agent=fagt_new");
     },
   },
   {
-    name: "edit: Esc with unsaved edits asks first, and keeps what was typed",
+    name: "team: Runners and People are tabs; Settings has This Mac and Members",
     async run(p) {
-      await p.open("/work/wi_21");
-      await p.click('[data-testid="edit-item"]');
-      await p.waitFor("document.querySelector('#edit-title') !== null");
-      await p.focus("#edit-title");
-      await p.evaluate("document.querySelector('#edit-title').select()");
-      await p.type("A better title");
-      await p.key("Escape");
-      expect(
-        await p.exists('[data-testid="discard-dialog"]'),
-        "asks before discarding",
-      ).toBeTruthy();
-      // The question opens with an animation; focus moves into it once it has.
-      await sleep(300);
-      await p.key("Escape");
-      await sleep(300);
-      expect(await p.exists('[data-testid="discard-dialog"]'), "the question closes").toBeFalsy();
-      expect(await p.exists('[data-testid="edit-dialog"]'), "the edit stays open").toBeTruthy();
-      expect(
-        await p.evaluate("document.querySelector('#edit-title').value"),
-        "the typed title",
-      ).toBe("A better title");
-      await p.key("Escape");
-      await p.click('[data-testid="discard"]');
-      await sleep(300);
-      expect(await p.exists('[data-testid="edit-dialog"]'), "discarded").toBeFalsy();
+      await p.open("/flow/org_personal/team");
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=section-tabs] [role=tab]')].find((t) => t.textContent === 'Runners').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))",
+      );
+      await p.waitFor("document.querySelector('[data-testid=runner-row]')");
+      expect(await p.path(), "the tab in the URL").toContain("tab=runners");
+      expect(await p.text("[data-testid=runners]"), "plain words").toContain("Takes new work");
+      await p.open("/flow/org_personal/settings");
+      await p.waitFor("document.querySelector('[data-testid=runner-status]')");
+      expect(await p.text("[data-testid=runner-status]"), "the runner").toContain("Running");
+      expect(await p.text("[data-testid=installed]"), "the version").toContain("0.1.41");
+      await p.click("[data-testid=settings-sign-out]");
+      await p.waitFor("document.querySelector('[data-testid=settings-page]')");
+      await p.open("/flow/org_personal/settings?tab=members");
+      await p.waitFor("document.querySelector('[data-testid=member]')");
+      expect(await p.text("[data-testid=members]"), "a real name").toContain("Mia Chen");
     },
   },
   {
-    name: "panel: Esc closes the dialog, then the terminal, then the panel",
+    name: "all orgs: Open on what needs you goes to the item in its org",
     async run(p) {
-      await p.open("/work?view=active&project=prj_factory&item=wi_9&end=1", "?terminal=fixture");
-      await p.waitFor("document.querySelector('[data-testid=panel-body]')");
-      await p.click('[data-testid="item-panel"] [data-testid="cancel"]');
-      await p.waitFor("document.querySelector('[role=dialog]')");
-      await sleep(300);
-      await p.key("Escape");
-      await sleep(300);
-      expect(await p.exists("[role=dialog]"), "the dialog closes").toBeFalsy();
-      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
-      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
-      await p.waitFor("document.querySelector('[data-testid=terminal-dock]')");
-      await p.focus('[data-testid="item-panel"]');
-      await p.key("Escape");
-      await sleep(200);
-      expect(await p.exists('[data-testid="terminal-dock"]'), "the terminal closes").toBeFalsy();
-      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
-      await p.key("Escape");
-      await sleep(300);
-      expect(await p.panelOpen(), "then the panel closes").toBeFalsy();
-    },
-  },
-  {
-    name: "panel: Esc while typing keeps the panel and the typed text",
-    async run(p) {
-      await p.open("/work?view=active&project=prj_factory&item=wi_12&itemTab=plan");
-      await p.waitFor("document.querySelector('[data-testid=chat-strip]')", 5000);
-      await p.click('[data-testid="chat-strip"]');
-      await p.waitFor("document.querySelector('[data-testid=chat-input]')");
-      await p.focus('[data-testid="chat-input"]');
-      await p.type("half a thought");
-      await p.key("Escape");
-      await sleep(200);
-      expect(await p.panelOpen(), "the panel stays").toBeTruthy();
-      expect(
-        await p.evaluate("document.querySelector('[data-testid=chat-input]').value"),
-        "the typed text",
-      ).toContain("half a thought");
-    },
-  },
-  {
-    name: "panel: deep link, reload, back and forward; closing doesn't leave a way back into it",
-    async run(p) {
-      await p.open("/work?view=active&project=prj_factory&item=wi_9");
-      expect(await p.panelOpen(), "a deep link opens it").toBeTruthy();
-      await p.evaluate("location.reload()");
-      await sleep(1500);
-      expect(await p.panelOpen(), "a reload keeps it").toBeTruthy();
-      await p.open("/work?view=active&project=prj_factory");
-      await p.click('[data-testid="card-wi_9"]');
+      await p.open("/flow/org_personal/work");
+      await p.click("[data-testid=all-orgs]");
+      await p.waitFor("document.querySelector('[data-testid=need-row]')");
+      expect(await p.text("[data-testid=needs-you]"), "across orgs").toContain("Client");
+      await p.evaluate(
+        "[...document.querySelectorAll('[data-testid=need-row]')].find((r) => r.textContent.includes('Invoice footer')).querySelector('[data-testid=open-item]').click()",
+      );
       await p.waitFor("document.querySelector('[data-testid=item-panel]')");
-      expect(await p.path(), "the URL names it").toContain("item=wi_9");
-      await p.evaluate("history.back()");
-      await sleep(500);
-      expect(await p.panelOpen(), "back closes it").toBeFalsy();
-      await p.evaluate("history.forward()");
-      await sleep(500);
-      expect(await p.panelOpen(), "forward opens it again").toBeTruthy();
-      await p.click('[data-testid="panel-close"]');
-      await sleep(400);
-      expect(await p.panelOpen(), "closed").toBeFalsy();
-      await p.evaluate("history.back()");
-      await sleep(500);
-      expect(await p.path(), "back after closing").not.toContain("item=wi_9");
-    },
-  },
-  {
-    name: "panel: opening moves focus into it, Tab stays inside, closing returns it to the card",
-    async run(p) {
-      await p.open("/work?view=active&project=prj_factory");
-      await p.focus('[data-testid="card-wi_9"]');
-      await p.key("Enter");
-      await p.waitFor("document.querySelector('[data-testid=panel-body]')");
-      await sleep(200);
-      expect(await p.inPanel(), "focus moved in").toBeTruthy();
-      for (let i = 0; i < 40; i++) await p.key("Tab");
-      expect(await p.inPanel(), "Tab stays inside").toBeTruthy();
-      await p.click('[data-testid="panel-close"]');
-      await sleep(400);
-      expect(await p.focused(), "back on the card").toBe("card-wi_9");
-      expect(
-        await p.evaluate("document.querySelectorAll('main').length"),
-        "one main landmark with it open",
-      ).toBe(1);
-    },
-  },
-  {
-    name: "panel: closing it, or showing another item, releases the terminal's socket",
-    async run(p) {
-      await p.open("/work?view=active&project=prj_factory&item=wi_9&end=1", "?terminal=fixture");
-      await p.waitFor(
-        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
-      );
-      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
-      await p.waitFor("(window.__sfCalls ?? []).some((c) => c.op === 'terminal.open')");
-      await sleep(300);
-      await p.click('[data-testid="panel-close"]');
-      await sleep(400);
-      const [opened] = await p.calls("terminal.open");
-      const closed = await p.calls("terminal.close");
-      expect(closed.length, "closed once").toBe(1);
-      expect(closed[0]?.input.id, "the same socket").toBe(opened?.input.id);
-      // Another item in the panel: the first one's terminal goes.
-      await p.click('[data-testid="card-wi_9"]');
-      await p.waitFor(
-        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
-      );
-      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
-      await p.waitFor(
-        "(window.__sfCalls ?? []).filter((c) => c.op === 'terminal.open').length === 2",
-      );
-      await sleep(300);
-      await p.click('[data-testid="card-wi_26"]');
-      await sleep(400);
-      expect((await p.calls("terminal.close")).length, "released on item change").toBe(2);
-    },
-  },
-  {
-    name: "panel: Expand keeps the tab and an open terminal",
-    async run(p) {
-      await p.open(
-        "/work?view=active&project=prj_factory&item=wi_9&itemTab=runs&end=1",
-        "?terminal=fixture",
-      );
-      await p.waitFor(
-        "document.querySelector('[data-testid=item-panel] [data-testid=open-terminal]')",
-      );
-      await p.click('[data-testid="item-panel"] [data-testid="open-terminal"]');
-      await p.waitFor("document.querySelector('[data-testid=terminal-dock]')");
-      await p.click('[data-testid="panel-expand"]');
-      await sleep(800);
-      expect(await p.path(), "the item's page").toContain("/work/wi_9");
-      expect(await p.path(), "the same tab").toContain("tab=runs");
-      expect(
-        await p.exists('[data-testid="terminal-dock"]'),
-        "the terminal stays open",
-      ).toBeTruthy();
-    },
-  },
-  {
-    name: "panel: at 1200 wide it leaves the board readable, and resizes from its left edge",
-    async run(p) {
-      await p.open("/work?view=active&project=prj_factory&item=wi_9");
-      const w = Number(
-        await p.evaluate("document.querySelector('[data-testid=item-panel]').dataset.width"),
-      );
-      expect(w <= 480 && w >= 360, `width ${w} between 360 and half the content area`).toBeTruthy();
-      await p.focus('[data-testid="panel-resize"]');
-      await p.key("ArrowRight");
-      const narrower = Number(
-        await p.evaluate("document.querySelector('[data-testid=item-panel]').dataset.width"),
-      );
-      expect(narrower < w, `narrower after ArrowRight (${narrower})`).toBeTruthy();
-      expect(await p.evaluate("localStorage.getItem('sf.itemPanel.width')"), "remembered").toBe(
-        String(narrower),
+      expect(await p.path(), "the item on its board").toBe(
+        "/flow/org_client/p/fprj_site?item=fitm_footer",
       );
     },
   },

@@ -7,7 +7,7 @@ import { Button } from "@software-factory/ui/components/button";
 import { Card } from "@software-factory/ui/components/card";
 import { Toaster } from "@software-factory/ui/components/sonner";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
+import { createRootRouteWithContext, Navigate, Outlet, useRouter } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../shared/rpc.ts";
 import { bun, onInbox, onNavigate } from "../bridge.ts";
@@ -27,25 +27,34 @@ import {
   shownFor,
 } from "../lib/account.ts";
 import { useDesktopSession, useUpdateStatus } from "../lib/desktop-session.ts";
-import { closeAllTerminals } from "../lib/open-terminals.ts";
 import { DRAG } from "../lib/title-bar.ts";
 
 export const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Root,
   errorComponent: AppError,
+  // A place that isn't in the app (an old screen's path, a stale tab): the app's start.
+  notFoundComponent: () => <Navigate to="/" replace />,
 });
 
-/** An `sf://` link's path as a route in the app (ADR 0382's trampoline sends these). */
+const ID = "[A-Za-z0-9_-]{1,80}";
+/** The new core's places an `sf://` link may name: All orgs, an org's section, a board, an item. */
+const FLOW_LINK = new RegExp(
+  `^/flow(/orgs|/${ID}(/(inbox|work|chat|team|auto|plugins|settings)|/p/${ID}(/i/${ID})?)?)?$`,
+);
+
+/**
+ * An `sf://` link's path as a route in the app (ADR 0382's trampoline sends these). A place in the
+ * new core goes there, an item on its board as `?item=`; anything else (the old core's work items,
+ * inbox and settings, which have no screens now) opens the app's start.
+ */
 export function routeForLink(path: string): string {
   const [p = "/", search = ""] = path.split("?");
   const clean = `/${p.replace(/^\/+|\/+$/g, "")}`;
-  const q = search ? `?${search}` : "";
-  if (clean === "/inbox" || clean === "/") return `/${q}`;
-  if (/^\/work\/[A-Za-z0-9_-]{1,80}(\/review)?$/.test(clean)) return clean;
-  if (clean === "/attach") return `/attach${q}`;
-  if (clean === "/setup" || clean === "/new" || clean === "/work" || clean === "/settings")
-    return clean;
-  return "/";
+  if (!FLOW_LINK.test(clean)) return "/";
+  const item = new URLSearchParams(search).get("item");
+  if (/^\/flow\/[^/]+\/p\/[^/]+$/.test(clean) && item && new RegExp(`^${ID}$`).test(item))
+    return `${clean}?item=${item}`;
+  return clean;
 }
 
 function Root() {
@@ -61,16 +70,9 @@ function Root() {
       }),
     [router, client],
   );
-  // The main process's inbox count changes on a live push or a poll: refresh what shows gates,
-  // and the Work lists and board, which the same events move (a gate opened, an item shaped).
-  useEffect(
-    () =>
-      onInbox(() => {
-        void client.invalidateQueries({ queryKey: ["inbox"] });
-        void client.invalidateQueries({ queryKey: ["work"] });
-      }),
-    [client],
-  );
+  // The main process hears of a change on a live push or a poll: what the screens show is read
+  // again (they also poll while the window shows them).
+  useEffect(() => onInbox(() => void client.invalidateQueries({ queryKey: ["flow"] })), [client]);
   // Signing in or out, or as another account, changes everything the cache holds.
   const shown = useSignedInRoutes(accountKey(session));
   // The main process hasn't answered yet: the window's shell, as index.html drew it.
@@ -140,10 +142,9 @@ export function useSignedInRoutes(account: string | null): number | null {
     const login = accountLogin(account);
     if (login !== null) claimAccountLocal(login);
     if (reset === null) return;
-    // The update status is the app's, not the account's: it survives (ADR 0393). The cache and
-    // the open terminals go with every change, signing out included.
+    // The update status is the app's, not the account's: it survives (ADR 0393). The cache goes
+    // with every change, signing out included.
     clearAccountData(client);
-    closeAllTerminals();
     router.history.replace("/");
     void router
       .invalidate()

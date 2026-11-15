@@ -2,14 +2,7 @@
 // operations are answered from fixtures.ts instead of the main process. vite.config.ts swaps it in.
 // It also draws the traffic lights macOS would draw over the toolbar, so shots match the window.
 import type { OpName } from "@software-factory/client/ops";
-import type {
-  AppRPC,
-  CallResult,
-  RunnerState,
-  Session,
-  TerminalEvent,
-  UpdateStatus,
-} from "../src/shared/rpc.ts";
+import type { AppRPC, CallResult, RunnerState, Session, UpdateStatus } from "../src/shared/rpc.ts";
 import { ANSWERS, Refusal } from "./fixtures.ts";
 
 /**
@@ -100,9 +93,8 @@ Object.assign(window, {
   },
 });
 const SIGNED_OUT: CallResult = { ok: false, code: "unauthenticated", error: "signed out" };
-// The open item's merge (#13), worded as the engine writes it (describeDecision).
-const TOUCH_ID_SUMMARY =
-  'Merge 3f2a91c into main of example/software-factory: "Guard the tests in verify"';
+// A decision waiting for Touch ID, worded as the engine writes it (describeDecision).
+const TOUCH_ID_SUMMARY = 'Approve "Add rate limiting to the public API" in API Platform';
 const runner: RunnerState = { status: "running", pid: 4242, restarts: 0, lastLine: null };
 
 /**
@@ -260,17 +252,6 @@ export const bun = {
   saveDownload: async () => ({ ok: true, path: null }),
   updateStatus: async () => updateStatus(),
   updateAction: async () => updateStatus(),
-  // A run's terminal (spec 42): the harness's server bridges a real tmux pane it was given
-  // (terminal.mjs); without one, opening it fails as an unreachable terminal does.
-  terminalOpen: async (p: { id: string; workItemId: string; runId: string }) => {
-    if (FIXTURE_TERMINAL) return fixtureOpen(p);
-    await subscribed();
-    return post<{ ok: boolean; error: string | null }>("open", { ...p, mode: TERMINAL_MODE });
-  },
-  terminalSend: (p: { id: string; data: string }) =>
-    FIXTURE_TERMINAL ? Promise.resolve({ ok: true }) : post<{ ok: boolean }>("send", p),
-  terminalClose: (p: { id: string }) =>
-    FIXTURE_TERMINAL ? fixtureClose(p) : post<{ ok: boolean }>("close", p),
   titleBarDoubleClick: async () => {
     const call = await mainProcess();
     return call
@@ -281,75 +262,7 @@ export const bun = {
 
 const none = () => () => undefined;
 
-const TERMINAL_MODE = new URLSearchParams(location.search).get("terminal") ?? "type";
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`/__terminal/${path}`, { method: "POST", body: JSON.stringify(body) });
-  return (await res.json()) as T;
-}
-const terminalListeners = new Set<(e: TerminalEvent) => void>();
-
-/**
- * `?terminal=fixture`: a made-up session instead of a real tmux pane, so screenshots never show
- * the Mac's own shell, and the behaviour tests can see a terminal open and its socket released
- * (each open and close is recorded with the writes).
- */
-const FIXTURE_TERMINAL = TERMINAL_MODE === "fixture";
-const FIXTURE_SCREEN = [
-  "\x1b[32mrunner\x1b[0m job-9 % claude",
-  "",
-  "\x1b[1m> Task 2 of 4: record suppressions on the review packet\x1b[0m",
-  "",
-  "\x1b[34m●\x1b[0m Read(packages/core/src/verify/suppressions.ts)",
-  "\x1b[34m●\x1b[0m Edit(packages/core/test/packet.test.ts)",
-  "\x1b[34m●\x1b[0m Bash(pnpm test --filter core)",
-  "  ⎿  \x1b[31m1 failing\x1b[0m: the packet shows the new section",
-  "",
-  "\x1b[34m●\x1b[0m The fixture still has the old section name. Fixing it.",
-  "",
-  "\x1b[2m  ⏵⏵ accept edits on · esc to interrupt\x1b[0m",
-].join("\r\n");
-const emitTerminal = (e: TerminalEvent) => {
-  for (const f of terminalListeners) f(e);
-};
-function fixtureOpen(p: { id: string; workItemId: string; runId: string }) {
-  calls.push({ op: "terminal.open", input: p });
-  setTimeout(() => {
-    emitTerminal({ id: p.id, kind: "open" });
-    emitTerminal({
-      id: p.id,
-      kind: "text",
-      data: JSON.stringify({ t: "hello", mode: "type", viewers: 1, host: true }),
-    });
-    const bytes = new TextEncoder().encode(FIXTURE_SCREEN);
-    emitTerminal({ id: p.id, kind: "bytes", base64: btoa(String.fromCharCode(...bytes)) });
-  }, 50);
-  return Promise.resolve({ ok: true, error: null });
-}
-function fixtureClose(p: { id: string }) {
-  calls.push({ op: "terminal.close", input: p });
-  setTimeout(() => emitTerminal({ id: p.id, kind: "close", code: 1000, reason: "" }), 0);
-  return Promise.resolve({ ok: true });
-}
-let events: Promise<void> | null = null;
-/** The harness's event stream, open before a terminal is (so its first frames aren't missed). */
-function subscribed(): Promise<void> {
-  events ??= new Promise((ready) => {
-    const source = new EventSource("/__terminal/events");
-    source.onopen = () => ready();
-    source.onmessage = (m) => {
-      const e = JSON.parse(String(m.data)) as TerminalEvent;
-      for (const f of terminalListeners) f(e);
-    };
-  });
-  return events;
-}
-export const onTerminal = (l: (e: TerminalEvent) => void) => {
-  void subscribed();
-  terminalListeners.add(l);
-  return () => {
-    terminalListeners.delete(l);
-  };
-};
+export const onTerminal = none;
 export const onSession = (l: (s: Session) => void) => {
   sessionListeners.add(l);
   return () => {

@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { SignedOutWait } from "../src/mainview/components/app-error.tsx";
-import { openedDiffKey } from "../src/mainview/components/review-parts.tsx";
 import {
   accountKey,
   accountLogin,
@@ -14,11 +13,10 @@ import {
   gateAccount,
   gateLoaded,
   initialGate,
+  OPENED_DIFF_PREFIX,
   type RoutesGate,
   shownFor,
 } from "../src/mainview/lib/account.ts";
-import { openTerminal, terminalFor } from "../src/mainview/lib/open-terminals.ts";
-import type { TerminalRun } from "../src/mainview/lib/terminal.ts";
 import { DRAG } from "../src/mainview/lib/title-bar.ts";
 import {
   getViewState,
@@ -28,6 +26,10 @@ import {
 } from "../src/mainview/lib/view-state.ts";
 
 vi.mock("../src/mainview/bridge.ts", () => import("./bridge-stub.ts"));
+
+/** A flag the old review screen kept per account in sessionStorage: still forgotten with it. */
+const openedDiffKey = (userId: string, itemId: string, sha: string) =>
+  `${OPENED_DIFF_PREFIX}${userId}:${itemId}:${sha}`;
 
 describe("accountKey", () => {
   it("changes with the login and the device, not only with signed in", () => {
@@ -148,9 +150,8 @@ describe("switching accounts while signed in", () => {
     expect(shownFor(gateLoaded(back.gate, 2), A)).toBe(2);
   });
 
-  it("forgets this Mac's state for the previous account: tabs, pins, org, drafts, terminals", () => {
+  it("forgets this Mac's state for the previous account: tabs, pins, org, drafts", () => {
     updateViewState((s) => ({ ...togglePin(s, "wi_owner"), orgId: "org_owner" }));
-    openTerminal("wi_owner", {} as TerminalRun);
     const storage = memoryStorage({
       [VIEW_STATE_KEY]: JSON.stringify({ pins: ["wi_owner"] }),
       "sf-canvas-wi_owner": "{}",
@@ -167,7 +168,6 @@ describe("switching accounts while signed in", () => {
     expect(session.keys()).toEqual(["sf-other"]);
     expect(getViewState()).toMatchObject({ pins: [], orgId: undefined });
     expect(getViewState().tabs.map((t) => t.path)).toEqual(["/"]);
-    expect(terminalFor("wi_owner")).toBeNull();
   });
 });
 
@@ -223,9 +223,5 @@ describe("this Mac's account state belongs to one login", () => {
     expect(storage.keys()).toEqual(["sf-account-owner"]);
     expect(session.keys()).toEqual([]);
     expect(getViewState().pins).toEqual([]);
-  });
-
-  it("an approval reads only its own account's opened-diff flag", () => {
-    expect(openedDiffKey("u_a", "wi_1", "abc")).not.toBe(openedDiffKey("u_b", "wi_1", "abc"));
   });
 });

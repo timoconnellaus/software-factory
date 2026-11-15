@@ -1,5 +1,5 @@
 // The new core's shell (.kim/mockups/board-and-item-panel.html, sidebar-c): the org strip, one
-// sidebar that never changes (the org's sections, then its projects, then Old factory and Settings),
+// sidebar that never changes (the org's sections, then its projects, then Settings),
 // and the content panel the pages fill. The window's toolbar (tabs, ⌘K) stays above it; the old
 // shell's status bar does not show here.
 import type { FlowProject } from "@software-factory/client/flow";
@@ -24,7 +24,6 @@ import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  FactoryIcon,
   FolderIcon,
   InboxIcon,
   LayoutGridIcon,
@@ -47,7 +46,7 @@ import { OpError, op, submitKey } from "../../lib/op.ts";
 import { orgInitial } from "../../lib/scope.ts";
 import { useSession } from "../../lib/session.ts";
 import { chooseOrg, updateViewState } from "../../lib/view-state.ts";
-import { AccountMenu } from "../shell-sidebar.tsx";
+import { AccountMenu } from "./account-menu.tsx";
 
 /** The org the new shell shows: the path's, else the chosen one, else Personal, else the first. */
 export function useFlowOrg(): string | null {
@@ -229,10 +228,6 @@ function FlowSidebar({ orgId }: { orgId: string }) {
         <ProjectLink key={p.id} orgId={orgId} project={p} current={p.id === projectId} />
       ))}
       <span className="mt-auto" />
-      <Link to="/" className={rowClass} data-testid="flow-nav-old-factory">
-        <FactoryIcon />
-        Old factory
-      </Link>
       <Link
         to="/flow/$orgId/settings"
         params={{ orgId }}
@@ -260,7 +255,8 @@ function ProjectLink({
   project: FlowProject;
   current: boolean;
 }) {
-  const count = project.nextNumber - 1;
+  // Its open items once the server counts them; until then, how many it has had.
+  const count = project.openCount ?? project.nextNumber - 1;
   return (
     <Link
       to="/flow/$orgId/p/$projectId"

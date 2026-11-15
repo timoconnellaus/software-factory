@@ -1,19 +1,14 @@
-// Search (⌘K, spec 41): the places in the app and the work items the app has loaded, by number or
-// title. ↑ ↓ move, Enter goes, Esc closes. It reads nothing new: the shell already loaded the lists.
+// Search (⌘K, spec 41): the places in the org on screen (its sections and projects) and All orgs.
+// ↑ ↓ move, Enter goes, Esc closes. It reads nothing new: the sidebar already loaded the projects.
 import { Dialog, DialogContent, DialogTitle } from "@software-factory/ui/components/dialog";
 import { cn } from "@software-factory/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { ArrowRightIcon, SearchIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { matchItems, PLACE_COMMANDS } from "../lib/places.ts";
-import { workListsQuery } from "../lib/queries.ts";
-import { useSession } from "../lib/session.ts";
-import { useOrgScope } from "./shell-sidebar.tsx";
-
-type Row =
-  | { kind: "place"; id: string; label: string; to: string; search?: Record<string, string> }
-  | { kind: "item"; id: string; label: string; number: number; status: string };
+import { flowProjectsQuery } from "../lib/flow-queries.ts";
+import { matchPlaces, type Place, placesIn } from "../lib/places.ts";
+import { useFlowOrg } from "./flow/shell.tsx";
 
 export function CommandPalette({
   open,
@@ -22,10 +17,9 @@ export function CommandPalette({
   open: boolean;
   onOpenChange: (o: boolean) => void;
 }) {
-  const session = useSession();
-  const orgId = useOrgScope();
-  const navigate = useNavigate();
-  const items = useQuery(workListsQuery(session.orgs.map((o) => o.id)));
+  const orgId = useFlowOrg();
+  const router = useRouter();
+  const projects = useQuery({ ...flowProjectsQuery(orgId ?? ""), enabled: !!orgId && open });
   const [text, setText] = useState("");
   const [at, setAt] = useState(0);
   useEffect(() => {
@@ -35,27 +29,15 @@ export function CommandPalette({
     }
   }, [open]);
 
-  const rows = useMemo<Row[]>(() => {
-    const q = text.trim().toLowerCase();
-    const places: Row[] = PLACE_COMMANDS.filter(
-      (p) => !q || p.label.toLowerCase().includes(q) || p.keywords.includes(q),
-    ).map((p) => ({ kind: "place", ...p }));
-    const scoped = (items.data ?? []).filter((i) => orgId === null || i.orgId === orgId);
-    const found: Row[] = matchItems(scoped, text).map((i) => ({
-      kind: "item",
-      id: i.id,
-      label: i.title,
-      number: i.number,
-      status: i.status,
-    }));
-    return /^#?\d+$/.test(q) ? [...found, ...places] : [...places, ...found];
-  }, [text, items.data, orgId]);
+  const rows = useMemo<Place[]>(
+    () => (orgId ? matchPlaces(placesIn(orgId, projects.data?.projects ?? []), text) : []),
+    [text, projects.data, orgId],
+  );
 
-  function go(row: Row | undefined) {
+  function go(row: Place | undefined) {
     if (!row) return;
     onOpenChange(false);
-    if (row.kind === "item") void navigate({ to: "/work/$id", params: { id: row.id } });
-    else void navigate({ to: row.to, search: row.search ?? {} });
+    router.history.push(row.to);
   }
 
   return (
@@ -90,20 +72,18 @@ export function CommandPalette({
                 go(rows[at]);
               }
             }}
-            placeholder="Search work items by number or title, or go to a place"
+            placeholder="Go to a section or a project"
             className="h-full flex-1 bg-transparent text-[14px] outline-none placeholder:text-ink-muted"
             data-testid="palette-input"
           />
         </div>
         <div id="palette-results" role="listbox" className="max-h-[360px] overflow-y-auto p-1.5">
           {rows.length === 0 && (
-            <div className="px-3 py-6 text-center text-ink-muted">
-              Nothing loaded matches. The list covers each org's 100 most recent work items.
-            </div>
+            <div className="px-3 py-6 text-center text-ink-muted">Nothing matches.</div>
           )}
           {rows.map((r, i) => (
             <div
-              key={`${r.kind}-${r.id}`}
+              key={r.id}
               role="option"
               tabIndex={-1}
               aria-selected={i === at}
@@ -116,20 +96,8 @@ export function CommandPalette({
               )}
               data-testid="palette-row"
             >
-              {r.kind === "item" ? (
-                <>
-                  <span className="w-10 flex-none font-mono text-[12px] text-ink-muted">
-                    #{r.number}
-                  </span>
-                  <span className="truncate">{r.label}</span>
-                  <span className="ml-auto text-ink-muted text-xs">{r.status}</span>
-                </>
-              ) : (
-                <>
-                  <ArrowRightIcon className="size-3.5 flex-none text-ink-muted" />
-                  <span className="truncate">{r.label}</span>
-                </>
-              )}
+              <ArrowRightIcon className="size-3.5 flex-none text-ink-muted" />
+              <span className="truncate">{r.label}</span>
             </div>
           ))}
         </div>

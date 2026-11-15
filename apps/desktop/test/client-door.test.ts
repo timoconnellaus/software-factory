@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { inputDigest } from "../src/bun/digest.ts";
 import { Door, type Fetch } from "../src/bun/door.ts";
 import { operationHandlers } from "../src/bun/operations.ts";
-import { run } from "../src/mainview/lib/decisions.tsx";
 import { connect, decide, OpError, op, read } from "../src/mainview/lib/op.ts";
 
 interface Seen {
@@ -95,9 +94,11 @@ describe("the screens through the client door", () => {
   });
 
   it("approving a merge asks for Touch ID once and sends the proof with the call", async () => {
-    expect(
-      await run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
-    ).toBe("Merging");
+    await decide(
+      "review.merge",
+      { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD },
+      { idempotencyKey: "desktop:merge-1" },
+    );
     // The commit is in the signed input, so the proof is for that commit only.
     const input = { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD };
     expect(prompts).toEqual([`n0nce\nreview.merge\n${await inputDigest(input)}\n${SUMMARY}`]);
@@ -110,8 +111,7 @@ describe("the screens through the client door", () => {
   });
 
   it("a push between opening the gate and approving is refused, and says so", async () => {
-    const refused = run({
-      kind: "review.merge",
+    const refused = decide("review.merge", {
       workItemId: "wi_1",
       openedFullDiff: true,
       headSha: PUSHED_OVER,
@@ -122,8 +122,7 @@ describe("the screens through the client door", () => {
   });
 
   it("send back goes through Touch ID too, with its note", async () => {
-    await run({
-      kind: "review.sendBack",
+    await decide("review.sendBack", {
       workItemId: "wi_1",
       note: "Tests fail",
       openedFullDiff: false,
@@ -140,7 +139,7 @@ describe("the screens through the client door", () => {
   it("a cancelled Touch ID decides nothing", async () => {
     touchId = "cancel";
     await expect(
-      run({ kind: "review.merge", workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
+      decide("review.merge", { workItemId: "wi_1", openedFullDiff: true, headSha: HEAD }),
     ).rejects.toMatchObject({ code: "cancelled" });
     expect(seen.map((s) => s.body.op)).toEqual(["presence.challenge"]);
   });
