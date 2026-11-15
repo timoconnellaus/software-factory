@@ -75,6 +75,24 @@ describe("run settings", () => {
     expect(s.sandbox.autoAllowBashIfSandboxed).toBe(false);
   });
 
+  it("lets a flow job read and write only in its own directory, with no git, in dontAsk", () => {
+    const s = runSettings({ stage: "flow" }, { worktree: "/tmp/flow/job", runDir: "/r/job" });
+    expect(s.permissions.defaultMode).toBe("dontAsk");
+    expect(s.permissions.allow).toEqual(
+      expect.arrayContaining(["Read", "Write(//tmp/flow/job/**)", "Edit(//tmp/flow/job/**)"]),
+    );
+    expect(s.permissions.allow).not.toContain("Write");
+    expect(s.permissions.allow).not.toContain("Edit");
+    expect(s.permissions.allow.some((r) => r.startsWith("Bash(git"))).toBe(false);
+    expect(s.permissions.allow.some((r) => r.startsWith("Bash(pnpm"))).toBe(false);
+    expect(s.sandbox.autoAllowBashIfSandboxed).toBe(false);
+    const contained = runSettings(
+      { stage: "flow" },
+      { worktree: "/w/job", runDir: "/r/job", isolation: "container" },
+    );
+    expect(contained.permissions.defaultMode).toBe("bypassPermissions");
+  });
+
   it("lets verify run the toolchain but not edit", () => {
     const s = runSettings({ stage: "verify" }, { worktree: "/w/job", runDir: "/r/job" });
     expect(s.permissions.defaultMode).toBe("dontAsk");

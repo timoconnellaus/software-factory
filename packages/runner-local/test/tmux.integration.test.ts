@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_POINTER, psCommand } from "@software-factory/harness-claude";
-import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import { type AdapterEvent, RESULT_FILE, type RepoJob } from "@software-factory/runner-contract";
 import { afterAll, describe, expect, it } from "vitest";
 import { createLocalRunner, reapOrphans, tmuxCli } from "../src/index.ts";
 
@@ -117,7 +117,7 @@ describe.skipIf(!hasTmux)("runner-local on the real tmux", { timeout: 60_000 }, 
       // `ps` shows `<node> <script> <args>` for a script: drop the interpreter, check the rest.
       readCommand: async (pid) => (await psCommand(pid))?.replace(/^\S+\s+/, "") ?? null,
     });
-    const j: Job = {
+    const j: RepoJob = {
       jobId: "job_tmux1",
       runId: "run_1",
       runNo: 1,

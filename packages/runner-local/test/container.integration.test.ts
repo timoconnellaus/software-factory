@@ -19,7 +19,7 @@ import type { AddressInfo } from "node:net";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type AdapterEvent, type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import { type AdapterEvent, RESULT_FILE, type RepoJob } from "@software-factory/runner-contract";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   containerReadCommand,
@@ -220,7 +220,7 @@ describe.skipIf(!hasTmux || !hasDocker)("a container job on the real Docker", ()
         },
       },
     });
-    const job: Job = {
+    const job: RepoJob = {
       jobId: "job_ctr1",
       runId: "run_1",
       runNo: 1,

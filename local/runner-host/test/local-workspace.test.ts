@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { PROMPT_POINTER, readLaunchRecord } from "@software-factory/harness-claude";
-import { type Job, RESULT_FILE } from "@software-factory/runner-contract";
+import { RESULT_FILE, type RepoJob } from "@software-factory/runner-contract";
 import {
   createLocalRunner,
   type Exec,
@@ -81,7 +81,7 @@ async function world(
 type World = Awaited<ReturnType<typeof world>>;
 
 /** One job's workspace lifecycle, as runJob drives it: resolve → fetch → prepare → release. */
-async function cycle(w: World, j: Job) {
+async function cycle(w: World, j: RepoJob) {
   const existing = await w.adapter.resolveCheckout?.(j);
   const checkout = await w.host.ensureRepo(j, TOKEN, existing ?? null);
   const ws = await w.adapter.prepareWorkspace(j, new AbortController().signal);

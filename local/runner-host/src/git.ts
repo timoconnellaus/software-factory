@@ -12,7 +12,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { PRIVATE_WORKTREE_FILES } from "@software-factory/harness-claude";
-import type { Artifact, Job } from "@software-factory/runner-contract";
+import type { Artifact, RepoJob } from "@software-factory/runner-contract";
 import type { Exec } from "@software-factory/runner-local";
 
 /**
@@ -66,7 +66,10 @@ export class GitError extends Error {
 }
 
 /** The run branch a job may push: its own `factory/<n>-<slug>-run-<k>`, nothing else (ADR 0035). */
-export function assertPushable(job: Pick<Job, "branch" | "repo" | "runNo">, pushBranch?: string) {
+export function assertPushable(
+  job: Pick<RepoJob, "branch" | "repo" | "runNo">,
+  pushBranch?: string,
+) {
   const expected = `${job.repo.baseRef}-run-${job.runNo}`;
   if (job.branch !== expected) {
     throw new GitError(`job branch ${job.branch} is not the run branch ${expected}`);
@@ -128,7 +131,7 @@ export function hostGit(options: HostGitOptions) {
   }
 
   /** The URL the host clones and pushes: the job's GitHub URL, checked against its owner/name. */
-  function remoteUrl(job: Pick<Job, "repo">): string {
+  function remoteUrl(job: Pick<RepoJob, "repo">): string {
     const canonical = `https://github.com/${job.repo.owner}/${job.repo.name}.git`;
     if (job.repo.url !== canonical && job.repo.url !== canonical.replace(/\.git$/, "")) {
       throw new GitError(`repo URL ${job.repo.url} is not ${canonical}`);
@@ -152,7 +155,7 @@ export function hostGit(options: HostGitOptions) {
     git,
     remoteUrl,
 
-    clonePath(job: Pick<Job, "repo">): string {
+    clonePath(job: Pick<RepoJob, "repo">): string {
       return join(options.reposDir, job.repo.owner, job.repo.name);
     },
 
@@ -162,7 +165,7 @@ export function hostGit(options: HostGitOptions) {
      * (ADR 0260): the host fetches into it and leaves everything else alone. Only when there is
      * none does the host clone, once, into `clonePath(job)`.
      */
-    async ensureRepo(job: Job, token: string, existing?: string | null): Promise<string> {
+    async ensureRepo(job: RepoJob, token: string, existing?: string | null): Promise<string> {
       const url = remoteUrl(job);
       const path = existing ?? this.clonePath(job);
       return locked(path, async () => {
@@ -215,7 +218,7 @@ export function hostGit(options: HostGitOptions) {
      * Where the job's worktree should start, as a SHA in `checkout`: the reviewed head for verify,
      * else the item branch as just fetched.
      */
-    async startPoint(job: Job, checkout: string): Promise<string> {
+    async startPoint(job: RepoJob, checkout: string): Promise<string> {
       const head = typeof job.context.headSha === "string" ? job.context.headSha : null;
       if (job.stage === "verify" && head && /^[0-9a-f]{40}$/.test(head)) {
         const has = await exec("git", ["cat-file", "-e", `${head}^{commit}`], {
@@ -240,7 +243,7 @@ export function hostGit(options: HostGitOptions) {
      * says so. `ahead`: whether the branch had commits of its own before the merge.
      */
     async mergeDefault(
-      job: Job,
+      job: RepoJob,
       worktree: string,
     ): Promise<
       | { status: "skipped" | "up-to-date"; ahead: boolean }
@@ -382,7 +385,7 @@ export function hostGit(options: HostGitOptions) {
      * anything else.
      */
     async pushRunBranch(
-      job: Job,
+      job: RepoJob,
       worktree: string,
       token: { token: string; pushBranch: string },
       /** The commit to push (the last one the checks ran on, ADR 0501); default HEAD. */

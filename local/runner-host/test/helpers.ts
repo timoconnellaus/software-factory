@@ -15,6 +15,7 @@ import {
   type Handback,
   type HeartbeatRequest,
   handleRunnerCall,
+  hasRepo,
   httpControlPlane,
   type Job,
   memoryIdempotencyStore,
@@ -22,6 +23,7 @@ import {
   PATHS,
   type PlanningRelay,
   parseJobPath,
+  type RepoJob,
   type RunnerAdapter,
   type RunnerCommand,
   type RunnerEvent,
@@ -190,7 +192,7 @@ export function fakeCloud(masterSecret = "test-master-secret"): FakeCloud {
                 body: {
                   token: `ghs_fake_${cloud.tokens}`,
                   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-                  repo: { owner: job?.repo.owner, name: job?.repo.name },
+                  repo: { owner: job?.repo?.owner, name: job?.repo?.name },
                   pushBranch: job?.branch,
                 },
               };
@@ -297,7 +299,7 @@ export async function scratchRepo() {
   return { root, bare, host, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
-export function job(overrides: Partial<Job> = {}): Job {
+export function job(overrides: Partial<RepoJob> = {}): RepoJob {
   return {
     jobId: `job_${Math.random().toString(36).slice(2, 10)}`,
     runId: "run_1",
@@ -415,15 +417,17 @@ export class FakeSocket {
 }
 
 export interface FakeWorkspace extends WorkspaceHandle {
+  /** The host's clone the worktree hangs off; empty for a job without a repo (a plain dir). */
   clone: string;
 }
 
 /**
- * An adapter whose "session" is a function run in a plain git worktree of the host's clone. It
- * records what happened so tests can check the lifecycle.
+ * An adapter whose "session" is a function run in a plain git worktree of the host's clone (or, for
+ * a job without a repo, a plain temp directory). It records what happened so tests can check the
+ * lifecycle.
  */
 export function fakeAdapter(
-  clonePath: (job: Job) => string,
+  clonePath: (job: RepoJob) => string,
   session: (
     worktree: string,
     job: Job,
@@ -445,6 +449,10 @@ export function fakeAdapter(
   const steered: string[] = [];
   const interrupted: string[] = [];
   const terminal = fakeTerminal();
+  /** Each job's workspace path, as prepareWorkspace made it. */
+  const paths = new Map<string, string>();
+  const pathOf = (j: Job) =>
+    paths.get(j.jobId) ?? (hasRepo(j) ? join(clonePath(j), "..", `wt-${j.jobId}`) : "");
   return {
     calls,
     prompts,
@@ -476,8 +484,7 @@ export function fakeAdapter(
           // Another turn of the same "session" (ADR 0501): the text goes in, the session runs again.
           async *continueSession(j: Job, _s: unknown, text: string, signal: AbortSignal) {
             steered.push(text);
-            const ws = join(clonePath(j), "..", `wt-${j.jobId}`);
-            for (const e of await session(ws, j, signal, relays.get(j.jobId))) yield e;
+            for (const e of await session(pathOf(j), j, signal, relays.get(j.jobId))) yield e;
           },
         }
       : {}),
@@ -494,6 +501,11 @@ export function fakeAdapter(
     async prepareWorkspace(j, _signal, options) {
       calls.push("prepare");
       if (options?.planningRelay) relays.set(j.jobId, options.planningRelay);
+      if (!hasRepo(j)) {
+        const path = await mkdtemp(join(tmpdir(), "sf-fake-flow-"));
+        paths.set(j.jobId, path);
+        return { jobId: j.jobId, path, branch: "", baseSha: "", clone: "" };
+      }
       const clone = clonePath(j);
       const path = join(clone, "..", `wt-${j.jobId}`);
       git(
@@ -521,8 +533,7 @@ export function fakeAdapter(
     },
     async *events(j, _s, signal) {
       calls.push("events");
-      const ws = join(clonePath(j), "..", `wt-${j.jobId}`);
-      for (const e of await session(ws, j, signal, relays.get(j.jobId))) yield e;
+      for (const e of await session(pathOf(j), j, signal, relays.get(j.jobId))) yield e;
     },
     async collectArtifacts(): Promise<Artifact[]> {
       calls.push("collect");
@@ -530,7 +541,9 @@ export function fakeAdapter(
     },
     async release(_j, ws) {
       calls.push("release");
-      if (ws) {
+      if (ws && !ws.clone) {
+        await rm(ws.path, { recursive: true, force: true });
+      } else if (ws) {
         execFileSync("git", ["worktree", "remove", "--force", ws.path], { cwd: ws.clone });
         git(ws.clone, "branch", "-D", ws.branch);
       }

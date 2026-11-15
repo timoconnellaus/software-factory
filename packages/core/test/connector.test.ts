@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import type { CapabilityManifest, Job } from "@software-factory/runner-contract";
+import type { CapabilityManifest, RepoJob } from "@software-factory/runner-contract";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN } from "../src/index.ts";
@@ -36,7 +36,7 @@ async function withActiveRun() {
     { workItemId: item.workItemId, stage: "build", role: "implement", prompt: "Do it" },
     FOREMAN,
   );
-  const { job } = await ok<{ job: Job }>(
+  const { job } = await ok<{ job: RepoJob }>(
     "job.claim",
     { claimId: uid("c"), manifest, capacity: { max: 1, inUse: 0, accepting: true } },
     RUNNER_ACTOR(runner.runnerId),

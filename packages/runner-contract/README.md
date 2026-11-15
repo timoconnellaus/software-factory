@@ -13,6 +13,16 @@ fetches the base into it (never writing the token to its config) instead of clon
 is none does the host clone, and the adapter registers that clone once and keeps it. Per-job state is
 a worktree and a branch; `release` never unregisters or deletes a checkout.
 
+## Jobs without a repo (`flow`, spec 70)
+A `flow` job is an agent-owned status in the new core. It may have no `repo` and no `branch` (the
+schema requires both for every other stage, so those are validated as before; `hasRepo(job)` tells
+them apart). A runner gives such a job a fresh empty directory of its own instead of a worktree,
+removed on release, and skips every git step: no `token`, clone, branch check, merge of the default
+branch, checks, push or diff. Everything else is the same: heartbeat and lease, events, steers,
+cancellation, timeouts, and the result read from `RESULT_FILE` in that directory. Its result is
+`flowResultSchema`, `{ outcome: "done" | "rejected", summary }`; the hand-back's `branch` is `""` and
+it has no `headSha`. It takes a slot in the light pool.
+
 ## The runner host's loop (`local/runner-host`)
 1. `heartbeat` every ~20 s with the manifest, capacity, `rateLimitedUntil` and `activeJobs`
    (`{ jobId, fencingToken }`): renews each lease (10 min) and returns `cancel` commands for jobs the

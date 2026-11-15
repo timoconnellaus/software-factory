@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import type { CapabilityManifest, Job } from "@software-factory/runner-contract";
+import type { CapabilityManifest, RepoJob } from "@software-factory/runner-contract";
 import { CONTRACT_VERSION, RUNNER_COMPAT } from "@software-factory/runner-contract";
 import { describe, expect, it } from "vitest";
 import { FOREMAN, runEvent } from "../src/index.ts";
@@ -53,7 +53,7 @@ const claim = (
   m = manifest(),
   c: ReturnType<typeof capacity> & { light?: { max: number; inUse: number } } = capacity(),
   claimId = uid("claim-"),
-) => ok<{ job: Job | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
+) => ok<{ job: RepoJob | null }>("job.claim", { claimId, manifest: m, capacity: c }, actor);
 
 describe("runners and the scheduler", () => {
   it("shows a runner's slots in use in the inbox, and narrows to the org asked for", async () => {
@@ -196,7 +196,7 @@ describe("runners and the scheduler", () => {
   it("fences a run that was taken over: its writes are refused, the heartbeat cancels it and its slot is free", async () => {
     const { w, item, actor } = await setup();
     await enqueue(item.workItemId);
-    const job = (await claim(actor)).job as Job;
+    const job = (await claim(actor)).job as RepoJob;
     await ok(
       "run.reportEvents",
       {
@@ -259,7 +259,7 @@ describe("runners and the scheduler", () => {
   it("mints a job token for the current token only, never storing it", async () => {
     const { item, actor } = await setup();
     await enqueue(item.workItemId);
-    const job = (await claim(actor)).job as Job;
+    const job = (await claim(actor)).job as RepoJob;
     const token = await ok<{ token: string; pushBranch: string }>(
       "run.issueToken",
       { jobId: job.jobId, fencingToken: 1 },
@@ -280,7 +280,7 @@ describe("runners and the scheduler", () => {
   it("accepts a build hand-back only for the run's own branch at the head pushed to GitHub, then fast-forwards the item branch", async () => {
     const { w, item, actor } = await setup();
     await enqueue(item.workItemId);
-    const job = (await claim(actor)).job as Job;
+    const job = (await claim(actor)).job as RepoJob;
     const base = await services.github.getBranchSha(w.repo, item.branch);
     const head = await services.github.push(w.repo, job.branch, base ?? undefined);
 
@@ -300,7 +300,7 @@ describe("runners and the scheduler", () => {
     expect(wrong.reason).toMatch(/may only push/);
     // The run failed: the next job is a new run with a new branch.
     await enqueue(item.workItemId);
-    const retry = (await claim(actor)).job as Job;
+    const retry = (await claim(actor)).job as RepoJob;
     expect(retry.runNo).toBe(2);
     expect(retry.lease.fencingToken).toBe(2);
     const head2 = await services.github.push(w.repo, retry.branch, base ?? undefined);
@@ -340,7 +340,7 @@ describe("runners and the scheduler", () => {
   it("expires a quiet run: bumps the token so the zombie's writes are refused", async () => {
     const { item, actor } = await setup();
     const { jobId } = await enqueue(item.workItemId);
-    const job = (await claim(actor)).job as Job;
+    const job = (await claim(actor)).job as RepoJob;
     const out = await ok<{ expired: boolean }>(
       "run.expire",
       { jobId, reason: "no hand-back in time" },

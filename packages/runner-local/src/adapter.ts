@@ -48,9 +48,11 @@ import {
   type CapabilityManifest,
   type Capacity,
   CONTRACT_VERSION,
+  hasRepo,
   type Job,
   MESSAGE_MAX,
   RESULT_FILE,
+  type RepoJob,
   type RunnerAdapter,
   type SessionHandle,
   steerText,
@@ -127,6 +129,11 @@ export interface LocalWorkspace extends WorkspaceHandle {
    */
   createdBranch?: boolean;
   /**
+   * A job without a repo (a `flow` job, spec 70): `path` is a plain empty directory, not a
+   * worktree; there is no checkout, branch or base commit. Release removes the directory.
+   */
+  plain?: boolean;
+  /**
    * Writes a file the session reads (the prompt) where the session runs, when that isn't this
    * machine (a sprite, ADR 0480). The host's copy is written as well.
    */
@@ -170,13 +177,13 @@ export interface LocalRunnerConfig {
    */
   checkouts?: readonly string[];
   /** The runner host's own clone of a job's repo: used when no checkout matches. */
-  resolveRepoPath: (job: Job) => Promise<string> | string;
+  resolveRepoPath: (job: RepoJob) => Promise<string> | string;
   /** Where the runner keeps its own clones; never a checkout match. */
   ownReposDir?: string;
   /** Job worktrees go here, as `<worktreesDir>/sf-<jobId>`. */
   worktreesDir: string;
   /** Where the job's worktree starts (default `job.repo.baseRef`): a ref or a SHA in the checkout. */
-  startPoint?: (job: Job, checkout: string) => Promise<string> | string;
+  startPoint?: (job: RepoJob, checkout: string) => Promise<string> | string;
   /** Per-run private directories (git config, empty tool dirs, the status file) go under here. */
   runsDir: string;
   /**
@@ -421,6 +428,79 @@ export function createLocalRunner(
     await exec("git", ["worktree", "prune"], { cwd: checkout });
   }
 
+  /** Removes a no-repo job's plain directory; only ever one under the worktrees dir. */
+  async function removePlainDir(path: string) {
+    const base = await realpath(config.worktreesDir).catch(() => config.worktreesDir);
+    if (!isUnder(path, base) && !isUnder(path, config.worktreesDir)) {
+      throw new Error(`refusing to remove ${path}: not under ${config.worktreesDir}`);
+    }
+    await rm(path, { recursive: true, force: true });
+  }
+
+  /**
+   * A job without a repo (a `flow` job, spec 70): a fresh empty directory, `<worktreesDir>/sf-<jobId>`
+   * (under the data dir, which the harness may read; a crash leaves it for the reaper like any job
+   * worktree). The harness is projected into it as into a worktree, so the prompt file, its pointer
+   * and the result file work the same. No checkout, branch, base commit or git.
+   */
+  async function preparePlainDir(job: Job): Promise<LocalWorkspace> {
+    const name = sessionName(job.jobId);
+    await mkdir(config.worktreesDir, { recursive: true });
+    const path = join(await realpath(config.worktreesDir), name);
+    const runDir = join(config.runsDir, job.jobId);
+    const attachmentsDir = join(
+      config.attachmentsDir ?? join(dirname(config.runsDir), "attachments"),
+      job.jobId,
+    );
+    // A crashed run of this same job may have left its Claude running (ADR 0550), and its dir.
+    await stopHarness(procs, join(runDir, RUN_SETTINGS_FILE), {
+      ...config.stop,
+      ...((await exists(path)) ? { worktree: path } : {}),
+    });
+    await removePlainDir(path);
+    await mkdir(path);
+    const partial: LocalWorkspace = {
+      jobId: job.jobId,
+      path,
+      branch: "",
+      baseSha: "",
+      checkout: "",
+      name,
+      runDir,
+      runTmp: "",
+      launch: {} as LaunchRecord,
+      launchScript: "",
+      statusFile: join(runDir, STATUS_FILE),
+      attachmentsDir,
+      account: DEFAULT_HARNESS_ACCOUNT,
+      plain: true,
+    };
+    try {
+      const account = (await config.account?.(job)) ?? DEFAULT_HARNESS_ACCOUNT;
+      partial.account = account;
+      const projected = await projectHarness(job, {
+        account,
+        worktree: path,
+        runDir,
+        protectPaths: [...(config.protectPaths ?? [])],
+        ...(capabilities.includes("work-item-attachments") ? { attachmentsDir } : {}),
+        ...(streamMode ? { session: "stream" as const } : {}),
+        statusHook: config.node ? { node: config.node } : true,
+        ...(config.claudeBin ? { claudeBin: config.claudeBin } : {}),
+      });
+      return {
+        ...partial,
+        runTmp: projected.runTmp,
+        launch: projected.launch,
+        launchScript: projected.scriptPath,
+        statusFile: projected.statusFile ?? partial.statusFile,
+      };
+    } catch (err) {
+      await release(job, partial, undefined).catch(() => {});
+      throw err;
+    }
+  }
+
   /** The run's settings path, when its processes are the host's to see (not a container's). */
   const settingsPathOf = (workspace?: LocalWorkspace, session?: LocalSession) =>
     session?.settingsPath ??
@@ -535,7 +615,9 @@ export function createLocalRunner(
     } else if (killed) {
       errors.push(`kill session: ${killed}`);
     }
-    if (workspace) {
+    if (workspace?.plain) {
+      await attempt("remove directory", () => removePlainDir(workspace.path));
+    } else if (workspace) {
       await attempt("remove worktree", () => removeWorktree(workspace.checkout, workspace.path));
       // The local branch always goes: the pushed run branch (or the diff artifact) is the record.
       // Only the branch this workspace created (ADR 0551), or a factory run branch from before the
@@ -544,6 +626,8 @@ export function createLocalRunner(
         if (!workspace.createdBranch && !isRunBranch(workspace.branch)) return;
         await deleteRunBranch(workspace.checkout, workspace.branch, exec);
       });
+    }
+    if (workspace) {
       await attempt("remove run dir", () => removeRunDir(workspace.runDir, workspace.runTmp));
       await attempt("remove attachments", () => removeRunDir(workspace.attachmentsDir));
     }
@@ -555,7 +639,7 @@ export function createLocalRunner(
     if (errors.length > 0) throw new Error(errors.join("; "));
   }
 
-  async function checkoutFor(job: Job): Promise<string> {
+  async function checkoutFor(job: RepoJob): Promise<string> {
     const found = await findCheckout(job, search);
     if (found) return found.path;
     const clone = await config.resolveRepoPath(job);
@@ -618,6 +702,7 @@ export function createLocalRunner(
       if (planning && !options?.planningRelay) {
         throw new Error(`planning job ${job.jobId} came without its relay`);
       }
+      if (!hasRepo(job)) return preparePlainDir(job);
       // ADR 0260 (amended): the owner's checkout of the job's remote, else the host's clone.
       const checkout = await checkoutFor(job);
       const name = sessionName(job.jobId);

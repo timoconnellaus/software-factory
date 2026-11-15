@@ -26,12 +26,14 @@ import {
   STATUS_FILE,
   verifyLaunch,
 } from "@software-factory/harness-claude";
-import type {
-  AdapterEvent,
-  Artifact,
-  CapabilityManifest,
-  Job,
-  RunnerAdapter,
+import {
+  type AdapterEvent,
+  type Artifact,
+  type CapabilityManifest,
+  hasRepo,
+  type Job,
+  type RepoJob,
+  type RunnerAdapter,
 } from "@software-factory/runner-contract";
 import {
   createLocalRunner,
@@ -285,7 +287,7 @@ export function createContainerRunner(
   /** The credential's values per running job, for the scan after the session. */
   const secrets = new Map<string, string[]>();
 
-  async function checkoutFor(job: Job): Promise<string> {
+  async function checkoutFor(job: RepoJob): Promise<string> {
     const found = await findCheckout(job, search);
     if (found) return found.path;
     const clone = await config.resolveRepoPath(job);
@@ -366,6 +368,9 @@ export function createContainerRunner(
 
     async prepareWorkspace(job, signal, prepareOptions): Promise<LocalWorkspace> {
       if (job.stage === "planning") return local.prepareWorkspace(job, signal, prepareOptions);
+      // A job without a repo (a `flow` job, spec 70) gets only the local adapter's plain directory.
+      if (!hasRepo(job))
+        throw new Error(`job ${job.jobId} has no repo; this runner takes only repo jobs`);
       const name = sessionName(job.jobId);
       const root = await containersRoot();
       const dirs = jobDirs(root, name);
