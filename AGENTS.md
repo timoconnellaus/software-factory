@@ -25,8 +25,8 @@ version of this project failed by designing for edge cases first and grew too bi
 
 **The base knows nothing about any kind of work.** `packages/flow`, `packages/store`,
 `packages/ops` and `packages/plugins` name no status, no service and no kind of work. The guard
-`scripts/checks/guards.test.ts` fails if any of them imports `packages/core` or has a source file
-over 400 lines. Split a file before it gets there.
+`scripts/checks/guards.test.ts` fails if any of them imports `packages/core`, or if any of them or
+`apps/engine/src/flow` has a source file over 400 lines. Split a file before it gets there.
 
 **Base, plugin or gateway.** If every kind of work needs it (items, statuses, owners, runs, the
 timeline, the inbox, schedules), it is the base. If only some kinds of work need it, it is a
@@ -55,6 +55,9 @@ desktop's fixture door (`apps/desktop/screenshots/fixtures.ts`). Three tests hol
 `apps/engine/test/flow-contract.test.ts` (each real answer parses) and
 `apps/desktop/test/flow-fixtures-contract.test.ts` (each fixture answer parses). A new operation the
 app calls goes in all three places.
+
+**Every feature lives in the desktop app.** The website (`apps/app`) is sign-in and the pages
+device logins and the GitHub connection need, nothing else.
 
 **A significant decision gets a short ADR** (`docs/adr/NNNN-title.md`, the next number after the
 highest). When a decision changes, add a dated note to the old ADR; never delete one. Keep

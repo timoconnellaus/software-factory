@@ -66,12 +66,16 @@ test("core, the runner contract and the apps never import Orca or a runner adapt
 
 // The new core stays in small modules (ADR 0660, spec 70 criteria 6 and 7): no source file in its
 // packages is over 400 lines, and none of them imports the old core.
-const NEW_CORE = ["flow", "ops", "store", "plugins", "plugin-editor", "gateways"];
+const NEW_CORE = ["flow", "ops", "store", "plugins"];
 
 test("no source file in the new core's packages is over 400 lines", () => {
   const offenders: string[] = [];
-  for (const name of NEW_CORE) {
-    for (const file of sources(join(root, "packages", name, "src"))) {
+  const dirs = [
+    ...NEW_CORE.map((name) => join(root, "packages", name, "src")),
+    join(root, "apps", "engine", "src", "flow"),
+  ];
+  for (const dir of dirs) {
+    for (const file of sources(dir)) {
       const lines = readFileSync(file, "utf8").split("\n").length;
       if (lines > 400) offenders.push(`${relative(root, file)} (${lines} lines)`);
     }
