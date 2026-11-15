@@ -23,6 +23,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.5.1",
     "@software-factory/config": "workspace:*",
+    "@software-factory/store": "workspace:*",
     "typescript": "6.0.3",
     "vitest": "5.1.0",
     "wrangler": "4.157.0"

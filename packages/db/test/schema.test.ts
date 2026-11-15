@@ -12,14 +12,21 @@ import {
 } from "../src/index.ts";
 
 const INTERNAL = /^(sqlite_|_cf_|d1_)/;
+/** The new core's tables (packages/store, ADR 0660) sit beside the old core's. */
+const FLOW_TABLE_PREFIX = "flow_";
 
 describe("core schema", () => {
-  it("names every table and index core_*", async () => {
+  it("names every table and index core_* or flow_*", async () => {
     const { results } = await env.DB.prepare(
       "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view', 'index', 'trigger')",
     ).all<{ name: string; type: string }>();
     const offenders = results
-      .filter((r) => !INTERNAL.test(r.name) && !r.name.startsWith(CORE_TABLE_PREFIX))
+      .filter(
+        (r) =>
+          !INTERNAL.test(r.name) &&
+          !r.name.startsWith(CORE_TABLE_PREFIX) &&
+          !r.name.startsWith(FLOW_TABLE_PREFIX),
+      )
       .map((r) => `${r.type} ${r.name}`);
     expect(offenders).toEqual([]);
   });

@@ -22,6 +22,7 @@ d1.batch([toStatement(env.DB, db.updateTable(...)), guardChanged(env.DB, "name")
 | 0260 | `core_repositories` (a project's GitHub repositories, ADR 0490; backfilled one per project; the repo columns stay on `core_projects` as an unread mirror until a later drop); `core_work_items.repository_id`, `core_verify_checks.repository_id` |
 | 0261 | `core_work_items` rebuilt: statuses `backlog`, `planning`, `ready`, `queued`; `priority`, `rank`, `acceptance_criteria`, `released_at`, `released_by`, `pulled_at`; `core_work_item_links` (waits for) (ADR 0491) |
 | 0262 | `core_work_items.shaping_started_at` (shaping stages before release, ADR 0493) |
+| 0430 | The new core's `flow_workflows`, `flow_projects`, `flow_agents`, `flow_items`, `flow_events`, `flow_runs` (ADR 0660, spec 70), written by `packages/store`, not by `packages/core` |
 
 `SCHEMA_VERSION` equals the highest migration on this branch (40). Parallel builds number their
 migrations from the block they claim in `docs/parallel-work.md`.

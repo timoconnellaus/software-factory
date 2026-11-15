@@ -1,0 +1,26 @@
+{
+  "name": "@software-factory/store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The new core's store (ADR 0660, spec 70): workflows, projects, agents, items, their timeline and runs in the flow_* tables, with the kernel's effects carried out in D1.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@software-factory/db": "workspace:*",
+    "@software-factory/flow": "workspace:*",
+    "kysely": "0.29.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.5.1",
+    "@cloudflare/workers-types": "5.20261104.1",
+    "@software-factory/config": "workspace:*",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
