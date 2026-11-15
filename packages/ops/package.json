@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@software-factory/flow": "workspace:*",
+    "@software-factory/plugins": "workspace:*",
     "@software-factory/store": "workspace:*",
     "zod": "4.6.7"
   },

@@ -1,10 +1,29 @@
 // @software-factory/store: the new core's D1 access (ADR 0660, spec 70). It persists what the kernel
 // in @software-factory/flow works on and carries out the kernel's effects.
-export { type Agent, createAgent, getAgent, listAgents, updateAgent } from "./agents.ts";
+export {
+  type Agent,
+  createAgent,
+  getAgent,
+  listAgents,
+  parseMcp,
+  updateAgent,
+} from "./agents.ts";
 export { StoreError } from "./db.ts";
+export { addCard, FIELD_ID, setField, stopItem } from "./entries.ts";
+export {
+  deleteGateway,
+  type Gateway,
+  type GatewayAuth,
+  gatewayForHost,
+  getGateway,
+  listGateways,
+  saveGateway,
+} from "./gateways.ts";
 export {
   addComment,
+  appendEntry,
   applyEvent,
+  applyEventStep,
   BOARD_LIMIT,
   board,
   createItem,
@@ -18,6 +37,19 @@ export {
   timeline,
 } from "./items.ts";
 export {
+  declaredFields,
+  deletePlugin,
+  enabledPlugins,
+  getPlugin,
+  getPluginById,
+  listPlugins,
+  type Plugin,
+  type PluginField,
+  savePlugin,
+  setPluginEnabled,
+  setPluginLastError,
+} from "./plugins.ts";
+export {
   createProject,
   getProject,
   listProjects,
@@ -27,6 +59,8 @@ export {
 export {
   type ClaimedRun,
   claimRun,
+  type EndedRun,
+  endRun,
   expireRun,
   expireRuns,
   failRun,
@@ -34,10 +68,14 @@ export {
   getRun,
   itemRuns,
   type Run,
+  type RunEnding,
   type RunResult,
   renewLease,
+  runForToken,
+  setMcpTokenHash,
 } from "./runs.ts";
 export type * from "./schema.ts";
+export { type LoadedItem, loadItem, type Stepped } from "./step.ts";
 export {
   createWorkflow,
   getWorkflow,

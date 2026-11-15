@@ -35,6 +35,8 @@ export type Workflow = z.infer<typeof workflowSchema>;
 export type Actor =
   | { kind: "person"; id: string }
   | { kind: "agent"; id: string }
+  /** A plugin acting through its `ctx` (spec 70 milestone 2); `id` is the plugin's name. */
+  | { kind: "plugin"; id: string }
   | { kind: "system" };
 
 /** What an item is waiting on in its current status. */

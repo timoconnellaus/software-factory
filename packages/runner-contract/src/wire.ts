@@ -187,10 +187,28 @@ export const jobSchema = z
     checks: jobChecksSchema.optional(),
     /** Every job-scoped call carries `fencingToken`; a stale one is refused (ADR 0035). */
     lease: z.object({ fencingToken, expiresAt: iso }),
+    /**
+     * Flow jobs only (spec 70 milestone 2): MCP servers (streamable HTTP) to give the session, such
+     * as the engine's own `factory` server with a bearer token valid while the run is claimed.
+     * Optional and additive: a runner that predates it ignores it.
+     */
+    mcpServers: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(64),
+          url: z.string().url(),
+          headers: z.record(z.string(), z.string()).optional(),
+        }),
+      )
+      .max(10)
+      .optional(),
   })
   .superRefine((job, ctx) => {
     // Every stage but `flow` needs a repo and a run branch, exactly as before they were optional.
     if (job.stage === "flow") return;
+    if (job.mcpServers !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["mcpServers"], message: "only a flow job has these" });
+    }
     if (job.repo === undefined) {
       ctx.addIssue({ code: "custom", path: ["repo"], message: `a ${job.stage} job needs a repo` });
     }

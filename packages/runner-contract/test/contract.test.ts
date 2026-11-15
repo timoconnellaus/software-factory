@@ -146,6 +146,23 @@ describe("contract helpers", () => {
     const build = jobSchema.safeParse({ ...base, stage: "build" });
     expect(build.success).toBe(false);
     expect(build.error?.issues.map((i) => i.path.join("."))).toEqual(["repo", "branch"]);
+    // MCP servers ride on flow jobs only (spec 70 milestone 2).
+    const mcpServers = [
+      {
+        name: "factory",
+        url: "https://sf-engine.example/flow/mcp",
+        headers: { Authorization: "Bearer t" },
+      },
+    ];
+    expect(jobSchema.parse({ ...base, stage: "flow", mcpServers }).mcpServers).toEqual(mcpServers);
+    const builds = jobSchema.safeParse({
+      ...base,
+      stage: "build",
+      repo: { url: "https://github.com/o/r.git", owner: "o", name: "r", baseRef: "factory/1-x" },
+      branch: "factory/1-x-run-1",
+      mcpServers,
+    });
+    expect(builds.error?.issues.map((i) => i.path.join("."))).toEqual(["mcpServers"]);
     expect(
       jobSchema.safeParse({
         ...base,

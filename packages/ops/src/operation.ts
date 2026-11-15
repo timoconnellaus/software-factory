@@ -1,14 +1,33 @@
 // The shape of an operation: a name, what it does in words a model can read, a zod input, and a
 // handler. Nothing else: no roles, approvals or audit (spec 70: keep it simple).
+import type { Actor } from "@software-factory/flow";
+import type { PluginHostEnv } from "@software-factory/plugins";
 import { z } from "zod";
 
 export type Person = { kind: "person"; id: string };
 
+/**
+ * An agent calling through the engine's MCP server, during one of its runs: it acts in the run's
+ * org (and only there), for the person who created the run's item.
+ */
+export type AgentCaller = { kind: "agent"; id: string; orgId: string; onBehalfOf: string };
+
+export type Caller = Person | AgentCaller;
+
+/** The caller as the kernel and the timeline record it. */
+export const kernelActor = (caller: Caller): Actor => ({ kind: caller.kind, id: caller.id });
+
+/** The person a caller acts as: who an item they create belongs to. */
+export const personOf = (caller: Caller): string =>
+  caller.kind === "person" ? caller.id : caller.onBehalfOf;
+
 /** What a handler gets: the org the call is in (checked: the actor is a member), who, and when. */
 export interface Ctx {
   d1: D1Database;
+  /** The engine's bindings the plugin host needs (D1, the Worker Loader, the gateway key). */
+  host: PluginHostEnv;
   orgId: string;
-  actor: Person;
+  actor: Caller;
   /** Milliseconds since the epoch. */
   now: number;
 }
@@ -19,6 +38,7 @@ export type ErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "unavailable"
   | "internal";
 
 /** A refusal a handler (or `call`) raises on purpose. Its message is shown to the caller. */

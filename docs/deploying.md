@@ -12,7 +12,7 @@ Today that is:
 
 | Worker | Folder | Public | Notes |
 | --- | --- | --- | --- |
-| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` |
+| `sf-engine` | `apps/engine` | `sf-engine.zerobsai.com` (runner channel + `/health` only) | Every operation (RPC for `sf-app`), work-item Workflows, the runner channel, cron (`* * * * *`). D1 `software-factory`, migrations from `packages/db/migrations`. The rate limiting binding `MOBILE_NONCE_LIMIT` (in `wrangler.jsonc`, nothing to provision). The Worker Loader binding `LOADER` (plugins as Dynamic Workers; Workers Paid plan; see "The new core's plugins" below). Secrets `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY`, `FLOW_GATEWAY_KEY` |
 | `sf-app` | `apps/app` | `software-factory.zerobsai.com` | Dashboard (TanStack Start, built with `vite build` before `wrangler deploy`), GitHub sign-in. D1 `software-factory` (Better Auth tables), service binding `ENGINE` → `sf-engine#EngineApi`. Secrets `BETTER_AUTH_SECRET`, `GH_APP_CLIENT_SECRET`; var `ALLOWED_GITHUB_LOGINS` |
 
 A new Worker (a connector, say) is picked up automatically: add its `wrangler.jsonc` and it
@@ -254,6 +254,27 @@ First install: download `https://downloads.zerobsai.com/desktop/canary-macos-arm
 unzip and move it to `/Applications`. After that the app updates itself; the app refuses an update
 that isn't a higher version, isn't signed with its own Team ID, or that Gatekeeper rejects.
 
+## The new core's plugins (spec 70 milestone 2)
+
+- **Worker Loader.** `apps/engine/wrangler.jsonc` binds `worker_loaders: [{ binding: "LOADER" }]`.
+  Each plugin runs as a Dynamic Worker loaded through it (`packages/plugins`), with
+  `globalOutbound: null`. Nothing to provision, but Dynamic Workers need the **Workers Paid plan**;
+  on a Free account the deploy fails on this binding. Billing: 1,000 unique Dynamic Workers a
+  month included, then $0.002 per Dynamic Worker per day; requests and CPU at the Workers
+  Standard rates. A worker is one plugin version (its org and its code's hash), so editing a
+  plugin makes a new one.
+- **`FLOW_GATEWAY_KEY`** (engine secret, any long random string, e.g. `openssl rand -base64 32`).
+  Gateway secrets are sealed with AES-GCM under a key derived from it. Set it as a repo secret
+  of the same name and the deploy job syncs it with the others. Unset: saving a gateway secret
+  is refused (`unavailable`), and gateways with `auth: { kind: "none" }` still work. Changing it
+  makes every stored gateway secret unreadable; save them again.
+- **Public routes** on `sf-engine.zerobsai.com`: `POST /flow/mcp` (the engine's MCP server; a
+  bearer token issued per claimed flow run) and `POST /flow/triggers/<pluginId>/<name>?key=…`
+  (a plugin's trigger; the key is the check). No route or DNS change: the engine's custom domain
+  already serves every path.
+- Migration `0431_flow_plugins.sql` rebuilds `flow_events` (to allow `card` entries); it is small
+  today, but the rebuild copies every row once.
+
 ## Deploying by hand
 
 From a checkout, logged in with `wrangler login` or with `CLOUDFLARE_API_TOKEN` and
@@ -272,5 +293,5 @@ node scripts/deploy/deploy.ts                # provision + migrate + deploy ever
   production D1. It waits for separate preview resources.
 - **Secrets on the Workers** are synced by the deploy job from repo secrets with
   `wrangler secret bulk`: `sf-app` gets the Better Auth and GitHub App secrets; `sf-engine` gets
-  `RUNNER_CHANNEL_SECRET` and `GH_APP_PRIVATE_KEY`. Unset ones are skipped, and the engine degrades
+  `RUNNER_CHANNEL_SECRET`, `GH_APP_PRIVATE_KEY` and `FLOW_GATEWAY_KEY`. Unset ones are skipped, and the engine degrades
   (the runner channel answers 503) instead of failing to deploy.

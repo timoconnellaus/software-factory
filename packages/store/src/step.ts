@@ -27,6 +27,19 @@ export interface Item {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** The item's plugin fields, field id to value. */
+  fields: Record<string, unknown>;
+}
+
+function parseFields(text: string | null | undefined): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text ?? "{}") as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 export function toItem(row: FlowItemsTable): Item {
@@ -44,6 +57,7 @@ export function toItem(row: FlowItemsTable): Item {
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    fields: parseFields(row.fields),
   };
 }
 
@@ -141,21 +155,17 @@ export interface StepExtras {
   comment?: { actor: Actor; text: string };
 }
 
-/**
- * Applies `event` to the item and writes the result in one batch. A FlowError from the kernel
- * propagates unchanged and writes nothing. The item's update is conditional on the `stay` and
- * `updated_at` it was read with, and the timeline's (item_id, seq) is unique, so of two writers
- * that read the same item only one advances it; the other gets a conflict.
- */
-export async function advance(
-  d1: D1Database,
-  itemId: string,
-  event: ItemEvent,
-  actor: Actor,
-  extras: StepExtras = {},
-): Promise<Item> {
-  const db = flowDb(d1);
-  const row = await db
+/** An item as a step reads it: its row, its workflow, and its timeline's last seq. */
+export interface LoadedItem {
+  item: Item;
+  workflow: Workflow;
+  row: FlowItemsTable;
+  lastSeq: number;
+}
+
+/** One read: the item, its project's workflow and its timeline's last seq. */
+export async function loadItem(d1: D1Database, itemId: string): Promise<LoadedItem> {
+  const row = await flowDb(d1)
     .selectFrom("flow_items as i")
     .innerJoin("flow_projects as p", "p.id", "i.project_id")
     .innerJoin("flow_workflows as w", "w.id", "p.workflow_id")
@@ -172,14 +182,41 @@ export async function advance(
     .executeTakeFirst();
   if (!row) throw new StoreError("not_found", `No item ${itemId}.`);
   const { definition, last_seq, ...current } = row;
-  const workflow = JSON.parse(definition) as Workflow;
-  const item = toItem(current);
+  return {
+    item: toItem(current),
+    workflow: JSON.parse(definition) as Workflow,
+    row: current,
+    lastSeq: last_seq ?? 0,
+  };
+}
+
+/** The item after a step, and the kernel's effects that step carried out. */
+export interface Stepped {
+  item: Item;
+  effects: Effect[];
+}
+
+/**
+ * Applies `event` to the item and writes the result in one batch. A FlowError from the kernel
+ * propagates unchanged and writes nothing. The item's update is conditional on the `stay` and
+ * `updated_at` it was read with, and the timeline's (item_id, seq) is unique, so of two writers
+ * that read the same item only one advances it; the other gets a conflict.
+ */
+export async function advance(
+  d1: D1Database,
+  itemId: string,
+  event: ItemEvent,
+  actor: Actor,
+  extras: StepExtras = {},
+): Promise<Stepped> {
+  const db = flowDb(d1);
+  const { item, workflow, row: current, lastSeq } = await loadItem(d1, itemId);
   const { statusId, waiting, error, stay } = item;
   const step = apply(workflow, { statusId, waiting, error, stay }, event);
 
   const now = iso();
   const next: FlowItemsTable = { ...current, ...stateColumns(step.state), updated_at: now };
-  const seq = (last_seq ?? 0) + 1;
+  const seq = lastSeq + 1;
   const statements = [
     ...(extras.before ?? []),
     toStatement(
@@ -208,5 +245,5 @@ export async function advance(
     );
   }
   await writeBatch(d1, statements);
-  return toItem(next);
+  return { item: toItem(next), effects: step.effects };
 }
