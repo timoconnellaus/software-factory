@@ -37,6 +37,8 @@ export interface Session {
    * Secure Enclave by signing in again (spec 40 M4b, migration).
    */
   keyUpgrade: boolean;
+  /** The engine this app talks to (SF_ENGINE_URL): what a plugin's trigger URL starts with. */
+  engineUrl?: string;
 }
 
 /**

@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import {
   createAgent,
+  createChat,
   createItem,
   createProject,
   createWorkflow,
@@ -211,6 +212,41 @@ describe("a run's events", () => {
     expect(await runEvents(d1, recent.runId)).toHaveLength(30);
     expect(await runEvents(d1, live.runId)).toHaveLength(30);
     expect(await runView(d1, recent.runId, now)).toMatchObject({ eventsRemoved: false });
+  });
+});
+
+describe("a chat's run", () => {
+  it("is shown with its chat's title and no item, and stores its events like any other", async () => {
+    const orgId = `org_${crypto.randomUUID()}`;
+    const agent = await createAgent(d1, {
+      orgId,
+      name: "Builder",
+      instructions: "",
+      mcp: ["factory"],
+    });
+    const chat = await createChat(d1, {
+      orgId,
+      agentId: agent.id,
+      text: "Make a workflow",
+      createdBy: "sam",
+    });
+    const run = await d1
+      .prepare("SELECT id FROM flow_runs WHERE chat_id = ?")
+      .bind(chat.id)
+      .first<{ id: string }>();
+    if (!run) throw new Error("no chat run");
+    await storeRunEvents(d1, run.id, [tool(1)]);
+    expect(await runView(d1, run.id)).toMatchObject({
+      itemId: null,
+      itemTitle: null,
+      projectKey: null,
+      statusName: null,
+      chatTitle: "Make a workflow",
+      startedBy: "a message in the chat",
+      agentName: "Builder",
+      steps: 1,
+    });
+    expect(await runEvents(d1, run.id)).toHaveLength(1);
   });
 });
 

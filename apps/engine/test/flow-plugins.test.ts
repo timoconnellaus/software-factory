@@ -244,6 +244,17 @@ describe("plugins on the new core", () => {
         } },
       };`,
     );
+    // The list gives the trigger's path (with its key) to members, for Auto's Triggers tab; a plugin
+    // with no trigger has none.
+    await save(p, "quiet", "export default { on: { async entered() {} } };");
+    const listed = await p.call<{ plugins: { name: string; triggerPath?: string }[] }>(
+      "flow.plugin.list",
+      {},
+    );
+    expect(listed.plugins.find((x) => x.name === "support-email")?.triggerPath).toBe(
+      plugin.triggerPath,
+    );
+    expect(listed.plugins.find((x) => x.name === "quiet")).not.toHaveProperty("triggerPath");
     const path = plugin.triggerPath.replace("<name>", "email");
     const fire = (url: string, body: unknown) =>
       worker.fetch(

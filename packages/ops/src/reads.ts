@@ -69,7 +69,7 @@ export const readOps = [
   }),
   defineOperation({
     name: "flow.run.list",
-    description: `Runs, each with its agent, status, result or error, and its item's itemTitle, itemNumber and projectKey. Either { itemId }: the item's runs, by stay; or { agentId, limit? }: the agent's newest runs first (limit default 20, at most ${AGENT_RUNS_LIMIT}).`,
+    description: `Runs, each with its agent, status, result or error, and its item's itemTitle, itemNumber and projectKey (a chat's run has its chatId and chatTitle instead, with the item's fields null). Either { itemId }: the item's runs, by stay; or { agentId, limit? }: the agent's newest runs first (limit default 20, at most ${AGENT_RUNS_LIMIT}).`,
     risk: "read",
     input: z.union([
       z.object({ orgId, itemId: id }),
@@ -89,7 +89,7 @@ export const readOps = [
   defineOperation({
     name: "flow.run.get",
     description:
-      'One run: its agent (and agentName), status, brief, result or error; its item\'s itemTitle, itemNumber, projectId and projectKey (null for a run on no item); and its totals: claimedAt (started), finishedAt, durationMs, steps (tool calls), tokens and costUsd when the runner reports them (else null), startedBy ("entering <status name>"), runnerName, eventsTruncated and eventsRemoved (its events are kept 30 days after it finished).',
+      'One run: its agent (and agentName), status, brief, result or error; its item\'s itemTitle, itemNumber, projectId and projectKey (null for a chat\'s run, which has chatId and chatTitle instead); and its totals: claimedAt (started), finishedAt, durationMs, steps (tool calls), tokens and costUsd when the runner reports them (else null), startedBy ("entering <status name>", or "a message in the chat"), runnerName, eventsTruncated and eventsRemoved (its events are kept 30 days after it finished).',
     risk: "read",
     input: z.object({ orgId, runId: id }),
     handler: async (input, ctx) => {

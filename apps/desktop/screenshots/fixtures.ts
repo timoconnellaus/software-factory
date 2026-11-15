@@ -3,6 +3,7 @@
 // The new core's answers are in flow-fixtures.ts; here are who is signed in and this person's
 // runners. Never shipped: the app's own bridge talks to the main process.
 import type { OpInput, OpName, OpOutput } from "@software-factory/client/ops";
+import { AUTO_ANSWERS } from "./flow-auto-fixtures.ts";
 import { FLOW_ANSWERS } from "./flow-fixtures.ts";
 
 const now = Date.now();
@@ -64,6 +65,8 @@ type Answers = { [N in OpName]?: (input: OpInput<N>) => OpOutput<N> };
 export const ANSWERS: Answers = {
   // The new core's (spec 70): flow-fixtures.ts.
   ...FLOW_ANSWERS,
+  // Auto's schedules: flow-auto-fixtures.ts.
+  ...AUTO_ANSWERS,
   "org.list": () => ({
     userId: ME,
     orgs: [

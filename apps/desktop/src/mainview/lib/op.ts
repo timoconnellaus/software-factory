@@ -108,7 +108,12 @@ export type ReadOpName =
   | "flow.run.list"
   // The run view (spec 70): one run's totals, and its events a page at a time.
   | "flow.run.get"
-  | "flow.run.events";
+  | "flow.run.events"
+  // Chat's reads (flow-chat-queries.ts).
+  | "flow.chat.list"
+  | "flow.chat.get"
+  // Auto's schedules (flow-auto.ts).
+  | "flow.schedule.list";
 
 export async function op<N extends Exclude<OpName, DecisionOp>>(
   name: N,

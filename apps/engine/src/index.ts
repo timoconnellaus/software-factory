@@ -13,6 +13,7 @@ import {
   r2AttachmentBlobs,
   sweepStrayAttachmentBlobs,
 } from "@software-factory/core";
+import { runDueSchedules } from "@software-factory/ops";
 import { expireRunsWithHooks } from "@software-factory/plugins";
 import { parseTerminalPath } from "@software-factory/runner-contract";
 import { pruneRunEvents } from "@software-factory/store";
@@ -76,6 +77,11 @@ export default {
     // most 4 rounds of 500 rows through flow_runs_events_due_idx; a tick with none due reads none.
     await pruneRunEvents(env.DB, now.getTime()).catch((error) => {
       console.error("flow pruneRunEvents failed", error);
+    });
+    // The new core's schedules (the Auto screen): at most 20 due a tick, through
+    // flow_schedules_due_idx, each moved on to its next time before it makes its item. Caught.
+    await runDueSchedules(flowHost(env), now.getTime()).catch((error) => {
+      console.error("flow schedules failed", error);
     });
     await pruneChannelStore(env.DB, now);
     await recheckProtection(env, now);

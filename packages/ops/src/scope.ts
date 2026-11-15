@@ -1,5 +1,5 @@
 // The whole permission model: the caller is a member of the org the call names, and every project,
-// item, workflow, run and agent the call names belongs to that org. One query answers both. (A
+// item, workflow, run, chat and agent the call names belongs to that org. One query answers both. (A
 // `self` operation names no org: it reads only the caller's own orgs; see operation.ts.)
 import { type Caller, OpError } from "./operation.ts";
 
@@ -9,6 +9,7 @@ interface Named {
   itemId?: string;
   workflowId?: string;
   runId?: string;
+  chatId?: string;
   /** An agent the input names: `agentId`, and every agent a workflow's statuses own. */
   agentIds: string[];
 }
@@ -31,10 +32,12 @@ function named(input: Record<string, unknown>): Named {
   const itemId = str(input.itemId);
   const workflowId = str(input.workflowId);
   const runId = str(input.runId);
+  const chatId = str(input.chatId);
   if (projectId) out.projectId = projectId;
   if (itemId) out.itemId = itemId;
   if (workflowId) out.workflowId = workflowId;
   if (runId) out.runId = runId;
+  if (chatId) out.chatId = chatId;
   return out;
 }
 
@@ -43,9 +46,10 @@ const TABLES = {
   itemId: ["flow_items", "item"],
   workflowId: ["flow_workflows", "workflow"],
   runId: ["flow_runs", "run"],
+  chatId: ["flow_chats", "chat"],
 } as const;
 
-const KEYS = ["projectId", "itemId", "workflowId", "runId"] as const;
+const KEYS = ["projectId", "itemId", "workflowId", "runId", "chatId"] as const;
 
 /**
  * Refuses the call unless `userId` is a member of `orgId` (core_member's unique (organization_id,

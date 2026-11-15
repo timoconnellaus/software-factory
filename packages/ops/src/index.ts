@@ -23,3 +23,4 @@ export {
   type SelfCtx,
 } from "./operation.ts";
 export { triggerPath } from "./plugins.ts";
+export { DUE_PER_TICK, fireSchedule, runDueSchedules } from "./schedules.ts";

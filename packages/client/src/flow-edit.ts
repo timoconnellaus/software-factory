@@ -27,6 +27,13 @@ export interface FlowPlugin {
   /** When it last failed, the error in plain words. */
   lastError: string | null;
   updatedAt: string;
+  /** The hooks its module defines: entered, leaving, runEnded, trigger. */
+  hooks?: string[];
+  /**
+   * For a plugin that defines `trigger`: the path its trigger is posted to, relative to the
+   * engine, with its key (`/flow/triggers/<id>/<name>?key=…`; `<name>` is the caller's choice).
+   */
+  triggerPath?: string;
 }
 
 export interface FlowPluginDetail extends FlowPlugin {
@@ -70,25 +77,27 @@ export interface FlowEditOpMap {
   };
   "flow.member.list": { input: Org; output: { members: FlowMember[] } };
   "flow.plugin.list": { input: Org; output: { plugins: FlowPlugin[] } };
-  "flow.plugin.get": { input: Org & { pluginId: string }; output: { plugin: FlowPluginDetail } };
+  /** By name, as the server keys plugins. The answer is the plugin itself, with its code. */
+  "flow.plugin.get": { input: Org & { name: string }; output: FlowPluginDetail };
   "flow.plugin.setEnabled": {
-    input: Org & { pluginId: string; enabled: boolean };
-    output: unknown;
+    input: Org & { name: string; enabled: boolean };
+    output: FlowPlugin;
   };
-  "flow.plugin.delete": { input: Org & { pluginId: string }; output: unknown };
+  "flow.plugin.delete": { input: Org & { name: string }; output: { ok: boolean } };
   "flow.gateway.list": { input: Org; output: { gateways: FlowGateway[] } };
   "flow.gateway.save": {
+    /** `secret`: a string sets it, null removes it, left out keeps it. */
     input: Org & {
       /** An existing gateway's id: renames or changes that one. Left out: by `name`. */
       gatewayId?: string;
       name: string;
       baseUrl: string;
       auth: FlowGatewayAuth;
-      secret?: string;
+      secret?: string | null;
     };
-    output: unknown;
+    output: FlowGateway;
   };
-  "flow.gateway.delete": { input: Org & { gatewayId: string }; output: unknown };
+  "flow.gateway.delete": { input: Org & { name: string }; output: { ok: boolean } };
 }
 
 // ---- The inbox ----------------------------------------------------------------------------------

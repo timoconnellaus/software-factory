@@ -2,9 +2,11 @@
 // uses, during one of its runs, to set up workflows, projects, agents and items (every flow.*
 // operation) and to build plugins (the plugin editor). Streamable HTTP at /flow/mcp: a POST of one
 // JSON-RPC message (or a batch) answered as JSON; no sessions and no server-sent stream. The
-// bearer token names the run (mcp-auth.ts); every call acts as that run's agent, in its org.
+// bearer token names the run (mcp-auth.ts); every call acts as that run's agent, in its org. During a
+// chat's run, each call that changes something adds a `did` row to the chat (did.ts).
 import { type CallResult, describeWithInputs } from "@software-factory/ops";
 import { PLUGIN_GUIDE } from "@software-factory/plugins";
+import { beforeDelete, recordDid } from "./did.ts";
 import { callFlowAs } from "./door.ts";
 import { authenticateMcp } from "./mcp-auth.ts";
 
@@ -87,8 +89,12 @@ const fromCall = (out: CallResult, map: (r: unknown) => unknown = (r) => r) =>
 
 async function callTool(env: Env, auth: Auth, name: string, args: Record<string, unknown>) {
   const org = auth.run.orgId;
-  const as = (op: string, input: Record<string, unknown>) =>
-    callFlowAs(env, auth.caller, op, { ...input, orgId: org });
+  const as = async (op: string, input: Record<string, unknown>) => {
+    const deleted = await beforeDelete(env.DB, auth.run, op, input);
+    const out = await callFlowAs(env, auth.caller, op, { ...input, orgId: org });
+    await recordDid(env.DB, auth.run, op, input, out, deleted);
+    return out;
+  };
   switch (name) {
     case "flow_ops":
       return toolResult(describeWithInputs());

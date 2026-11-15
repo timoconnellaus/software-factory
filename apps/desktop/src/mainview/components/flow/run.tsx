@@ -276,7 +276,9 @@ function Header({ run, onClose }: { run: FlowRunView | undefined; onClose: () =>
   const on =
     run?.itemNumber != null
       ? `${run.projectKey ? `${run.projectKey}-` : "#"}${run.itemNumber} ${run.itemTitle ?? ""}`
-      : null;
+      : run?.chatTitle
+        ? `the chat "${run.chatTitle}"`
+        : null;
   return (
     <div className="flex items-center gap-2.5 border-line-soft border-b px-4 py-3">
       {pill && (

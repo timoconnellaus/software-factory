@@ -8,13 +8,15 @@ import type { FlowRunRow } from "./schema.ts";
 export interface RunView extends Run {
   /** Null for a run on no item (a chat's). */
   itemTitle: string | null;
+  /** A chat's run: the chat's title (null for an item's run). */
+  chatTitle: string | null;
   itemNumber: number | null;
   projectId: string | null;
   projectKey: string | null;
   agentName: string | null;
   /** The status the run is for, by name in its project's workflow (null without an item). */
   statusName: string | null;
-  /** "entering Build" for an item's run; null when nothing says. */
+  /** "entering Build" for an item's run, "a message in the chat" for a chat's. */
   startedBy: string | null;
   /** Claimed to finished; null while it runs or if it was never claimed. */
   durationMs: number | null;
@@ -38,7 +40,7 @@ export async function runView(
   const row = await d1
     .prepare(
       `SELECT r.*, i.title AS item_title, i.number AS item_number, i.project_id AS project_id,
-          p.key AS project_key, a.name AS agent_name, cr.name AS runner_name,
+          p.key AS project_key, a.name AS agent_name, cr.name AS runner_name, c.title AS chat_title,
           (SELECT json_extract(s.value, '$.name') FROM json_each(w.definition, '$.statuses') AS s
             WHERE json_extract(s.value, '$.id') = r.status_id) AS status_name
         FROM flow_runs AS r
@@ -47,6 +49,7 @@ export async function runView(
         LEFT JOIN flow_workflows AS w ON w.id = p.workflow_id
         LEFT JOIN flow_agents AS a ON a.id = r.agent_id
         LEFT JOIN core_runners AS cr ON cr.id = r.runner_id
+        LEFT JOIN flow_chats AS c ON c.id = r.chat_id
         WHERE r.id = ?`,
     )
     .bind(runId)
@@ -59,6 +62,7 @@ export async function runView(
         agent_name: string | null;
         runner_name: string | null;
         status_name: string | null;
+        chat_title: string | null;
       }
     >();
   if (!row) return null;
@@ -70,6 +74,7 @@ export async function runView(
     agent_name,
     runner_name,
     status_name,
+    chat_title,
     ...run
   } = row;
   const statusName = item_title === null ? null : (status_name ?? run.status_id);
@@ -78,12 +83,18 @@ export async function runView(
   return {
     ...toRun(run),
     itemTitle: item_title,
+    chatTitle: chat_title,
     itemNumber: item_number,
     projectId: project_id,
     projectKey: project_key,
     agentName: agent_name,
     statusName,
-    startedBy: statusName === null ? null : `entering ${statusName}`,
+    startedBy:
+      statusName !== null
+        ? `entering ${statusName}`
+        : run.chat_id !== null
+          ? "a message in the chat"
+          : null,
     durationMs:
       claimed && finished ? Math.max(0, Date.parse(finished) - Date.parse(claimed)) : null,
     runnerName: runner_name,

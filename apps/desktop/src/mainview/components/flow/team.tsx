@@ -295,7 +295,9 @@ function AgentPage({ orgId, agent }: { orgId: string; agent: FlowAgent }) {
                     ) : (
                       <LoaderIcon className="size-4 flex-none text-ink-muted" />
                     )}
-                    <span className="truncate">{r.itemTitle ?? "An item"}</span>
+                    <span className="truncate">
+                      {r.itemTitle ?? (r.chatTitle ? `Chat: ${r.chatTitle}` : "An item")}
+                    </span>
                     <span className="ml-auto flex-none text-[12px] text-ink-muted">
                       <span className={cn(out.ok === false && "text-bad")}>{out.text}</span>
                       {r.finishedAt && ` · ${when(r.finishedAt)}`}

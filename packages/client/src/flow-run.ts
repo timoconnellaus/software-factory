@@ -23,6 +23,8 @@ export interface FlowRunView {
   claimedAt: string | null;
   finishedAt: string | null;
   itemTitle: string | null;
+  /** A chat's run: the chat's title (the item fields null). */
+  chatTitle?: string | null;
   itemNumber: number | null;
   projectId: string | null;
   projectKey: string | null;

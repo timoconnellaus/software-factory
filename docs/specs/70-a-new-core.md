@@ -1,6 +1,6 @@
 # Spec 70: A new core
 
-Status: **being built.** Milestone 1 is built and was proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
+Status: **being built.** Milestones 1 and 2 are built and were proved on the deployed engine and a real runner on 2026-11-15. Read [ADR 0660](../adr/0660-the-core-is-a-small-workflow-engine-with-plugins.md)
 first. This spec is the plan; each milestone gets its own short spec when it starts.
 
 ## The goal
@@ -144,6 +144,38 @@ sf call flow.agent.update '{"orgId":"<org>","agentId":"<agent>","name":"Builder"
 curl -X POST "https://sf-engine.zerobsai.com/flow/triggers/<pluginId>/email?key=<key>" -d '{"subject":"Help"}'
 ```
 
+### Chat: as built (2026-11-15)
+- **Tables** (migration 0433): `flow_chats` and `flow_chat_messages` (`person`, `agent`, `did`),
+  kept as the chat's record until `flow.chat.delete`. `flow_runs` was rebuilt: a run has an
+  `item_id` or a `chat_id`, never both. A chat run has `status_id` '', `stay` = the seq of the
+  message it answers, and that message as its `brief`.
+- **Operations**: `flow.chat.create | send | list | get | delete` and `flow.agent.ensureBuilder`
+  (the org's agent with the `factory` server, or a new "Builder"). `create` refuses an agent
+  without the Plugin editor; `send` is refused while the last run is queued or claimed. `get`
+  answers the messages, `working`, and `made` (the workflows and plugins its `did` rows name).
+- **A chat run** is claimed and handed back on the same channel path as an item's run. It differs
+  in three places: its prompt (`flow/chat-prompt.ts`: what the app is, the conversation so far
+  capped at 24,000 characters, the new message, and a summary that is the reply), its end
+  (`endChatRun` in the store adds the agent's message; no item is stepped and no plugin hook runs),
+  and the MCP server, which acts for the chat's creator and adds a `did` row for each successful
+  change (`flow/did.ts`). A failed or lapsed run leaves a plain agent message; sending again retries.
+- **The app**: Chat (`?chat=`), with recent chats in a switcher in the header, the conversation on
+  the left and what it made on the right; it polls `flow.chat.get` every 3 seconds only while a run
+  is in flight. The Plugins screen's "Say what you want the app to do…" starts a chat.
+
+### Auto (schedules): as built (2026-11-15)
+- A schedule (`flow_schedules`, migration 0435) makes an item in a project on a clock: every hour
+  at a minute, every day, weekdays, or one day a week at a time, in one IANA time zone (the
+  creator's, by default). The item goes through its project's workflow like any other, created as
+  the schedule's creator with the plugins' `entered` hooks. Nothing else: no cron expressions, no
+  run-only mode, no auto-pause, no webhooks (plugins have triggers).
+- The minute cron fires at most 20 due schedules a tick (`flow_schedules_due_idx`), moving each
+  `next_at` on with a conditional update before it makes the item, so two ticks can't both fire
+  it and a broken one fails once a period. A failure is kept as `last_error`.
+- Operations: `flow.schedule.list | save | delete | runNow`. The desktop app's Auto screen lists
+  them; its Triggers tab lists each plugin that defines a trigger with a
+  copyable URL (`flow.plugin.list` gives `triggerPath` for those).
+
 ### Milestone 4: the run view, as built (2026-11-15)
 - **What is stored.** The channel's `events` call for a flow run now stores what the runner sends
   (`flow_run_events`, migration 0434), normalised to three kinds: `note` (the assistant's
@@ -202,6 +234,17 @@ moved to Done. The timeline shows each move and the agent's text. No code names 
 Known gaps, left on purpose: a claim whose reply is lost isn't retried cleanly; any org member can
 finish a person's status; a run's events aren't stored, so the run view has nothing to show yet
 (stored since migration 0434: see "the run view, as built" above).
+
+## Milestone 2, proved (2026-11-15)
+On the deployed engine: an agent "Builder" with the `factory` MCP server, a workflow "Ask, check"
+(Ask owned by Builder, Check by a person), and an item whose body asked, in plain words, for a
+plugin that adds a "Ready to check" card whenever an item enters Check. The M5's runner claimed the
+run; Builder read the plugin guide, wrote the plugin "Welcome card" and saved it through the MCP
+server, 31 seconds after the claim. When its run ended the item moved to Check, the new plugin's
+`entered` hook ran in a Dynamic Worker, and the card appeared on the item's timeline.
+
+Also on that day: the old app's screens were removed from the desktop app at the owner's request,
+ahead of milestone 5. The old core's server code is still in place.
 
 ## Rules
 - Keep it simple. No limits on plugins, no grants, no approval flows, and no handling of edge

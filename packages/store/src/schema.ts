@@ -1,5 +1,5 @@
-// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql,
-// 0434_flow_run_events.sql; 0432 adds only indexes), as Kysely sees them.
+// The flow_* tables (packages/db/migrations/0430_flow.sql, 0431_flow_plugins.sql, 0433_flow_chat.sql,
+// 0434_flow_run_events.sql, 0435_flow_schedules.sql; 0432 adds only indexes), as Kysely sees them.
 
 import type { Generated, Selectable } from "kysely";
 
@@ -74,7 +74,9 @@ export type RunStatus = "queued" | "claimed" | "done" | "failed" | "cancelled";
 export interface FlowRunsTable {
   id: string;
   org_id: string;
-  item_id: string;
+  /** A run belongs to an item or to a chat (migration 0433): exactly one of these is set. */
+  item_id: string | null;
+  chat_id: string | null;
   agent_id: string;
   status_id: string;
   stay: number;
@@ -152,7 +154,61 @@ export interface FlowGatewaysTable {
   updated_at: string;
 }
 
+/** A schedule (migration 0435): an item made in a project on a clock. */
+export interface FlowSchedulesTable {
+  id: string;
+  org_id: string;
+  project_id: string;
+  name: string;
+  /** The item's title. */
+  title: string;
+  /** The item's body. */
+  body: string;
+  every: "hour" | "day" | "weekday" | "week";
+  at_minute: number;
+  at_hour: number | null;
+  on_day: number | null;
+  time_zone: string;
+  enabled: number;
+  /** ISO, UTC; null while it is off. */
+  next_at: string | null;
+  last_at: string | null;
+  last_item_id: string | null;
+  last_error: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FlowChatsTable {
+  id: string;
+  org_id: string;
+  agent_id: string;
+  /** The first message, cut to 80 characters. */
+  title: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ChatRole = "person" | "agent" | "did";
+
+export interface FlowChatMessagesTable {
+  id: string;
+  chat_id: string;
+  org_id: string;
+  seq: number;
+  role: ChatRole;
+  text: string;
+  /** JSON: a `did` row's { kind, id, name? }, or an agent message's { failed: true }; else null. */
+  data: string | null;
+  run_id: string | null;
+  created_at: string;
+}
+
 export interface FlowDatabase {
+  flow_chats: FlowChatsTable;
+  flow_chat_messages: FlowChatMessagesTable;
   flow_workflows: FlowWorkflowsTable;
   flow_projects: FlowProjectsTable;
   flow_agents: FlowAgentsTable;
@@ -162,4 +218,5 @@ export interface FlowDatabase {
   flow_run_events: FlowRunEventsTable;
   flow_plugins: FlowPluginsTable;
   flow_gateways: FlowGatewaysTable;
+  flow_schedules: FlowSchedulesTable;
 }

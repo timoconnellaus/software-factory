@@ -21,7 +21,7 @@ const name = z.string().trim().min(1).max(64);
 export const triggerPath = (p: Plugin) =>
   `/flow/triggers/${p.id}/<name>?key=${encodeURIComponent(p.triggerKey)}`;
 
-/** A plugin as a list shows it: no code, no trigger key. */
+/** A plugin as a list shows it: no code; its trigger path (with its key) if it defines a trigger. */
 const summary = (p: Plugin) => ({
   id: p.id,
   name: p.name,
@@ -32,6 +32,7 @@ const summary = (p: Plugin) => ({
   hooks: p.hooks,
   createdBy: p.createdBy,
   updatedAt: p.updatedAt,
+  ...(p.hooks.includes("trigger") ? { triggerPath: triggerPath(p) } : {}),
 });
 
 const full = (p: Plugin) => ({ ...summary(p), code: p.code, triggerPath: triggerPath(p) });
@@ -40,7 +41,7 @@ export const pluginOps = [
   defineOperation({
     name: "flow.plugin.list",
     description:
-      "The org's plugins by name: each one's request (the person's plain words), whether it is on, its last error, and the fields and hooks it declares. No code.",
+      "The org's plugins by name: each one's request (the person's plain words), whether it is on, its last error, and the fields and hooks it declares; one that defines a trigger has its triggerPath (POST it with a JSON body). No code.",
     risk: "read",
     input: z.object({ orgId }),
     handler: async (_input, ctx) => ({

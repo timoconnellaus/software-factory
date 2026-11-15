@@ -57,11 +57,6 @@ describe("the shell", () => {
     );
     expect(text).toContain("API Platform 7 Autopilots launch");
   });
-
-  it("gives a section still to come one line", async () => {
-    const text = textOf(await renderPage(`/flow/${ORG}/chat`));
-    expect(text).toContain("Chat Coming next.");
-  });
 });
 
 describe("the board", () => {

@@ -1,78 +1,33 @@
-// Runs: queued by the kernel's run.start, claimed by a runner under a lease with a fencing token,
-// and ended by the runner (or by the lease sweep), which applies run.ended or run.failed to the item.
+// Runs: queued by the kernel's run.start (or by a chat message, chats.ts), claimed by a runner under
+// a lease with a fencing token, and ended by the runner (or by the lease sweep), which applies
+// run.ended or run.failed to the item, or, for a chat run, adds the agent's reply (chat-runs.ts).
 import { guardChanged, toStatement } from "@software-factory/db";
 import type { Actor } from "@software-factory/flow";
 import { sql } from "kysely";
 import { parseMcp } from "./agents.ts";
+import { expireChatRun } from "./chat-runs.ts";
 import { flowDb, iso, StoreError } from "./db.ts";
-import type { FlowRunRow, RunStatus } from "./schema.ts";
+import { type Run, type RunResult, toRun } from "./run-row.ts";
+import type { FlowRunRow } from "./schema.ts";
 import { advance, type Item, type Stepped } from "./step.ts";
 
-export interface RunResult {
-  outcome: "done" | "rejected";
-  summary: string;
-}
-
-export interface Run {
-  id: string;
-  orgId: string;
-  itemId: string;
-  agentId: string;
-  statusId: string;
-  stay: number;
-  brief: string;
-  status: RunStatus;
-  runnerId: string | null;
-  fencingToken: number;
-  leaseExpiresAt: string | null;
-  result: RunResult | null;
-  error: string | null;
-  createdAt: string;
-  claimedAt: string | null;
-  finishedAt: string | null;
-  /** Tool calls the runner reported (runEvents.ts). */
-  steps: number;
-  /** Tokens the runner reported, or null when it reports none. */
-  tokens: number | null;
-  /** Cost the runner reported, or null (no runner reports cost yet). */
-  costUsd: number | null;
-}
-
-export function toRun(row: FlowRunRow): Run {
-  return {
-    id: row.id,
-    orgId: row.org_id,
-    itemId: row.item_id,
-    agentId: row.agent_id,
-    statusId: row.status_id,
-    stay: row.stay,
-    brief: row.brief,
-    status: row.status,
-    runnerId: row.runner_id,
-    fencingToken: row.fencing_token,
-    leaseExpiresAt: row.lease_expires_at,
-    result: row.result === null ? null : (JSON.parse(row.result) as RunResult),
-    error: row.error,
-    createdAt: row.created_at,
-    claimedAt: row.claimed_at,
-    finishedAt: row.finished_at,
-    steps: row.steps,
-    tokens: row.tokens,
-    costUsd: row.cost_usd,
-  };
-}
+export { type Run, type RunResult, toRun } from "./run-row.ts";
 
 /** What a runner needs to do a claimed run. */
 export interface ClaimedRun {
   id: string;
   orgId: string;
-  itemId: string;
+  itemId: string | null;
+  chatId: string | null;
   statusId: string;
   stay: number;
   brief: string;
   fencingToken: number;
   leaseExpiresAt: string;
-  item: { number: number; title: string; body: string };
+  /** An item's run: the item. Null for a chat's run. */
+  item: { number: number; title: string; body: string } | null;
+  /** A chat's run: the chat. Null for an item's run. */
+  chat: { title: string } | null;
   /** Null when the workflow names an agent the org doesn't have. */
   agent: { id: string; name: string; instructions: string; mcp: string[] } | null;
 }
@@ -85,7 +40,8 @@ const STOPPED_RESPONDING = "The runner stopped responding.";
  * another runner claimed it first.
  *
  * A runner serves, as in the old core's placement (core_runners, core_runner_shares, ADR 0038), the
- * items its owner created, and every item of an org it is shared into (`scope = 'org'`).
+ * items and chats its owner created, and every one of an org it is shared into (`scope = 'org'`).
+ * A run's item or chat is a left join by primary key: a run has exactly one of them.
  */
 export async function claimRun(
   d1: D1Database,
@@ -98,14 +54,23 @@ export async function claimRun(
   // owner and its shares are point reads by primary key.
   const run = await db
     .selectFrom("flow_runs as r")
-    .innerJoin("flow_items as i", "i.id", "r.item_id")
+    .leftJoin("flow_items as i", "i.id", "r.item_id")
+    .leftJoin("flow_chats as c", "c.id", "r.chat_id")
     .leftJoin("flow_agents as a", "a.id", "r.agent_id")
-    .select(["r.id", "r.org_id", "r.item_id", "r.agent_id", "r.status_id", "r.stay", "r.brief"])
-    .select(["r.fencing_token", "i.number", "i.title", "i.body"])
+    .select(["r.id", "r.org_id", "r.item_id", "r.chat_id", "r.agent_id", "r.status_id", "r.stay"])
+    .select([
+      "r.brief",
+      "r.fencing_token",
+      "i.number",
+      "i.title",
+      "i.body",
+      "c.title as chat_title",
+    ])
     .select(["a.name as agent_name", "a.instructions as agent_instructions", "a.mcp as agent_mcp"])
     .where("r.status", "=", sql.lit("queued"))
     .where(
-      sql<boolean>`(i.created_by = (SELECT owner_user_id FROM core_runners WHERE id = ${runnerId})
+      sql<boolean>`(COALESCE(i.created_by, c.created_by) =
+          (SELECT owner_user_id FROM core_runners WHERE id = ${runnerId})
         OR EXISTS (SELECT 1 FROM core_runner_shares s WHERE s.runner_id = ${runnerId}
           AND s.scope = 'org' AND s.scope_id = r.org_id))`,
     )
@@ -132,12 +97,17 @@ export async function claimRun(
     id: run.id,
     orgId: run.org_id,
     itemId: run.item_id,
+    chatId: run.chat_id,
     statusId: run.status_id,
     stay: run.stay,
     brief: run.brief,
     fencingToken: run.fencing_token + 1,
     leaseExpiresAt,
-    item: { number: run.number, title: run.title, body: run.body },
+    item:
+      run.item_id !== null && run.number !== null
+        ? { number: run.number, title: run.title ?? "", body: run.body ?? "" }
+        : null,
+    chat: run.chat_id !== null ? { title: run.chat_title ?? "" } : null,
     agent:
       run.agent_name === null
         ? null
@@ -208,6 +178,9 @@ export async function endRun(
     .where("id", "=", runId)
     .executeTakeFirst();
   if (!run) throw new StoreError("not_found", `No run ${runId}.`);
+  // A chat's run ends through chat-runs.ts (endChatRun): it has no item to step.
+  if (run.item_id === null) throw new StoreError("invalid", `Run ${runId} is a chat's run.`);
+  const itemId = run.item_id;
   if (run.status !== "claimed" || run.fencing_token !== fencingToken) {
     throw new StoreError(
       "stale_run",
@@ -239,7 +212,7 @@ export async function endRun(
   const stopWith = ended.status === "done" ? ended.stopWith : undefined;
   const stepped = await advance(
     d1,
-    run.item_id,
+    itemId,
     // The event and the summary carry the run's id, so the timeline can link them to it.
     ended.status === "failed"
       ? { type: "run.failed", stay: run.stay, error: ended.error, runId }
@@ -303,8 +276,9 @@ export async function expireRun(
 /**
  * Fails claimed runs whose lease lapsed before `now`, oldest first, through expireRun. Reads
  * flow_runs_lease_idx. At most 10 a call (AGENTS.md cost rule 8: each one is a few queries); a run
- * that ended or was renewed meanwhile is skipped. `onEnded` runs after each one that failed (the
- * plugin hooks). Returns how many it failed.
+ * that ended or was renewed meanwhile is skipped. `onEnded` runs after each item's run that failed
+ * (the plugin hooks); a chat's run gets the agent's note that it stopped instead. Returns how many it
+ * failed.
  */
 export async function expireRuns(
   d1: D1Database,
@@ -314,7 +288,7 @@ export async function expireRuns(
 ): Promise<number> {
   const lapsed = await flowDb(d1)
     .selectFrom("flow_runs")
-    .select(["id", "fencing_token"])
+    .select(["id", "fencing_token", "chat_id"])
     .where("status", "=", sql.lit("claimed"))
     .where("lease_expires_at", "<", iso(now))
     .orderBy("lease_expires_at")
@@ -322,6 +296,10 @@ export async function expireRuns(
     .execute();
   let failed = 0;
   for (const run of lapsed) {
+    if (run.chat_id !== null) {
+      if (await expireChatRun(d1, run.id, run.fencing_token, now, STOPPED_RESPONDING)) failed++;
+      continue;
+    }
     const ended = await expireRun(d1, run.id, run.fencing_token, now);
     if (!ended) continue;
     failed++;
@@ -341,20 +319,23 @@ export async function setMcpTokenHash(d1: D1Database, runId: string, hash: strin
 
 /**
  * What the MCP server needs to authenticate a run's token: the run, its token's hash, and who
- * created its item (the person the agent acts for). One read by primary key.
+ * created its item or chat (the person the agent acts for). One read by primary key.
  */
 export async function runForToken(
   d1: D1Database,
   runId: string,
-): Promise<{ run: Run; tokenHash: string | null; itemCreatedBy: string } | null> {
+): Promise<{ run: Run; tokenHash: string | null; createdBy: string } | null> {
   const row = await flowDb(d1)
     .selectFrom("flow_runs as r")
-    .innerJoin("flow_items as i", "i.id", "r.item_id")
+    .leftJoin("flow_items as i", "i.id", "r.item_id")
+    .leftJoin("flow_chats as c", "c.id", "r.chat_id")
     .selectAll("r")
-    .select("i.created_by as item_created_by")
+    .select(["i.created_by as item_created_by", "c.created_by as chat_created_by"])
     .where("r.id", "=", runId)
     .executeTakeFirst();
   if (!row) return null;
-  const { item_created_by, ...run } = row;
-  return { run: toRun(run), tokenHash: run.mcp_token_hash, itemCreatedBy: item_created_by };
+  const { item_created_by, chat_created_by, ...run } = row;
+  const createdBy = item_created_by ?? chat_created_by;
+  if (createdBy === null) return null;
+  return { run: toRun(run), tokenHash: run.mcp_token_hash, createdBy };
 }
