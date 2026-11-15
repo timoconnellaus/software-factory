@@ -112,21 +112,44 @@ export function toolPhrase(
   return TOOLS[tool] ?? `Using ${tool}`;
 }
 
-/** The steps as lines: each tool call in words, each note as it is. */
+/**
+ * How every run is wired, not something the model did for the person: it reads its instructions
+ * from a prompt file, writes its reply to a result file, and looks up its tools. A chat never shows
+ * these (the owner said "hi" and saw "Reading a file, Writing a file").
+ */
+const PLUMBING_FILES = [".factory-prompt.md", ".factory-result.json"];
+const RESULT_FILE = ".factory-result.json";
+const touches = (s: { name: string; input: string }, files: string[]) => {
+  if (!["Read", "Write", "Edit", "MultiEdit"].includes(s.name)) return false;
+  const path = str(parse(s.input).file_path) ?? s.input;
+  return files.some((f) => path.includes(f));
+};
+const isPlumbing = (s: { name: string; input: string }) =>
+  s.name === "ToolSearch" || touches(s, PLUMBING_FILES);
+
+/**
+ * The steps as lines: each tool call in words, each note as it is. The run's own plumbing is left
+ * out, and so is anything the model says after writing its reply: that is the reply again.
+ */
 export function chatStepLines(
   steps: RunStep[],
   projectName?: (id: string) => string | null,
 ): ChatStepLine[] {
-  return steps.map((s) =>
-    s.kind === "note"
-      ? { kind: "note", seq: s.seq, text: s.text }
-      : {
-          kind: "doing",
-          seq: s.seq,
-          text: toolPhrase(s.name, s.input, projectName),
-          failed: s.isError,
-        },
-  );
+  const replied = steps.find((s) => s.kind !== "note" && touches(s, [RESULT_FILE]));
+  const lines: ChatStepLine[] = [];
+  for (const s of steps) {
+    if (s.kind === "note") {
+      if (!replied || s.seq < replied.seq) lines.push({ kind: "note", seq: s.seq, text: s.text });
+    } else if (!isPlumbing(s)) {
+      lines.push({
+        kind: "doing",
+        seq: s.seq,
+        text: toolPhrase(s.name, s.input, projectName),
+        failed: s.isError,
+      });
+    }
+  }
+  return lines;
 }
 
 /** "Did 6 things": how many tool calls a finished run made. */
