@@ -159,6 +159,21 @@ describe("run settings", () => {
     }
   });
 
+  it("in a container, runs every job in bypassPermissions with Claude's own sandbox off (ADR 0661)", () => {
+    for (const kind of [{}, REPO]) {
+      const s = runSettings(kind, { worktree: "/w/job", runDir: "/r/job", isolation: "container" });
+      expect(s.permissions.defaultMode).toBe("bypassPermissions");
+      expect(s.skipDangerousModePermissionPrompt).toBe(true);
+      expect(s.sandbox).toMatchObject({ enabled: false, failIfUnavailable: false });
+      expect(
+        claudeArgv(
+          { ...kind, harness: { id: "claude-code", role: "implement", prompt: "" } },
+          { settingsPath: "/r/job/s.json", mode: s.permissions.defaultMode },
+        ),
+      ).toContain("bypassPermissions");
+    }
+  });
+
   it("turns the sandbox on in every run, with no way to run unsandboxed", () => {
     for (const kind of [{}, REPO]) {
       const s = runSettings(kind, {

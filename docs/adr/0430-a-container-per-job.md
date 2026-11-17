@@ -151,3 +151,7 @@ later), and the same boundary to carry over to cloud sandboxes (plan piece 7).
 > isolation the container is the floor. The Claude sandbox is off, and every stage's default
 > mode is `bypassPermissions`. The launch check runs inside the container, and a container check
 > is added.
+
+> **2026-11-15:** removed with the old pipeline (spec 70).
+>
+> **2026-11-18:** brought back, smaller, by [ADR 0661](0661-a-run-can-run-in-a-container-on-the-runners-machine.md): the job repo and its check are kept; the egress proxy, the credential scan, the check container and the per-stage policy are not.

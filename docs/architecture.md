@@ -81,6 +81,11 @@ key (`/runner/v1/*`).
 - **Release** ends the job; a release with the run still open fails it. The cron fails runs whose
   lease lapsed.
 
+**In a container** (`runner.json` `"isolation": "container"`, [ADR 0661](adr/0661-a-run-can-run-in-a-container-on-the-runners-machine.md)),
+the session runs `docker run` and Claude Code runs inside it on the same machine, with permissions
+off, seeing only its working tree (a job repo of its own, not a worktree), a fresh home and the
+token account's token. Otherwise:
+
 **Without a repository** the runner host gives the session an empty directory, removed on release.
 **With one** (a project with a repository) it makes a git worktree of the owner's checkout on the
 item's branch `factory/flow-<key>-<number>`, and after the session commits what is left and pushes

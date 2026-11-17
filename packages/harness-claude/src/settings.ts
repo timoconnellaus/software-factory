@@ -63,10 +63,10 @@ export interface ClaudeSettings {
     blockWritesOutsideWorkingDirectories: true;
   };
   sandbox: {
-    /** Always on. */
-    enabled: true;
-    /** Refuse to start rather than run commands unsandboxed. */
-    failIfUnavailable: true;
+    /** On, except in a container (the container is the floor there, ADR 0661). */
+    enabled: boolean;
+    /** Refuse to start rather than run commands unsandboxed (when enabled). */
+    failIfUnavailable: boolean;
     /** Never: `dangerouslyDisableSandbox` is ignored. The floor. */
     allowUnsandboxedCommands: false;
     autoAllowBashIfSandboxed: boolean;
@@ -129,6 +129,20 @@ export interface SettingsOptions {
   mcpServers?: readonly string[];
   /** The platform the run's on, for its credential stores and temp dirs (default: this one). */
   platform?: NodeJS.Platform;
+  /**
+   * Where the run is held in (ADR 0661): `sandbox` (default), Claude Code's OS sandbox on the
+   * runner's machine; `container`, a container the runner started, which is the floor instead, so
+   * Claude's own sandbox is off and every run is in `bypassPermissions`.
+   */
+  isolation?: Isolation;
+}
+
+/** Where a run is held in (ADR 0661). */
+export type Isolation = "sandbox" | "container";
+
+/** The permission mode a run gets: by its kind, except in a container, where it's always bypass. */
+export function runMode(kind: RunKind, isolation: Isolation = "sandbox"): PermissionMode {
+  return isolation === "container" ? "bypassPermissions" : RUN_MODES[kind];
 }
 
 /** Hook events whose output can grant a permission or answer a dialog: a runner may not add them. */
@@ -435,7 +449,8 @@ export function runSettings(
   options: SettingsOptions,
 ): ClaudeSettings {
   const kind = runKind(job);
-  const mode = RUN_MODES[kind];
+  const contained = options.isolation === "container";
+  const mode = runMode(kind, options.isolation);
   const domains = DEFAULT_ALLOWED_DOMAINS;
   const runTmp = options.runTmp ?? `${options.runDir}/tmp`;
   for (const event of DECISION_HOOK_EVENTS) {
@@ -489,8 +504,8 @@ export function runSettings(
       blockWritesOutsideWorkingDirectories: true,
     },
     sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
+      enabled: !contained,
+      failIfUnavailable: !contained,
       allowUnsandboxedCommands: false,
       // Only where the mode lets everything through anyway; elsewhere the allowlist decides.
       autoAllowBashIfSandboxed: mode === "bypassPermissions",

@@ -1,15 +1,18 @@
 // Wires a runner from its config: the signed channel client, the host's git, and the local adapter
-// (git worktrees + tmux, ADR 0380) with the Claude harness. This is the one place that names a
+// (git worktrees + tmux, ADR 0380), or its container form (ADR 0661), with the Claude harness. This is the one place that names a
 // runner adapter; the host loop and the job lifecycle only see the contract.
 
 import { join } from "node:path";
 import { DEFAULT_IDENTITY } from "@software-factory/harness-claude";
 import { httpControlPlane } from "@software-factory/runner-contract";
 import {
+  createContainerRunner,
   createLocalRunner,
+  dockerRuntime,
   type Exec,
   type LocalRunnerConfig,
   nodeExec,
+  reapContainers,
   reapOrphans,
 } from "@software-factory/runner-local";
 import { accountPaths, accountsReport, activeAccount, noteUsage, useAccount } from "./accounts.ts";
@@ -31,14 +34,14 @@ export const hostDirs = (dirs: Paths, exec: Exec = nodeExec) => ({
 });
 
 /**
- * Why this runner takes no jobs, from its config, or null: `container` and `sprites` isolation
- * were removed with the old pipeline (spec 70 milestone 5).
+ * Why this runner takes no jobs, from its config, or null: `sprites` isolation was removed with the
+ * old pipeline (spec 70 milestone 5). `container` came back in ADR 0661.
  */
 export function retiredIsolation(config: Pick<RunnerConfig, "isolation">): string | null {
   const isolation = config.isolation ?? "sandbox";
-  return isolation === "sandbox"
-    ? null
-    : `runner.json says "isolation": "${isolation}", which this runner no longer has: it takes no jobs until that is "sandbox"`;
+  return isolation === "sprites"
+    ? `runner.json says "isolation": "sprites", which this runner no longer has: it takes no jobs until that is "sandbox" or "container"`
+    : null;
 }
 
 export function buildRunner(
@@ -105,7 +108,16 @@ export function buildRunner(
     session: config.session,
     ...options.local,
   };
-  const adapter = createLocalRunner(localConfig);
+  // ADR 0661: each job's Claude in its own container on this machine, or on the host in Claude's
+  // own sandbox (the default).
+  const contained = config.isolation === "container";
+  const runtime = contained ? dockerRuntime({ exec }) : null;
+  const adapter = runtime
+    ? createContainerRunner({
+        ...localConfig,
+        container: { runtime, runnerId: config.runnerId, log },
+      })
+    : createLocalRunner(localConfig);
   const host = new RunnerHost({
     accounts: {
       report: () => accountsReport(accounts),
@@ -117,8 +129,15 @@ export function buildRunner(
     maxConcurrent: config.maxConcurrent,
     maxLight: config.maxLight,
     heartbeatMs: config.heartbeatMs,
-    reapOrphans: (running) =>
-      reapOrphans(
+    reapOrphans: async (running) => [
+      // A container this runner started for a job it no longer runs (ADR 0661).
+      ...(runtime
+        ? await reapContainers(runtime, config.runnerId, running).catch((err) => {
+            log(`reaping containers: ${err instanceof Error ? err.message : err}`);
+            return [];
+          })
+        : []),
+      ...(await reapOrphans(
         {
           ...hostDirs(dirs, exec),
           ...(options.local?.tmux ? { tmux: options.local.tmux } : {}),
@@ -131,7 +150,8 @@ export function buildRunner(
           },
         },
         running,
-      ),
+      )),
+    ],
     liveJobsFile: liveJobsFile(dirs),
     load,
     log,
