@@ -66,7 +66,7 @@ export function RunModal({ orgId, runId }: { orgId: string; runId: string }) {
     // biome-ignore lint/a11y/noStaticElementInteractions: the backdrop's click is a mouse shortcut; Escape and the close button close it too.
     // biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled on the window.
     <div
-      className="absolute inset-0 z-30 grid place-items-center bg-[rgba(30,30,28,0.28)] p-[26px] dark:bg-black/50"
+      className="fade-in-0 absolute inset-0 z-30 grid animate-in place-items-center bg-[rgba(30,30,28,0.28)] p-[26px] duration-200 ease-out dark:bg-black/50"
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -76,7 +76,7 @@ export function RunModal({ orgId, runId }: { orgId: string; runId: string }) {
         role="dialog"
         aria-modal="true"
         aria-label="Run"
-        className="flex h-full max-h-[690px] w-full max-w-[1040px] flex-col overflow-hidden rounded-[14px] border border-line bg-panel shadow-[0_20px_60px_rgba(0,0,0,0.25)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.6)]"
+        className="fade-in-0 zoom-in-95 flex h-full max-h-[690px] w-full max-w-[1040px] animate-in flex-col duration-200 ease-out overflow-hidden rounded-[14px] border border-line bg-panel shadow-[0_20px_60px_rgba(0,0,0,0.25)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.6)]"
         data-testid="run-modal"
       >
         <RunBody key={runId} orgId={orgId} runId={runId} onClose={close} />

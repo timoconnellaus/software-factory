@@ -41,14 +41,20 @@ function useStepLines(orgId: string, runId: string, live: boolean, wanted: boole
   return { lines, loading: events.isFetching && !events.data, failed: events.isError };
 }
 
-function Line({ line }: { line: ChatStepLine }) {
+/** A live line comes in from below as it arrives; a folded turn's lines just show. */
+const ARRIVES = "fade-in-0 slide-in-from-bottom-1 animate-in duration-200 ease-out";
+
+function Line({ line, live }: { line: ChatStepLine; live?: boolean }) {
   return line.kind === "note" ? (
-    <p className="m-0 line-clamp-3 text-ink-muted italic" data-testid="chat-step-note">
+    <p
+      className={cn("m-0 line-clamp-3 text-ink-muted italic", live && ARRIVES)}
+      data-testid="chat-step-note"
+    >
       {line.text}
     </p>
   ) : (
     <p
-      className={cn("m-0 truncate text-ink-muted", line.failed && "text-bad")}
+      className={cn("m-0 truncate text-ink-muted", line.failed && "text-bad", live && ARRIVES)}
       data-testid="chat-step"
     >
       {line.text}
@@ -63,7 +69,7 @@ export function LiveSteps({ orgId, runId }: { orgId: string; runId: string }) {
   return (
     <div className="mt-1 grid gap-1 text-[12.5px]" data-testid="chat-working">
       {shown.map((l) => (
-        <Line key={l.seq} line={l} />
+        <Line key={l.seq} line={l} live />
       ))}
       <p className="m-0 flex items-center gap-2 text-ink-faint">
         <LoaderIcon className="size-3.5 animate-spin" />
@@ -100,13 +106,15 @@ export function DoneSteps({
         {lines ? didThings(lines) : "What it did"}
         {loading && <LoaderIcon className="ml-1 size-3 animate-spin" />}
       </CollapsibleTrigger>
-      <CollapsibleContent
-        className="mt-1 mb-2 ml-[7px] grid gap-1 border-line-soft border-l pl-3 text-[12.5px]"
-        data-testid="chat-steps"
-      >
-        {(lines ?? []).map((l) => (
-          <Line key={l.seq} line={l} />
-        ))}
+      <CollapsibleContent>
+        <div
+          className="mt-1 mb-2 ml-[7px] grid gap-1 border-line-soft border-l pl-3 text-[12.5px]"
+          data-testid="chat-steps"
+        >
+          {(lines ?? []).map((l) => (
+            <Line key={l.seq} line={l} />
+          ))}
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );

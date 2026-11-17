@@ -139,7 +139,11 @@ export function ItemPanel({
 
   return (
     <aside
-      className="absolute top-2 right-2 bottom-2 z-10 flex w-[452px] max-w-[calc(100%-16px)] flex-col rounded-xl border border-line bg-panel shadow-[0_12px_40px_rgba(20,20,20,0.12)] dark:shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+      className={cn(
+        "absolute top-2 right-2 bottom-2 z-10 flex w-[452px] max-w-[calc(100%-16px)] flex-col rounded-xl border border-line bg-panel shadow-[0_12px_40px_rgba(20,20,20,0.12)] dark:shadow-[0_12px_40px_rgba(0,0,0,0.5)]",
+        // It comes in from the edge it sits on, once: choosing another card swaps what it shows.
+        "fade-in-0 slide-in-from-right-4 animate-in duration-200 ease-out",
+      )}
       data-testid="item-panel"
     >
       <header className="flex items-center gap-2 border-line-soft border-b px-3.5 py-2 text-[12px] text-ink-muted">

@@ -44,6 +44,8 @@ export function CommandPalette({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
+        // ⌘K opens this many times a day: it shows and goes at once.
+        instant
         className="top-[18%] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-[560px]"
         data-testid="palette"
       >
