@@ -1,4 +1,4 @@
-# ADR 0661: Motion is rare, fast and names its purpose
+# ADR 0662: Motion is rare, fast and names its purpose
 
 Status: accepted and built, 2026-11-18.
 

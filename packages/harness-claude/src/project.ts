@@ -150,6 +150,7 @@ export async function projectHarness(
     mode: settings.permissions.defaultMode,
     argv: claudeArgv(job, {
       settingsPath: paths.runSettings,
+      mode: settings.permissions.defaultMode,
       ...(options.claudeBin ? { claudeBin: options.claudeBin } : {}),
       ...(mcpConfigPath ? { mcpConfigPath } : {}),
       ...(streamSessionId ? { stream: { sessionId: streamSessionId } } : {}),

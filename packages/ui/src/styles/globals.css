@@ -188,7 +188,7 @@
   --color-chip-green-ink: var(--chip-green-ink);
   --color-needs-you: var(--needs-you);
   --color-link: var(--link);
-  /* Motion (ADR 0661). The built-in curves are too weak to read at UI speeds, so `ease-out` and
+  /* Motion (ADR 0662). The built-in curves are too weak to read at UI speeds, so `ease-out` and
      `ease-in-out` take these: ease-out for what enters or leaves, ease-in-out for what moves on
      screen, ease-drawer for a sheet. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);

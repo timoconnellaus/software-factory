@@ -61,10 +61,11 @@ export const configSchema = z.object({
     .strict()
     .optional(),
   /**
-   * Where jobs run: `sandbox` (default) is a worktree or a plain directory with Claude Code's OS
-   * sandbox on this machine (ADR 0270). `container` (ADR 0430) and `sprites` (ADR 0480) were
-   * removed with the old pipeline (spec 70): a runner.json that still names one is read, and the
-   * runner takes no jobs until it is changed back to `sandbox`.
+   * Where jobs run (ADR 0661): `sandbox` (default), a worktree or a plain directory on this machine
+   * with Claude Code's OS sandbox (ADR 0270); `container`, each job's Claude in its own Docker
+   * container on this machine, with permissions off inside it (needs Docker Desktop, OrbStack or
+   * Docker Engine, and a token account). `sprites` (ADR 0480) was removed with the old pipeline: a
+   * runner.json that still names it takes no jobs. Changing it takes a restart.
    */
   isolation: z.enum(["sandbox", "container", "sprites"]).default("sandbox"),
   /** Test only: clone/push URL per canonical GitHub URL. */
