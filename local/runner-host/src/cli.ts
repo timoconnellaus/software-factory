@@ -28,7 +28,10 @@ import { parseArgs } from "node:util";
 import { CONTRACT_VERSION } from "@software-factory/runner-contract";
 import {
   checkRunningHarness,
+  containerAccount,
   diagnose,
+  dockerRuntime,
+  imageTag,
   jobIdOfSession,
   nodeExec,
   reapOrphans,
@@ -36,7 +39,7 @@ import {
   tmuxCli,
 } from "@software-factory/runner-local";
 import { accountCommand } from "./account-cli.ts";
-import { AccountError, accountPaths, listAccounts } from "./accounts.ts";
+import { AccountError, accountPaths, activeAccount, listAccounts } from "./accounts.ts";
 import { checkoutDirs, migrateCheckouts } from "./checkouts.ts";
 import type { RunnerConfig } from "./config.ts";
 import {
@@ -477,7 +480,14 @@ async function doctor(args: string[]) {
     await check("isolation", async () => {
       const retired = retiredIsolation(configured);
       if (retired) throw new Error(retired);
-      return "sandbox";
+      if (configured.isolation !== "container") return "sandbox";
+      // ADR 0661: Docker must be up, and the active account a token account.
+      const runtime = dockerRuntime();
+      const version = await runtime.version();
+      const active = await activeAccount(accountPaths(dirs));
+      containerAccount(active, "/");
+      const image = await runtime.imageId(imageTag());
+      return `container (Docker ${version} at ${runtime.bin}; agent image ${image ? "built" : "built on the first job"})`;
     });
   }
   await check("running jobs' harness (permission mode, setting sources, settings)", async () => {

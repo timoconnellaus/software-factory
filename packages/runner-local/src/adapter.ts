@@ -114,6 +114,11 @@ export interface LocalWorkspace extends WorkspaceHandle {
    * worktree; there is no checkout, branch or base commit. Release removes the directory.
    */
   plain?: boolean;
+  /**
+   * How the launch check reads the live process's command line, when it isn't on this host's
+   * process table (a container job reads it inside its container, ADR 0661). Default: the config's.
+   */
+  readCommand?: ReadCommand;
 }
 
 export interface LocalSession extends SessionHandle {
@@ -712,7 +717,10 @@ export function createLocalRunner(
           job,
           workspace,
           signal,
-          streamOptions(),
+          {
+            ...streamOptions(),
+            ...(workspace.readCommand ? { readCommand: workspace.readCommand } : {}),
+          },
           (problems) => new HarnessConfigMismatch(problems),
         );
         const settingsPath = settingsPathOf(workspace);
@@ -819,7 +827,10 @@ export function createLocalRunner(
 
       // Before the job does anything: the live process and its settings must be exactly what the
       // harness set. Otherwise kill it and fail the job (incident 2026-11-11 #6).
-      const problems = await verifyLaunch(workspace.launch, config.readCommand);
+      const problems = await verifyLaunch(
+        workspace.launch,
+        workspace.readCommand ?? config.readCommand,
+      );
       if (problems.length > 0) await fail(new HarnessConfigMismatch(problems));
 
       // The prompt goes in a file; the terminal gets one short line pointing at it. A long paste

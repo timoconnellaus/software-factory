@@ -4,6 +4,7 @@
 export * from "./adapter.ts";
 export * from "./branches.ts";
 export * from "./checkouts.ts";
+export * from "./container/index.ts";
 export * from "./exec.ts";
 export * from "./procs.ts";
 export * from "./reap.ts";

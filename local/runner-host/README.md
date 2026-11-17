@@ -372,7 +372,7 @@ enough: `runner-contract` uses parameter properties. `bin/sf-runner` and `bin/sf
 | `identity` | `Software Factory <software-factory@users.noreply.github.com>` | Commit author |
 | `load` | `{ "enabled": true, "heavyStop": 1.5, "lightStop": 2.0, "resumeFactor": 0.8 }` | Back off claiming under load (ADR 0552): above `heavyStop` × cores (1-minute load average) no new heavy jobs, above `lightStop` × cores none at all; each resumes below its stop × `resumeFactor`. The heartbeat says why (`capacity.paused`), the health line reads "runner busy: load". `"enabled": false` turns it off |
 | `autoUpdate` | `true` | Update the runner's checkout to the deployed commit when idle (ADR 0360); `false` reports `blocked` instead |
-| `isolation` | `sandbox` | The only one left. `container` and `sprites` were removed with the old pipeline (spec 70): a runner.json that still names one takes no jobs until it says `sandbox` |
+| `isolation` | `sandbox` | `sandbox`: Claude Code's OS sandbox on this machine. `container`: each run in its own Docker container here, permissions off inside (ADR 0661; needs Docker and a token account). `sprites` was removed: a runner.json that names it takes no jobs |
 | `repoUrlMap` | — | Test only: clone and push a local bare repo in place of GitHub |
 
 ## Layout

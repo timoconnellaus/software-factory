@@ -21,9 +21,9 @@ import { join } from "node:path";
 import type { Job, JobStage } from "@software-factory/runner-contract";
 import {
   type PermissionMode,
-  RUN_MODES,
   RUN_SETTINGS_FILE,
   runKind,
+  runMode,
   SETTINGS_FILE,
 } from "./settings.ts";
 
@@ -91,13 +91,15 @@ export function claudeArgv(
     stream?: { sessionId?: string };
     /** The job's MCP config (spec 70 milestone 2), when the job names MCP servers. */
     mcpConfigPath?: string;
+    /** The permission mode (default: by the kind of run, held in by the OS sandbox). */
+    mode?: PermissionMode;
   },
 ): string[] {
   const stream = options.stream;
   return [
     options.claudeBin ?? "claude",
     "--permission-mode",
-    RUN_MODES[runKind(job)],
+    options.mode ?? runMode(runKind(job)),
     "--setting-sources",
     SETTING_SOURCES,
     "--settings",
