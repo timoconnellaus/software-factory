@@ -1,0 +1,8 @@
+{
+  "org": "",
+  "repoUrl": "https://github.com/timoconnellaus/software-factory.git",
+  "repoRef": "main",
+  "projectRoot": "/home/sprite/software-factory",
+  "port": 8080,
+  "orcaServerVersion": "1.4.257"
+}
